@@ -69,6 +69,21 @@ class TestLlmboxCompleter(unittest.TestCase):
         # without raising and produced Completion objects (possibly empty).
         self.assertTrue(all(hasattr(c, "text") for c in results))
 
+    def test_slash_uppercase_yields_help(self):
+        results = self._completions("/HE")
+        names = [c.text for c in results]
+        self.assertIn("/help", names)
+
+    def test_slash_mixed_case_yields_help(self):
+        results = self._completions("/HeLp")
+        names = [c.text for c in results]
+        self.assertIn("/help", names)
+
+    def test_slash_single_char_matches(self):
+        results = self._completions("/h")
+        names = [c.text for c in results]
+        self.assertIn("/help", names)
+
 
 @unittest.skipUnless(tui._AVAILABLE, "prompt_toolkit not installed")
 class TestTuiSessionToolbar(unittest.TestCase):
@@ -111,6 +126,104 @@ class TestTuiSessionToolbar(unittest.TestCase):
             estimate_tokens=lambda m: 10,
         )
         self.assertEqual(sess._ctx_pct(), 0.0)
+
+    def test_ctx_pct_cache_hits_on_unchanged_state(self):
+        """Second _ctx_pct call with unchanged history should reuse the cache."""
+        from callbacks import TerminalCallbacks
+        calls = {"n": 0}
+
+        def counting_estimate(m):
+            calls["n"] += 1
+            return 10
+
+        sess = tui.TuiSession(
+            history=[{"role": "user", "content": "hi"}] * 3,
+            summary_state={"text": "s"},
+            config={"llm": {"model": "m"}},
+            ctx_size=4096,
+            cb=TerminalCallbacks(),
+            estimate_tokens=counting_estimate,
+        )
+        sess._ctx_pct()
+        first = calls["n"]
+        sess._ctx_pct()
+        self.assertEqual(calls["n"], first,
+                         "cache miss on unchanged state")
+
+    def test_ctx_pct_cache_invalidates_on_history_append(self):
+        """Appending to history should invalidate the cache."""
+        from callbacks import TerminalCallbacks
+        calls = {"n": 0}
+
+        def counting_estimate(m):
+            calls["n"] += 1
+            return 10
+
+        hist = [{"role": "user", "content": "hi"}]
+        sess = tui.TuiSession(
+            history=hist,
+            summary_state={},
+            config={"llm": {"model": "m"}},
+            ctx_size=4096,
+            cb=TerminalCallbacks(),
+            estimate_tokens=counting_estimate,
+        )
+        sess._ctx_pct()
+        first = calls["n"]
+        hist.append({"role": "user", "content": "again"})
+        sess._ctx_pct()
+        self.assertGreater(calls["n"], first,
+                           "cache should have invalidated on append")
+
+    def test_ctx_pct_cache_invalidates_on_summary_length_change(self):
+        """Summary text growing in length should invalidate the cache."""
+        from callbacks import TerminalCallbacks
+        calls = {"n": 0}
+
+        def counting_estimate(m):
+            calls["n"] += 1
+            return 10
+
+        summary = {"text": "short"}
+        sess = tui.TuiSession(
+            history=[{"role": "user", "content": "hi"}],
+            summary_state=summary,
+            config={"llm": {"model": "m"}},
+            ctx_size=4096,
+            cb=TerminalCallbacks(),
+            estimate_tokens=counting_estimate,
+        )
+        sess._ctx_pct()
+        first = calls["n"]
+        summary["text"] = "a much longer summary text"
+        sess._ctx_pct()
+        self.assertGreater(calls["n"], first)
+
+    def test_toolbar_label_shows_tilde_when_fallback_tokenizer(self):
+        """When the real tokenizer isn't loaded, the ctx% label should be prefixed with ~."""
+        import token_utils
+        sess = self._make_session(
+            history=[{"role": "user", "content": "hi"}],
+            summary_text=None,
+        )
+        with mock.patch.object(token_utils, "_QWEN_TOKENIZER_AVAILABLE", False):
+            html = sess._toolbar()
+            # HTML object stringifies to its raw input
+            self.assertIn("ctx ~", str(html.value))
+
+    def test_toolbar_label_no_tilde_when_real_tokenizer(self):
+        """When the real tokenizer is loaded, the ~ approximation marker drops."""
+        import token_utils
+        sess = self._make_session(
+            history=[{"role": "user", "content": "hi"}],
+            summary_text=None,
+        )
+        with mock.patch.object(token_utils, "_QWEN_TOKENIZER_AVAILABLE", True):
+            # Invalidate cache so the label re-renders with new flag value
+            sess._ctx_cache_key = None
+            html = sess._toolbar()
+            self.assertNotIn("ctx ~", str(html.value))
+            self.assertIn("ctx ", str(html.value))
 
 
 @unittest.skipUnless(tui._AVAILABLE, "prompt_toolkit not installed")

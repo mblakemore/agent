@@ -126,10 +126,12 @@ if _AVAILABLE:
         def get_completions(self, document: Document, complete_event):
             text = document.text_before_cursor
 
-            # Slash command at start of line — match prefix and offer all.
+            # Slash command at start of line — match prefix case-insensitively
+            # so `/HELP`, `/HeLp`, `/h` all complete to the canonical `/help`.
             if text.startswith("/") and " " not in text:
+                lower = text.lower()
                 for cmd, desc in _SLASH_COMMANDS:
-                    if cmd.startswith(text):
+                    if cmd.startswith(lower):
                         yield Completion(
                             cmd,
                             start_position=-len(text),
@@ -185,6 +187,13 @@ if _AVAILABLE:
             self.ctx_size = ctx_size
             self.cb = cb
             self._estimate_tokens = estimate_tokens
+            # Toolbar ctx% cache. Key is (len(history), len(summary_text)) —
+            # cheap to compute, catches both "new message appended" and
+            # "summary updated in place". The rare case where the summary
+            # is rewritten to the same length shows a stale percentage for
+            # exactly one keystroke — acceptable staleness.
+            self._ctx_cache_key: tuple[int, int] | None = None
+            self._ctx_cache_val: float = 0.0
 
             self._session: PromptSession = PromptSession(
                 message=[("class:prompt", "\nYou: ")],
@@ -231,11 +240,17 @@ if _AVAILABLE:
         def _ctx_pct(self) -> float:
             if not self.ctx_size:
                 return 0.0
-            body = sum(self._estimate_tokens(m) for m in self.history) if self.history else 0
             summary = self.summary_state.get("text") or ""
+            key = (len(self.history), len(summary))
+            if self._ctx_cache_key == key:
+                return self._ctx_cache_val
+            body = sum(self._estimate_tokens(m) for m in self.history) if self.history else 0
             if summary:
                 body += self._estimate_tokens({"role": "system", "content": summary})
-            return min(1.0, body / self.ctx_size)
+            pct = min(1.0, body / self.ctx_size)
+            self._ctx_cache_key = key
+            self._ctx_cache_val = pct
+            return pct
 
         def _toolbar(self):
             cwd = Path(os.getcwd()).name or "/"
@@ -244,7 +259,14 @@ if _AVAILABLE:
             pct = self._ctx_pct() * 100.0
             verbose = bool(getattr(self.cb, "verbose", False))
             vstate = "verbose on" if verbose else "verbose off"
-            vcls = "bottom-toolbar.verbose-on" if verbose else "bottom-toolbar.verbose-off"
+
+            # Drop the ~ approximation marker when the real tokenizer is in
+            # use. Import lazily so tui.py stays independent of token_utils.
+            try:
+                from token_utils import _QWEN_TOKENIZER_AVAILABLE as _exact
+            except Exception:
+                _exact = False
+            ctx_label = f"ctx {pct:.0f}%" if _exact else f"ctx ~{pct:.0f}%"
 
             left = (
                 f'<style fg="{_SKY_HEX}" bg="{_VIOLET_HEX}"><b> {cwd} </b></style>'
@@ -253,7 +275,7 @@ if _AVAILABLE:
                 f'<style fg="#707070" bg="{_VIOLET_HEX}"> | </style>'
                 f'<style fg="#ffffff" bg="{_VIOLET_HEX}"> {msgs} msgs </style>'
                 f'<style fg="#707070" bg="{_VIOLET_HEX}"> | </style>'
-                f'<style fg="{_AMBER_HEX}" bg="{_VIOLET_HEX}"> ctx ~{pct:.0f}% </style>'
+                f'<style fg="{_AMBER_HEX}" bg="{_VIOLET_HEX}"> {ctx_label} </style>'
                 f'<style fg="#707070" bg="{_VIOLET_HEX}"> | </style>'
                 f'<style fg="{_MINT_HEX if verbose else "#909090"}" bg="{_VIOLET_HEX}"> {vstate} </style>'
             )
@@ -263,7 +285,7 @@ if _AVAILABLE:
                 width = os.get_terminal_size().columns
             except OSError:
                 width = 80
-            visible_len = len(f" {cwd}  |  {model}  |  {msgs} msgs  |  ctx ~{pct:.0f}%  |  {vstate} ")
+            visible_len = len(f" {cwd}  |  {model}  |  {msgs} msgs  |  {ctx_label}  |  {vstate} ")
             pad = max(0, width - visible_len)
             return HTML(left + f'<style bg="{_VIOLET_HEX}">{" " * pad}</style>')
 
