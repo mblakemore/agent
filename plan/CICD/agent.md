@@ -503,7 +503,9 @@ If any result is a plausible match, I comment on the existing issue with the new
 
 Things I already know rub. Each entry is fair game as a cycle target. When I find a new one during PROBE, I append it here in the same commit as the cycle's results.
 
-- <seed empty — first cycle will populate>
+- `tools/*.py` still carry a `SHARED RUNTIME — DO NOT MODIFY. This file is part of tool-agent/` docstring left over from the archive-era tool-agent/ layout that no longer exists. Cycle 0001 already retargeted `load_extra_tools` away from this dir, and cycle 0003 edited `tools/search_files.py` cleanly, so the warning is a lie. Worth a cycle: replace it with an accurate one-liner across every file in `tools/`, with a metric like "stale docstring count → 0" proved by a grep-based test.
+- `tools/search_files.py` still has an unused `import os` left over from a previous rewrite. Not worth its own cycle, but fold into any cycle that touches the file.
+- P-enum probe log (both runs) shows the agent issuing a `think({"prompt": "...3KB of already-in-context analysis..."})` call whose prompt is essentially a verbatim dump of what's already in history. The `think` tool round-trips a lot of tokens for dubious benefit when the agent already has the answer. A probe-driven cycle could measure "think tool calls whose prompt duplicates > 80% of recent context" and either gate them at the tool layer or retrain the description to discourage the pattern.
 
 ---
 
