@@ -1,0 +1,139 @@
+HH:MM:SS INFO Session started | ctx_size=114688 max_turns=20 temperature=0.0 max_tokens=16384
+HH:MM:SS INFO Tools registered: ['exec_command', 'file', 'read_pdf', 'search_files', 'sleep', 'task_tracker', 'think', 'web_fetch']
+HH:MM:SS INFO Async summarizer enabled → http://127.0.0.1:8082
+HH:MM:SS INFO USER: read README.md and summarize in 2 sentences
+HH:MM:SS DEBUG Context budget: 11/N tokens, 1 messages, oldest_idx=0, has_context_msg=False
+HH:MM:SS INFO --- turn N/20 | sending 1 messages (history has 1 total)
+HH:MM:SS INFO Response status: 200
+HH:MM:SS INFO Executing 1 tool call(s)
+HH:MM:SS INFO TOOL CALL: file({"action": "read", "path": "README.md"}) [id=r3ImeN7qDuPaFCPOj8o8b4ucgJJH0L9s]
+HH:MM:SS INFO TOOL RESULT [file]: [README.md: lines 1-122 of 122]
+   1  # Agent
+   2  
+   3  A local, tool-driven coding assistant that talks to an OpenAI-compatible LLM endpoint (e.g. `llama-server` from `llama.cpp`) and runs an autonomous file/shell tool loop. It is built to survive long sessions: it checkpoints every turn, summarizes older history in the background, recovers from malformed tool calls, and catches common hallucinations before they poison context.
+   4  
+   5  ## Quick start
+   6  
+   7  1. Start an OpenAI-compatible LLM server locally. The default endpoint is `http://127.0.0.1:8080`:
+   8  
+   9     ```bash
+  10     llama-server -m your-model.gguf --port 8080
+  11     ```
+  12  
+  13  2. (Optional) create a `config.json` in your working directory to override defaults — see [Configuration](#configuration).
+  14  
+  15  3. Run the agent:
+  16  
+  17     ```bash
+  18     python agent.py "fix the failing test in tests/test_parser.py"
+  19     ```
+  20  
+  21  ## CLI
+  22  
+  23  ```
+  24  python agent.py [OPTIONS] [PROMPT...]
+  25  ```
+  26  
+  27  | Flag | Description |
+  28  | --- | --- |
+  29  | `-a`, `--auto` | Automation mode — run the prompt and exit; no interactive loop. |
+  30  | `-c`, `--continue` | Resume from the last checkpoint (picks up a crashed or interrupted cycle). |
+  31  | `-r N`, `--repeat N` | Run the prompt `N` times with fresh state each run. `0` or omitted means run indefinitely. Implies `-a`. |
+  32  | `--nudge` | When the model returns a text-only response (no tool calls), auto-nudge it to keep going instead of stopping. Off by default. |
+  33  | `PROMPT...` | Initial prompt. Optional; in interactive mode you'll be prompted if omitted. |
+  34  
+  35  Press **Escape twice** within 400ms to cancel a streaming response.
+  36  
+  37  ## How it works
+  38  
+  39  Each cycle is a turn loop:
+  40  
+  41  1. Build a context window from recent history plus an async summary of older history.
+  42  2. Stream a response from the LLM.
+  43  3. Execute any tool calls.
+  44  4. Feed results back in and repeat until the model stops calling tools, a cycle limit is hit, or the user cancels.
+  45  
+  46  The loop has a few guardrails worth knowing about:
+  47  
+  48  - **Checkpointing.** Conversation history and summary state are written to `state/conversation_checkpoint.json` every turn. `--continue` resumes from there.
+  49  - **Async summarization.** If a summary endpoint is configured, a background thread condenses older messages while the main model keeps working. The summary is swapped in when ready.
+  50  - **Cycle limits & wind-down.** After `cycle.max_turns` turns (default 100), the agent is asked to wrap up; after `cycle.wind_down_turns` more turns it is forced to stop.
+  51  - **Text-loop detection.** If the model emits the same text three times in a row, the cycle ends instead of looping forever.
+  52  - **Hallucination guards.** When the model claims to have read a file it never actually read, the fabricated message is stripped and a correction injected. Malformed tool-call JSON is also salvaged heuristically.
+  53  - **Tool recovery.** When a tool fails with a recognizable error (e.g. bad line numbers), `tool_recovery.py` tries to re-run it with corrected parameters via a lightweight LLM call.
+  54  - **Context overflow handling.** Three consecutive HTTP 500s from the LLM endpoint are treated as context overflow — the agent trims history and retries.
+  55  
+  56  ## Project layout
+  57  
+  58  ```
+  59  agent.py            # Main loop, streaming, context management, checkpointing
+  60  cancel.py           # Double-escape cancel handler
+  61  spinner.py          # Waiting/streaming/done visual feedback
+  62  token_utils.py      # Tokenizer (Gemma) with char-based fallback
+  63  tool_recovery.py    # Auto-recovery from recoverable tool errors
+  64  tools/              # Built-in tools (see below)
+  65    file.py           # read / write / insert / append / delete / list
+  66    exec_command.py   # Shell execution with background-session support
+  67    search_files.py   # Grep-like search with glob and case controls
+  68    read_pdf.py       # PDF text extraction (PyMuPDF)
+  69    web_fetch.py      # URL → markdown, saved to disk with inline preview
+  70    think.py          # Deep-reasoning tool via a separate thinking call
+  71    task_tracker.py   # Persistent task list in state/tasks.json
+  72    sleep.py          # Pause execution
+  73  state/              # Runtime artifacts (created on first run)
+  74    conversation_checkpoint.json
+  75    agent.log
+  76    tasks.json
+  77    cycle.txt
+  78  ```
+  79  
+  80  Agent-specific tools can also live in `./tools/` alongside your working directory — they are auto-discovered and registered on startup.
+  81  
+  82  ## Configuration
+  83  
+  84  Drop a `config.json` in the working directory to override any of the built-in defaults. The top-level sections are:
+  85  
+  86  - **`llm`** — `base_url`, `model`. The OpenAI-compatible endpoint and model name.
+  87  - **`generation`** — `temperature`, `top_p`, `top_k`, `presence_penalty`.
+  88  - **`context`** — `ctx_size`, `max_tokens`, `max_full_lines`, `preview_lines`, `summary_threshold`, `summary_max_chars`, `max_context_messages`. Controls how history is sized and when it gets summarized.
+  89  - **`cycle`** — `max_turns`, `wind_down_turns`, `max_text_only`. Per-cycle turn budget and text-only nudge cap.
+  90  - **`retry`** — `max_retries`, `base_delay_seconds`, `max_delay_seconds`, `backoff_multiplier`, `jitter_factor`. Exponential backoff for transient LLM errors.
+  91  - **`summary`** — `enabled`, `base_url`, `model`, `max_wait_on_save`. Optional separate summarization endpoint (default port 8082).
+  92  
+  93  Example minimal override:
+  94  
+  95  ```json
+  96  {
+  97    "llm": { "base_url": "http://127.0.0.1:8080", "model": "gemma-4-31B" },
+  98    "context": { "ctx_size": 32768 },
+  99    "cycle": { "max_turns": 50 }
+ 100  }
+ 101  ```
+ 102  
+ 103  ## Dependencies
+ 104  
+ 105  - Python 3.7+
+ 106  - `requests` — HTTP to the LLM endpoint
+ 107  - `transformers` + `torch` — Gemma tokenizer (optional; falls back to a character-based estimate if missing)
+ 108  - `PyMuPDF` (`fitz`) — PDF extraction, used by `tools/read_pdf.py`
+ 109  - `markdownify` — HTML → Markdown conversion, used by `tools/web_fetch.py`
+ 110  - A running OpenAI-compatible LLM server (e.g. `llama-server`)
+ 111  - Bash, and a TTY for the cancel handler
+ 112  
+ 113  ## State and logs
+ 114  
+ 115  Everything runtime lives under `state/`:
+ 116  
+ 117  - `conversation_checkpoint.json` — last checkpoint for `--continue`
+ 118  - `agent.log` — detailed per-turn log
+ 119  - `tasks.json` — persistent task list used by the `task_tracker` tool
+ 120  - `cycle.txt` — monotonic cycle counter
+ 121  
+ 122  Delete the `state/` directory to start completely fresh.
+
+HH:MM:SS DEBUG Context budget: 2251/N tokens, 3 messages, oldest_idx=0, has_context_msg=False
+HH:MM:SS INFO --- turn N/20 | sending 3 messages (history has 3 total)
+HH:MM:SS INFO Response status: 200
+HH:MM:SS INFO ASSISTANT: Agent is a local, tool-driven coding assistant that interacts with an OpenAI-compatible LLM to perform autonomous file and shell operations. It features robust session management, including checkpointing, background summarization, and hallucination guards to ensure stability during long tasks.
+HH:MM:SS INFO Stopping: text-only response (no tool calls)
+HH:MM:SS INFO Session ended (auto mode) | 4 messages in history
