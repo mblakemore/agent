@@ -110,6 +110,21 @@ class TestHandleCommand(unittest.TestCase):
             commands.handle_command("/tools", ctx)
         self.assertIn("file", buf.getvalue())
 
+    def test_clear_with_stray_args_still_clears_and_warns(self):
+        """Regression guard: no-arg commands still run when given stray
+        trailing tokens, but emit a warn notice so the typo is visible.
+        Pins the behavior introduced with /tools arg parsing in CICD 0002."""
+        ctx = _make_ctx()
+        ctx.conversation_history.extend([{"role": "user"}, {"role": "assistant"}])
+        notices: list[tuple[str, str]] = []
+        ctx.cb.on_notice = lambda level, msg: notices.append((level, msg))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertTrue(commands.handle_command("/clear now", ctx))
+        self.assertEqual(len(ctx.conversation_history), 0)
+        self.assertTrue(any(level == "warn" and "/clear" in msg
+                            for level, msg in notices))
+
 
 class TestVerboseCli(unittest.TestCase):
     """--verbose CLI flag must be forwarded into run_agent_interactive."""
