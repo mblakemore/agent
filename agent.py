@@ -1173,7 +1173,7 @@ def _pick_model_interactive(current_model, base_url):
     return None
 
 
-def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, *, cb=None, tui=False):
+def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, *, cb=None, tui=False, verbose=False):
     """Interactive agent that maintains conversation history.
 
     When `tui=True`, a prompt_toolkit front-end (tui.TuiSession) owns the
@@ -1191,7 +1191,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
 
     # Install the UI callback handle for this session
     global _cb, _cb_log
-    _cb = cb if cb is not None else TerminalCallbacks()
+    _cb = cb if cb is not None else TerminalCallbacks(verbose=verbose)
     _cb_log = log
 
     model_name = _config["llm"]["model"]
@@ -1721,6 +1721,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             conversation_history.append({"role": "user", "content": nudge})
             log.info("Auto-nudge (%d/%d): text-only response, prompting to continue",
                      _consecutive_text_only, _MAX_TEXT_ONLY)
+            _emit("on_auto_nudge", _consecutive_text_only, _MAX_TEXT_ONLY)
             continue
 
         _consecutive_text_only = 0  # reset on successful tool use
@@ -1805,6 +1806,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         if result_str.startswith("Error"):
                             try:
                                 from tool_recovery import attempt_recovery
+                                _emit("on_tool_recovery", func_name, 1)
                                 recovered = attempt_recovery(
                                     func_name, func_args, result_str,
                                     map_fn=MAP_FN,
@@ -1950,6 +1952,9 @@ def main():
                         help="Repeat N times (fresh each run). 0 or omit = indefinite. Implies -a.")
     parser.add_argument("--nudge", action="store_true",
                         help="Auto-nudge the model when it returns a text-only response.")
+    parser.add_argument("--verbose", action="store_true",
+                        help="Start the session with full (uncompacted) tool output. "
+                             "Toggle in-session with /verbose.")
     parser.add_argument("--no-tui", dest="no_tui", action="store_true",
                         help="Disable the prompt_toolkit TUI even in interactive mode "
                              "(use a plain input() prompt). The TUI is on by default when "
@@ -1976,7 +1981,8 @@ def main():
                 run += 1
                 label = f"run {run}/{n}" if n > 0 else f"run {run}"
                 _emit("on_repeat_run_start", label)
-                run_agent_interactive(initial_prompt=initial_prompt, auto=True)
+                run_agent_interactive(initial_prompt=initial_prompt, auto=True,
+                                      verbose=args.verbose)
         except KeyboardInterrupt:
             _emit("on_repeat_done", run)
     else:
@@ -1987,6 +1993,7 @@ def main():
             auto=args.auto,
             continue_mode=args.continue_mode,
             tui=tui_enabled,
+            verbose=args.verbose,
         )
 
 

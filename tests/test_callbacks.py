@@ -117,6 +117,73 @@ class TestTerminalCallbacks(unittest.TestCase):
         self.assertFalse(any("truncated" in c for c in captured))
 
 
+class TestHookWiring(unittest.TestCase):
+    """Confirms that the loop emit sites actually reach the installed cb."""
+
+    def _counting_cb(self):
+        counts = {}
+
+        class Counter(callbacks.NullCallbacks):
+            def on_auto_nudge(self_inner, n, max_n):
+                counts.setdefault("nudge", []).append((n, max_n))
+
+            def on_tool_recovery(self_inner, name, attempt):
+                counts.setdefault("recovery", []).append((name, attempt))
+
+        return Counter(), counts
+
+    def test_emit_auto_nudge_reaches_cb(self):
+        import agent
+        cb, counts = self._counting_cb()
+        prev_cb, prev_log = agent._cb, agent._cb_log
+        agent._cb, agent._cb_log = cb, None
+        try:
+            agent._emit("on_auto_nudge", 1, 3)
+        finally:
+            agent._cb, agent._cb_log = prev_cb, prev_log
+        self.assertEqual(counts.get("nudge"), [(1, 3)])
+
+    def test_emit_tool_recovery_reaches_cb(self):
+        import agent
+        cb, counts = self._counting_cb()
+        prev_cb, prev_log = agent._cb, agent._cb_log
+        agent._cb, agent._cb_log = cb, None
+        try:
+            agent._emit("on_tool_recovery", "file", 1)
+        finally:
+            agent._cb, agent._cb_log = prev_cb, prev_log
+        self.assertEqual(counts.get("recovery"), [("file", 1)])
+
+    def test_nudge_emit_site_present_in_source(self):
+        """Guard against accidental removal of the emit line in the loop body."""
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "agent.py").read_text()
+        self.assertIn('_emit("on_auto_nudge"', src)
+
+    def test_tool_recovery_emit_site_present_in_source(self):
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "agent.py").read_text()
+        self.assertIn('_emit("on_tool_recovery"', src)
+
+
+class TestHookInterfaceShape(unittest.TestCase):
+    """Dead/live hook assertions — guards Phase A § 7.4 deletion and § 7.2/7.3 emits."""
+
+    def test_truncation_hooks_removed(self):
+        """on_truncation_* were unwired dead surface; they must stay gone."""
+        self.assertFalse(hasattr(callbacks.NullCallbacks, "on_truncation_recovered"))
+        self.assertFalse(hasattr(callbacks.NullCallbacks, "on_truncation_failed"))
+        self.assertFalse(hasattr(callbacks.TerminalCallbacks, "on_truncation_recovered"))
+        self.assertFalse(hasattr(callbacks.TerminalCallbacks, "on_truncation_failed"))
+
+    def test_wired_recovery_hooks_present(self):
+        """on_auto_nudge / on_tool_recovery are emitted from the loop."""
+        self.assertTrue(hasattr(callbacks.NullCallbacks, "on_auto_nudge"))
+        self.assertTrue(hasattr(callbacks.NullCallbacks, "on_tool_recovery"))
+        self.assertTrue(hasattr(callbacks.TerminalCallbacks, "on_auto_nudge"))
+        self.assertTrue(hasattr(callbacks.TerminalCallbacks, "on_tool_recovery"))
+
+
 class TestSafeCb(unittest.TestCase):
     def test_calls_method_and_returns_value(self):
         class C(callbacks.NullCallbacks):

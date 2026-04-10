@@ -141,12 +141,6 @@ class NullCallbacks:
     def on_context_recovery(self, auto: bool) -> None:
         return None
 
-    def on_truncation_recovered(self, attempts: int) -> None:
-        return None
-
-    def on_truncation_failed(self, attempts: int) -> None:
-        return None
-
     # --- errors / status -----------------------------------------------
     def on_notice(self, level: str, msg: str) -> None:
         """Low-stakes status messages that don't warrant a typed hook."""
@@ -341,12 +335,6 @@ class TerminalCallbacks(NullCallbacks):
 
     def on_context_recovery(self, auto: bool) -> None:
         self._note("[context overflow — trimming and retrying]")
-
-    def on_truncation_recovered(self, attempts: int) -> None:
-        self._note(f"[truncation recovered after {attempts} attempts]")
-
-    def on_truncation_failed(self, attempts: int) -> None:
-        self._print(theme.c(theme.ROSE, f"  [truncation failed after {attempts} attempts]"))
 
     # -- summarization --------------------------------------------------
 

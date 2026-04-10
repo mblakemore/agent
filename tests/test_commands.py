@@ -111,5 +111,39 @@ class TestHandleCommand(unittest.TestCase):
         self.assertIn("file", buf.getvalue())
 
 
+class TestVerboseCli(unittest.TestCase):
+    """--verbose CLI flag must be forwarded into run_agent_interactive."""
+
+    def _run_main(self, argv):
+        import agent
+        captured = {}
+
+        def fake_run(**kwargs):
+            captured.update(kwargs)
+
+        import unittest.mock as um
+        with um.patch.object(sys, "argv", argv):
+            with um.patch.object(agent, "run_agent_interactive", side_effect=fake_run):
+                agent.main()
+        return captured
+
+    def test_verbose_flag_propagates(self):
+        captured = self._run_main(["agent.py", "--verbose", "-a", "hello"])
+        self.assertTrue(captured.get("verbose"))
+        self.assertTrue(captured.get("auto"))
+
+    def test_verbose_default_false(self):
+        captured = self._run_main(["agent.py", "-a", "hello"])
+        self.assertFalse(captured.get("verbose"))
+
+    def test_verbose_constructs_terminal_cb_with_flag(self):
+        """Default TerminalCallbacks picks up the verbose kwarg."""
+        import callbacks as _cb
+        cb = _cb.TerminalCallbacks(verbose=True)
+        self.assertTrue(cb.verbose)
+        cb2 = _cb.TerminalCallbacks(verbose=False)
+        self.assertFalse(cb2.verbose)
+
+
 if __name__ == "__main__":
     unittest.main()

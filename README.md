@@ -31,6 +31,7 @@ python agent.py [OPTIONS] [PROMPT...]
 | `-r N`, `--repeat N` | Run the prompt `N` times with fresh state each run. `0` or omitted means run indefinitely. Implies `-a`. |
 | `--nudge` | When the model returns a text-only response (no tool calls), auto-nudge it to keep going instead of stopping. Off by default. |
 | `--no-tui` | Disable the `prompt_toolkit` TUI and use a plain `input()` prompt. The TUI is on by default in any interactive mode and falls back to plain input automatically if `prompt_toolkit` isn't installed. |
+| `--verbose` | Start the session with full (uncompacted) tool output. Toggle in-session with `/verbose`. |
 | `PROMPT...` | Initial prompt. Optional; in interactive mode you'll be prompted if omitted. |
 
 Press **Escape twice** within 400ms to cancel a streaming response. In the TUI this works while the model is streaming; the prompt itself uses `prompt_toolkit`'s native key handling.

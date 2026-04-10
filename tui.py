@@ -23,11 +23,26 @@ Design notes (see plan/ui-upgrade-from-llmbox-cli.md § Phase 3):
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from typing import Callable
 
 import cancel
 from callbacks import TerminalCallbacks
+
+
+# Thread-local flag: True on a thread while its TuiSession.prompt() is
+# actively blocked reading user input. Read from TuiCallbacks._print so
+# that a background-thread print (e.g. on_summary_ready from the async
+# summarizer) can wrap itself in patch_stdout only when it would otherwise
+# corrupt the rendered prompt. If a hook fires on a thread that never
+# entered prompt(), the flag is False and no wrapping is needed — that
+# thread doesn't own the terminal anyway.
+_prompt_active = threading.local()
+
+
+def _prompt_is_active() -> bool:
+    return getattr(_prompt_active, "on", False)
 
 
 try:
@@ -191,13 +206,17 @@ if _AVAILABLE:
 
             TUI mode is flipped on only while the prompt is active so the
             cbreak-based double-escape monitor can still intercept cancels
-            during streaming (between prompts).
+            during streaming (between prompts). The _prompt_active flag
+            is set in lockstep so TuiCallbacks._print can route through
+            patch_stdout while a prompt is displayed.
             """
+            _prompt_active.on = True
             cancel.set_tui_mode(True)
             try:
                 return self._session.prompt().strip()
             finally:
                 cancel.set_tui_mode(False)
+                _prompt_active.on = False
 
         def set_cb(self, cb: TerminalCallbacks) -> None:
             """Swap the callback reference (toolbar reads verbose from it)."""
@@ -254,13 +273,24 @@ if _AVAILABLE:
 
         Inherits compaction, tool_history recording, streaming de-dup,
         and /tools rendering unchanged — D12 invariants hold because
-        the raw result_str path is untouched.
+        the raw result_str path is untouched. _print is routed through
+        prompt_toolkit.patch_stdout while a TuiSession prompt is active
+        so background-thread prints (e.g. on_summary_ready from the
+        async summarizer) don't corrupt the rendered prompt line.
         """
 
         def __init__(self, tui_session: "TuiSession", *, verbose: bool = False) -> None:
             super().__init__(verbose=verbose)
             self.tui = tui_session
             self.tui.set_cb(self)
+
+        def _print(self, text: str = "", end: str = "\n") -> None:
+            if _prompt_is_active():
+                from prompt_toolkit.patch_stdout import patch_stdout
+                with patch_stdout(raw=True):
+                    print(text, end=end, flush=True)
+            else:
+                print(text, end=end, flush=True)
 
         def on_session_start(self, info: dict) -> None:
             super().on_session_start(info)
