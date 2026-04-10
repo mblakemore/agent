@@ -1173,8 +1173,15 @@ def _pick_model_interactive(current_model, base_url):
     return None
 
 
-def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, *, cb=None):
-    """Interactive agent that maintains conversation history."""
+def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, *, cb=None, tui=False):
+    """Interactive agent that maintains conversation history.
+
+    When `tui=True`, a prompt_toolkit front-end (tui.TuiSession) owns the
+    input prompt and swaps the default TerminalCallbacks for TuiCallbacks
+    so the bottom toolbar reflects live model/message/ctx state. The TUI
+    is optional — if prompt_toolkit isn't installed, a clean ImportError
+    is raised at TuiSession construction time.
+    """
 
     ctx_size = _config["context"]["ctx_size"]
     max_tokens = _config["context"]["max_tokens"]
@@ -1264,6 +1271,22 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     summary_state = summary_state if continue_mode and start_turn > 0 else {"text": "", "up_to": 0}
     initial_files = initial_files if continue_mode and start_turn > 0 else None
 
+    # ── TUI front-end (optional) ──
+    # Now that history / summary / initial_files have stable identities,
+    # instantiate the prompt_toolkit session and swap the UI callback.
+    tui_session = None
+    if tui:
+        import tui as _tuimod
+        tui_session = _tuimod.TuiSession(
+            history=conversation_history,
+            summary_state=summary_state,
+            config=_config,
+            ctx_size=ctx_size,
+            cb=_cb,
+            estimate_tokens=_estimate_tokens,
+        )
+        _cb = _tuimod.TuiCallbacks(tui_session, verbose=getattr(_cb, "verbose", False))
+
     if initial_prompt and not (continue_mode and start_turn > 0):
         _emit("on_user_message", initial_prompt)
         expanded, files, err = _expand_file_refs(initial_prompt)
@@ -1315,7 +1338,10 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
 
     while True:
         try:
-            user_input = input("\nYou: ").strip()
+            if tui_session is not None:
+                user_input = tui_session.prompt()
+            else:
+                user_input = input("\nYou: ").strip()
         except EOFError:
             break
         except KeyboardInterrupt:
@@ -1368,6 +1394,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                          gen["presence_penalty"], max_tokens, ctx_size,
                          async_summarizer=_async_summarizer)
 
+    if tui_session is not None:
+        tui_session.close()
     cleanup_temp_sessions()
     _delete_checkpoint()
     log.info("Session ended | %d messages in history", len(conversation_history))
@@ -1912,8 +1940,14 @@ def main():
                         help="Repeat N times (fresh each run). 0 or omit = indefinite. Implies -a.")
     parser.add_argument("--nudge", action="store_true",
                         help="Auto-nudge the model when it returns a text-only response.")
+    parser.add_argument("--tui", action="store_true",
+                        help="Use the prompt_toolkit TUI (bottom toolbar, completer, history). "
+                             "Requires optional `prompt_toolkit` package. Interactive mode only.")
     parser.add_argument("prompt", nargs="*", help="Initial prompt")
     args = parser.parse_args()
+
+    if args.tui and (args.auto or args.continue_mode or args.repeat is not None):
+        parser.error("--tui is interactive only; cannot combine with -a/-c/-r")
 
     global _NUDGE_ENABLED
     _NUDGE_ENABLED = args.nudge
@@ -1934,7 +1968,7 @@ def main():
         except KeyboardInterrupt:
             _emit("on_repeat_done", run)
     else:
-        run_agent_interactive(initial_prompt=initial_prompt, auto=args.auto)
+        run_agent_interactive(initial_prompt=initial_prompt, auto=args.auto, tui=args.tui)
 
 
 if __name__ == "__main__":

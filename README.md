@@ -30,6 +30,7 @@ python agent.py [OPTIONS] [PROMPT...]
 | `-c`, `--continue` | Resume from the last checkpoint (picks up a crashed or interrupted cycle). |
 | `-r N`, `--repeat N` | Run the prompt `N` times with fresh state each run. `0` or omitted means run indefinitely. Implies `-a`. |
 | `--nudge` | When the model returns a text-only response (no tool calls), auto-nudge it to keep going instead of stopping. Off by default. |
+| `--tui` | Use the prompt_toolkit front-end: command / `@path` completer, input history, and a live bottom toolbar (cwd · model · msgs · ctx% · verbose). Interactive only — cannot combine with `-a`/`-c`/`-r`. Requires the optional `prompt_toolkit` package. |
 | `PROMPT...` | Initial prompt. Optional; in interactive mode you'll be prompted if omitted. |
 
 Press **Escape twice** within 400ms to cancel a streaming response.
@@ -44,6 +45,8 @@ In the interactive loop, lines starting with `/` are commands:
 | `/clear` | Clear conversation history and start a fresh session log. |
 | `/context` | Show current context usage as an Aurora-gradient bar with token counts. |
 | `/model` | Pick a different model from the server's `/v1/models` endpoint (summarizer keeps its original). |
+| `/verbose` | Toggle compact vs. full tool-result output. Full results are always logged regardless. |
+| `/tools` | Show the last 20 tool calls with a one-line result preview. |
 | `exit` / `quit` | End the session. |
 
 ### Colors
@@ -73,6 +76,9 @@ The loop has a few guardrails worth knowing about:
 
 ```
 agent.py            # Main loop, streaming, context management, checkpointing
+callbacks.py        # UI callback interface — NullCallbacks, TerminalCallbacks, safe_cb
+commands.py         # Slash-command dispatcher (/help, /clear, /verbose, /tools, …)
+tui.py              # Optional prompt_toolkit front-end (--tui)
 cancel.py           # Double-escape cancel handler
 spinner.py          # Aurora-pulsed waiting/streaming/done visual feedback
 theme.py            # Aurora color palette + single source of ANSI escapes
@@ -128,6 +134,7 @@ Example minimal override:
 - `transformers` + `torch` — Gemma tokenizer (optional; falls back to a character-based estimate if missing)
 - `PyMuPDF` (`fitz`) — PDF extraction, used by `tools/read_pdf.py`
 - `markdownify` — HTML → Markdown conversion, used by `tools/web_fetch.py`
+- `prompt_toolkit` — **optional**, only required for `--tui` mode. Install with `pip install prompt_toolkit`.
 - A running OpenAI-compatible LLM server (e.g. `llama-server`)
 - Bash, and a TTY for the cancel handler
 
