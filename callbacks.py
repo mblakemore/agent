@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from collections import deque
-from typing import Any
+from typing import Any, Optional
 
 import theme
 
@@ -368,11 +368,18 @@ class TerminalCallbacks(NullCallbacks):
 
     # -- /tools viewer --------------------------------------------------
 
-    def render_tools(self, limit: int = 20) -> str:
+    def render_tools(self, limit: Optional[int] = None) -> str:
         if not self.tool_history:
             return "No tool calls yet."
-        lines = [theme.c(theme.SKY, f"Last {min(limit, len(self.tool_history))} tool call(s):")]
-        tail = list(self.tool_history)[-limit:]
+        total = len(self.tool_history)
+        if limit is None:
+            tail = list(self.tool_history)
+            header = f"All {total} tool call(s):"
+        else:
+            shown = min(limit, total)
+            tail = list(self.tool_history)[-limit:]
+            header = f"Last {shown} of {total} tool call(s):"
+        lines = [theme.c(theme.SKY, header)]
         for i, (name, args, result, is_error) in enumerate(tail, 1):
             marker = theme.c(theme.ROSE, "✗") if is_error else theme.c(theme.MINT, "✓")
             head = result.split("\n", 1)[0][:120]
