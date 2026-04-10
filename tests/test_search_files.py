@@ -134,9 +134,17 @@ class TestSearchFilesDefinition(unittest.TestCase):
         props = search_files.definition["function"]["parameters"]["properties"]
         self.assertIn("context", props)
         self.assertEqual(props["context"]["type"], "integer")
-        self.assertEqual(props["context"]["default"], 0)
+        self.assertEqual(props["context"]["default"], 3)
         self.assertEqual(props["context"]["minimum"], 0)
         self.assertNotIn("context", search_files.definition["function"]["parameters"].get("required", []))
+
+    def test_default_context_matches_definition(self):
+        import inspect
+        sig = inspect.signature(search_files.fn)
+        self.assertEqual(
+            sig.parameters["context"].default,
+            search_files.definition["function"]["parameters"]["properties"]["context"]["default"],
+        )
 
 
 if __name__ == "__main__":
