@@ -75,7 +75,7 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/context", "show current context usage"),
     ("/model",   "pick a different model"),
     ("/verbose", "toggle compact/full tool output"),
-    ("/tools",   "show recent tool calls"),
+    ("/tools",   "show buffered tool calls — /tools N or /tools all"),
 ]
 
 
