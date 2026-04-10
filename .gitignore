@@ -1,7 +1,11 @@
 # Claude Code
 CLAUDE.md
 .claude/
-plan/
+# Ignore everything under plan/ EXCEPT the CICD loop's tracked artifacts
+# (plans, results, progress log). Use plan/* — not plan/ — so git can still
+# descend into plan/CICD/ to honor the re-include below.
+plan/*
+!plan/CICD/
 
 # Agent runtime state (.agent/ holds state/, history/, etc.)
 .agent/
