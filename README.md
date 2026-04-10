@@ -34,6 +34,22 @@ python agent.py [OPTIONS] [PROMPT...]
 
 Press **Escape twice** within 400ms to cancel a streaming response.
 
+### Interactive commands
+
+In the interactive loop, lines starting with `/` are commands:
+
+| Command | Description |
+| --- | --- |
+| `/help` | List available commands. |
+| `/clear` | Clear conversation history and start a fresh session log. |
+| `/context` | Show current context usage as an Aurora-gradient bar with token counts. |
+| `/model` | Pick a different model from the server's `/v1/models` endpoint (summarizer keeps its original). |
+| `exit` / `quit` | End the session. |
+
+### Colors
+
+The terminal UI uses the **Aurora** palette (violet → sky → mint) via `theme.py`. `NO_COLOR=1` or piping to a file disables all colors and cursor escapes automatically.
+
 ## How it works
 
 Each cycle is a turn loop:
@@ -45,7 +61,7 @@ Each cycle is a turn loop:
 
 The loop has a few guardrails worth knowing about:
 
-- **Checkpointing.** Conversation history and summary state are written to `state/conversation_checkpoint.json` every turn. `--continue` resumes from there.
+- **Checkpointing.** Conversation history and summary state are written to `.agent/state/conversation_checkpoint.json` every turn. `--continue` resumes from there.
 - **Async summarization.** If a summary endpoint is configured, a background thread condenses older messages while the main model keeps working. The summary is swapped in when ready.
 - **Cycle limits & wind-down.** After `cycle.max_turns` turns (default 100), the agent is asked to wrap up; after `cycle.wind_down_turns` more turns it is forced to stop.
 - **Text-loop detection.** If the model emits the same text three times in a row, the cycle ends instead of looping forever.
@@ -58,7 +74,8 @@ The loop has a few guardrails worth knowing about:
 ```
 agent.py            # Main loop, streaming, context management, checkpointing
 cancel.py           # Double-escape cancel handler
-spinner.py          # Waiting/streaming/done visual feedback
+spinner.py          # Aurora-pulsed waiting/streaming/done visual feedback
+theme.py            # Aurora color palette + single source of ANSI escapes
 token_utils.py      # Tokenizer (Gemma) with char-based fallback
 tool_recovery.py    # Auto-recovery from recoverable tool errors
 tools/              # Built-in tools (see below)
@@ -68,13 +85,17 @@ tools/              # Built-in tools (see below)
   read_pdf.py       # PDF text extraction (PyMuPDF)
   web_fetch.py      # URL → markdown, saved to disk with inline preview
   think.py          # Deep-reasoning tool via a separate thinking call
-  task_tracker.py   # Persistent task list in state/tasks.json
+  task_tracker.py   # Persistent task list in .agent/state/tasks.json
   sleep.py          # Pause execution
-state/              # Runtime artifacts (created on first run)
-  conversation_checkpoint.json
-  agent.log
-  tasks.json
-  cycle.txt
+.agent/             # Runtime artifacts (created on first run, gitignored)
+  state/
+    conversation_checkpoint.json
+    tasks.json
+    current-state.json
+    cycle.txt
+    fetched/        # Cached web_fetch output
+  history/
+    session-*.log   # Per-session verbose logs
 ```
 
 Agent-specific tools can also live in `./tools/` alongside your working directory — they are auto-discovered and registered on startup.
@@ -112,11 +133,13 @@ Example minimal override:
 
 ## State and logs
 
-Everything runtime lives under `state/`:
+Everything runtime lives under `.agent/` in the working directory:
 
-- `conversation_checkpoint.json` — last checkpoint for `--continue`
-- `agent.log` — detailed per-turn log
-- `tasks.json` — persistent task list used by the `task_tracker` tool
-- `cycle.txt` — monotonic cycle counter
+- `.agent/state/conversation_checkpoint.json` — last checkpoint for `--continue`
+- `.agent/state/tasks.json` — persistent task list used by the `task_tracker` tool
+- `.agent/state/current-state.json` — per-cycle scratch state
+- `.agent/state/cycle.txt` — monotonic cycle counter
+- `.agent/state/fetched/` — cached `web_fetch` downloads
+- `.agent/history/session-*.log` — verbose per-session logs
 
-Delete the `state/` directory to start completely fresh.
+Delete the `.agent/` directory to start completely fresh. The whole tree is gitignored.

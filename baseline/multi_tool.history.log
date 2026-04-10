@@ -6,15 +6,15 @@ HH:MM:SS DEBUG Context budget: 15/N tokens, 1 messages, oldest_idx=0, has_contex
 HH:MM:SS INFO --- turn N/20 | sending 1 messages (history has 1 total)
 HH:MM:SS INFO Response status: 200
 HH:MM:SS INFO Executing 1 tool call(s)
-HH:MM:SS INFO TOOL CALL: file({"action": "write", "content": "hi\n", "path": "scratch.txt"}) [id=BlLrYGIyT7ExzocROqYSeOAg1rxceITH]
+HH:MM:SS INFO TOOL CALL: file({"action": "write", "content": "hi\n", "path": "scratch.txt"}) [id=pnVAbnmZyp0eO27Dy0C3osL9vPdb9q4Q]
 HH:MM:SS INFO TOOL RESULT [file]: Wrote 'scratch.txt' (3 chars)
-HH:MM:SS DEBUG Context budget: 92/N tokens, 3 messages, oldest_idx=0, has_context_msg=False
+HH:MM:SS DEBUG Context budget: 97/N tokens, 3 messages, oldest_idx=0, has_context_msg=False
 HH:MM:SS INFO --- turn N/20 | sending 3 messages (history has 3 total)
 HH:MM:SS INFO Response status: 200
 HH:MM:SS INFO Executing 1 tool call(s)
-HH:MM:SS INFO TOOL CALL: file({"action": "delete", "path": "scratch.txt"}) [id=fXulaPkw8V6ovaLYYBHC25XMkWpP3NGb]
+HH:MM:SS INFO TOOL CALL: file({"action": "delete", "path": "scratch.txt"}) [id=DKJseAgsuiut4e4LXxvv2zGBqyXjMm4U]
 HH:MM:SS INFO TOOL RESULT [file]: Deleted 'scratch.txt'
-HH:MM:SS DEBUG Context budget: 159/N tokens, 5 messages, oldest_idx=0, has_context_msg=False
+HH:MM:SS DEBUG Context budget: 165/N tokens, 5 messages, oldest_idx=0, has_context_msg=False
 HH:MM:SS INFO --- turn N/20 | sending 5 messages (history has 5 total)
 HH:MM:SS INFO Response status: 200
 HH:MM:SS INFO ASSISTANT: The file `scratch.txt` was created with the content 'hi' and then successfully deleted.

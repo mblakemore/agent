@@ -42,8 +42,11 @@ try:
     _tracker = CycleFrequencyTracker()
 except Exception:
     _tracker = None
-DIM = "\033[90m"
-RESET = "\033[0m"
+import theme
+
+RESET = theme.RESET
+BOLD = theme.BOLD
+DIM = theme.DIM
 
 _FILE_REF = re.compile(r"@(\S+)")
 
@@ -207,6 +210,93 @@ def _sanitize(text):
     """Replace common Unicode characters with ASCII equivalents and strip think tags."""
     text = _THINK_TAG_RE.sub('', text)
     return text.translate(_UNICODE_MAP)
+
+
+def _sanitize_display(text):
+    """Unicode replacement only — think tags are handled by _ReasoningRenderer."""
+    return text.translate(_UNICODE_MAP)
+
+
+class _ReasoningRenderer:
+    """Stream-aware renderer that wraps <think>…</think> blocks in a
+    violet [Reasoning] header + dim body, printing everything else normally.
+
+    Handles tags split across delta chunks via a small pending buffer.
+    """
+
+    _OPEN = "<think>"
+    _CLOSE = "</think>"
+    _MAX_PENDING = max(len(_OPEN), len(_CLOSE)) - 1  # 7
+
+    def __init__(self, out):
+        self._out = out
+        self._pending = ""
+        self._in_think = False
+
+    def feed(self, chunk):
+        buf = self._pending + chunk
+        self._pending = ""
+        while buf:
+            if self._in_think:
+                close_idx = buf.find(self._CLOSE)
+                if close_idx == -1:
+                    # Keep last few chars in case the close tag is splitting
+                    if len(buf) > self._MAX_PENDING:
+                        self._emit_think(buf[:-self._MAX_PENDING])
+                        self._pending = buf[-self._MAX_PENDING:]
+                    else:
+                        self._pending = buf
+                    return
+                self._emit_think(buf[:close_idx])
+                buf = buf[close_idx + len(self._CLOSE):]
+                self._close_block()
+            else:
+                open_idx = buf.find(self._OPEN)
+                if open_idx == -1:
+                    if len(buf) > self._MAX_PENDING:
+                        self._emit_plain(buf[:-self._MAX_PENDING])
+                        self._pending = buf[-self._MAX_PENDING:]
+                    else:
+                        self._pending = buf
+                    return
+                self._emit_plain(buf[:open_idx])
+                buf = buf[open_idx + len(self._OPEN):]
+                self._open_block()
+
+    def flush(self):
+        if self._pending:
+            if self._in_think:
+                self._emit_think(self._pending)
+            else:
+                self._emit_plain(self._pending)
+            self._pending = ""
+        if self._in_think:
+            self._close_block()
+
+    def _emit_plain(self, text):
+        if not text:
+            return
+        self._out.write(_sanitize_display(text))
+        self._out.flush()
+
+    def _emit_think(self, text):
+        if not text:
+            return
+        styled = theme.dim(_sanitize_display(text))
+        self._out.write(styled)
+        self._out.flush()
+
+    def _open_block(self):
+        self._in_think = True
+        header = theme.c(theme.VIOLET, "\n[Reasoning]\n", bold=True)
+        self._out.write(header)
+        self._out.flush()
+
+    def _close_block(self):
+        self._in_think = False
+        footer = theme.c(theme.VIOLET, "\n[/Reasoning]\n", bold=True)
+        self._out.write(footer)
+        self._out.flush()
 
 
 _FILE_ACTIONS = {"read", "write", "insert", "append", "delete", "list"}
@@ -704,7 +794,7 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
         parts.append(f"Progress summary of work done so far:\n{summary_state['text']}")
         parts.append(
             f"IMPORTANT: Your working directory is '{os.getcwd()}'. "
-            "Use relative paths (e.g. 'state/file.json') — do not cd elsewhere. "
+            "Use relative paths (e.g. '.agent/state/file.json') — do not cd elsewhere. "
             "Continue where you left off. Do not repeat already-completed steps. "
             "TOOL RULE: To write JSON files, use exec_command with heredoc "
             "(e.g. cat > file.json << 'EOF'\\n...\\nEOF). "
@@ -727,7 +817,7 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
             parts.append(f"Progress summary of work done so far:\n{summary_state['text']}")
             parts.append(
                 f"IMPORTANT: Your working directory is '{os.getcwd()}'. "
-                "Use relative paths (e.g. 'state/file.json') — do not cd elsewhere. "
+                "Use relative paths (e.g. '.agent/state/file.json') — do not cd elsewhere. "
                 "Continue where you left off. Do not repeat already-completed steps."
             )
             context_msg = {"role": "user", "content": "\n\n".join(parts)}
@@ -805,7 +895,11 @@ def _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, for
 
 def _setup_logger():
     """Create a structured logger with levels, rotation, and console output."""
-    history_dir = os.path.join(os.getcwd(), _config.get("log_dir", "agent_history"))
+    log_dir_override = _config.get("log_dir")
+    if log_dir_override:
+        history_dir = os.path.join(os.getcwd(), log_dir_override)
+    else:
+        history_dir = _HISTORY_DIR
     os.makedirs(history_dir, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -839,7 +933,24 @@ def _setup_logger():
 
 # ── Conversation checkpoints (for -c continue) ──────────────────────
 
-_CHECKPOINT_PATH = os.path.join(os.getcwd(), "state", "conversation_checkpoint.json")
+_AGENT_DIR = os.path.join(os.getcwd(), ".agent")
+_STATE_DIR = os.path.join(_AGENT_DIR, "state")
+_HISTORY_DIR = os.path.join(_AGENT_DIR, "history")
+
+
+def _state_path(*parts):
+    """Return a path inside .agent/state under the current working directory."""
+    return os.path.join(_STATE_DIR, *parts)
+
+
+def _ensure_agent_dirs():
+    """Create .agent/state and .agent/history on first use."""
+    os.makedirs(_STATE_DIR, exist_ok=True)
+    os.makedirs(_HISTORY_DIR, exist_ok=True)
+
+
+_ensure_agent_dirs()
+_CHECKPOINT_PATH = _state_path("conversation_checkpoint.json")
 
 
 def _strip_checkpoint_reads(conversation_history):
@@ -906,7 +1017,7 @@ def _delete_checkpoint():
 def _auto_increment_cycle(log):
     """Check if the current cycle was already committed and bump if so.
 
-    Compares the cycle number in state/current-state.json against the
+    Compares the cycle number in .agent/state/current-state.json against the
     latest git log entries.  If a 'C<N>:' commit exists for the current
     cycle, the state file is incremented to N+1 so the agent starts the
     next cycle instead of repeating.
@@ -915,7 +1026,7 @@ def _auto_increment_cycle(log):
     If the file has uncommitted changes, a previous session may have already
     bumped it — touching it again would cause a double-increment/skip.
     """
-    state_path = os.path.join(os.getcwd(), "state", "current-state.json")
+    state_path = _state_path("current-state.json")
     if not os.path.exists(state_path):
         return
 
@@ -978,6 +1089,77 @@ def _auto_increment_cycle(log):
 
 # ── Main agent loop ───────────────────────────────────────────────────
 
+def _check_api_health(base_url, timeout=3):
+    """Probe the LLM endpoint. Return (ok: bool, detail: str)."""
+    try:
+        resp = requests.get(f"{base_url}/health", timeout=timeout)
+        if resp.status_code == 200:
+            return True, "ok"
+        return False, f"HTTP {resp.status_code}"
+    except requests.Timeout:
+        return False, "timeout"
+    except requests.ConnectionError:
+        return False, "unreachable"
+    except requests.RequestException as e:
+        return False, str(e)[:60]
+
+
+def _list_available_models(base_url, timeout=3):
+    """Query /v1/models and return a list of model id strings, or []."""
+    try:
+        resp = requests.get(f"{base_url}/v1/models", timeout=timeout)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+        return [m.get("id", "") for m in data.get("data", []) if m.get("id")]
+    except (requests.RequestException, ValueError, KeyError):
+        return []
+
+
+def _render_context_bar(history, summary_state, ctx_size, width=30):
+    """Return a multi-line string showing current context usage with a bar."""
+    body_tokens = sum(_estimate_tokens(m) for m in history) if history else 0
+    summary_text = summary_state.get("text", "") or ""
+    summary_tokens = _estimate_tokens({"role": "system", "content": summary_text}) if summary_text else 0
+    total = body_tokens + summary_tokens
+    pct = total / ctx_size if ctx_size else 0.0
+    bar = theme.bar(pct, width=width)
+    pct_str = f"{pct*100:.1f}%"
+    return (
+        f"{bar} {pct_str}\n"
+        f"  history: {body_tokens} tokens in {len(history)} messages\n"
+        f"  summary: {summary_tokens} tokens\n"
+        f"  budget:  {total} / {ctx_size} tokens"
+    )
+
+
+def _pick_model_interactive(current_model, base_url):
+    """Interactive model picker. Returns the chosen model id or None."""
+    models = _list_available_models(base_url)
+    if not models:
+        print(theme.c(theme.ROSE, f"Could not list models from {base_url}/v1/models"))
+        return None
+    print(theme.c(theme.SKY, f"Available models at {base_url}:"))
+    for i, m in enumerate(models, 1):
+        marker = theme.c(theme.MINT, " *") if m == current_model else "  "
+        print(f"{marker} {i}. {m}")
+    try:
+        choice = input("Pick a model number (blank to cancel): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    if not choice:
+        return None
+    try:
+        idx = int(choice) - 1
+        if 0 <= idx < len(models):
+            return models[idx]
+    except ValueError:
+        pass
+    print(theme.c(theme.ROSE, "Invalid selection."))
+    return None
+
+
 def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False):
     """Interactive agent that maintains conversation history."""
 
@@ -987,14 +1169,22 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False):
 
     log, log_path, error_log_path = _setup_logger()
 
-    print("="*60)
-    print("Agent with File Tools - Interactive Mode")
-    print("="*60)
+    model_name = _config["llm"]["model"]
+    ok, detail = _check_api_health(BASE_URL)
+    if ok:
+        health_line = theme.c(theme.MINT, f"● {BASE_URL} ({model_name})")
+    else:
+        health_line = theme.c(theme.AMBER, f"⚠ {BASE_URL} ({detail}) — continuing anyway")
+
+    print(theme.c(theme.VIOLET, "="*60, bold=True))
+    print(theme.c(theme.VIOLET, "Agent with File Tools — Interactive Mode", bold=True))
+    print(theme.c(theme.VIOLET, "="*60, bold=True))
+    print(f"API: {health_line}")
     print(f"Context size: {ctx_size} tokens | Max turns: {_MAX_TURNS}")
     print(f"Session log: {log_path}")
     print(f"Error log: {error_log_path}")
-    print("Press Escape twice to cancel")
-    print("Type 'exit' or 'quit' to end conversation\n")
+    print(theme.dim("Press Escape twice to cancel. Type /help for commands."))
+    print(theme.dim("Type 'exit' or 'quit' to end conversation.\n"))
 
     log.info("Session started | ctx_size=%d max_turns=%d temperature=%.1f max_tokens=%d",
              ctx_size, _MAX_TURNS, gen["temperature"], max_tokens)
@@ -1121,7 +1311,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False):
         if user_input.lower() in ["exit", "quit"]:
             print("Goodbye!")
             break
-        if user_input.strip() == "/clear":
+        cmd = user_input.strip()
+        if cmd == "/clear":
             conversation_history.clear()
             summary_state["text"] = ""
             summary_state["up_to"] = 0
@@ -1130,6 +1321,24 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False):
                 _async_summarizer.reset()
             log, log_path, error_log_path = _setup_logger()
             print(f"Conversation cleared. New session: {log_path}")
+            continue
+        if cmd == "/help":
+            print(theme.c(theme.SKY, "Commands:"))
+            print("  /help     — show this message")
+            print("  /clear    — clear conversation history and start a fresh session log")
+            print("  /context  — show current context usage (bar + token counts)")
+            print("  /model    — pick a different model from the server")
+            print("  exit/quit — end the session")
+            continue
+        if cmd == "/context":
+            print(_render_context_bar(conversation_history, summary_state, ctx_size))
+            continue
+        if cmd == "/model":
+            new_model = _pick_model_interactive(_config["llm"]["model"], BASE_URL)
+            if new_model:
+                _config["llm"]["model"] = new_model
+                print(theme.c(theme.MINT, f"Model set to {new_model} (summarizer keeps its original model)"))
+                log.info("Model changed via /model: %s", new_model)
             continue
 
         expanded, files, err = _expand_file_refs(user_input)
@@ -1302,6 +1511,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         receiving_tools = False
         status = StreamStatus()
         status.start("\nAssistant: ")
+        renderer = _ReasoningRenderer(sys.stdout)
 
         try:
             with cancellable():
@@ -1326,8 +1536,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         if not printed_header:
                             status.first_token()
                             printed_header = True
-                        text = _sanitize(delta["content"])
-                        print(text, end="", flush=True)
+                        renderer.feed(delta["content"])
                         content_parts.append(delta["content"])
                         status.count_token()
 
@@ -1354,6 +1563,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             if tc_delta.get("function", {}).get("arguments"):
                                 tc["function"]["arguments"] += tc_delta["function"]["arguments"]
         except CancelledError:
+            renderer.flush()
             status.finish()
             response.close()
             print(f"\n[cancelled]{RESET}")
@@ -1361,6 +1571,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             # Keep partial history so caller can inject user guidance
             return "cancelled"
 
+        renderer.flush()
         if content_parts and not receiving_tools:
             print()
         status.finish()
@@ -1513,7 +1724,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 "content": (
                                     f"Error: your tool call was garbled — 'path' is missing. "
                                     f"Use exec_command to write files instead. Example: "
-                                    f'{{\"command\": \"cat > state/current-state.json << \'EOF\'\\n{{content}}\\nEOF\"}}'
+                                    f'{{\"command\": \"cat > .agent/state/current-state.json << \'EOF\'\\n{{content}}\\nEOF\"}}'
                                 ),
                             })
                             continue
@@ -1558,7 +1769,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     if use_spinner:
                         tool_status.first_token()
                         tool_status.finish()
-                    print(f"\r\033[K  -> {func_name}({', '.join(f'{k}={repr(v)[:50]}' for k, v in func_args.items())})")
+                    print(f"{theme.CLEAR_LINE}  -> {func_name}({', '.join(f'{k}={repr(v)[:50]}' for k, v in func_args.items())})")
 
                     conversation_history.append({
                         "role": "tool",

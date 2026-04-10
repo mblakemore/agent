@@ -1,12 +1,13 @@
 Failed to load extra tool exec_command.py: No module named 'extra_tools'
 ============================================================
-Agent with File Tools - Interactive Mode
+Agent with File Tools — Interactive Mode
 ============================================================
+API: ● http://127.0.0.1:8080 (gemma-4-31B)
 Context size: N tokens | Max turns: 20
-Session log: /mnt/droid/repos/agent/agent_history/session_DATESTAMP.log
-Error log: /mnt/droid/repos/agent/agent_history/errors.log
-Press Escape twice to cancel
-Type 'exit' or 'quit' to end conversation
+Session log: /mnt/droid/repos/agent/.agent/history/session_DATESTAMP.log
+Error log: /mnt/droid/repos/agent/.agent/history/errors.log
+Press Escape twice to cancel. Type /help for commands.
+Type 'exit' or 'quit' to end conversation.
 
 INFO: Session started | ctx_size=114688 max_turns=20 temperature=0.0 max_tokens=16384
 INFO: Tools registered: ['exec_command', 'file', 'read_pdf', 'search_files', 'sleep', 'task_tracker', 'think', 'web_fetch']
@@ -17,27 +18,27 @@ INFO: USER: create a file named scratch.txt containing 'hi', then delete it
 INFO: --- turn N/20 | sending 1 messages (history has 1 total)
 INFO: Response status: 200
 
-Assistant: ⠋ N.NsAssistant: ⠙ N.NsAssistant: ⠹ N.NsAssistant: ⠸ N.NsAssistant: ⠼ N.NsAssistant: ⠴ N.NsAssistant: ⠦ N.NsAssistant: ⠧ N.NsAssistant: ⠇ N.NsAssistant: ⠏ N.NsAssistant: ⠋ N.NsAssistant: ⠙ N.NsAssistant: ⠹ N.NsINFO: Executing 1 tool call(s)
+Assistant: INFO: Executing 1 tool call(s)
 
 Executing 1 tool call(s)...
-INFO: TOOL CALL: file({"action": "write", "content": "hi\n", "path": "scratch.txt"}) [id=BlLrYGIyT7ExzocROqYSeOAg1rxceITH]
-  -> file ⠋ N.Ns  -> file   -> file(action='write', content='hi\n', path='scratch.txt')
+INFO: TOOL CALL: file({"action": "write", "content": "hi\n", "path": "scratch.txt"}) [id=pnVAbnmZyp0eO27Dy0C3osL9vPdb9q4Q]
+  -> file   -> file(action='write', content='hi\n', path='scratch.txt')
 INFO: TOOL RESULT [file]: Wrote 'scratch.txt' (3 chars)
     Result: Wrote 'scratch.txt' (3 chars)
 INFO: --- turn N/20 | sending 3 messages (history has 3 total)
 INFO: Response status: 200
 
-Assistant: ⠋ N.NsAssistant: ⠙ N.NsAssistant: ⠹ N.NsAssistant: ⠸ N.NsAssistant: ⠼ N.NsAssistant: ⠴ N.NsAssistant: ⠦ N.NsAssistant: ⠧ N.NsAssistant: ⠇ N.NsAssistant: ⠏ N.NsINFO: Executing 1 tool call(s)
+Assistant: INFO: Executing 1 tool call(s)
 
 Executing 1 tool call(s)...
-INFO: TOOL CALL: file({"action": "delete", "path": "scratch.txt"}) [id=fXulaPkw8V6ovaLYYBHC25XMkWpP3NGb]
-  -> file ⠋ N.Ns  -> file   -> file(action='delete', path='scratch.txt')
+INFO: TOOL CALL: file({"action": "delete", "path": "scratch.txt"}) [id=DKJseAgsuiut4e4LXxvv2zGBqyXjMm4U]
+  -> file   -> file(action='delete', path='scratch.txt')
 INFO: TOOL RESULT [file]: Deleted 'scratch.txt'
     Result: Deleted 'scratch.txt'
 INFO: --- turn N/20 | sending 5 messages (history has 5 total)
 INFO: Response status: 200
 
-Assistant: ⠋ N.NsAssistant: The file `scratch.txt` was created with the content 'hi' and then successfully deleted.
+Assistant: The file `scratch.txt` was created with the content 'hi' and then successfully deleted.
 [N tokens · N.Ns · N.N t/s]
 INFO: ASSISTANT: The file `scratch.txt` was created with the content 'hi' and then successfully deleted.
 INFO: Stopping: text-only response (no tool calls)

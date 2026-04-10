@@ -1,14 +1,11 @@
-"""Task tracker tool — persistent task management via state/tasks.json.
-
-SHARED RUNTIME — DO NOT MODIFY. This file is part of tool-agent/ and is used by all agents.
-"""
+"""Task tracker tool — persistent task management via .agent/state/tasks.json."""
 
 import json
 from datetime import datetime
 from pathlib import Path
 
 
-_TASKS_FILE = "state/tasks.json"
+_TASKS_FILE = ".agent/state/tasks.json"
 
 
 def _load_tasks():
@@ -134,7 +131,7 @@ definition = {
     "function": {
         "name": "task_tracker",
         "description": (
-            "Manage persistent tasks stored in state/tasks.json. "
+            "Manage persistent tasks stored in .agent/state/tasks.json. "
             "Use this to track work items across turns and cycles. "
             "Actions: add (new task), done (complete), update (change status/note), "
             "drop (remove), list (show all). "

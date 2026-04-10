@@ -161,7 +161,7 @@ def _write(path, content, start_line, end_line):
     if len(dirs_to_create) > _MAX_NEW_DIRS:
         return (f"Error: writing '{path}' would create {len(dirs_to_create)} nested directories. "
                 f"This usually means the path is wrong. Use a relative path from your working directory "
-                f"(e.g. 'state/file.json' not '/droid/repos/.../state/file.json').")
+                f"(e.g. '.agent/state/file.json' not '/droid/repos/.../state/file.json').")
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, 'w') as f:
         f.write(content)

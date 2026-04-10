@@ -67,7 +67,7 @@ def fn(url: str) -> str:
 
     # Save to file so the full content survives context compression
     url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
-    save_dir = os.path.join(os.getcwd(), "state", "fetched")
+    save_dir = os.path.join(os.getcwd(), ".agent", "state", "fetched")
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, f"{url_hash}.md")
     with open(save_path, "w") as f:
@@ -91,7 +91,7 @@ definition = {
     "function": {
         "name": "web_fetch",
         "description": (
-            "Fetch a web page, save it to state/fetched/<hash>.md, and return "
+            "Fetch a web page, save it to .agent/state/fetched/<hash>.md, and return "
             "a short preview. The full content is in the saved file — use the "
             "file tool to read it. Do NOT re-fetch a URL that was already fetched; "
             "read the saved file instead."

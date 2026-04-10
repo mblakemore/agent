@@ -3,8 +3,10 @@ CLAUDE.md
 .claude/
 plan/
 
-# Agent runtime state
+# Agent runtime state (.agent/ holds state/, history/, etc.)
+.agent/
 state/
+agent_history/
 
 # Python
 __pycache__/

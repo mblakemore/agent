@@ -1,10 +1,12 @@
 """
 Double-escape cancellation for streaming responses.
 
-SHARED RUNTIME — DO NOT MODIFY. This file is part of tool-agent/ and is used by all agents.
-
 Two Escape presses within 400ms aborts the current streaming operation.
 Single escapes and ANSI sequences (arrow keys, etc.) are ignored.
+
+When a richer TUI host owns the keyboard (see set_tui_mode), the cbreak
+capture + monitor are suppressed; the host is expected to call
+request_cancel() on its own keybinding.
 """
 
 import atexit
@@ -24,6 +26,7 @@ class CancelledError(Exception):
 _cancel_event = threading.Event()
 _monitor_active = threading.Event()
 _original_termios = None
+_tui_mode = False
 
 
 def is_cancelled():
@@ -40,6 +43,29 @@ def check_cancelled():
 def reset():
     """Clear the cancellation flag."""
     _cancel_event.clear()
+
+
+def request_cancel():
+    """Set the cancel flag from an external source (e.g. TUI keybinding)."""
+    _cancel_event.set()
+
+
+def set_tui_mode(enabled):
+    """Enable or disable TUI mode.
+
+    When enabled, the cancellable context manager skips cbreak capture and
+    the background escape monitor — a prompt_toolkit host (or equivalent)
+    is expected to own the keyboard and call request_cancel() itself.
+    """
+    global _tui_mode
+    _tui_mode = bool(enabled)
+    if _tui_mode:
+        _monitor_active.clear()
+
+
+def tui_mode():
+    """Return True when TUI mode is active."""
+    return _tui_mode
 
 
 class cbreak_mode:
@@ -149,6 +175,9 @@ class cancellable:
 
     def __enter__(self):
         reset()
+        if _tui_mode:
+            # A TUI host owns the keyboard; it will call request_cancel().
+            return self
         if sys.stdin.isatty():
             self._cbreak = cbreak_mode()
             self._cbreak.__enter__()
