@@ -17,7 +17,7 @@ def fn(
     path: str = ".",
     glob: str = "*",
     ignore_case: bool = True,
-    context: int = 0,
+    context: int = 3,
 ) -> str:
     """Search file contents for a regex pattern.
 
@@ -27,7 +27,8 @@ def fn(
         glob: File glob pattern to filter (default: * for all files).
         ignore_case: Case-insensitive search (default: True).
         context: Lines of context to include before/after each match, like
-            grep -C. Capped at _MAX_CONTEXT. Default 0 (no context).
+            grep -C. Capped at _MAX_CONTEXT. Default 3; pass 0 to get the
+            legacy bare-match shape.
     """
     try:
         flags = re.IGNORECASE if ignore_case else 0
@@ -136,11 +137,13 @@ definition = {
         "name": "search_files",
         "description": (
             "Search file contents for a regex pattern (like grep). "
-            "Searches recursively through a directory. Supports context lines "
-            "around each hit so you can disambiguate definitions, calls, and "
-            "doc mentions in a single call. Use this to find patterns in code, "
-            "search memory files, review past cycle logs, or locate specific "
-            "content across the project."
+            "Searches recursively through a directory and returns each hit "
+            "with surrounding context lines by default, so you can tell a "
+            "definition from a call from a documentation mention without "
+            "needing a follow-up file read. Use this to find patterns in "
+            "code, search memory files, review past cycle logs, or locate "
+            "specific content across the project. Prefer this over reading "
+            "whole files when you only need to look at a handful of matches."
         ),
         "parameters": {
             "type": "object",
@@ -171,9 +174,10 @@ definition = {
                         "like grep -C. Matched lines are emitted as "
                         "'path:line: text'; context lines use 'path-line- text'. "
                         "Disjoint groups are separated by '--'. Capped at 20. "
-                        "Default 0 (no context)."
+                        "Default 3 — pass 0 only if you want the legacy "
+                        "bare-match shape."
                     ),
-                    "default": 0,
+                    "default": 3,
                     "minimum": 0,
                 },
             },
