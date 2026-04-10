@@ -149,8 +149,11 @@ _WIND_DOWN_TURNS = _config["cycle"]["wind_down_turns"]
 # Auto-nudge on text-only responses. Off by default; enable with --nudge.
 _NUDGE_ENABLED = False
 
-# Load agent-specific tools from CWD/tools/ if it exists
-_agent_tools_dir = os.path.join(os.getcwd(), "tools")
+# Load agent-specific tools from CWD/.agent/tools/ if it exists.
+# Note: CWD/tools/ is the builtin package already loaded by tools/__init__.py —
+# pointing the loader at it would re-execute every module under a fake
+# "extra_tools" parent, breaking relative imports (e.g. exec_command).
+_agent_tools_dir = os.path.join(os.getcwd(), ".agent", "tools")
 if os.path.isdir(_agent_tools_dir):
     load_extra_tools(_agent_tools_dir)
 
