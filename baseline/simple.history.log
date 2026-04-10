@@ -6,7 +6,7 @@ HH:MM:SS DEBUG Context budget: 11/N tokens, 1 messages, oldest_idx=0, has_contex
 HH:MM:SS INFO --- turn N/20 | sending 1 messages (history has 1 total)
 HH:MM:SS INFO Response status: 200
 HH:MM:SS INFO Executing 1 tool call(s)
-HH:MM:SS INFO TOOL CALL: file({"action": "read", "path": "README.md"}) [id=Ah2LfhVszDkOYzCq41X0DTnEHDFq7v8p]
+HH:MM:SS INFO TOOL CALL: file({"action": "read", "path": "README.md"}) [id=yyUxUFHSFQkpLZJhvbKCLUeWuCan4ASZ]
 HH:MM:SS INFO TOOL RESULT [file]: [README.md: lines 1-145 of 145]
    1  # Agent
    2  
@@ -154,9 +154,9 @@ HH:MM:SS INFO TOOL RESULT [file]: [README.md: lines 1-145 of 145]
  144  
  145  Delete the `.agent/` directory to start completely fresh. The whole tree is gitignored.
 
-HH:MM:SS DEBUG Context budget: 2665/N tokens, 3 messages, oldest_idx=0, has_context_msg=False
+HH:MM:SS DEBUG Context budget: 2658/N tokens, 3 messages, oldest_idx=0, has_context_msg=False
 HH:MM:SS INFO --- turn N/20 | sending 3 messages (history has 3 total)
 HH:MM:SS INFO Response status: 200
-HH:MM:SS INFO ASSISTANT: Agent is a local, tool-driven coding assistant that connects to an OpenAI-compatible LLM to perform autonomous file and shell operations. It features robust session management, including checkpointing, background summarization, and hallucination guards, to ensure stability during long-running tasks.
+HH:MM:SS INFO ASSISTANT: Agent is a local, tool-driven coding assistant that connects to an OpenAI-compatible LLM endpoint to perform autonomous file and shell operations. It features robust session management, including checkpointing, background summarization, and hallucination guards to ensure stability during long-running tasks.
 HH:MM:SS INFO Stopping: text-only response (no tool calls)
 HH:MM:SS INFO Session ended (auto mode) | 4 messages in history

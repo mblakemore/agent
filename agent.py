@@ -43,10 +43,28 @@ try:
 except Exception:
     _tracker = None
 import theme
+import callbacks as _cbmod
+import commands as _commands
+from callbacks import NullCallbacks, TerminalCallbacks, safe_cb
+from types import SimpleNamespace
 
 RESET = theme.RESET
 BOLD = theme.BOLD
 DIM = theme.DIM
+
+# Module-level UI callback handle. run_agent_interactive replaces this with a
+# TerminalCallbacks() by default, or a user-provided subclass (e.g. TuiCallbacks
+# from the prompt_toolkit front-end in Phase 3).  Helpers that want to emit a
+# UI event use `_emit("method_name", ...)` which routes through `safe_cb` so a
+# buggy UI hook can never crash the loop.
+_cb: NullCallbacks = NullCallbacks()
+_cb_log = None
+
+
+def _emit(method, *args, **kwargs):
+    """Invoke a callback method via safe_cb, logging any exception."""
+    return safe_cb(_cb, method, *args, log=_cb_log, **kwargs)
+
 
 _FILE_REF = re.compile(r"@(\S+)")
 
@@ -189,8 +207,7 @@ def _llm_request(log, **kwargs):
             delay = _calculate_retry_delay(attempt)
             log.warning("LLM request failed (attempt %d/%d): %s — retrying in %ds",
                         attempt + 1, _LLM_MAX_RETRIES + 1, e, delay)
-            print(f"  {DIM}[LLM error: {e} — retry {attempt + 1}/{_LLM_MAX_RETRIES} in {delay}s]{RESET}",
-                  flush=True)
+            _emit("on_api_retry", str(e), attempt + 1, _LLM_MAX_RETRIES, delay)
             time.sleep(delay)
 
 
@@ -219,17 +236,20 @@ def _sanitize_display(text):
 
 class _ReasoningRenderer:
     """Stream-aware renderer that wraps <think>…</think> blocks in a
-    violet [Reasoning] header + dim body, printing everything else normally.
+    violet [Reasoning] header + dim body, emitting everything else normally.
 
     Handles tags split across delta chunks via a small pending buffer.
+    The `writer` is a callable taking a pre-styled text chunk — in practice
+    this is `lambda t: _emit("on_stream_chunk", t)` so the UI callback
+    layer gets every printable chunk.
     """
 
     _OPEN = "<think>"
     _CLOSE = "</think>"
     _MAX_PENDING = max(len(_OPEN), len(_CLOSE)) - 1  # 7
 
-    def __init__(self, out):
-        self._out = out
+    def __init__(self, writer):
+        self._write = writer
         self._pending = ""
         self._in_think = False
 
@@ -276,27 +296,20 @@ class _ReasoningRenderer:
     def _emit_plain(self, text):
         if not text:
             return
-        self._out.write(_sanitize_display(text))
-        self._out.flush()
+        self._write(_sanitize_display(text))
 
     def _emit_think(self, text):
         if not text:
             return
-        styled = theme.dim(_sanitize_display(text))
-        self._out.write(styled)
-        self._out.flush()
+        self._write(theme.dim(_sanitize_display(text)))
 
     def _open_block(self):
         self._in_think = True
-        header = theme.c(theme.VIOLET, "\n[Reasoning]\n", bold=True)
-        self._out.write(header)
-        self._out.flush()
+        self._write(theme.c(theme.VIOLET, "\n[Reasoning]\n", bold=True))
 
     def _close_block(self):
         self._in_think = False
-        footer = theme.c(theme.VIOLET, "\n[/Reasoning]\n", bold=True)
-        self._out.write(footer)
-        self._out.flush()
+        self._write(theme.c(theme.VIOLET, "\n[/Reasoning]\n", bold=True))
 
 
 _FILE_ACTIONS = {"read", "write", "insert", "append", "delete", "list"}
@@ -480,7 +493,7 @@ def _expand_file_refs(text):
                       f"This is YOUR agent.md — do not search for it elsewhere. {total} lines]")
 
         attachments.append(f"{header}\n{content}")
-        print(f"  {DIM}{header}{RESET}")
+        _emit("on_file_attached", header)
 
     files_content = "\n\n".join(attachments)
     # Prepend working directory context when agent.md is loaded
@@ -574,7 +587,7 @@ def _condense_summary(text, log=None):
         return text
     if log:
         log.info("Summary too long (%d chars, limit %d) — condensing", len(text), _SUMMARY_MAX_CHARS)
-    print(f"  {DIM}[summary too long, condensing...]{RESET}", flush=True)
+    _emit("on_summary_start", 0)
     prompt = (
         f"The following summary is too long ({len(text)} chars). "
         f"Rewrite it in under {_SUMMARY_MAX_CHARS // 2} characters. "
@@ -591,7 +604,7 @@ def _condense_summary(text, log=None):
             condensed = condensed[:_SUMMARY_MAX_CHARS].rsplit('\n', 1)[0] + "\n[...truncated]"
         if log:
             log.info("Condensed summary: %d → %d chars", len(text), len(condensed))
-        print(f"  {DIM}[summary condensed: {len(text)} → {len(condensed)} chars]{RESET}")
+        _emit("on_notice", "info", f"[summary condensed: {len(text)} → {len(condensed)} chars]")
         return condensed
     except Exception as e:
         if log:
@@ -883,11 +896,11 @@ def _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, for
                   summary_state["up_to"], oldest_idx)
         return False
 
-    print(f"  {DIM}[summarizing {len(new_messages)} messages...]{RESET}", flush=True)
+    _emit("on_summary_start", len(new_messages))
     summary = _generate_summary(summary_state["text"], new_messages, log)
     summary_state["text"] = _condense_summary(summary, log)
     summary_state["up_to"] = oldest_idx
-    print(f"  {DIM}[summary updated]{RESET}")
+    _emit("on_summary_done")
     return True
 
 
@@ -1082,7 +1095,7 @@ def _auto_increment_cycle(log):
 
             log.info("AUTO-INCREMENT: cycle %d already committed, bumped state to %d",
                      cycle, new_cycle)
-            print(f"  [auto-increment: cycle {cycle} already committed → starting cycle {new_cycle}]")
+            _emit("on_cycle_bumped", cycle, new_cycle)
     except Exception as e:
         log.warning("Auto-increment check failed: %s", e)
 
@@ -1160,7 +1173,7 @@ def _pick_model_interactive(current_model, base_url):
     return None
 
 
-def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False):
+def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, *, cb=None):
     """Interactive agent that maintains conversation history."""
 
     ctx_size = _config["context"]["ctx_size"]
@@ -1169,22 +1182,24 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False):
 
     log, log_path, error_log_path = _setup_logger()
 
+    # Install the UI callback handle for this session
+    global _cb, _cb_log
+    _cb = cb if cb is not None else TerminalCallbacks()
+    _cb_log = log
+
     model_name = _config["llm"]["model"]
     ok, detail = _check_api_health(BASE_URL)
-    if ok:
-        health_line = theme.c(theme.MINT, f"● {BASE_URL} ({model_name})")
-    else:
-        health_line = theme.c(theme.AMBER, f"⚠ {BASE_URL} ({detail}) — continuing anyway")
 
-    print(theme.c(theme.VIOLET, "="*60, bold=True))
-    print(theme.c(theme.VIOLET, "Agent with File Tools — Interactive Mode", bold=True))
-    print(theme.c(theme.VIOLET, "="*60, bold=True))
-    print(f"API: {health_line}")
-    print(f"Context size: {ctx_size} tokens | Max turns: {_MAX_TURNS}")
-    print(f"Session log: {log_path}")
-    print(f"Error log: {error_log_path}")
-    print(theme.dim("Press Escape twice to cancel. Type /help for commands."))
-    print(theme.dim("Type 'exit' or 'quit' to end conversation.\n"))
+    _emit("on_session_start", {
+        "api_ok": ok,
+        "api_detail": detail,
+        "base_url": BASE_URL,
+        "model": model_name,
+        "ctx_size": ctx_size,
+        "max_turns": _MAX_TURNS,
+        "log_path": log_path,
+        "error_log_path": error_log_path,
+    })
 
     log.info("Session started | ctx_size=%d max_turns=%d temperature=%.1f max_tokens=%d",
              ctx_size, _MAX_TURNS, gen["temperature"], max_tokens)
@@ -1200,15 +1215,15 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False):
             if health.status_code == 200:
                 _async_summarizer = AsyncSummarizer(_config, log)
                 log.info("Async summarizer enabled → %s", summary_url)
-                print(f"  {DIM}[summary model online at {summary_url}]{RESET}")
+                _emit("on_summarizer_status", "online", summary_url)
             else:
                 log.warning("Summary endpoint returned %d, using main model for summaries",
                             health.status_code)
-                print(f"  {DIM}[summary model unhealthy, using main model]{RESET}")
+                _emit("on_summarizer_status", "unhealthy", str(health.status_code))
         except (requests.ConnectionError, requests.Timeout):
             log.warning("Summary endpoint unreachable at %s, using main model for summaries",
                         summary_url)
-            print(f"  {DIM}[summary model offline, using main model]{RESET}")
+            _emit("on_summarizer_status", "offline", summary_url)
 
     # ── Continue mode: resume from checkpoint ──
     start_turn = 0
@@ -1221,7 +1236,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False):
             # Cap summary from old checkpoints that may have bloated summaries
             if summary_state.get("text"):
                 summary_state["text"] = _condense_summary(summary_state["text"], log)
-            print(f"  [continuing from turn {start_turn} with {len(conversation_history)} messages]")
+            _emit("on_continue_resumed", start_turn, len(conversation_history))
             # Add a resume nudge so the model knows it's continuing
             conversation_history.append({"role": "user", "content":
                 "Continue where you left off. The session was interrupted — "
@@ -1238,7 +1253,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False):
                 return
             # Fall through to interactive loop if not auto
         else:
-            print("  [no checkpoint found — starting fresh]")
+            _emit("on_continue_none")
             log.info("CONTINUE: no checkpoint found, starting fresh")
 
     if not continue_mode:
@@ -1250,10 +1265,10 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False):
     initial_files = initial_files if continue_mode and start_turn > 0 else None
 
     if initial_prompt and not (continue_mode and start_turn > 0):
-        print(f"You: {initial_prompt}")
+        _emit("on_user_message", initial_prompt)
         expanded, files, err = _expand_file_refs(initial_prompt)
         if err:
-            print(err)
+            _emit("on_error", err)
             return
         if files:
             initial_files = files
@@ -1267,7 +1282,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False):
         if auto:
             if result == "cancelled":
                 # Double-escape in auto mode: prompt operator for guidance, then continue
-                print(f"\n{BOLD}[Agent paused — enter guidance, or press Enter to resume]{RESET}")
+                _emit("on_notice", "info",
+                      f"\n{BOLD}[Agent paused — enter guidance, or press Enter to resume]{RESET}")
                 try:
                     guidance = input("\nOperator: ").strip()
                 except (EOFError, KeyboardInterrupt):
@@ -1277,7 +1293,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False):
                 if guidance:
                     expanded_g, files_g, err_g = _expand_file_refs(guidance)
                     if err_g:
-                        print(err_g)
+                        _emit("on_error", err_g)
                     else:
                         if files_g:
                             initial_files = files_g
@@ -1311,39 +1327,35 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False):
         if user_input.lower() in ["exit", "quit"]:
             print("Goodbye!")
             break
-        cmd = user_input.strip()
-        if cmd == "/clear":
-            conversation_history.clear()
-            summary_state["text"] = ""
-            summary_state["up_to"] = 0
-            initial_files = None
-            if _async_summarizer:
-                _async_summarizer.reset()
-            log, log_path, error_log_path = _setup_logger()
-            print(f"Conversation cleared. New session: {log_path}")
-            continue
-        if cmd == "/help":
-            print(theme.c(theme.SKY, "Commands:"))
-            print("  /help     — show this message")
-            print("  /clear    — clear conversation history and start a fresh session log")
-            print("  /context  — show current context usage (bar + token counts)")
-            print("  /model    — pick a different model from the server")
-            print("  exit/quit — end the session")
-            continue
-        if cmd == "/context":
-            print(_render_context_bar(conversation_history, summary_state, ctx_size))
-            continue
-        if cmd == "/model":
-            new_model = _pick_model_interactive(_config["llm"]["model"], BASE_URL)
-            if new_model:
-                _config["llm"]["model"] = new_model
-                print(theme.c(theme.MINT, f"Model set to {new_model} (summarizer keeps its original model)"))
-                log.info("Model changed via /model: %s", new_model)
-            continue
+        if user_input.startswith("/"):
+            def _refresh_cb_log(new_log):
+                globals()["_cb_log"] = new_log
+            ctx = SimpleNamespace(
+                conversation_history=conversation_history,
+                summary_state=summary_state,
+                initial_files=initial_files,
+                async_summarizer=_async_summarizer,
+                cb=_cb,
+                log=log,
+                log_path=log_path,
+                ctx_size=ctx_size,
+                config=_config,
+                base_url=BASE_URL,
+                setup_logger=_setup_logger,
+                pick_model=_pick_model_interactive,
+                render_context_bar=_render_context_bar,
+                refresh_cb_log=_refresh_cb_log,
+            )
+            if _commands.handle_command(user_input, ctx):
+                # /clear may have rotated log and initial_files — pull them back
+                initial_files = ctx.initial_files
+                log = ctx.log
+                log_path = ctx.log_path
+                continue
 
         expanded, files, err = _expand_file_refs(user_input)
         if err:
-            print(err)
+            _emit("on_error", err)
             continue
         if files:
             initial_files = files
@@ -1417,7 +1429,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         # Harvest any completed async summary before building context
         if _async_summarizer and _async_summarizer.harvest(summary_state):
             log.info("Harvested async summary")
-            print(f"  {DIM}[summary ready]{RESET}", flush=True)
+            _emit("on_summary_ready")
 
         # Build context window, with overflow reduction loop
         _ctx_max_messages = None  # None = use default _MAX_CONTEXT_MESSAGES
@@ -1436,7 +1448,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     if new_messages:
                         _async_summarizer.kick(summary_state["text"], new_messages, oldest_idx)
                         log.info("Kicked async summary for %d messages", len(new_messages))
-                        print(f"  {DIM}[background summarization started]{RESET}", flush=True)
+                        _emit("on_notice", "info", "[background summarization started]")
             elif _maybe_resummarize(conversation_history, summary_state, oldest_idx, log):
                 messages_to_send, oldest_idx = _build_context(
                     conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
@@ -1472,7 +1484,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             except ContextOverflowError:
                 if _ctx_attempt >= _CTX_REDUCE_MAX:
                     log.error("Context overflow: still failing after %d reductions", _CTX_REDUCE_MAX)
-                    print(f"Error: context overflow — could not fit in server context window")
+                    _emit("on_error", "Error: context overflow — could not fit in server context window")
                     return "error"
                 current_count = len(messages_to_send)
                 if current_count <= 2:
@@ -1484,24 +1496,23 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         log.warning("Context overflow (attempt %d/%d): at min messages, "
                                     "truncating summary from %d to %d chars",
                                     _ctx_attempt + 1, _CTX_REDUCE_MAX, old_len, len(summary_state["text"]))
-                        print(f"  {DIM}[Context overflow — truncating summary to fit]{RESET}", flush=True)
+                        _emit("on_notice", "info", "[Context overflow — truncating summary to fit]")
                     else:
                         log.error("Context overflow with no summary and minimal messages — cannot reduce further")
-                        print(f"Error: context overflow — cannot reduce further")
+                        _emit("on_error", "Error: context overflow — cannot reduce further")
                         return "error"
                 else:
                     # Reduce: cap messages to current count minus 2 (drop oldest pair)
                     _ctx_max_messages = max(2, current_count - 2)
                     log.warning("Context overflow (attempt %d/%d): reducing from %d to max %d messages",
                                 _ctx_attempt + 1, _CTX_REDUCE_MAX, current_count, _ctx_max_messages)
-                    print(f"  {DIM}[Context overflow — reducing to {_ctx_max_messages} messages and resummarizing]{RESET}",
-                          flush=True)
+                    _emit("on_context_recovery", True)
                     # Force a resummarize with the tighter window so dropped messages aren't lost
                     _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True)
                 continue
             except requests.exceptions.RequestException as e:
                 log.error("Request failed after retries: %s", e)
-                print(f"Error calling server: {e}")
+                _emit("on_error", f"Error calling server: {e}")
                 return "error"
 
         # Accumulate streamed response
@@ -1511,7 +1522,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         receiving_tools = False
         status = StreamStatus()
         status.start("\nAssistant: ")
-        renderer = _ReasoningRenderer(sys.stdout)
+        renderer = _ReasoningRenderer(lambda t: _emit("on_stream_chunk", t))
 
         try:
             with cancellable():
@@ -1566,7 +1577,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             renderer.flush()
             status.finish()
             response.close()
-            print(f"\n[cancelled]{RESET}")
+            _emit("on_cancelled", "streaming")
             log.info("CANCELLED during streaming")
             # Keep partial history so caller can inject user guidance
             return "cancelled"
@@ -1577,6 +1588,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         status.finish()
 
         full_content = _THINK_TAG_RE.sub('', "".join(content_parts)).strip()
+        _emit("on_assistant_text", full_content, None)
         tool_calls = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)] if tool_calls_by_index else []
 
         assistant_msg = {"role": "assistant", "content": full_content}
@@ -1599,7 +1611,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             if _repeat_count >= _TEXT_LOOP_THRESHOLD:
                 log.warning("Text loop detected: same output %d times — stopping",
                             _repeat_count)
-                print(f"  [text loop detected — stopping]")
+                _emit("on_text_loop_detected", _repeat_count)
                 return "done"
 
         if not tool_calls:
@@ -1613,7 +1625,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             # Past turn limit + no tool use = end cycle immediately
             if turn > _MAX_TURNS:
                 log.warning("Overtime + text-only response — ending cycle")
-                print(f"  [overtime + no tool use — ending cycle]")
+                _emit("on_overtime", "text_only")
                 return "done"
             _consecutive_text_only += 1
             if _consecutive_text_only >= _MAX_TEXT_ONLY:
@@ -1626,7 +1638,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             if _consecutive_text_only == 1:
                 conversation_history.pop()  # remove the hallucinated assistant msg
                 log.info("Hallucination guard: stripped text-only response, retrying")
-                print(f"  [text-only response stripped, retrying]")
+                _emit("on_hallucination_stripped", "text_only")
                 continue
 
             # Detect hallucinated file reads: model claims to have read a file
@@ -1658,7 +1670,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     "Do not guess or fabricate file contents. Use the tool now."
                 )
                 log.info("Hallucination guard: detected fabricated file read, correcting")
-                print(f"  [hallucinated file read detected, correcting]")
+                _emit("on_hallucination_stripped", "file_read")
             else:
                 # Generic nudge
                 nudge = (
@@ -1677,7 +1689,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
         # Execute tool calls
         log.info("Executing %d tool call(s)", len(tool_calls))
-        print(f"\n{DIM}Executing {len(tool_calls)} tool call(s)...")
+        _emit("on_tool_batch_start", len(tool_calls))
         try:
             with cancellable():
                 for tool_call in tool_calls:
@@ -1769,7 +1781,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     if use_spinner:
                         tool_status.first_token()
                         tool_status.finish()
-                    print(f"{theme.CLEAR_LINE}  -> {func_name}({', '.join(f'{k}={repr(v)[:50]}' for k, v in func_args.items())})")
+                    _emit("on_tool_start", func_name, func_args)
 
                     conversation_history.append({
                         "role": "tool",
@@ -1784,7 +1796,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         # Record cycle timestamp automatically
                         if _tracker:
                             try:
-                                with open(os.path.join(os.getcwd(), "state", "current-state.json")) as _sf:
+                                with open(_state_path("current-state.json")) as _sf:
                                     _cycle = json.load(_sf).get("cycle", 0)
                             except Exception:
                                 _cycle = 0
@@ -1806,7 +1818,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     if turn > _MAX_TURNS and _result_repeats >= 3:
                         log.warning("Overtime + repeated tool result (%s x%d) — ending cycle",
                                     func_name, _result_repeats)
-                        print(f"  [overtime + repeated result — ending cycle]")
+                        _emit("on_overtime", "repeated_result")
                         return "done"
 
                     if result_str.startswith("Error"):
@@ -1815,7 +1827,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             # Model is stuck even after forced thinks — skip this step
                             log.warning("Hard bail: %s failed %d times — skipping",
                                         func_name, consecutive)
-                            print(f"  [skipping — {func_name} failed {consecutive} times]")
+                            _emit("on_tool_skip", func_name, consecutive)
                             conversation_history.append({
                                 "role": "user",
                                 "content": (
@@ -1844,7 +1856,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             )
                             log.warning("Loop detected: %s x%d — forcing think",
                                         func_name, consecutive)
-                            print(f"  [loop detected — forcing think]")
+                            _emit("on_forced_think", func_name, consecutive)
                             if "think" in MAP_FN:
                                 think_result = MAP_FN["think"](prompt=think_prompt)
                                 # Inject as assistant thought + tool response
@@ -1871,9 +1883,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     else:
                         # Successful call — reset tracker for this tool
                         _recent_tool_errors[:] = [e for e in _recent_tool_errors if e[0] != func_name]
-                    print(f"    Result: {result_str}{RESET}")
+                    _emit("on_tool_result", func_name, func_args, result_str,
+                          result_str.startswith("Error"))
         except CancelledError:
-            print(f"\n[cancelled]{RESET}")
+            _emit("on_cancelled", "tool_execution")
             log.info("CANCELLED during tool execution")
             if _async_summarizer:
                 _async_summarizer.drain()
@@ -1916,10 +1929,10 @@ def main():
             while n == 0 or run < n:
                 run += 1
                 label = f"run {run}/{n}" if n > 0 else f"run {run}"
-                print(f"\n{'='*60}\n{label}\n{'='*60}")
+                _emit("on_repeat_run_start", label)
                 run_agent_interactive(initial_prompt=initial_prompt, auto=True)
         except KeyboardInterrupt:
-            print(f"\n\nStopped after {run} run(s).")
+            _emit("on_repeat_done", run)
     else:
         run_agent_interactive(initial_prompt=initial_prompt, auto=args.auto)
 

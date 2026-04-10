@@ -21,7 +21,7 @@ INFO: Response status: 200
 Assistant: INFO: Executing 1 tool call(s)
 
 Executing 1 tool call(s)...
-INFO: TOOL CALL: file({"action": "write", "content": "hi\n", "path": "scratch.txt"}) [id=pnVAbnmZyp0eO27Dy0C3osL9vPdb9q4Q]
+INFO: TOOL CALL: file({"action": "write", "content": "hi\n", "path": "scratch.txt"}) [id=d8APVZsx9HsAS407gMTaiCJXFo4IbfsP]
   -> file   -> file(action='write', content='hi\n', path='scratch.txt')
 INFO: TOOL RESULT [file]: Wrote 'scratch.txt' (3 chars)
     Result: Wrote 'scratch.txt' (3 chars)
@@ -31,7 +31,7 @@ INFO: Response status: 200
 Assistant: INFO: Executing 1 tool call(s)
 
 Executing 1 tool call(s)...
-INFO: TOOL CALL: file({"action": "delete", "path": "scratch.txt"}) [id=DKJseAgsuiut4e4LXxvv2zGBqyXjMm4U]
+INFO: TOOL CALL: file({"action": "delete", "path": "scratch.txt"}) [id=cCIEoBUGzXtvbEuDFOw7AwOyGZrKLIuZ]
   -> file   -> file(action='delete', path='scratch.txt')
 INFO: TOOL RESULT [file]: Deleted 'scratch.txt'
     Result: Deleted 'scratch.txt'
