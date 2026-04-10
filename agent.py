@@ -1274,18 +1274,28 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     # ── TUI front-end (optional) ──
     # Now that history / summary / initial_files have stable identities,
     # instantiate the prompt_toolkit session and swap the UI callback.
+    # If prompt_toolkit isn't installed we fall back silently to plain
+    # input() with a one-line notice so `--tui`-by-default doesn't break
+    # environments that haven't installed the optional dependency.
     tui_session = None
-    if tui:
+    if tui and not auto:
         import tui as _tuimod
-        tui_session = _tuimod.TuiSession(
-            history=conversation_history,
-            summary_state=summary_state,
-            config=_config,
-            ctx_size=ctx_size,
-            cb=_cb,
-            estimate_tokens=_estimate_tokens,
-        )
-        _cb = _tuimod.TuiCallbacks(tui_session, verbose=getattr(_cb, "verbose", False))
+        if _tuimod._AVAILABLE:
+            tui_session = _tuimod.TuiSession(
+                history=conversation_history,
+                summary_state=summary_state,
+                config=_config,
+                ctx_size=ctx_size,
+                cb=_cb,
+                estimate_tokens=_estimate_tokens,
+            )
+            _cb = _tuimod.TuiCallbacks(tui_session, verbose=getattr(_cb, "verbose", False))
+            _emit("on_notice", "info",
+                  "[TUI mode · Enter submit · Ctrl+N newline · ↑/↓ history · /help for commands]")
+        else:
+            _emit("on_notice", "warn",
+                  "prompt_toolkit not installed — using plain prompt. "
+                  "`pip install prompt_toolkit` (or pass --no-tui to silence).")
 
     if initial_prompt and not (continue_mode and start_turn > 0):
         _emit("on_user_message", initial_prompt)
@@ -1940,23 +1950,25 @@ def main():
                         help="Repeat N times (fresh each run). 0 or omit = indefinite. Implies -a.")
     parser.add_argument("--nudge", action="store_true",
                         help="Auto-nudge the model when it returns a text-only response.")
-    parser.add_argument("--tui", action="store_true",
-                        help="Use the prompt_toolkit TUI (bottom toolbar, completer, history). "
-                             "Requires optional `prompt_toolkit` package. Interactive mode only.")
+    parser.add_argument("--no-tui", dest="no_tui", action="store_true",
+                        help="Disable the prompt_toolkit TUI even in interactive mode "
+                             "(use a plain input() prompt). The TUI is on by default when "
+                             "running interactively and falls back to plain input() automatically "
+                             "if `prompt_toolkit` isn't installed.")
     parser.add_argument("prompt", nargs="*", help="Initial prompt")
     args = parser.parse_args()
-
-    if args.tui and (args.auto or args.continue_mode or args.repeat is not None):
-        parser.error("--tui is interactive only; cannot combine with -a/-c/-r")
 
     global _NUDGE_ENABLED
     _NUDGE_ENABLED = args.nudge
 
     initial_prompt = " ".join(args.prompt).strip() or None
 
-    if args.continue_mode:
-        run_agent_interactive(initial_prompt=initial_prompt, auto=True, continue_mode=True)
-    elif args.repeat is not None:
+    # TUI is the default in any mode that has an interactive prompt:
+    #   plain run, `-c` resume-then-interactive, or initial-prompt + interactive.
+    # Automation modes (`-a`, `-r`) never get a TUI since there is no prompt.
+    tui_enabled = not args.no_tui and not args.auto and args.repeat is None
+
+    if args.repeat is not None:
         n = args.repeat
         run = 0
         try:
@@ -1968,7 +1980,14 @@ def main():
         except KeyboardInterrupt:
             _emit("on_repeat_done", run)
     else:
-        run_agent_interactive(initial_prompt=initial_prompt, auto=args.auto, tui=args.tui)
+        # `-c` without `-a` resumes the checkpoint and drops into interactive
+        # mode; `-c -a` is the old auto-resume-and-exit behaviour.
+        run_agent_interactive(
+            initial_prompt=initial_prompt,
+            auto=args.auto,
+            continue_mode=args.continue_mode,
+            tui=tui_enabled,
+        )
 
 
 if __name__ == "__main__":

@@ -27,13 +27,24 @@ python agent.py [OPTIONS] [PROMPT...]
 | Flag | Description |
 | --- | --- |
 | `-a`, `--auto` | Automation mode — run the prompt and exit; no interactive loop. |
-| `-c`, `--continue` | Resume from the last checkpoint (picks up a crashed or interrupted cycle). |
+| `-c`, `--continue` | Resume from the last checkpoint and drop into an interactive session. Combine with `-a` for auto-resume-and-exit. |
 | `-r N`, `--repeat N` | Run the prompt `N` times with fresh state each run. `0` or omitted means run indefinitely. Implies `-a`. |
 | `--nudge` | When the model returns a text-only response (no tool calls), auto-nudge it to keep going instead of stopping. Off by default. |
-| `--tui` | Use the prompt_toolkit front-end: command / `@path` completer, input history, and a live bottom toolbar (cwd · model · msgs · ctx% · verbose). Interactive only — cannot combine with `-a`/`-c`/`-r`. Requires the optional `prompt_toolkit` package. |
+| `--no-tui` | Disable the `prompt_toolkit` TUI and use a plain `input()` prompt. The TUI is on by default in any interactive mode and falls back to plain input automatically if `prompt_toolkit` isn't installed. |
 | `PROMPT...` | Initial prompt. Optional; in interactive mode you'll be prompted if omitted. |
 
-Press **Escape twice** within 400ms to cancel a streaming response.
+Press **Escape twice** within 400ms to cancel a streaming response. In the TUI this works while the model is streaming; the prompt itself uses `prompt_toolkit`'s native key handling.
+
+### Interactive TUI (default)
+
+When running interactively, the agent uses a `prompt_toolkit` front-end with:
+
+- A **bottom toolbar** showing `cwd · model · message count · context ~% · verbose state`.
+- **Completion** for slash commands (`/he<Tab>`) and `@path` file refs (`@src/<Tab>`).
+- **Input history** navigable with ↑ / ↓.
+- **Key bindings**: `Enter` submits, `Ctrl+N` inserts a literal newline.
+
+Pass `--no-tui` to use the plain `input()` prompt instead. The `prompt_toolkit` package is an optional dependency — if it isn't installed, the agent prints a one-line notice and falls back to the plain prompt automatically.
 
 ### Interactive commands
 
