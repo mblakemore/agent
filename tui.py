@@ -1,10 +1,14 @@
 """
 prompt_toolkit-based TUI front-end for the interactive agent.
 
-Optional feature — `prompt_toolkit` is not installed by default. When
-`--tui` is passed but the package is missing, `TuiSession()` raises a
-clean ImportError with an install hint. The rest of the agent continues
-to work without it.
+This is the default interactive front-end — `main()` instantiates a
+`TuiSession` whenever it enters an interactive loop unless the caller
+passes `--no-tui`. `prompt_toolkit` itself is an optional runtime
+dependency: if the import fails at module load time, `_AVAILABLE` is
+set to `False` and `main()` falls back to a plain `input()` prompt
+with a one-line notice. A caller that bypasses that fallback and
+instantiates `TuiSession()` directly while `prompt_toolkit` is missing
+gets a clean `ImportError` from the stub class below.
 
 Design notes (see plan/ui-upgrade-from-llmbox-cli.md § Phase 3):
   * TuiSession owns the PromptSession and bottom toolbar. It holds
@@ -322,8 +326,9 @@ if _AVAILABLE:
 else:  # prompt_toolkit not installed — provide stubs that fail clearly
 
     _INSTALL_HINT = (
-        "--tui requires the optional `prompt_toolkit` package. "
-        "Install it with:  pip install prompt_toolkit"
+        "Interactive TUI mode requires the optional `prompt_toolkit` package. "
+        "Install it with `pip install prompt_toolkit`, or pass `--no-tui` "
+        "to use the plain `input()` prompt instead."
     )
 
 
