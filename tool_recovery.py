@@ -120,7 +120,6 @@ def _ask_for_param(pattern, func_args, error_str, llm_call_fn, config, log):
     log.info("Recovery: asking LLM for '%s': %s", pattern["param"], question)
 
     try:
-        base_url = config.get("llm", {}).get("base_url", "http://127.0.0.1:8080")
         model = config.get("llm", {}).get("model", "")
 
         response = llm_call_fn(
