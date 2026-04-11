@@ -1271,12 +1271,12 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     summary_state = summary_state if continue_mode and start_turn > 0 else {"text": "", "up_to": 0}
     initial_files = initial_files if continue_mode and start_turn > 0 else None
 
-    # ── TUI front-end (optional) ──
+    # ── TUI front-end (default in interactive mode) ──
     # Now that history / summary / initial_files have stable identities,
     # instantiate the prompt_toolkit session and swap the UI callback.
     # If prompt_toolkit isn't installed we fall back silently to plain
-    # input() with a one-line notice so `--tui`-by-default doesn't break
-    # environments that haven't installed the optional dependency.
+    # input() with a one-line notice so the default TUI path doesn't
+    # break environments that haven't installed the optional dependency.
     tui_session = None
     if tui and not auto:
         import tui as _tuimod
