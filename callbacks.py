@@ -85,7 +85,7 @@ class NullCallbacks:
     def on_stream_chunk(self, text: str) -> None:
         return None
 
-    def on_assistant_text(self, text: str, reasoning: str | None) -> None:
+    def on_assistant_text(self, text: str) -> None:
         return None
 
     # --- tool loop -----------------------------------------------------
@@ -137,7 +137,7 @@ class NullCallbacks:
     def on_overtime(self, reason: str) -> None:
         return None
 
-    def on_context_recovery(self, auto: bool) -> None:
+    def on_context_recovery(self) -> None:
         return None
 
     # --- errors / status -----------------------------------------------
@@ -261,7 +261,7 @@ class TerminalCallbacks(NullCallbacks):
         self._last_was_stream = True
         print(text, end="", flush=True)
 
-    def on_assistant_text(self, text: str, reasoning: str | None) -> None:
+    def on_assistant_text(self, text: str) -> None:
         # Streamed assistant text has already been printed chunk-by-chunk;
         # this hook is called at end-of-turn for completeness but must not
         # re-emit text when the stream was live.
@@ -332,7 +332,7 @@ class TerminalCallbacks(NullCallbacks):
         }
         self._print(f"  {mapping.get(reason, f'[overtime: {reason}]')}")
 
-    def on_context_recovery(self, auto: bool) -> None:
+    def on_context_recovery(self) -> None:
         self._note("[context overflow — trimming and retrying]")
 
     # -- summarization --------------------------------------------------

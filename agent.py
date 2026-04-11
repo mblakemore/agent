@@ -1541,7 +1541,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     _ctx_max_messages = max(2, current_count - 2)
                     log.warning("Context overflow (attempt %d/%d): reducing from %d to max %d messages",
                                 _ctx_attempt + 1, _CTX_REDUCE_MAX, current_count, _ctx_max_messages)
-                    _emit("on_context_recovery", True)
+                    _emit("on_context_recovery")
                     # Force a resummarize with the tighter window so dropped messages aren't lost
                     _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True)
                 continue
@@ -1623,7 +1623,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         status.finish()
 
         full_content = _THINK_TAG_RE.sub('', "".join(content_parts)).strip()
-        _emit("on_assistant_text", full_content, None)
+        _emit("on_assistant_text", full_content)
         tool_calls = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)] if tool_calls_by_index else []
 
         assistant_msg = {"role": "assistant", "content": full_content}
