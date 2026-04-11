@@ -1221,7 +1221,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             health = requests.get(f"{summary_url}/health", timeout=3)
             if health.status_code == 200:
                 _async_summarizer = AsyncSummarizer(_config, log)
-                log.info("Async summarizer enabled → %s", summary_url)
+                log.debug("Async summarizer enabled → %s", summary_url)
                 _emit("on_summarizer_status", "online", summary_url)
             else:
                 log.warning("Summary endpoint returned %d, using main model for summaries",
