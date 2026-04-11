@@ -305,5 +305,222 @@ class TestSafeCb(unittest.TestCase):
         self.assertEqual(len(log.calls), 1)
 
 
+class TestTerminalCallbacksDispatchArms(unittest.TestCase):
+    """Cycle 0020 regression: TerminalCallbacks string-switch bodies must
+    not contain a dispatch arm whose guarding literal (or dict-key / else
+    fallback) is unreachable given the actual set of literals that
+    `_emit` / `safe_cb` call sites in the repo produce for that hook.
+    """
+
+    TARGET_HOOKS = (
+        "on_notice",
+        "on_hallucination_stripped",
+        "on_overtime",
+    )
+
+    def _repo_root(self):
+        return Path(__file__).parent.parent
+
+    def test_no_known_dead_dispatch_arms(self):
+        """The 3 specific dead-arm markers from cycle 0020 baseline must
+        not reappear in callbacks.py source."""
+        src = (self._repo_root() / "callbacks.py").read_text()
+        dead_markers = [
+            ('on_notice "error" elif arm',
+             'elif level == "error":'),
+            ('on_hallucination_stripped unknown-kind fallback',
+             "[hallucination stripped: {kind}]"),
+            ('on_overtime unknown-reason fallback',
+             "[overtime: {reason}]"),
+        ]
+        found = [label for label, marker in dead_markers if marker in src]
+        self.assertFalse(
+            found,
+            "Dead dispatch arm(s) reappeared in callbacks.py: " + ", ".join(found)
+        )
+
+    def _collect_emitted_keys(self):
+        """Walk every .py file under the repo root (skipping .git, tests,
+        plan) and collect the set of string literals passed as the first
+        positional argument to `_emit("hook", ...)` or
+        `safe_cb(cb, "hook", ...)` for each target hook. Returns
+        (emitted_map, dynamic_sites).
+        """
+        import ast
+        emitted = {h: set() for h in self.TARGET_HOOKS}
+        dynamic = []
+        root = self._repo_root()
+        for path in root.rglob("*.py"):
+            rel = path.relative_to(root)
+            parts = rel.parts
+            if parts[0] in (".git", "tests", "plan"):
+                continue
+            try:
+                tree = ast.parse(path.read_text(), str(rel))
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                hook = None
+                arg_offset = 0
+                if isinstance(func, ast.Name) and func.id == "_emit":
+                    if node.args and isinstance(node.args[0], ast.Constant):
+                        hook = node.args[0].value
+                        arg_offset = 1
+                elif isinstance(func, ast.Name) and func.id == "safe_cb":
+                    if len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+                        hook = node.args[1].value
+                        arg_offset = 2
+                if hook not in self.TARGET_HOOKS:
+                    continue
+                if arg_offset >= len(node.args):
+                    continue
+                first = node.args[arg_offset]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    emitted[hook].add(first.value)
+                else:
+                    dynamic.append((str(rel), node.lineno, hook))
+        return emitted, dynamic
+
+    def _classify_hook_body(self, body, arg_name):
+        """Walk a TerminalCallbacks method body; return (literal_keys,
+        has_else_fallback, has_default_fallback).
+
+        - literal_keys: strings the body explicitly dispatches on, either
+          via `if/elif <arg> == "lit":` or via dict literal keys used in
+          `dict.get(<arg>, ...)` or `dict[<arg>]` expressions.
+        - has_else_fallback: True iff any top-level if/elif chain that
+          compares against string literals has a trailing else: with a
+          non-pass body.
+        - has_default_fallback: True iff the body contains a
+          `dict.get(<arg>, default)` where default is not None.
+        """
+        import ast
+        literal_keys = set()
+        has_else_fallback = False
+        has_default_fallback = False
+
+        def walk_if_chain(if_stmt):
+            nonlocal has_else_fallback
+            t = if_stmt.test
+            is_literal_cmp = False
+            if isinstance(t, ast.Compare) and len(t.ops) == 1 and isinstance(t.ops[0], ast.Eq):
+                left, right = t.left, t.comparators[0]
+                if (isinstance(left, ast.Name) and left.id == arg_name
+                        and isinstance(right, ast.Constant)
+                        and isinstance(right.value, str)):
+                    literal_keys.add(right.value)
+                    is_literal_cmp = True
+            if if_stmt.orelse:
+                # If orelse is a single If → elif; otherwise else branch.
+                if len(if_stmt.orelse) == 1 and isinstance(if_stmt.orelse[0], ast.If):
+                    walk_if_chain(if_stmt.orelse[0])
+                else:
+                    # Trailing else: any non-pass body → fallback present.
+                    if is_literal_cmp and not (
+                        len(if_stmt.orelse) == 1
+                        and isinstance(if_stmt.orelse[0], ast.Pass)
+                    ):
+                        has_else_fallback = True
+
+        for stmt in body:
+            if isinstance(stmt, ast.If):
+                walk_if_chain(stmt)
+        for sub in ast.walk(ast.Module(body=body, type_ignores=[])):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute):
+                # dict.get(arg, default) on a Dict literal.
+                if (sub.func.attr == "get"
+                        and isinstance(sub.func.value, ast.Dict)):
+                    for k in sub.func.value.keys:
+                        if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                            literal_keys.add(k.value)
+                    if len(sub.args) >= 2:
+                        default = sub.args[1]
+                        if not (isinstance(default, ast.Constant) and default.value is None):
+                            has_default_fallback = True
+            if isinstance(sub, ast.Subscript) and isinstance(sub.value, ast.Dict):
+                for k in sub.value.keys:
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                        literal_keys.add(k.value)
+        return literal_keys, has_else_fallback, has_default_fallback
+
+    def test_dispatch_arms_are_reachable(self):
+        """AST-driven guard: every explicit arm in TerminalCallbacks.<hook>
+        must correspond to an emitted literal, and any else/default
+        fallback must be reachable via at least one emitted literal that
+        isn't covered by the explicit arms."""
+        import ast
+        emitted, dynamic = self._collect_emitted_keys()
+        self.assertFalse(
+            dynamic,
+            "Dynamic-key call sites for target hooks (expected all literals): "
+            + str(dynamic)
+        )
+
+        src = (self._repo_root() / "callbacks.py").read_text()
+        tree = ast.parse(src)
+        term_cls = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "TerminalCallbacks":
+                term_cls = node
+                break
+        self.assertIsNotNone(term_cls, "TerminalCallbacks class not found")
+
+        methods = {
+            item.name: item
+            for item in term_cls.body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+
+        for hook in self.TARGET_HOOKS:
+            with self.subTest(hook=hook):
+                self.assertIn(hook, methods, f"{hook} missing from TerminalCallbacks")
+                meth = methods[hook]
+                # First non-self arg is the switch key.
+                args = meth.args.args
+                self.assertGreaterEqual(
+                    len(args), 2,
+                    f"{hook} must take at least one switch arg besides self"
+                )
+                arg_name = args[1].arg
+                literal_keys, has_else, has_default = self._classify_hook_body(
+                    meth.body, arg_name
+                )
+                emit_set = emitted[hook]
+
+                # Invariant 1: every literal handled must be emitted.
+                dead_literals = literal_keys - emit_set
+                self.assertFalse(
+                    dead_literals,
+                    f"{hook}: literal(s) {sorted(dead_literals)} are handled "
+                    f"but no call site emits them "
+                    f"(emitted={sorted(emit_set)})"
+                )
+
+                # Invariant 2: else fallback is reachable only if some
+                # emitted literal isn't covered by the explicit chain.
+                uncovered = emit_set - literal_keys
+                if has_else:
+                    self.assertTrue(
+                        uncovered,
+                        f"{hook}: has an else: fallback branch but every "
+                        f"emitted literal ({sorted(emit_set)}) is already "
+                        f"covered by an explicit arm — else is dead code"
+                    )
+
+                # Invariant 3: dict.get(arg, default) default is reachable
+                # only if some emitted literal isn't a dict key.
+                if has_default:
+                    self.assertTrue(
+                        uncovered,
+                        f"{hook}: has a dict.get(arg, default) with a "
+                        f"non-None default but every emitted literal "
+                        f"({sorted(emit_set)}) is already a dict key — "
+                        f"default is dead code"
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()
