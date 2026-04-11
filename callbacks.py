@@ -17,7 +17,6 @@ Rules (see plan/ui-upgrade-from-llmbox-cli.md § 7):
 
 from __future__ import annotations
 
-import json
 from collections import deque
 from typing import Any, Optional
 

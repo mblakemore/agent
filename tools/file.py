@@ -1,6 +1,5 @@
 """Unified file operations tool — read, write, insert, append, delete, list."""
 
-import os
 from pathlib import Path
 
 # Paths that would create suspiciously deep nesting are probably mistakes
