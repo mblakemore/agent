@@ -1782,7 +1782,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     # Tools that do their own streaming (think) handle
                     # their own console output — don't wrap them in a spinner.
                     _STREAMING_TOOLS = {"think"}
-                    use_spinner = func_name not in _STREAMING_TOOLS
+                    use_spinner = func_name not in _STREAMING_TOOLS and not theme._no_color()
 
                     if use_spinner:
                         tool_status = StreamStatus()
