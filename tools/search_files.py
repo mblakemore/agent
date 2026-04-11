@@ -153,7 +153,11 @@ definition = {
             "needing a follow-up file read. Use this to find patterns in "
             "code, search memory files, review past cycle logs, or locate "
             "specific content across the project. Prefer this over reading "
-            "whole files when you only need to look at a handful of matches."
+            "whole files when you only need to look at a handful of matches. "
+            "IMPORTANT: always pass `path` explicitly when you know the "
+            "directory you want to search. The default `'.'` is the process "
+            "working directory, which in automation mode is usually an empty "
+            "temp dir — not the repo the user asked about."
         ),
         "parameters": {
             "type": "object",
@@ -164,7 +168,13 @@ definition = {
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search in (default: current directory).",
+                    "description": (
+                        "Directory to search in. The default '.' is the "
+                        "process working directory, which in automation "
+                        "mode is usually an empty temp dir — pass the "
+                        "absolute path to the directory you actually want "
+                        "to search whenever you know it."
+                    ),
                     "default": ".",
                 },
                 "glob": {

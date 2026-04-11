@@ -202,6 +202,19 @@ class TestSearchFilesDefinition(unittest.TestCase):
             search_files.definition["function"]["parameters"]["properties"]["context"]["default"],
         )
 
+    def test_definition_warns_about_cwd_default(self):
+        main_desc = search_files.definition["function"]["description"].lower()
+        self.assertIn("automation", main_desc)
+        self.assertIn("working directory", main_desc)
+
+        path_desc = (
+            search_files.definition["function"]["parameters"]
+            ["properties"]["path"]["description"]
+            .lower()
+        )
+        self.assertIn("automation", path_desc)
+        self.assertIn("working directory", path_desc)
+
 
 if __name__ == "__main__":
     unittest.main()
