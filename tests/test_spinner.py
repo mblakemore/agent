@@ -87,6 +87,29 @@ class TestSpinnerInteractivity(unittest.TestCase):
                 m_stdout.write.assert_any_call("hello ")
             status.finish()
 
+    def test_agent_tool_spinner_gated_on_interactive(self):
+        """Regression guard for CICD 0015 / issue #34.
+
+        In non-interactive mode the per-tool StreamStatus.start() call leaves
+        a ``  -> name `` prefix in the log that the on_tool_start callback
+        then duplicates as ``  -> name(args)``. The fix is to gate the
+        spinner on ``theme._no_color()`` at the call site in agent.py so the
+        prefix write never happens when CLEAR_LINE is empty. This test pins
+        the gate so a refactor can't silently regress it.
+        """
+        import re
+
+        agent_src = (Path(__file__).parent.parent / "agent.py").read_text()
+        pattern = re.compile(
+            r"use_spinner\s*=\s*func_name\s+not\s+in\s+_STREAMING_TOOLS"
+            r"\s+and\s+not\s+theme\._no_color\(\)"
+        )
+        self.assertRegex(
+            agent_src, pattern,
+            "agent.py must gate use_spinner on theme._no_color() — "
+            "see plan/CICD/improvements/0015-tool-spinner-noninteractive.md",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
