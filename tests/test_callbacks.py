@@ -116,6 +116,21 @@ class TestTerminalCallbacks(unittest.TestCase):
         self.assertTrue(any("x" * 100 in c for c in captured))
         self.assertFalse(any("truncated" in c for c in captured))
 
+    def test_signal_args_surface_in_output(self):
+        """Cycle 0017 regression: on_cancelled/on_forced_think/on_text_loop_detected
+        must surface every arg they receive — not just print a placeholder.
+        See plan/CICD/improvements/0017-callbacks-surface-signal.md."""
+        cb = callbacks.TerminalCallbacks()
+        captured = []
+        cb._print = lambda text="", end="\n": captured.append(text)
+        cb.on_cancelled("streaming")
+        cb.on_forced_think("exec_command", 3)
+        cb.on_text_loop_detected(5)
+        joined = "\n".join(captured)
+        for token in ("streaming", "exec_command", "3", "5"):
+            self.assertIn(token, joined,
+                          f"token {token!r} missing from hook output: {joined!r}")
+
 
 class TestHookWiring(unittest.TestCase):
     """Confirms that the loop emit sites actually reach the installed cb."""
