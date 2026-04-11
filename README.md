@@ -58,7 +58,7 @@ In the interactive loop, lines starting with `/` are commands:
 | `/context` | Show current context usage as an Aurora-gradient bar with token counts. |
 | `/model` | Pick a different model from the server's `/v1/models` endpoint (summarizer keeps its original). |
 | `/verbose` | Toggle compact vs. full tool-result output. Full results are always logged regardless. |
-| `/tools` | Show the last 20 tool calls with a one-line result preview. |
+| `/tools [N\|all]` | Show buffered tool calls with a one-line result preview. Default `/tools` shows every call in the rolling buffer (50 most recent); `/tools N` shows the last `N`; `/tools all` is an explicit synonym for the default. |
 | `exit` / `quit` | End the session. |
 
 ### Colors
@@ -90,7 +90,7 @@ The loop has a few guardrails worth knowing about:
 agent.py            # Main loop, streaming, context management, checkpointing
 callbacks.py        # UI callback interface — NullCallbacks, TerminalCallbacks, safe_cb
 commands.py         # Slash-command dispatcher (/help, /clear, /verbose, /tools, …)
-tui.py              # Optional prompt_toolkit front-end (--tui)
+tui.py              # prompt_toolkit front-end (default in interactive mode; --no-tui to disable)
 cancel.py           # Double-escape cancel handler
 spinner.py          # Aurora-pulsed waiting/streaming/done visual feedback
 theme.py            # Aurora color palette + single source of ANSI escapes
@@ -146,7 +146,7 @@ Example minimal override:
 - `transformers` + `torch` — Gemma tokenizer (optional; falls back to a character-based estimate if missing)
 - `PyMuPDF` (`fitz`) — PDF extraction, used by `tools/read_pdf.py`
 - `markdownify` — HTML → Markdown conversion, used by `tools/web_fetch.py`
-- `prompt_toolkit` — **optional**, only required for `--tui` mode. Install with `pip install prompt_toolkit`.
+- `prompt_toolkit` — powers the default interactive TUI (bottom toolbar, completion, input history). Technically **optional** — if it isn't installed, interactive mode automatically falls back to a plain `input()` prompt and prints a one-line notice. Pass `--no-tui` to force the plain prompt even when `prompt_toolkit` is available. Install with `pip install prompt_toolkit`.
 - A running OpenAI-compatible LLM server (e.g. `llama-server`)
 - Bash, and a TTY for the cancel handler
 
