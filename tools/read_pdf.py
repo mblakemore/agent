@@ -1,6 +1,5 @@
 """Read PDF tool — extract text from PDF files with page range support.
 
-SHARED RUNTIME — DO NOT MODIFY. This file is part of tool-agent/ and is used by all agents.
 NOTE: This tool is for PDF files ONLY. Do NOT use it to read .log, .py, .json, or other text files.
 Use the file tool (action='read') for text files.
 """

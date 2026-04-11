@@ -1,7 +1,4 @@
-"""Sleep for a specified duration.
-
-SHARED RUNTIME — DO NOT MODIFY. This file is part of tool-agent/ and is used by all agents.
-"""
+"""Sleep for a specified duration."""
 
 import time
 

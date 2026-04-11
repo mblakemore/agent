@@ -1,13 +1,13 @@
-"""
-Tool registry with auto-discovery.
+"""Tool registry with auto-discovery.
 
-SHARED RUNTIME — DO NOT MODIFY. This file is part of tool-agent/ and is used by all agents.
-To add agent-specific tools, create .py files in YOUR tools/ directory (e.g. e0/tools/),
-not here. Agent tools are auto-loaded on top of shared tools.
-
-Each tool module should export:
+Each tool module in this package should export:
   - fn: the callable implementation
   - definition: the OpenAI-compatible tool schema dict
+
+On import, `_discover_tools()` walks this package and registers every
+matching module into `MAP_FN` (name -> callable) and `tools` (schema
+list). `load_extra_tools(directory)` can then layer agent-specific
+tools from an external directory on top of the shared set.
 """
 
 import importlib

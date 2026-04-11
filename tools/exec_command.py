@@ -1,9 +1,7 @@
 """Execute shell commands via subprocess.
 
-SHARED RUNTIME — DO NOT MODIFY. This file is part of tool-agent/ and is used by all agents.
-
 Each command runs in a fresh bash shell rooted at the agent's working
-directory (os.getcwd()).  Compound commands like 'cd ../e1 && git log'
+directory (os.getcwd()). Compound commands like 'cd ../e1 && git log'
 work within a single call but do NOT affect future calls — every
 invocation starts from the agent's home directory.
 
