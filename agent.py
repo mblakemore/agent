@@ -550,7 +550,7 @@ def _format_for_summary(messages):
     return "\n".join(parts)
 
 
-def _summary_request(prompt, log, base_url=None, model=None):
+def _summary_request(prompt, base_url=None, model=None):
     """POST a summary prompt to the given endpoint. Returns summary text.
 
     Args:
@@ -595,7 +595,7 @@ def _condense_summary(text, log=None):
         f"{text}"
     )
     try:
-        condensed = _summary_request(prompt, log)
+        condensed = _summary_request(prompt)
         if len(condensed) > _SUMMARY_MAX_CHARS:
             # Model didn't comply — hard truncate as last resort
             if log:
@@ -659,9 +659,9 @@ def _generate_summary(old_summary, new_messages, log):
     try:
         # Try dedicated summary endpoint first
         if summary_cfg.get("enabled") and summary_url:
-            summary = _summary_request(prompt, log)
+            summary = _summary_request(prompt)
         else:
-            summary = _summary_request(prompt, log, base_url=BASE_URL,
+            summary = _summary_request(prompt, base_url=BASE_URL,
                                        model=_config["llm"]["model"])
         log.info("SUMMARY: %s", summary)
         return summary
@@ -669,7 +669,7 @@ def _generate_summary(old_summary, new_messages, log):
         if summary_url and summary_url != BASE_URL:
             log.warning("Summary endpoint unavailable (%s), falling back to main model", e)
             try:
-                summary = _summary_request(prompt, log, base_url=BASE_URL,
+                summary = _summary_request(prompt, base_url=BASE_URL,
                                            model=_config["llm"]["model"])
                 log.info("SUMMARY (fallback): %s", summary)
                 return summary
@@ -718,12 +718,12 @@ class AsyncSummarizer:
                 prompt = _build_summary_prompt(old_summary_text, msgs)
                 # Try dedicated endpoint, fall back to main model
                 try:
-                    result = _summary_request(prompt, self._log)
+                    result = _summary_request(prompt)
                 except (requests.ConnectionError, requests.Timeout) as e:
                     self._log.warning("Async summary endpoint unavailable (%s), "
                                       "falling back to main model", e)
                     result = _summary_request(
-                        prompt, self._log,
+                        prompt,
                         base_url=BASE_URL,
                         model=self._config["llm"]["model"],
                     )

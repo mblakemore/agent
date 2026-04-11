@@ -21,3 +21,4 @@ Running record of improvement cycles. Each row is one end-to-end loop
 | 0014 | 2026-04-11 | continue-none-dedup | #30 | (pending) | P-continue (--continue in empty dir) | `grep -c "no checkpoint found"` on probe log | 2 | 1 | −1 (−50%) | PASS | cicd/0014-continue-none-dedup |
 | 0014 | 2026-04-11 | dead-imports | #28 | (pending) | AST scan (no live probe) | dead top-level imports across `tool_recovery.py`, `tools/file.py`, `callbacks.py`, `agent.py` | 5 | 0 | −5 (−100%) | PASS | cicd/0014-dead-imports |
 | 0015 | 2026-04-11 | spinner-nontty-dedup | #32 | (pending) | P-count (tests/ count) | `grep -cE '-> [a-z_]+\s+-> [a-z_]+\('` on probe log | 1 | 0 | −1 (−100%) | PASS | cicd/0015-spinner-nontty-dedup |
+| 0016 | 2026-04-11 | summary-request-dead-log | #36 | (pending) | AST scan (no live probe) | dead-param score on `_summary_request` (1 sig + 6 call sites) | 7 | 0 | −7 (−100%) | PASS | cicd/0016-summary-request-dead-log |
