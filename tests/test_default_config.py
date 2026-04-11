@@ -148,5 +148,73 @@ class TestRunAgentSingleDefaults(unittest.TestCase):
             )
 
 
+class TestLoadConfigTopLevel(unittest.TestCase):
+    """Regression guard for CICD cycle 0026: _load_config() must copy top-level
+    scalar keys from config.json into _config, not silently drop them.
+
+    Before this fix, _load_config() only merged dict-valued sections that were
+    already present in _DEFAULT_CONFIG.  Keys like 'log_dir' and 'log_prefix'
+    — which are top-level strings — were always swallowed and could never be
+    overridden by a user's config.json."""
+
+    def _load_with(self, user_cfg: dict):
+        """Write user_cfg to a temp dir's config.json and return _load_config()."""
+        import tempfile
+        import json as _json
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = os.path.join(tmpdir, "config.json")
+            with open(cfg_path, "w") as f:
+                _json.dump(user_cfg, f)
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                return agent._load_config()
+            finally:
+                os.chdir(old_cwd)
+
+    def test_log_prefix_override(self):
+        """log_prefix set in config.json must appear in the loaded config."""
+        cfg = self._load_with({"log_prefix": "mytest"})
+        self.assertEqual(
+            cfg.get("log_prefix"),
+            "mytest",
+            "log_prefix from config.json was silently dropped by _load_config()",
+        )
+
+    def test_log_dir_override(self):
+        """log_dir set in config.json must appear in the loaded config."""
+        cfg = self._load_with({"log_dir": "my_logs"})
+        self.assertEqual(
+            cfg.get("log_dir"),
+            "my_logs",
+            "log_dir from config.json was silently dropped by _load_config()",
+        )
+
+    def test_section_override_still_works(self):
+        """Existing dict-section merging must continue to work alongside the
+        new scalar copy — a dict section override must not be treated as a scalar."""
+        cfg = self._load_with({"llm": {"base_url": "http://testhost:9999"}})
+        self.assertEqual(
+            cfg["llm"]["base_url"],
+            "http://testhost:9999",
+            "dict-section override (llm.base_url) broken after adding scalar copy",
+        )
+        # The scalar-copy loop must not duplicate the dict section as a top-level key
+        self.assertIsInstance(cfg["llm"], dict, "cfg['llm'] must remain a dict")
+
+    def test_unknown_scalar_does_not_overwrite_section(self):
+        """A scalar value for a key that IS a _DEFAULT_CONFIG section must not
+        overwrite the dict — guard 'key not in config' prevents this."""
+        cfg = self._load_with({"llm": "bad_value"})
+        # The scalar "bad_value" should be ignored because "llm" is already in config
+        self.assertIsInstance(
+            cfg["llm"],
+            dict,
+            "A scalar user_config entry with the same name as a DEFAULT section "
+            "must not overwrite the dict",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
