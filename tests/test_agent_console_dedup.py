@@ -30,6 +30,7 @@ BANNED_AT_INFO = [
     '"Executing %d tool call(s)"',
     '"TOOL CALL: %s(%s) [id=%s]"',
     '"TOOL RESULT [%s]: %s"',
+    '"Async summarizer enabled → %s"',
 ]
 
 
