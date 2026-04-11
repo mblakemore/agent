@@ -94,5 +94,59 @@ class TestDefaultConfigSummaryKeys(unittest.TestCase):
             _ = summary[key]  # direct access, must not KeyError
 
 
+class TestRunAgentSingleDefaults(unittest.TestCase):
+    """Regression guard for CICD cycle 0025: run_agent_single's parameter
+    defaults must match _DEFAULT_CONFIG so they stay in sync with the config
+    system and don't mislead direct callers."""
+
+    import inspect as _inspect
+
+    @classmethod
+    def _sig_defaults(cls):
+        sig = cls._inspect.signature(agent.run_agent_single)
+        return {
+            k: v.default
+            for k, v in sig.parameters.items()
+            if v.default is not cls._inspect.Parameter.empty
+        }
+
+    def test_run_agent_single_defaults_match_generation_config(self):
+        """temperature, top_p, top_k, presence_penalty defaults must equal
+        _DEFAULT_CONFIG['generation'] values.
+
+        Before cycle 0025, these were stale pre-refactor literals:
+          temperature=0.7, top_p=0.8, top_k=20, presence_penalty=1.5
+        After cycle 0025, they read from _DEFAULT_CONFIG at function-definition
+        time and must equal 1.0, 0.95, 64, 0.0 respectively."""
+        defaults = self._sig_defaults()
+        gen = agent._DEFAULT_CONFIG["generation"]
+        for key in ("temperature", "top_p", "top_k", "presence_penalty"):
+            self.assertEqual(
+                defaults[key],
+                gen[key],
+                f"run_agent_single default for '{key}' is {defaults[key]!r} but "
+                f"_DEFAULT_CONFIG['generation']['{key}'] is {gen[key]!r} — "
+                f"cycle 0025 regression: the function signature was re-hardcoded.",
+            )
+
+    def test_run_agent_single_defaults_match_context_config(self):
+        """max_tokens and ctx_size defaults must equal _DEFAULT_CONFIG['context']
+        values.
+
+        Before cycle 0025, these were stale literals: max_tokens=4096, ctx_size=32768.
+        After cycle 0025, they read from _DEFAULT_CONFIG and must equal 16384 and
+        114688 respectively."""
+        defaults = self._sig_defaults()
+        ctx = agent._DEFAULT_CONFIG["context"]
+        for key in ("max_tokens", "ctx_size"):
+            self.assertEqual(
+                defaults[key],
+                ctx[key],
+                f"run_agent_single default for '{key}' is {defaults[key]!r} but "
+                f"_DEFAULT_CONFIG['context']['{key}'] is {ctx[key]!r} — "
+                f"cycle 0025 regression: the function signature was re-hardcoded.",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
