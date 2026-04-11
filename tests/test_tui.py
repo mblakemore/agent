@@ -206,7 +206,7 @@ class TestTuiSessionToolbar(unittest.TestCase):
             history=[{"role": "user", "content": "hi"}],
             summary_text=None,
         )
-        with mock.patch.object(token_utils, "_QWEN_TOKENIZER_AVAILABLE", False):
+        with mock.patch.object(token_utils, "_EXACT_TOKENIZER_AVAILABLE", False):
             html = sess._toolbar()
             # HTML object stringifies to its raw input
             self.assertIn("ctx ~", str(html.value))
@@ -218,7 +218,7 @@ class TestTuiSessionToolbar(unittest.TestCase):
             history=[{"role": "user", "content": "hi"}],
             summary_text=None,
         )
-        with mock.patch.object(token_utils, "_QWEN_TOKENIZER_AVAILABLE", True):
+        with mock.patch.object(token_utils, "_EXACT_TOKENIZER_AVAILABLE", True):
             # Invalidate cache so the label re-renders with new flag value
             sess._ctx_cache_key = None
             html = sess._toolbar()

@@ -15,19 +15,19 @@ os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 
 _tokenizer = None
-_QWEN_TOKENIZER_AVAILABLE = False  # kept for backward-compat imports
+_EXACT_TOKENIZER_AVAILABLE = False
 
 try:
     from transformers import AutoTokenizer, logging as tf_logging
     tf_logging.set_verbosity_error()
     _tokenizer = AutoTokenizer.from_pretrained("unsloth/gemma-3-4b-it")
-    _QWEN_TOKENIZER_AVAILABLE = True
+    _EXACT_TOKENIZER_AVAILABLE = True
 except ImportError:
     logging.warning("transformers not installed — run: pip install transformers")
 except Exception as e:
     logging.warning(f"Failed to load Gemma tokenizer: {e}")
 
-if not _QWEN_TOKENIZER_AVAILABLE:
+if not _EXACT_TOKENIZER_AVAILABLE:
     logging.warning("Using character/3.0 fallback for token estimation (conservative)")
 
 # Conservative chars-per-token that errs on overestimating (safer than underestimating)
@@ -35,8 +35,8 @@ _CHARS_PER_TOKEN_FALLBACK = 3.0
 
 
 def count_tokens(text: str) -> int:
-    """Count tokens in text using Qwen tokenizer if available, otherwise fallback estimate."""
-    if _QWEN_TOKENIZER_AVAILABLE and text:
+    """Count tokens using the exact tokenizer if available, otherwise fallback estimate."""
+    if _EXACT_TOKENIZER_AVAILABLE and text:
         return len(_tokenizer.encode(text))
     elif text:
         return max(1, int(len(text) / _CHARS_PER_TOKEN_FALLBACK))
