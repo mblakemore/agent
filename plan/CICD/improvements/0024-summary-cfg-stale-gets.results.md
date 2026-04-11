@@ -2,7 +2,7 @@
 
 - Issue: #52
 - Branch: cicd/0024-summary-cfg-stale-gets
-- PR: (pending)
+- PR: #53
 - Commit range: 0cc5e5c..0cc5e5c
 - Date: 2026-04-11
 
