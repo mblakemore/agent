@@ -1,11 +1,8 @@
-"""
-Token utilities with accurate Gemma 3 tokenizer counting.
-
-SHARED RUNTIME — DO NOT MODIFY. This file is part of tool-agent/ and is used by all agents.
+"""Token utilities with Gemma 3 tokenizer counting.
 
 Uses the Gemma 3 tokenizer (shared by Gemma 4 variants) for precise context
 window management. Falls back to conservative character-based estimation if
-unavailable.
+the tokenizer is unavailable.
 """
 
 import logging
