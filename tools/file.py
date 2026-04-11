@@ -1,9 +1,4 @@
-"""Unified file operations tool — read, write, insert, append, delete, list.
-
-SHARED RUNTIME — DO NOT MODIFY. This file is part of tool-agent/ and is used by all agents.
-To use file operations from your own code, call MAP_FN["file"](action=..., path=..., ...)
-in the agent loop. Do NOT import this file directly or modify its contents.
-"""
+"""Unified file operations tool — read, write, insert, append, delete, list."""
 
 import os
 from pathlib import Path
