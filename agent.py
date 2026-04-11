@@ -717,7 +717,6 @@ class AsyncSummarizer:
         def _worker():
             try:
                 prompt = _build_summary_prompt(old_summary_text, msgs)
-                summary_cfg = self._config.get("summary", {})
                 # Try dedicated endpoint, fall back to main model
                 try:
                     result = _summary_request(prompt, self._log)
@@ -1417,7 +1416,6 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                      start_turn=0, async_summarizer=None):
     """Run the agentic loop with turn limits and wind-down."""
 
-    history_snapshot = len(conversation_history)
     turn = start_turn
 
     # Track repeated tool failures to break infinite loops
