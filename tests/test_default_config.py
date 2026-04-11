@@ -57,5 +57,42 @@ class TestDefaultConfigContextKeys(unittest.TestCase):
         self.assertEqual(agent._DEFAULT_CONFIG["context"]["summary_max_chars"], 3000)
 
 
+class TestDefaultConfigSummaryKeys(unittest.TestCase):
+    """Regression guard: _DEFAULT_CONFIG['summary'] must have all 4 keys so
+    that agent.py can use direct [] access instead of .get() with fallbacks."""
+
+    _EXPECTED_SUMMARY_KEYS = {"base_url", "model", "enabled", "max_wait_on_save"}
+
+    def test_summary_section_keys_in_default_config(self):
+        """All 4 summary section keys must be present in _DEFAULT_CONFIG so that
+        _config['summary']['key'] is always safe — no .get() fallback needed."""
+        actual = set(agent._DEFAULT_CONFIG["summary"].keys())
+        missing = self._EXPECTED_SUMMARY_KEYS - actual
+        self.assertFalse(
+            missing,
+            f"Keys missing from _DEFAULT_CONFIG['summary']: {missing}",
+        )
+
+    def test_load_config_summary_section_always_present(self):
+        """_load_config() must return a config where ['summary'] and all 4 inner
+        keys are directly accessible — no KeyError — even with no config.json."""
+        import tempfile
+        import os
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(tmpdir)
+                cfg = agent._load_config()
+            finally:
+                os.chdir(old_cwd)
+
+        # Direct [] access must not raise
+        summary = cfg["summary"]
+        for key in self._EXPECTED_SUMMARY_KEYS:
+            self.assertIn(key, summary, f"cfg['summary']['{key}'] missing from _load_config() result")
+            _ = summary[key]  # direct access, must not KeyError
+
+
 if __name__ == "__main__":
     unittest.main()
