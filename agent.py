@@ -1259,7 +1259,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             # Fall through to interactive loop if not auto
         else:
             _emit("on_continue_none")
-            log.info("CONTINUE: no checkpoint found, starting fresh")
+            log.debug("CONTINUE: no checkpoint found, starting fresh")
 
     if not continue_mode:
         # Check if the current cycle was already committed — bump if so
