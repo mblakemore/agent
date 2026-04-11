@@ -131,7 +131,7 @@ BASE_URL = _config["llm"]["base_url"]
 _MAX_FULL_LINES = _config["context"]["max_full_lines"]
 _PREVIEW_LINES = _config["context"]["preview_lines"]
 _SUMMARY_THRESHOLD = _config["context"]["summary_threshold"]
-_SUMMARY_MAX_CHARS = _config["context"].get("summary_max_chars", 1500)
+_SUMMARY_MAX_CHARS = _config["context"]["summary_max_chars"]
 _MAX_CONTEXT_MESSAGES = _config["context"]["max_context_messages"]
 
 _LLM_MAX_RETRIES = _config["retry"]["max_retries"]
