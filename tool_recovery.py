@@ -1,12 +1,8 @@
-"""Conversational Tool Recovery
+"""Conversational tool recovery.
 
-SHARED RUNTIME — DO NOT MODIFY. This file is part of tool-agent/ and is used by all agents.
-
-When a tool call fails due to missing/invalid parameters, this module
-attempts to recover by making a lightweight LLM call to get the corrected
-value, then re-executes the tool.
-
-Only triggers on errors — happy path is unchanged.
+When a tool call fails due to missing or invalid parameters, this module
+makes a lightweight LLM call to recover the corrected value and re-executes
+the tool. Only triggers on errors — the happy path is unchanged.
 """
 
 import re
