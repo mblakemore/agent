@@ -267,7 +267,7 @@ if _AVAILABLE:
             # Drop the ~ approximation marker when the real tokenizer is in
             # use. Import lazily so tui.py stays independent of token_utils.
             try:
-                from token_utils import _QWEN_TOKENIZER_AVAILABLE as _exact
+                from token_utils import _EXACT_TOKENIZER_AVAILABLE as _exact
             except Exception:
                 _exact = False
             ctx_label = f"ctx {pct:.0f}%" if _exact else f"ctx ~{pct:.0f}%"
