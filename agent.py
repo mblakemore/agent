@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""
-Agent script with file reading/writing tools.
-Connects to llama-server and executes tool calls in an agentic loop.
+"""Main agent script.
 
-SHARED RUNTIME — DO NOT MODIFY. This file is part of tool-agent/ and is used by all agents.
-Do NOT create symlinks to this directory. Do NOT add __init__.py files here.
-Do NOT change import statements. If you need to extend functionality, create
-tools in your own tools/ directory instead.
+Connects to llama-server and runs the agentic tool-calling loop.
+Entry points: ``run_agent_interactive()`` for interactive use, ``run_agent()``
+for single-prompt runs. See ``README.md`` for CLI flags.
 """
 
 import json
