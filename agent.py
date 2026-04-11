@@ -29,7 +29,7 @@ except ImportError:
     class CircuitBreakerError(Exception):
         pass
 from spinner import StreamStatus
-from token_utils import count_tokens_from_message, count_tools_tokens, _QWEN_TOKENIZER_AVAILABLE
+from token_utils import count_tokens_from_message, count_tools_tokens
 from tools import MAP_FN, tools, load_extra_tools
 from tools.exec_command import cleanup_temp_sessions
 # Import CycleFrequencyTracker for cycle timestamp tracking
@@ -40,7 +40,6 @@ try:
 except Exception:
     _tracker = None
 import theme
-import callbacks as _cbmod
 import commands as _commands
 from callbacks import NullCallbacks, TerminalCallbacks, safe_cb
 from types import SimpleNamespace
