@@ -31,6 +31,7 @@ BANNED_AT_INFO = [
     '"TOOL CALL: %s(%s) [id=%s]"',
     '"TOOL RESULT [%s]: %s"',
     '"Async summarizer enabled → %s"',
+    '"CONTINUE: no checkpoint found, starting fresh"',
 ]
 
 
