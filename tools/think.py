@@ -1,10 +1,4 @@
-"""Think tool — opt-in deep reasoning via a separate API call with thinking enabled.
-
-SHARED RUNTIME — DO NOT MODIFY. This file is part of tool-agent/ and is used by all agents.
-To use the think tool from your own code, call it via MAP_FN["think"](prompt=..., depth=...)
-in the agent loop, or use exec_command to invoke it. Do NOT import this file directly,
-do NOT change its imports, and do NOT create symlinks to tool-agent/.
-"""
+"""Think tool — opt-in deep reasoning via a separate API call with thinking enabled."""
 
 import json
 import logging
