@@ -1412,8 +1412,13 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
 
 
 def run_agent_single(conversation_history: list, summary_state: dict, initial_files,
-                     log: logging.Logger, temperature=0.7, top_p=0.8, top_k=20,
-                     presence_penalty=1.5, max_tokens=4096, ctx_size=32768,
+                     log: logging.Logger,
+                     temperature=_DEFAULT_CONFIG["generation"]["temperature"],
+                     top_p=_DEFAULT_CONFIG["generation"]["top_p"],
+                     top_k=_DEFAULT_CONFIG["generation"]["top_k"],
+                     presence_penalty=_DEFAULT_CONFIG["generation"]["presence_penalty"],
+                     max_tokens=_DEFAULT_CONFIG["context"]["max_tokens"],
+                     ctx_size=_DEFAULT_CONFIG["context"]["ctx_size"],
                      start_turn=0, async_summarizer=None):
     """Run the agentic loop with turn limits and wind-down."""
 
