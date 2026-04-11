@@ -118,6 +118,11 @@ def _load_config():
         for section in config:
             if section in user_config and isinstance(user_config[section], dict):
                 config[section].update(user_config[section])
+        # Copy top-level scalar overrides (e.g. log_dir, log_prefix) that aren't
+        # _DEFAULT_CONFIG sections — the loop above only handles dict-valued sections.
+        for key, val in user_config.items():
+            if key not in config and not isinstance(val, dict):
+                config[key] = val
         return config
     except (json.JSONDecodeError, IOError) as e:
         print(f"Warning: Could not load config.json, using defaults: {e}")
