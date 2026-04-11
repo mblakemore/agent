@@ -560,9 +560,9 @@ def _summary_request(prompt, base_url=None, model=None):
                   Defaults to the summary config, then the main model.
         model:    Override model name. Defaults to summary config, then main.
     """
-    summary_cfg = _config.get("summary", {})
-    url = base_url or summary_cfg.get("base_url") or BASE_URL
-    mdl = model or summary_cfg.get("model") or _config["llm"]["model"]
+    summary_cfg = _config["summary"]
+    url = base_url or summary_cfg["base_url"] or BASE_URL
+    mdl = model or summary_cfg["model"] or _config["llm"]["model"]
 
     request_body = {
         "model": mdl,
@@ -656,11 +656,11 @@ def _generate_summary(old_summary, new_messages, log):
     prompt = _build_summary_prompt(old_summary, new_messages)
     log.info("Generating conversation summary...")
 
-    summary_cfg = _config.get("summary", {})
-    summary_url = summary_cfg.get("base_url")
+    summary_cfg = _config["summary"]
+    summary_url = summary_cfg["base_url"]
     try:
         # Try dedicated summary endpoint first
-        if summary_cfg.get("enabled") and summary_url:
+        if summary_cfg["enabled"] and summary_url:
             summary = _summary_request(prompt)
         else:
             summary = _summary_request(prompt, base_url=BASE_URL,
@@ -761,7 +761,7 @@ class AsyncSummarizer:
     def drain(self, timeout=None):
         """Block until pending summary completes (for checkpoint saves)."""
         if timeout is None:
-            timeout = self._config.get("summary", {}).get("max_wait_on_save", 10)
+            timeout = self._config["summary"]["max_wait_on_save"]
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=timeout)
 
@@ -1214,9 +1214,9 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
 
     # Create async summarizer if enabled and the CPU endpoint is reachable
     _async_summarizer = None
-    summary_cfg = _config.get("summary", {})
-    if summary_cfg.get("enabled"):
-        summary_url = summary_cfg.get("base_url", "http://127.0.0.1:8082")
+    summary_cfg = _config["summary"]
+    if summary_cfg["enabled"]:
+        summary_url = summary_cfg["base_url"]
         try:
             health = requests.get(f"{summary_url}/health", timeout=3)
             if health.status_code == 200:
