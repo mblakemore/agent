@@ -36,6 +36,11 @@ def fn(
     if not search_path.exists():
         return f"Error: path '{path}' does not exist"
 
+    try:
+        resolved = search_path.resolve()
+    except (OSError, RuntimeError):
+        resolved = search_path.absolute()
+
     if context < 0:
         context = 0
     elif context > _MAX_CONTEXT:
@@ -113,12 +118,21 @@ def fn(
             truncated = True
             break
 
-    header = f"[Searched {files_searched} files, {files_matched} matched, {total_matches} results"
+    header = (
+        f"[Searched '{resolved}' "
+        f"({files_searched} files, {files_matched} matched, {total_matches} results)"
+    )
     if truncated:
         header += " (truncated)"
     header += "]\n"
 
     if total_matches == 0:
+        if files_searched == 0:
+            return (
+                header
+                + f"No files were searched under '{resolved}'. "
+                f"If you meant a different directory, pass path= with an absolute path."
+            )
         return header + "No matches found."
 
     if context == 0:
