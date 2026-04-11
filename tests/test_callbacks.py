@@ -17,7 +17,7 @@ class TestNullCallbacks(unittest.TestCase):
         self.assertIsNone(cb.on_session_start({}))
         self.assertIsNone(cb.on_api_retry("err", 1, 3, 2.0))
         self.assertIsNone(cb.on_stream_chunk("x"))
-        self.assertIsNone(cb.on_assistant_text("txt", None))
+        self.assertIsNone(cb.on_assistant_text("txt"))
         self.assertIsNone(cb.on_tool_batch_start(1))
         self.assertIsNone(cb.on_tool_start("t", {}))
         self.assertIsNone(cb.on_tool_result("t", {}, "r", False))
@@ -84,7 +84,7 @@ class TestTerminalCallbacks(unittest.TestCase):
         cb._print = lambda text="", end="\n": emitted.append(text)
         # Chunks go through on_stream_chunk (raw print, bypasses _print)
         cb._last_was_stream = True  # simulate a streamed turn
-        cb.on_assistant_text("full text", None)
+        cb.on_assistant_text("full text")
         # Should not re-emit via _print — the text was already streamed
         self.assertEqual(emitted, [])
         self.assertFalse(cb._last_was_stream)
@@ -93,7 +93,7 @@ class TestTerminalCallbacks(unittest.TestCase):
         cb = callbacks.TerminalCallbacks()
         emitted = []
         cb._print = lambda text="", end="\n": emitted.append(text)
-        cb.on_assistant_text("hello", None)
+        cb.on_assistant_text("hello")
         self.assertEqual(emitted, ["hello"])
 
     def test_verbose_off_compacts_long_results(self):
@@ -197,6 +197,20 @@ class TestHookInterfaceShape(unittest.TestCase):
         self.assertTrue(hasattr(callbacks.NullCallbacks, "on_tool_recovery"))
         self.assertTrue(hasattr(callbacks.TerminalCallbacks, "on_auto_nudge"))
         self.assertTrue(hasattr(callbacks.TerminalCallbacks, "on_tool_recovery"))
+
+    def test_no_dead_params_on_assistant_text_or_context_recovery(self):
+        """Cycle 0018 regression: on_assistant_text and on_context_recovery
+        must not regrow a parameter whose only call-site value is a literal.
+        See plan/CICD/improvements/0018-callbacks-dead-params.md."""
+        import inspect
+        at = inspect.signature(callbacks.TerminalCallbacks.on_assistant_text)
+        self.assertEqual(list(at.parameters.keys()), ["self", "text"])
+        cr = inspect.signature(callbacks.TerminalCallbacks.on_context_recovery)
+        self.assertEqual(list(cr.parameters.keys()), ["self"])
+        at_null = inspect.signature(callbacks.NullCallbacks.on_assistant_text)
+        self.assertEqual(list(at_null.parameters.keys()), ["self", "text"])
+        cr_null = inspect.signature(callbacks.NullCallbacks.on_context_recovery)
+        self.assertEqual(list(cr_null.parameters.keys()), ["self"])
 
 
 class TestSafeCb(unittest.TestCase):
