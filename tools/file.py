@@ -19,9 +19,7 @@ def _resolve_path(path):
         # Detect when the agent passes something like "droid/repos/project/e2/file"
         # which duplicates the cwd structure. Try to resolve it.
         try:
-            resolved = (cwd / p).resolve()
             # Check if the relative path starts with parts of the cwd
-            cwd_str = str(cwd) + "/"
             if path.startswith(str(cwd)[1:]):  # e.g. "droid/repos/..." matching "/droid/repos/..."
                 # Strip the cwd prefix from the relative path
                 stripped = "/" + path
