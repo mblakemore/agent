@@ -303,18 +303,15 @@ class TerminalCallbacks(NullCallbacks):
             self._print("  [hallucinated file read detected, correcting]")
         elif kind == "text_only":
             self._print("  [text-only response stripped, retrying]")
-        else:
-            self._print(f"  [hallucination stripped: {kind}]")
 
     def on_text_loop_detected(self, count: int) -> None:
         self._print(f"  [text loop detected — same output x{count}, stopping]")
 
     def on_overtime(self, reason: str) -> None:
-        mapping = {
-            "text_only":       "[overtime + no tool use — ending cycle]",
-            "repeated_result": "[overtime + repeated result — ending cycle]",
-        }
-        self._print(f"  {mapping.get(reason, f'[overtime: {reason}]')}")
+        if reason == "text_only":
+            self._print("  [overtime + no tool use — ending cycle]")
+        elif reason == "repeated_result":
+            self._print("  [overtime + repeated result — ending cycle]")
 
     def on_context_recovery(self) -> None:
         self._note("[context overflow — trimming and retrying]")
@@ -338,8 +335,6 @@ class TerminalCallbacks(NullCallbacks):
     def on_notice(self, level: str, msg: str) -> None:
         if level == "warn":
             self._print(theme.c(theme.AMBER, f"  {msg}"))
-        elif level == "error":
-            self._print(theme.c(theme.ROSE, f"  {msg}"))
         else:
             self._note(msg)
 
