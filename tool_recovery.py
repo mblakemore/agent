@@ -7,7 +7,6 @@ the tool. Only triggers on errors — the happy path is unchanged.
 
 import re
 import json
-import logging
 
 # ── Recovery pattern registry ─────────────────────────────────────────
 
