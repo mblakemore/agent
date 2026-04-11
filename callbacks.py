@@ -43,9 +43,6 @@ class NullCallbacks:
     def on_session_start(self, info: dict) -> None:
         return None
 
-    def on_session_end(self, info: dict) -> None:
-        return None
-
     def on_cycle_bumped(self, old: int, new: int) -> None:
         return None
 
@@ -69,15 +66,6 @@ class NullCallbacks:
         return None
 
     # --- LLM API lifecycle ---------------------------------------------
-    def on_api_start(self, label: str) -> None:
-        return None
-
-    def on_api_response(self) -> None:
-        return None
-
-    def on_api_done(self) -> None:
-        return None
-
     def on_api_retry(self, error: str, attempt: int, max_attempts: int, delay: float) -> None:
         return None
 
@@ -99,10 +87,6 @@ class NullCallbacks:
         return None
 
     def on_tool_skip(self, name: str, count: int) -> None:
-        return None
-
-    # --- per turn ------------------------------------------------------
-    def on_turn_end(self, turn: int, turn_result: Any) -> None:
         return None
 
     # --- summarization -------------------------------------------------

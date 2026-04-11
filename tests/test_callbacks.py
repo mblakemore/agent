@@ -212,6 +212,64 @@ class TestHookInterfaceShape(unittest.TestCase):
         cr_null = inspect.signature(callbacks.NullCallbacks.on_context_recovery)
         self.assertEqual(list(cr_null.parameters.keys()), ["self"])
 
+    def test_no_dead_null_callbacks_hooks(self):
+        """Cycle 0019 regression: every public hook declared on NullCallbacks
+        must have at least one non-definition call site in the repo source.
+        `check_cancelled` is excluded — it's a query-style hook governed by
+        the callbacks.py:12 'no raise except check_cancelled' rule, not an
+        event hook on the _emit/safe_cb dispatch path.
+        See plan/CICD/improvements/0019-dead-null-hooks.md."""
+        import ast
+        import inspect
+        import os
+        import re
+
+        repo_root = Path(__file__).parent.parent
+        cb_path = repo_root / "callbacks.py"
+        tree = ast.parse(cb_path.read_text())
+
+        hooks = []  # list of (lineno, name)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == "NullCallbacks":
+                for item in node.body:
+                    if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    name = item.name
+                    if name.startswith("_"):
+                        continue
+                    if name == "check_cancelled":
+                        continue
+                    hooks.append((item.lineno, name))
+
+        self.assertTrue(hooks, "NullCallbacks has no hook methods — test is misconfigured")
+
+        dead = []
+        for lineno, name in hooks:
+            pattern = re.compile(r"\b" + re.escape(name) + r"\b")
+            hits = 0
+            for root, _, files in os.walk(repo_root):
+                if os.sep + ".git" in root:
+                    continue
+                for fn in files:
+                    if not fn.endswith(".py"):
+                        continue
+                    path = os.path.join(root, fn)
+                    with open(path) as f:
+                        for i, line in enumerate(f, 1):
+                            if pattern.search(line):
+                                if path == str(cb_path) and i == lineno:
+                                    continue
+                                hits += 1
+            if hits == 0:
+                dead.append(name)
+
+        self.assertEqual(
+            dead, [],
+            f"NullCallbacks declares hook stubs that no call site in the repo "
+            f"ever invokes (via _emit, safe_cb, or direct attribute access): "
+            f"{dead}. Either wire them up or delete the stubs."
+        )
+
 
 class TestSafeCb(unittest.TestCase):
     def test_calls_method_and_returns_value(self):
