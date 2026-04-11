@@ -6,3 +6,4 @@ Running record of PR review decisions. Each row is one end-to-end review cycle
 | R-# | Date | PR | Issue | Verdict | Metric? | Tests | Reason |
 |-----|------|----|----|---------|---------|-------|--------|
 | R-0001 | 2026-04-11 | — | — | NO_TARGET | n/a | 131/131 green | No open PRs in queue; all CICD PRs through #45 (cycle 0020) already merged |
+| R-0002 | 2026-04-11 | #48 | #46 | MERGE | yes — old=0 new=7 (plan targeted 6; extra hit is docstring in count_tokens(), correct and in-scope) | 131/131 | All claims hold; renamed _QWEN_TOKENIZER_AVAILABLE → _EXACT_TOKENIZER_AVAILABLE across 3 files |
