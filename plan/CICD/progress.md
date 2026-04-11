@@ -11,3 +11,4 @@ Running record of improvement cycles. Each row is one end-to-end loop
 | 0004 | 2026-04-11 | file-write-auto-mkdir-advertised | #7 | (pending) | P-impl (word_freq + tests) | tool-call count on probe | 4 | 3 | −1 (−25%) | PASS | cicd/0004-file-write-auto-mkdir-advertised |
 | 0005 | 2026-04-11 | tools-docstring-cleanup | #9 | (pending) | P-bug (no-regression only) | stale `SHARED RUNTIME`/`tool-agent/` hits in tools/*.py | 8 | 0 | −8 (−100%) | PASS | cicd/0005-tools-docstring-cleanup |
 | 0006 | 2026-04-11 | root-docstring-cleanup | #11 | (pending) | smoke-import (no-regression only) | stale `SHARED RUNTIME`/`tool-agent/` hits in `*.py` repo-wide | 3 | 0 | −3 (−100%) | PASS | cicd/0006-root-docstring-cleanup |
+| 0007 | 2026-04-11 | search-files-path-in-header | #13 | (pending) | P-enum from empty tempdir | tool-call count on probe | 4 | 2 | −2 (−50%) | PASS | cicd/0007-search-files-path-in-header |
