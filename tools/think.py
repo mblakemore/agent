@@ -6,12 +6,9 @@ import os
 import re
 import requests
 
+import theme
 from cancel import check_cancelled
 from spinner import StreamStatus
-
-BLUE = "\033[34m"
-DIM = "\033[2m"
-RESET = "\033[0m"
 
 DEPTH_MAX_TOKENS = {
     "brief": 1024,
@@ -83,7 +80,7 @@ def fn(prompt: str, depth: str = "brief", context: str = "") -> str:
     content_parts = []
 
     status = StreamStatus()
-    status.start(f"  {BLUE}[Thinking] ")
+    status.start("  " + theme.c(theme.SKY, "[Thinking] "))
 
     for line in response.iter_lines(decode_unicode=True):
         check_cancelled()
@@ -117,8 +114,8 @@ def fn(prompt: str, depth: str = "brief", context: str = "") -> str:
     if match:
         reasoning = match.group(1).strip()
         answer = raw[match.end():].strip()
-        print(f"  {DIM}[Reasoning]{RESET}")
-        print(f"  {DIM}{reasoning}{RESET}")
+        print("  " + theme.dim("[Reasoning]"))
+        print("  " + theme.dim(reasoning))
         print(f"  [Answer] {answer}")
         log.info("THINK REASONING: %s", reasoning)
         log.info("THINK ANSWER: %s", answer)
