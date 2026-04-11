@@ -87,6 +87,7 @@ _DEFAULT_CONFIG = {
     "cycle": {
         "max_turns": 100,
         "wind_down_turns": 10,
+        "max_text_only": 3,
     },
     "generation": {
         "temperature": 1.0,
@@ -141,6 +142,7 @@ _LLM_JITTER_FACTOR = _config["retry"]["jitter_factor"]
 
 _MAX_TURNS = _config["cycle"]["max_turns"]
 _WIND_DOWN_TURNS = _config["cycle"]["wind_down_turns"]
+_MAX_TEXT_ONLY = _config["cycle"]["max_text_only"]
 
 # Auto-nudge on text-only responses. Off by default; enable with --nudge.
 _NUDGE_ENABLED = False
@@ -1431,7 +1433,6 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # Store hashes of recent text-only responses; bail if too many match.
     _recent_text_hashes = []
     _TEXT_LOOP_THRESHOLD = 3
-    _MAX_TEXT_ONLY = _config.get("cycle", {}).get("max_text_only", 3)
 
     # Disable auto-nudge after 'git push' — the cycle is done.
     _cycle_persisted = False
