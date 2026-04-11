@@ -128,6 +128,62 @@ class TestSearchFilesContextGrouping(unittest.TestCase):
             self.assertIn("b.txt:2: HIT", groups[1])
 
 
+class TestSearchFilesHeaderIdentity(unittest.TestCase):
+
+    def test_header_names_resolved_absolute_path_on_hit(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("HIT\n")
+            result = search_files.fn("HIT", path=d)
+            resolved = str(Path(d).resolve())
+            header, sep, _ = result.partition("]\n")
+            self.assertTrue(sep, "header terminator ']\\n' missing")
+            self.assertIn(f"'{resolved}'", header)
+            self.assertIn("1 files", header)
+            self.assertIn("1 matched", header)
+
+    def test_header_names_resolved_absolute_path_on_miss_with_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("nothing here\n")
+            result = search_files.fn("xyzzy", path=d)
+            resolved = str(Path(d).resolve())
+            header, _, body = result.partition("]\n")
+            self.assertIn(f"'{resolved}'", header)
+            self.assertIn("1 files", header)
+            self.assertIn("0 matched", header)
+            self.assertEqual(body, "No matches found.")
+            self.assertNotIn("No files were searched", body)
+            self.assertNotIn("pass path=", body)
+
+    def test_zero_files_emits_hint_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            # No files written — dir is empty.
+            result = search_files.fn("HIT", path=d)
+            resolved = str(Path(d).resolve())
+            header, _, body = result.partition("]\n")
+            self.assertIn(f"'{resolved}'", header)
+            self.assertIn("0 files", header)
+            self.assertIn("No files were searched under", body)
+            self.assertIn(f"'{resolved}'", body)
+            self.assertIn("pass path=", body)
+
+    def test_header_shape_body_partition_still_works(self):
+        # Cycle 0003's _body() helper partitions on "]\n". Prove that still
+        # works for every shape the new header can take: hit, miss-with-files,
+        # and zero-files.
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("HIT\nmore\n")
+            for pattern in ("HIT", "xyzzy"):
+                result = search_files.fn(pattern, path=d)
+                self.assertIn("]\n", result)
+                body = _body(result)
+                self.assertNotIn("[Searched", body)
+        with tempfile.TemporaryDirectory() as d:
+            result = search_files.fn("HIT", path=d)
+            self.assertIn("]\n", result)
+            body = _body(result)
+            self.assertNotIn("[Searched", body)
+
+
 class TestSearchFilesDefinition(unittest.TestCase):
 
     def test_definition_advertises_context_param(self):
