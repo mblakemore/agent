@@ -2,7 +2,7 @@
 
 - Issue: #56
 - Branch: cicd/0026-config-toplevel-merge
-- PR: (pending)
+- PR: #57
 - Commit range: c449c37
 - Date: 2026-04-11
 
