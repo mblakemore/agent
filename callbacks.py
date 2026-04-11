@@ -306,7 +306,7 @@ class TerminalCallbacks(NullCallbacks):
     # -- guards ---------------------------------------------------------
 
     def on_forced_think(self, tool_name: str, count: int) -> None:
-        self._print(f"  [loop detected — forcing think]")
+        self._print(f"  [loop detected on {tool_name} x{count} — forcing think]")
 
     def on_tool_recovery(self, name: str, attempt: int) -> None:
         self._note(f"[tool recovery: {name} attempt {attempt}]")
@@ -323,7 +323,7 @@ class TerminalCallbacks(NullCallbacks):
             self._print(f"  [hallucination stripped: {kind}]")
 
     def on_text_loop_detected(self, count: int) -> None:
-        self._print(f"  [text loop detected — stopping]")
+        self._print(f"  [text loop detected — same output x{count}, stopping]")
 
     def on_overtime(self, reason: str) -> None:
         mapping = {
@@ -363,7 +363,7 @@ class TerminalCallbacks(NullCallbacks):
         self._print(theme.c(theme.ROSE, msg))
 
     def on_cancelled(self, where: str) -> None:
-        self._print(theme.c(theme.AMBER, f"\n[cancelled]"))
+        self._print(theme.c(theme.AMBER, f"\n[cancelled — {where}]"))
 
     # -- /tools viewer --------------------------------------------------
 
