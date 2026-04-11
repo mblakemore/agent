@@ -1306,7 +1306,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         if files:
             initial_files = files
         conversation_history.append({"role": "user", "content": expanded})
-        log.info("USER: %s", expanded)
+        log.debug("USER: %s", expanded)
         result = run_agent_single(conversation_history, summary_state, initial_files, log,
                                   gen["temperature"], gen["top_p"], gen["top_k"],
                                   gen["presence_penalty"], max_tokens, ctx_size,
@@ -1397,7 +1397,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             initial_files = files
 
         conversation_history.append({"role": "user", "content": expanded})
-        log.info("USER: %s", expanded)
+        log.debug("USER: %s", expanded)
 
         run_agent_single(conversation_history, summary_state, initial_files, log,
                          gen["temperature"], gen["top_p"], gen["top_k"],
@@ -1635,7 +1635,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         conversation_history.append(assistant_msg)
 
         if full_content:
-            log.info("ASSISTANT: %s", full_content)
+            log.debug("ASSISTANT: %s", full_content)
 
         # Detect degenerate text loops (model repeating itself)
         if full_content:
@@ -1727,7 +1727,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         _consecutive_text_only = 0  # reset on successful tool use
 
         # Execute tool calls
-        log.info("Executing %d tool call(s)", len(tool_calls))
+        log.debug("Executing %d tool call(s)", len(tool_calls))
         _emit("on_tool_batch_start", len(tool_calls))
         try:
             with cancellable():
@@ -1780,7 +1780,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             })
                             continue
 
-                    log.info("TOOL CALL: %s(%s) [id=%s]", func_name, json.dumps(func_args), tool_id)
+                    log.debug("TOOL CALL: %s(%s) [id=%s]", func_name, json.dumps(func_args), tool_id)
 
                     # Tools that do their own streaming (think) handle
                     # their own console output — don't wrap them in a spinner.
@@ -1847,7 +1847,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 log.error("Failed to record cycle timestamp: %s", e)
                         log.info("Cycle persist detected (git push) — auto-nudge disabled")
 
-                    log.info("TOOL RESULT [%s]: %s", func_name, result_str)
+                    log.debug("TOOL RESULT [%s]: %s", func_name, result_str)
 
                     # Track repeated tool results (errors and identical results)
                     _result_sig = (func_name, result_str[:100])
