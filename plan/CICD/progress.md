@@ -14,3 +14,4 @@ Running record of improvement cycles. Each row is one end-to-end loop
 | 0007 | 2026-04-11 | search-files-path-in-header | #13 | (pending) | P-enum from empty tempdir | tool-call count on probe | 4 | 2 | −2 (−50%) | PASS | cicd/0007-search-files-path-in-header |
 | 0008 | 2026-04-11 | console-dedup | #15 | (pending) | P-bug (running_mean off-by-one) | `wc -l` of probe log (lines) | 206 | 104 | −102 (−49.5%) | PASS | cicd/0008-console-dedup |
 | 0009 | 2026-04-11 | search-files-path-warning | #17 | (pending) | P-enum from empty tempdir | tool-call count on probe | 2 | 1 | −1 (−50%) | PASS | cicd/0009-search-files-path-warning |
+| 0010 | 2026-04-11 | doc-sync-stale-tui | #19 | (pending) | doc-as-code grep (no-regression only) | stale `--tui` + `/tools` "last 20" refs in README.md/tui.py/agent.py | 6 | 0 | −6 (−100%) | PASS | cicd/0010-doc-sync-stale-tui |
