@@ -1,9 +1,7 @@
 """Web fetch tool — retrieve and convert web pages to readable text.
 
-SHARED RUNTIME — DO NOT MODIFY. This file is part of tool-agent/ and is used by all agents.
-
 Content is saved to a file and a short summary is returned to keep the
-conversation context small.  The agent can then read the file with the
+conversation context small. The agent can then read the file with the
 file tool if it needs the full content.
 """
 
@@ -16,7 +14,7 @@ from markdownify import markdownify
 _MAX_CHARS = 50000
 _TIMEOUT = 30
 _HEADERS = {
-    "User-Agent": "Mozilla/5.0 (compatible; tool-agent/1.0)"
+    "User-Agent": "Mozilla/5.0 (compatible; agent/1.0)"
 }
 # Max chars to include inline in the tool result (keeps context small)
 _INLINE_PREVIEW = 2000

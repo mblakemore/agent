@@ -1,9 +1,5 @@
-"""Search files tool — grep through files for patterns.
+"""Search files tool — grep through files for patterns."""
 
-SHARED RUNTIME — DO NOT MODIFY. This file is part of tool-agent/ and is used by all agents.
-"""
-
-import os
 import re
 from pathlib import Path
 
