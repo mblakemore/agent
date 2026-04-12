@@ -1608,7 +1608,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             }
 
             try:
-                response = _llm_request(log, json=request_body, stream=True, timeout=3600)
+                response = _llm_request(log, json=request_body, stream=True, timeout=(30, 300))
                 log.info("Response status: %d", response.status_code)
                 break  # success — exit the reduction loop
             except ContextOverflowError:

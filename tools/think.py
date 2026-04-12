@@ -76,7 +76,7 @@ def fn(prompt: str, depth: str = "brief", context: str = "") -> str:
             f"{base_url}/v1/chat/completions",
             json=request_body,
             stream=True,
-            timeout=3600,
+            timeout=(30, 300),  # 30s connect, 5min read (per chunk)
         )
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
