@@ -467,7 +467,7 @@ def _expand_file_refs(text):
         if p.is_dir():
             return None, None, f"Error: '{ref}' is a directory, not a file"
 
-        lines = p.read_text().splitlines(True)
+        lines = p.read_text(encoding='utf-8', errors='replace').splitlines(True)
         total = len(lines)
         if total <= _MAX_FULL_LINES or p.name == "agent.md":
             content = "".join(lines)

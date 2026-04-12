@@ -68,7 +68,7 @@ def fn(
 
         files_searched += 1
         try:
-            text = file_path.read_text(errors="ignore")
+            text = file_path.read_text(encoding='utf-8', errors='ignore')
         except Exception:
             continue
 

@@ -13,7 +13,7 @@ def _load_tasks():
     if not p.exists():
         return []
     try:
-        return json.loads(p.read_text())
+        return json.loads(p.read_text(encoding='utf-8', errors='replace'))
     except (json.JSONDecodeError, IOError):
         return []
 
@@ -21,7 +21,7 @@ def _load_tasks():
 def _save_tasks(tasks):
     p = Path(_TASKS_FILE)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(tasks, indent=2) + "\n")
+    p.write_text(json.dumps(tasks, indent=2) + "\n", encoding='utf-8')
 
 
 def _next_id(tasks):
