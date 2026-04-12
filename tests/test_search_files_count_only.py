@@ -1,4 +1,4 @@
-"""Tests for search_files count_only parameter — CICD 0036."""
+"""Tests for search_files count_only parameter — CICD 0036/0038."""
 
 import os
 import sys
@@ -50,6 +50,43 @@ class TestCountOnly(unittest.TestCase):
         self.assertIn("count_only", props)
         self.assertEqual(props["count_only"]["type"], "boolean")
         self.assertFalse(props["count_only"]["default"])
+
+
+class TestCountOnlyNoTruncation(unittest.TestCase):
+    """Regression tests for CICD 0038: count_only must not truncate at _MAX_RESULTS.
+
+    When count_only=True the early-exit cap (_MAX_RESULTS=100) must be skipped
+    so the returned count is accurate even when there are more than 100 matches.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        # Create 110 files with 1 match each → 110 total matches, above _MAX_RESULTS=100.
+        for i in range(110):
+            Path(self.tmpdir, f"file_{i:03d}.py").write_text(
+                f"def test_case_{i}(): pass\n"
+            )
+
+    def test_count_only_above_max_results_returns_real_count(self):
+        """count_only=True must return 110, not 100."""
+        result = fn(pattern="def test_", path=self.tmpdir, count_only=True)
+        self.assertIn("110 results", result,
+                      f"Expected 110 but count_only returned: {result}")
+
+    def test_count_only_above_max_results_no_truncated_label(self):
+        """count_only=True must never emit '(truncated)' regardless of match count."""
+        result = fn(pattern="def test_", path=self.tmpdir, count_only=True)
+        self.assertNotIn("(truncated)", result,
+                         f"count_only should not be truncated: {result}")
+
+    def test_display_mode_still_truncates_at_max(self):
+        """With count_only=False the 100-result cap must still apply."""
+        result = fn(pattern="def test_", path=self.tmpdir,
+                    count_only=False, context=0)
+        self.assertIn("(truncated)", result,
+                      "Display mode should still truncate at _MAX_RESULTS")
+        self.assertIn("100 results", result,
+                      "Display mode count should be capped at 100")
 
 
 if __name__ == "__main__":

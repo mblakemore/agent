@@ -77,7 +77,7 @@ def fn(
         for line_num, line in enumerate(lines, 1):
             if regex.search(line):
                 hit_nums.append(line_num)
-                if total_matches + len(hit_nums) >= _MAX_RESULTS:
+                if not count_only and total_matches + len(hit_nums) >= _MAX_RESULTS:
                     break
 
         if not hit_nums:
@@ -89,7 +89,7 @@ def fn(
             for n in hit_nums:
                 match_lines.append(f"{rel}:{n}: {lines[n - 1].rstrip()}")
             total_matches += len(hit_nums)
-            if total_matches >= _MAX_RESULTS:
+            if not count_only and total_matches >= _MAX_RESULTS:
                 truncated = True
                 break
             continue
@@ -118,7 +118,7 @@ def fn(
             context_groups.append(group)
 
         total_matches += len(hit_nums)
-        if total_matches >= _MAX_RESULTS:
+        if not count_only and total_matches >= _MAX_RESULTS:
             truncated = True
             break
 
