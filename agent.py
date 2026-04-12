@@ -1196,6 +1196,13 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     _cb = cb if cb is not None else TerminalCallbacks(verbose=verbose)
     _cb_log = log
 
+    # Wire think tool's output through the callback system (D12 compliance).
+    # _emit("on_stream_chunk", text) routes through safe_cb so a buggy UI hook
+    # can never crash the think tool.  The default (_output = print) is kept
+    # as a safe fallback for standalone/test use outside the agent loop.
+    import tools.think as _think_mod
+    _think_mod._output = lambda text: _emit("on_stream_chunk", text)
+
     model_name = _config["llm"]["model"]
     ok, detail = _check_api_health(BASE_URL)
 
