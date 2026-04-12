@@ -56,8 +56,40 @@ echo "==> Cloning ${REPO_URL} to ${CLONE_DIR}"
 git clone "${REPO_URL}" "${CLONE_DIR}"
 cd "${CLONE_DIR}"
 
+# ── Bootstrap dependencies ────────────────────────────────────────────
+# Attempt to install project dependencies so the agent has a working
+# test environment.  Failures are non-fatal — the agent can still run.
+echo "==> Bootstrapping dependencies"
+if [[ -f "requirements.txt" || -f "setup.py" || -f "pyproject.toml" || -f "setup.cfg" ]]; then
+    python3 -m venv "${SESSION_DIR}/.venv" 2>/dev/null && {
+        # shellcheck disable=SC1091
+        . "${SESSION_DIR}/.venv/bin/activate"
+        pip install --quiet --upgrade pip 2>/dev/null || true
+        [[ -f "requirements-dev.txt" ]] && pip install --quiet -r requirements-dev.txt 2>/dev/null || true
+        [[ -f "requirements.txt" ]]     && pip install --quiet -r requirements.txt 2>/dev/null || true
+        pip install --quiet -e ".[dev]" 2>/dev/null || pip install --quiet -e . 2>/dev/null || true
+        pip install --quiet pytest 2>/dev/null || true
+        echo "    Python venv: ${SESSION_DIR}/.venv"
+    } || echo "    (venv creation failed — skipping Python deps)"
+elif [[ -f "package.json" ]]; then
+    npm install --quiet 2>/dev/null || echo "    (npm install failed)"
+elif [[ -f "go.mod" ]]; then
+    go mod download 2>/dev/null || echo "    (go mod download failed)"
+elif [[ -f "Cargo.toml" ]]; then
+    cargo fetch 2>/dev/null || echo "    (cargo fetch failed)"
+else
+    echo "    (no recognized dependency file — skipping)"
+fi
+
 # ── Build override message ────────────────────────────────────────────
 # Tell the agent the real paths so it doesn't use template placeholders.
+# If a venv was created, export its PATH so agent subprocesses use it
+VENV_NOTE=""
+if [[ -d "${SESSION_DIR}/.venv" ]]; then
+    export PATH="${SESSION_DIR}/.venv/bin:${PATH}"
+    VENV_NOTE="  Python venv: ${SESSION_DIR}/.venv (activated — pytest and deps available)"
+fi
+
 OVERRIDE="$(cat <<EOVERRIDE
 NOTE — Session paths (use these instead of any template placeholders):
   Target repo:   ${CLONE_DIR}
@@ -68,6 +100,7 @@ NOTE — Session paths (use these instead of any template placeholders):
   Sandbox boundary: ${SESSION_DIR} — all paths must be under here or under ${WORKSPACE}/CICD.
   Repo name: ${REPO_NAME}
   Repo URL:  ${REPO_URL}
+${VENV_NOTE}
 EOVERRIDE
 )"
 
