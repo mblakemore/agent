@@ -77,5 +77,36 @@ class TestBlockedFilenames(unittest.TestCase):
             self.assertTrue(target.exists(), "blocked delete must not remove the file")
 
 
+class TestFileReadEncoding(unittest.TestCase):
+    """open() in file.py must use encoding='utf-8' so reads never raise UnicodeDecodeError."""
+
+    def test_read_non_utf8_file_returns_content_not_error(self):
+        """Reading a file with non-UTF-8 bytes must succeed (with replacement chars),
+        not raise UnicodeDecodeError wrapped in an 'Error (read):' message."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "latin1.txt"
+            # Write raw bytes: 'hello \xff world' — \xff is invalid UTF-8
+            target.write_bytes(b"hello \xff world\n")
+            result = file_tool.fn(action="read", path=str(target))
+            self.assertFalse(
+                result.startswith("Error"),
+                msg=f"reading a non-UTF-8 file should not return an error, got: {result!r}",
+            )
+            # The replacement character U+FFFD should appear in place of \xff
+            self.assertIn("\ufffd", result,
+                          msg="invalid byte should be replaced with U+FFFD, not crash")
+
+    def test_read_utf8_file_with_non_ascii_works_correctly(self):
+        """Valid UTF-8 files with non-ASCII content (e.g. accented chars, emoji) must
+        read back intact."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "utf8.txt"
+            content = "café ⋆ résumé\n"
+            target.write_text(content, encoding="utf-8")
+            result = file_tool.fn(action="read", path=str(target))
+            self.assertIn("café", result, msg="accented chars must survive round-trip")
+            self.assertIn("⋆", result, msg="Unicode star (U+22C6) must survive round-trip")
+
+
 if __name__ == "__main__":
     unittest.main()

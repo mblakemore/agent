@@ -47,3 +47,4 @@ Running record of improvement cycles. Each row is one end-to-end loop
 | 0039 | 2026-04-12 | think-raw-print | #81 | (pending) | static grep | non-comment `print()` call count in `tools/think.py` (D12 violation) | 4 | 0 | −4 (−100%) | PASS | cicd/0039-think-raw-print |
 | 0040 | 2026-04-12 | think-iter-utf8 | #83 | #84 | static grep | `grep -c 'iter_lines(decode_unicode=True)' tools/think.py` (Latin-1 decode in think SSE loop) | 1 | 0 | −1 (−100%) | PASS | cicd/0040-think-iter-utf8 |
 | 0041 | 2026-04-12 | search-files-count-only-context | #85 | (pending) | static grep | `grep -c 'if count_only:' tools/search_files.py` (context window bypass guard) | 1 | 2 | +1 (+100%) | PASS | cicd/0041-search-files-count-only-context |
+| 0042 | 2026-04-12 | file-open-encoding | #87 | (pending) | static grep | `grep -c "encoding='utf-8'" tools/file.py` (open() calls with explicit encoding) | 0 | 7 | +7 (+∞%) | PASS | cicd/0042-file-open-encoding |
