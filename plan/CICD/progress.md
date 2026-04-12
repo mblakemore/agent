@@ -46,3 +46,4 @@ Running record of improvement cycles. Each row is one end-to-end loop
 | 0038 | 2026-04-12 | count-only-truncation | #79 | (pending) | P-count probe | `search_files(count_only=True)` result count (truncated-100 vs real-182) | 100 (wrong) | 182 (correct) | +82 (+82%) | PASS | cicd/0038-count-only-truncation |
 | 0039 | 2026-04-12 | think-raw-print | #81 | (pending) | static grep | non-comment `print()` call count in `tools/think.py` (D12 violation) | 4 | 0 | −4 (−100%) | PASS | cicd/0039-think-raw-print |
 | 0040 | 2026-04-12 | think-iter-utf8 | #83 | #84 | static grep | `grep -c 'iter_lines(decode_unicode=True)' tools/think.py` (Latin-1 decode in think SSE loop) | 1 | 0 | −1 (−100%) | PASS | cicd/0040-think-iter-utf8 |
+| 0041 | 2026-04-12 | search-files-count-only-context | #85 | (pending) | static grep | `grep -c 'if count_only:' tools/search_files.py` (context window bypass guard) | 1 | 2 | +1 (+100%) | PASS | cicd/0041-search-files-count-only-context |
