@@ -31,7 +31,7 @@ def _get_base_url():
     try:
         config_path = os.path.join(os.getcwd(), "config.json")
         if os.path.exists(config_path):
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8", errors="replace") as f:
                 cfg = json.load(f)
             return cfg.get("llm", {}).get("base_url", "http://127.0.0.1:8080")
     except Exception:

@@ -114,7 +114,7 @@ def _load_config():
         return config
 
     try:
-        with open(config_path, "r") as f:
+        with open(config_path, "r", encoding="utf-8", errors="replace") as f:
             user_config = json.load(f)
         for section in config:
             if section in user_config and isinstance(user_config[section], dict):
@@ -996,7 +996,7 @@ def _save_checkpoint(conversation_history, summary_state, turn, initial_files):
             "initial_files": initial_files,
         }
         os.makedirs(os.path.dirname(_CHECKPOINT_PATH), exist_ok=True)
-        with open(_CHECKPOINT_PATH, "w") as f:
+        with open(_CHECKPOINT_PATH, "w", encoding="utf-8") as f:
             json.dump(checkpoint, f)
     except Exception:
         pass  # best-effort, don't crash the agent
@@ -1007,7 +1007,7 @@ def _load_checkpoint():
     if not os.path.exists(_CHECKPOINT_PATH):
         return None
     try:
-        with open(_CHECKPOINT_PATH) as f:
+        with open(_CHECKPOINT_PATH, encoding="utf-8", errors="replace") as f:
             cp = json.load(f)
         return (
             cp["conversation_history"],
@@ -1047,7 +1047,7 @@ def _auto_increment_cycle(log):
         return
 
     try:
-        with open(state_path) as f:
+        with open(state_path, encoding="utf-8", errors="replace") as f:
             state = json.load(f)
         cycle = int(state.get("cycle", 0))
         if cycle <= 0:
@@ -1077,7 +1077,7 @@ def _auto_increment_cycle(log):
         if cycle <= highest_committed:
             new_cycle = highest_committed + 1
             state["cycle"] = new_cycle
-            with open(state_path, "w") as f:
+            with open(state_path, "w", encoding="utf-8") as f:
                 json.dump(state, f, indent=2)
                 f.write("\n")
 
@@ -1085,11 +1085,11 @@ def _auto_increment_cycle(log):
             focus_path = os.path.join(os.getcwd(), "state", "focus.json")
             if os.path.exists(focus_path):
                 try:
-                    with open(focus_path) as f:
+                    with open(focus_path, encoding="utf-8", errors="replace") as f:
                         focus = json.load(f)
                     if int(focus.get("cycle", 0)) <= cycle:
                         focus["cycle"] = new_cycle
-                        with open(focus_path, "w") as f:
+                        with open(focus_path, "w", encoding="utf-8") as f:
                             json.dump(focus, f, indent=2)
                             f.write("\n")
                 except Exception:
@@ -1854,7 +1854,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         # Record cycle timestamp automatically
                         if _tracker:
                             try:
-                                with open(_state_path("current-state.json")) as _sf:
+                                with open(_state_path("current-state.json"), encoding="utf-8", errors="replace") as _sf:
                                     _cycle = json.load(_sf).get("cycle", 0)
                             except Exception:
                                 _cycle = 0
