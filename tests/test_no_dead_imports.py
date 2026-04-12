@@ -67,6 +67,26 @@ def _dead_top_level_imports(rel_path: str):
     return sorted(dead)
 
 
+class TestNoShadowingLocalImports(unittest.TestCase):
+    """Regression guard for CICD cycle 0030 — agent.py must not re-import
+    stdlib names that are already available at module scope."""
+
+    def test_no_shadowing_local_imports_in_agent_py(self):
+        """agent.py must not contain local imports that shadow module-level names."""
+        src = (REPO_ROOT / "agent.py").read_text()
+        bad_patterns = [
+            "import re as _re",
+            "import hashlib as _hl",
+            "from pathlib import Path as _P",
+        ]
+        for pattern in bad_patterns:
+            self.assertNotIn(
+                pattern, src,
+                f"agent.py still contains redundant local import: {pattern!r} "
+                f"(cycle 0030 regression)"
+            )
+
+
 class TestNoDeadTopLevelImports(unittest.TestCase):
     def test_no_dead_imports_in_guarded_files(self):
         offenders = []
