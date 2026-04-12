@@ -141,6 +141,11 @@ class NullCallbacks:
 _COMPACT_LIMIT_DEFAULT = 400  # chars shown per tool result when compact
 
 
+def _nplural(n: int, singular: str, plural: str) -> str:
+    """Return 'N singular' when n==1, else 'N plural' — proper English count phrase."""
+    return f"{n} {singular}" if n == 1 else f"{n} {plural}"
+
+
 class TerminalCallbacks(NullCallbacks):
     """Plain-terminal UI. Aurora colors via theme.py, NO_COLOR-safe.
 
@@ -226,7 +231,7 @@ class TerminalCallbacks(NullCallbacks):
         self._print(f"\n{bar}\n{title}\n{bar}")
 
     def on_repeat_done(self, runs: int) -> None:
-        self._print(f"\n\nStopped after {runs} run(s).")
+        self._print(f"\n\nStopped after {_nplural(runs, 'run', 'runs')}.")
 
     # -- user input -----------------------------------------------------
 
@@ -260,7 +265,7 @@ class TerminalCallbacks(NullCallbacks):
     # -- tool loop ------------------------------------------------------
 
     def on_tool_batch_start(self, count: int) -> None:
-        self._print(theme.dim(f"\nExecuting {count} tool call(s)..."))
+        self._print(theme.dim(f"\nExecuting {_nplural(count, 'tool call', 'tool calls')}..."))
 
     def on_tool_start(self, name: str, args: dict) -> None:
         self._print(f"{theme.CLEAR_LINE}  -> {name}({self._compact_args(args)})")
@@ -354,11 +359,11 @@ class TerminalCallbacks(NullCallbacks):
         total = len(self.tool_history)
         if limit is None:
             tail = list(self.tool_history)
-            header = f"All {total} tool call(s):"
+            header = f"All {_nplural(total, 'tool call', 'tool calls')}:"
         else:
             shown = min(limit, total)
             tail = list(self.tool_history)[-limit:]
-            header = f"Last {shown} of {total} tool call(s):"
+            header = f"Last {shown} of {_nplural(total, 'tool call', 'tool calls')}:"
         lines = [theme.c(theme.SKY, header)]
         for i, (name, args, result, is_error) in enumerate(tail, 1):
             marker = theme.c(theme.ROSE, "✗") if is_error else theme.c(theme.MINT, "✓")

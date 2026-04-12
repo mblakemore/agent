@@ -1747,7 +1747,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         _consecutive_text_only = 0  # reset on successful tool use
 
         # Execute tool calls
-        log.debug("Executing %d tool call(s)", len(tool_calls))
+        log.debug("Executing %d tool calls", len(tool_calls))
         _emit("on_tool_batch_start", len(tool_calls))
         try:
             with cancellable():

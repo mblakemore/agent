@@ -27,7 +27,7 @@ AGENT_PY = os.path.join(REPO_ROOT, "agent.py")
 BANNED_AT_INFO = [
     '"USER: %s"',
     '"ASSISTANT: %s"',
-    '"Executing %d tool call(s)"',
+    '"Executing %d tool calls"',
     '"TOOL CALL: %s(%s) [id=%s]"',
     '"TOOL RESULT [%s]: %s"',
     '"Async summarizer enabled → %s"',
