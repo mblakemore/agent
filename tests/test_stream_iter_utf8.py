@@ -1,19 +1,22 @@
-"""Regression guards for stream UTF-8 decoding fix (cycle 0037).
+"""Regression guards for stream UTF-8 decoding fix (cycles 0037 and 0040).
 
 Root cause (pre-fix): `response.iter_lines(decode_unicode=True)` in agent.py
-decoded SSE stream bytes using `requests`' internal logic, which defaults to
-ISO-8859-1 (Latin-1) for `text/*` Content-Types with no explicit charset.
-`llama.cpp` returns `Content-Type: text/event-stream` without a charset, so
-every multi-byte UTF-8 sequence (emojis, CJK, non-Latin scripts) was decoded
-as Latin-1 — producing garbage like `ð\x9f\x8c\x9f` instead of 🌟.
+and tools/think.py decoded SSE stream bytes using `requests`' internal logic,
+which defaults to ISO-8859-1 (Latin-1) for `text/*` Content-Types with no
+explicit charset.  `llama.cpp` returns `Content-Type: text/event-stream`
+without a charset, so every multi-byte UTF-8 sequence (emojis, CJK,
+non-Latin scripts) was decoded as Latin-1 — producing garbage like
+`ð\x9f\x8c\x9f` instead of 🌟.
 
 Fix: `iter_lines()` (raw bytes) + manual `raw_line.decode('utf-8')`.
 
 These tests guard that:
-1. `decode_unicode=True` is no longer in agent.py (static).
-2. The manual UTF-8 decode pattern is present (static).
-3. UTF-8 bytes decoded with UTF-8 preserve emojis (behavioral).
-4. The same bytes decoded with Latin-1 produce the corruption (documents the bug).
+1. `decode_unicode=True` is no longer in agent.py (static) [cycle 0037].
+2. The manual UTF-8 decode pattern is present in agent.py (static) [cycle 0037].
+3. `decode_unicode=True` is no longer in tools/think.py (static) [cycle 0040].
+4. The manual UTF-8 decode pattern is present in tools/think.py (static) [cycle 0040].
+5. UTF-8 bytes decoded with UTF-8 preserve emojis (behavioral).
+6. The same bytes decoded with Latin-1 produce the corruption (documents the bug).
 """
 
 import sys
@@ -24,6 +27,7 @@ _REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
 AGENT_PY = _REPO_ROOT / "agent.py"
+THINK_PY = _REPO_ROOT / "tools" / "think.py"
 
 
 class TestStreamIterUtf8(unittest.TestCase):
@@ -53,6 +57,33 @@ class TestStreamIterUtf8(unittest.TestCase):
             "agent.py must manually decode SSE stream lines as UTF-8 "
             "(.decode('utf-8') or .decode(\"utf-8\") expected). "
             "See plan/CICD/improvements/0037-stream-iter-utf8.md.",
+        )
+
+    def test_think_no_decode_unicode(self):
+        """Static: `iter_lines(decode_unicode=True)` must not appear in tools/think.py."""
+        src = THINK_PY.read_text(encoding="utf-8")
+        count = src.count("iter_lines(decode_unicode=True)")
+        self.assertEqual(
+            count,
+            0,
+            f"iter_lines(decode_unicode=True) still appears {count} time(s) in tools/think.py. "
+            "This causes UTF-8 emojis to be corrupted when llama.cpp returns "
+            "Content-Type: text/event-stream without a charset — requests defaults "
+            "to ISO-8859-1 for text/* types, mangling multi-byte sequences. "
+            "Fix: use iter_lines() and decode manually as UTF-8. "
+            "See plan/CICD/improvements/0040-think-iter-utf8.md.",
+        )
+
+    def test_think_has_utf8_decode(self):
+        """Static: manual UTF-8 decode pattern must be present in tools/think.py."""
+        src = THINK_PY.read_text(encoding="utf-8")
+        # Accept either .decode('utf-8') or .decode("utf-8")
+        has_decode = '.decode("utf-8")' in src or ".decode('utf-8')" in src
+        self.assertTrue(
+            has_decode,
+            "tools/think.py must manually decode SSE stream lines as UTF-8 "
+            "(.decode('utf-8') or .decode(\"utf-8\") expected). "
+            "See plan/CICD/improvements/0040-think-iter-utf8.md.",
         )
 
     def test_utf8_bytes_round_trip(self):

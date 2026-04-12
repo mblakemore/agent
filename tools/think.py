@@ -88,7 +88,8 @@ def fn(prompt: str, depth: str = "brief", context: str = "") -> str:
     status = StreamStatus()
     status.start("  " + theme.c(theme.SKY, "[Thinking] "))
 
-    for line in response.iter_lines(decode_unicode=True):
+    for raw_line in response.iter_lines():
+        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
         check_cancelled()
         if not line or not line.startswith("data: "):
             continue
