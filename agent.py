@@ -780,6 +780,33 @@ class AsyncSummarizer:
 
 # ── Context window management ─────────────────────────────────────────
 
+def _build_context_footnote(summary_text, initial_files):
+    """Build the synthetic context-restoration user message.
+
+    Returns a dict suitable for insertion at the start of the messages list
+    when some history has been dropped from the context window.  Always
+    includes the TOOL RULE hint so agents in condensed-summary sessions keep
+    the guidance about how to write JSON files.
+
+    Args:
+        summary_text: The current progress-summary string (non-empty).
+        initial_files: Optional string of initial file content to prepend.
+    """
+    parts = []
+    if initial_files:
+        parts.append(initial_files)
+    parts.append(f"Progress summary of work done so far:\n{summary_text}")
+    parts.append(
+        f"IMPORTANT: Your working directory is '{os.getcwd()}'. "
+        "Use relative paths (e.g. '.agent/state/file.json') — do not cd elsewhere. "
+        "Continue where you left off. Do not repeat already-completed steps. "
+        "TOOL RULE: To write JSON files, use exec_command with heredoc "
+        "(e.g. cat > file.json << 'EOF'\\n...\\nEOF). "
+        "Do NOT use the file tool with action='write' for JSON content."
+    )
+    return {"role": "user", "content": "\n\n".join(parts)}
+
+
 def _build_context(conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                     max_messages_override=None):
     """Build the context window dynamically based on token budget.
@@ -807,19 +834,7 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
     context_msg = None
     context_tokens = 0
     if summary_state["text"]:
-        parts = []
-        if initial_files:
-            parts.append(initial_files)
-        parts.append(f"Progress summary of work done so far:\n{summary_state['text']}")
-        parts.append(
-            f"IMPORTANT: Your working directory is '{os.getcwd()}'. "
-            "Use relative paths (e.g. '.agent/state/file.json') — do not cd elsewhere. "
-            "Continue where you left off. Do not repeat already-completed steps. "
-            "TOOL RULE: To write JSON files, use exec_command with heredoc "
-            "(e.g. cat > file.json << 'EOF'\\n...\\nEOF). "
-            "Do NOT use the file tool with action='write' for JSON content."
-        )
-        context_msg = {"role": "user", "content": "\n\n".join(parts)}
+        context_msg = _build_context_footnote(summary_state["text"], initial_files)
         context_tokens = _estimate_tokens(context_msg)
 
         # If summary takes a large share of the budget, reduce message count
@@ -830,16 +845,7 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
             log.warning("Summary exceeds 80%% of budget (%d/%d tokens) — condensing", context_tokens, budget)
             summary_state["text"] = _condense_summary(summary_state["text"], log)
             # Rebuild context_msg with condensed summary
-            parts = []
-            if initial_files:
-                parts.append(initial_files)
-            parts.append(f"Progress summary of work done so far:\n{summary_state['text']}")
-            parts.append(
-                f"IMPORTANT: Your working directory is '{os.getcwd()}'. "
-                "Use relative paths (e.g. '.agent/state/file.json') — do not cd elsewhere. "
-                "Continue where you left off. Do not repeat already-completed steps."
-            )
-            context_msg = {"role": "user", "content": "\n\n".join(parts)}
+            context_msg = _build_context_footnote(summary_state["text"], initial_files)
             context_tokens = _estimate_tokens(context_msg)
             log.info("Condensed summary, context now %d tokens", context_tokens)
         if context_tokens > budget * 0.5:
