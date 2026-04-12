@@ -103,7 +103,6 @@ class TestHandleCommand(unittest.TestCase):
 
     def test_tools_calls_render_tools(self):
         ctx = _make_ctx()
-        ctx.cb._print = lambda *a, **kw: None
         ctx.cb.on_tool_result("file", {"action": "read"}, "data", False)
         buf = io.StringIO()
         with redirect_stdout(buf):

@@ -46,7 +46,6 @@ def _count_entries(plain_text: str) -> int:
 
 def _populate(cb: callbacks.TerminalCallbacks, n: int) -> None:
     """Record `n` successful tool results on the callbacks' history buffer."""
-    cb._print = lambda *a, **kw: None  # silence the compact-mode prints
     for i in range(n):
         cb.on_tool_result(f"tool{i}", {"idx": i}, f"result-{i}", False)
 
