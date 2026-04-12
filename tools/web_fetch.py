@@ -68,7 +68,7 @@ def fn(url: str) -> str:
     save_dir = os.path.join(os.getcwd(), ".agent", "state", "fetched")
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, f"{url_hash}.md")
-    with open(save_path, "w") as f:
+    with open(save_path, "w", encoding="utf-8") as f:
         f.write(f"# Fetched: {url}\n\n{text}")
 
     total_chars = len(text)
