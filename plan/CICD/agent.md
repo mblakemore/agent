@@ -36,6 +36,16 @@ Never commit to `main` directly.
 
 ---
 
+## Efficiency Rules
+
+Every turn costs time and context. Minimize turns by:
+
+1. **Batch commands.** Combine related shell commands with `&&` in a single `exec_command` call instead of one command per turn.
+2. **Read, don't grep repeatedly.** When investigating a specific file, use `file(action="read", path="...", start_line=N, end_line=M)` to read the relevant section once. Do NOT run 5+ separate `grep` commands against the same file — that wastes turns. One grep to find the line number, then one read to get context.
+3. **Use `search_files` for codebase-wide searches.** It searches all files at once — faster than multiple `grep` commands.
+4. **Run tests once.** If tests pass, they pass. Do not re-run the same test suite more than once to "make sure." Mark the verification as done in `task_tracker` and move on.
+5. **Decide fast.** PERCEIVE + REFLECT + DECIDE should take ≤10 turns total. If you're past turn 10 without a DECIDE, pick the best candidate you have and go.
+
 ## Task Tracking
 
 Use `task_tracker` throughout the cycle to track progress. This prevents repeating work and survives context window resets.
