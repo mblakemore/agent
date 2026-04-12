@@ -2,7 +2,7 @@
 
 - Issue: #68
 - Branch: cicd/0032-build-context-footnote-dedup
-- PR: (pending)
+- PR: #69 (draft)
 - Commit range: 2b0bb50..HEAD
 - Date: 2026-04-12
 
