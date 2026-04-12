@@ -2166,13 +2166,13 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 # The assistant message is right before the tool responses
                 _to_remove = 1 + _garbled_count  # assistant + tool error responses
                 conversation_history[-_to_remove:] = []
-                run_agent._garble_retries = _garble_retries + 1
+                run_agent_single._garble_retries = _garble_retries + 1
                 continue  # retry the same turn
             else:
                 log.warning("Garble retry exhausted — proceeding with error responses")
-                run_agent._garble_retries = 0
+                run_agent_single._garble_retries = 0
         else:
-            run_agent._garble_retries = 0
+            run_agent_single._garble_retries = 0
 
         # Save checkpoint after each turn so -c can resume from here
         if _async_summarizer:
