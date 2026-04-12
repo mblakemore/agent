@@ -94,7 +94,11 @@ def fn(
                 break
             continue
 
-        # context > 0: build merged windows
+        # context > 0: build merged windows — skip entirely when count_only
+        if count_only:
+            total_matches += len(hit_nums)
+            continue
+
         total = len(lines)
         windows: list[list[int]] = []
         for n in hit_nums:
