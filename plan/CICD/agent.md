@@ -76,6 +76,15 @@ Then `gh issue create --label bug --label cicd --body "..."` with: Symptom, Repr
 
 Rank candidates from: open issues, this cycle's probe findings, sketched plan items. Score by **impact x tractability** (1-5 each). Age boost: +1 impact per week open (cap +3). Pick highest score; ties go to clearest metric.
 
+**If all existing issues are resolved or not reproducible**, look for:
+- Missing test coverage for recently-added features (compare `git log --oneline -20` vs `tests/`)
+- Performance improvements (e.g. redundant API calls, slow test setup)
+- Hardcoded values that should be configurable
+- Dead code, unused imports, stale comments referencing removed logic
+- New tool capabilities or enhanced error messages
+
+File a new issue for the best candidate and proceed to DECIDE. Do not conclude the cycle without attempting at least one implementation.
+
 ## Phase 4 — DECIDE
 
 State in one paragraph: **Issue** (number), **What** (change), **Why** (motivation), **Metric** (specific number to move), **Done-when** (threshold).

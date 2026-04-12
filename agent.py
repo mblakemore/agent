@@ -89,6 +89,7 @@ _DEFAULT_CONFIG = {
         "max_turns": 100,
         "wind_down_turns": 10,
         "max_text_only": 3,
+        "max_total_nudges": 6,
     },
     "generation": {
         "temperature": 1.0,
@@ -149,6 +150,7 @@ _LLM_JITTER_FACTOR = _config["retry"]["jitter_factor"]
 _MAX_TURNS = _config["cycle"]["max_turns"]
 _WIND_DOWN_TURNS = _config["cycle"]["wind_down_turns"]
 _MAX_TEXT_ONLY = _config["cycle"]["max_text_only"]
+_MAX_TOTAL_NUDGES = _config["cycle"]["max_total_nudges"]
 
 # Auto-nudge on text-only responses. Off by default; enable with --nudge.
 _NUDGE_ENABLED = False
@@ -1470,10 +1472,19 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # before treating it as a real stop signal.
     _consecutive_text_only = 0
 
+    # Total nudge budget across the session.  Prevents infinite oscillation
+    # where a weak tool call resets the consecutive counter but the model
+    # never makes substantive progress.
+    _total_nudges = 0
+
     # Detect degenerate text loops — model repeating the same output.
     # Store hashes of recent text-only responses; bail if too many match.
     _recent_text_hashes = []
     _TEXT_LOOP_THRESHOLD = 3
+
+    # Read-only tools: calls to these don't reset the consecutive text-only
+    # counter because they don't represent substantive progress.
+    _READ_ONLY_TOOLS = {"think", "search_files", "read_pdf"}
 
     # Disable auto-nudge after 'git push' — the cycle is done.
     _cycle_persisted = False
@@ -1704,7 +1715,28 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 log.warning("Overtime + text-only response — ending cycle")
                 _emit("on_overtime", "text_only")
                 return "done"
+
+            # Fix 1: Detect completion-intent responses.  If the model explicitly
+            # signals "cycle complete / no improvements / concluding" it has
+            # genuinely finished — let it stop instead of nudging endlessly.
+            _completion_signals = (
+                "cycle is complete", "cycle complete", "concluding this cycle",
+                "closing this cycle", "no further actionable", "no remaining",
+                "no improvements", "already met", "already resolved",
+            )
+            if full_content and any(s in full_content.lower() for s in _completion_signals):
+                log.info("Stopping: model signalled cycle completion")
+                return "done"
+
             _consecutive_text_only += 1
+
+            # Fix 4: Total nudge budget across the session.
+            _total_nudges += 1
+            if _total_nudges >= _MAX_TOTAL_NUDGES:
+                log.info("Stopping: total nudge budget exhausted (%d/%d)",
+                         _total_nudges, _MAX_TOTAL_NUDGES)
+                return "done"
+
             if _consecutive_text_only >= _MAX_TEXT_ONLY:
                 log.info("Stopping: %d consecutive text-only responses", _consecutive_text_only)
                 return "done"
@@ -1756,12 +1788,45 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 )
 
             conversation_history.append({"role": "user", "content": nudge})
-            log.info("Auto-nudge (%d/%d): text-only response, prompting to continue",
-                     _consecutive_text_only, _MAX_TEXT_ONLY)
+            log.info("Auto-nudge (%d/%d, total %d/%d): text-only response, prompting to continue",
+                     _consecutive_text_only, _MAX_TEXT_ONLY, _total_nudges, _MAX_TOTAL_NUDGES)
             _emit("on_auto_nudge", _consecutive_text_only, _MAX_TEXT_ONLY)
             continue
 
-        _consecutive_text_only = 0  # reset on successful tool use
+        # Fix 2: Only reset consecutive counter on substantive tool calls.
+        # Read-only tools (search, think, read_pdf) don't count as progress —
+        # they let the model oscillate between "I'm done" and a weak grep
+        # indefinitely.  file(action='read') is also read-only but uses the
+        # generic "file" tool name, so we check the action arg.
+        def _get_tc_args(tc):
+            raw = tc.function.arguments if hasattr(tc, 'function') else tc["function"]["arguments"]
+            try:
+                return json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                return {}
+
+        def _get_tc_name(tc):
+            return tc.function.name if hasattr(tc, 'function') else tc["function"]["name"]
+
+        _tool_names = {_get_tc_name(tc) for tc in tool_calls}
+
+        _is_read_only_file = (_tool_names == {"file"} and all(
+            _get_tc_args(tc).get("action") == "read"
+            for tc in tool_calls if _get_tc_name(tc) == "file"
+        ))
+        _WRITE_KEYWORDS = ("git commit", "git push", "cat >", ">>", "tee ",
+                           "sed -i", "patch ", "mv ", "cp ", "rm ", "mkdir ")
+        _is_read_only_exec = (_tool_names == {"exec_command"} and all(
+            not any(kw in _get_tc_args(tc).get("command", "") for kw in _WRITE_KEYWORDS)
+            for tc in tool_calls if _get_tc_name(tc) == "exec_command"
+        ))
+        _substantive = not (
+            _tool_names <= _READ_ONLY_TOOLS
+            or _is_read_only_file
+            or _is_read_only_exec
+        )
+        if _substantive:
+            _consecutive_text_only = 0
 
         # Execute tool calls
         log.debug("Executing %d tool calls", len(tool_calls))
