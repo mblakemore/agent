@@ -118,7 +118,7 @@ class StreamStatus:
         total = time.monotonic() - self._start_time
         if self._token_count > 0:
             tps = self._token_count / total if total > 0 else 0
-            print(theme.dim(f"[{self._token_count} tokens \u00b7 {total:.1f}s \u00b7 {tps:.1f} t/s]"))
+              _emit("on_notice", "info", theme.dim(f"[{self._token_count} tokens \u00b7 {total:.1f}s \u00b7 {tps:.1f} t/s]"))
         elif self._interactive:
             sys.stdout.write(CLEAR_LINE)
             sys.stdout.flush()

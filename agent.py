@@ -127,7 +127,7 @@ def _load_config():
                 config[key] = val
         return config
     except (json.JSONDecodeError, IOError) as e:
-        print(f"Warning: Could not load config.json, using defaults: {e}")
+        _emit("on_notice", "warn", f"Warning: Could not load config.json, using defaults: {e}")
         return config
 
 
@@ -1168,16 +1168,16 @@ def _pick_model_interactive(current_model, base_url):
     """Interactive model picker. Returns the chosen model id or None."""
     models = _list_available_models(base_url)
     if not models:
-        print(theme.c(theme.ROSE, f"Could not list models from {base_url}/v1/models"))
+        _emit("on_notice", "warn", theme.c(theme.ROSE, f"Could not list models from {base_url}/v1/models"))
         return None
-    print(theme.c(theme.SKY, f"Available models at {base_url}:"))
+    _emit("on_notice", "info", theme.c(theme.SKY, f"Available models at {base_url}:"))
     for i, m in enumerate(models, 1):
         marker = theme.c(theme.MINT, " *") if m == current_model else "  "
-        print(f"{marker} {i}. {m}")
+        _emit("on_notice", "info", f"{marker} {i}. {m}")
     try:
         choice = input("Pick a model number (blank to cancel): ").strip()
     except (EOFError, KeyboardInterrupt):
-        print()
+        _emit("on_notice", "info", "")
         return None
     if not choice:
         return None
@@ -1187,7 +1187,7 @@ def _pick_model_interactive(current_model, base_url):
             return models[idx]
     except ValueError:
         pass
-    print(theme.c(theme.ROSE, "Invalid selection."))
+    _emit("on_notice", "warn", theme.c(theme.ROSE, "Invalid selection."))
     return None
 
 
@@ -1359,7 +1359,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                     guidance = input("\nOperator: ").strip()
                 except (EOFError, KeyboardInterrupt):
                     log.info("Session ended (operator cancelled) | %d messages", len(conversation_history))
-                    print()
+                    _emit("on_notice", "info", "")
                     return
                 if guidance:
                     expanded_g, files_g, err_g = _expand_file_refs(guidance)
@@ -1393,13 +1393,13 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         except EOFError:
             break
         except KeyboardInterrupt:
-            print("\n\nGoodbye!")
+            _emit("on_notice", "info", "\n\nGoodbye!")
             break
 
         if not user_input:
             continue
         if user_input.lower() in ["exit", "quit"]:
-            print("Goodbye!")
+            _emit("on_notice", "info", "Goodbye!")
             break
         if user_input.startswith("/"):
             def _refresh_cb_log(new_log):
@@ -1644,7 +1644,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         if not receiving_tools:
                             receiving_tools = True
                             if printed_header:
-                                print()
+                                _emit("on_notice", "info", "")
                                 status = StreamStatus()
                                 status.start(f"{DIM}  preparing tool calls ")
                         for tc_delta in delta["tool_calls"]:
@@ -1673,7 +1673,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
         renderer.flush()
         if content_parts and not receiving_tools:
-            print()
+            _emit("on_notice", "info", "")
         status.finish()
 
         full_content = _THINK_TAG_RE.sub('', "".join(content_parts)).strip()
