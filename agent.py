@@ -1569,7 +1569,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
         try:
             with cancellable():
-                for line in response.iter_lines(decode_unicode=True):
+                for raw_line in response.iter_lines():
+                    line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
                     check_cancelled()
                     if not line or not line.startswith("data: "):
                         continue
