@@ -73,6 +73,12 @@ _MINT_HEX   = "#5fffb0"
 _AMBER_HEX  = "#ffbe3d"
 _ROSE_HEX   = "#ff4d6d"
 
+# Bottom-toolbar palette — dark neutral background with high-contrast text.
+# Using a flat dark-gray / off-white pair gives uniform readability regardless
+# of terminal theme, and avoids the low-contrast sky+violet clash.
+_BAR_BG_HEX = "#323232"
+_BAR_FG_HEX = "#dedede"
+
 _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help",    "show available commands"),
     ("/clear",   "clear conversation history"),
@@ -108,14 +114,14 @@ if _AVAILABLE:
     def _build_style() -> Style:
         return Style.from_dict({
             "prompt":                             f"{_VIOLET_HEX} bold",
-            "bottom-toolbar":                     f"bg:{_VIOLET_HEX} #ffffff",
-            "bottom-toolbar.cwd":                 f"bg:{_VIOLET_HEX} {_SKY_HEX} bold",
-            "bottom-toolbar.sep":                 f"bg:{_VIOLET_HEX} #707070",
-            "bottom-toolbar.model":               f"bg:{_VIOLET_HEX} {_MINT_HEX}",
-            "bottom-toolbar.msgs":                f"bg:{_VIOLET_HEX} #ffffff",
-            "bottom-toolbar.ctx":                 f"bg:{_VIOLET_HEX} {_AMBER_HEX}",
-            "bottom-toolbar.verbose-on":          f"bg:{_VIOLET_HEX} {_MINT_HEX} bold",
-            "bottom-toolbar.verbose-off":         f"bg:{_VIOLET_HEX} #909090",
+            "bottom-toolbar":                     f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX}",
+            "bottom-toolbar.cwd":                 f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX} bold",
+            "bottom-toolbar.sep":                 f"bg:{_BAR_BG_HEX} #606060",
+            "bottom-toolbar.model":               f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX}",
+            "bottom-toolbar.msgs":                f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX}",
+            "bottom-toolbar.ctx":                 f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX}",
+            "bottom-toolbar.verbose-on":          f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX} bold",
+            "bottom-toolbar.verbose-off":         f"bg:{_BAR_BG_HEX} #606060",
             "completion-menu.completion":         f"bg:{_VIOLET_HEX} #ffffff",
             "completion-menu.completion.current": f"bg:{_MINT_HEX} #000000 bold",
         })
@@ -273,15 +279,15 @@ if _AVAILABLE:
             ctx_label = f"ctx {pct:.0f}%" if _exact else f"ctx ~{pct:.0f}%"
 
             left = (
-                f'<style fg="{_SKY_HEX}" bg="{_VIOLET_HEX}"><b> {cwd} </b></style>'
-                f'<style fg="#505070" bg="{_VIOLET_HEX}"> │ </style>'
-                f'<style fg="{_MINT_HEX}" bg="{_VIOLET_HEX}"> {model} </style>'
-                f'<style fg="#505070" bg="{_VIOLET_HEX}"> │ </style>'
-                f'<style fg="#ffffff" bg="{_VIOLET_HEX}"> {msgs} msgs </style>'
-                f'<style fg="#505070" bg="{_VIOLET_HEX}"> │ </style>'
-                f'<style fg="{_AMBER_HEX}" bg="{_VIOLET_HEX}"> {ctx_label} </style>'
-                f'<style fg="#505070" bg="{_VIOLET_HEX}"> │ </style>'
-                f'<style fg="{_MINT_HEX if verbose else "#909090"}" bg="{_VIOLET_HEX}"> {vstate} </style>'
+                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"><b> {cwd} </b></style>'
+                f'<style fg="#606060" bg="{_BAR_BG_HEX}"> │ </style>'
+                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> {model} </style>'
+                f'<style fg="#606060" bg="{_BAR_BG_HEX}"> │ </style>'
+                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> {msgs} msgs </style>'
+                f'<style fg="#606060" bg="{_BAR_BG_HEX}"> │ </style>'
+                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> {ctx_label} </style>'
+                f'<style fg="#606060" bg="{_BAR_BG_HEX}"> │ </style>'
+                f'<style fg="{_BAR_FG_HEX if verbose else "#606060"}" bg="{_BAR_BG_HEX}"> {vstate} </style>'
             )
 
             # Pad to terminal width so the bar spans the screen.
@@ -291,7 +297,7 @@ if _AVAILABLE:
                 width = 80
             visible_len = len(f" {cwd}  │  {model}  │  {msgs} msgs  │  {ctx_label}  │  {vstate} ")
             pad = max(0, width - visible_len)
-            return HTML(left + f'<style bg="{_VIOLET_HEX}">{" " * pad}</style>')
+            return HTML(left + f'<style bg="{_BAR_BG_HEX}">{" " * pad}</style>')
 
 
     class TuiCallbacks(TerminalCallbacks):
