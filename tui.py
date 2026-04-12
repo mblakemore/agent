@@ -26,6 +26,7 @@ Design notes (see plan/ui-upgrade-from-llmbox-cli.md § Phase 3):
 
 from __future__ import annotations
 
+import html
 import os
 import threading
 from pathlib import Path
@@ -76,8 +77,9 @@ _ROSE_HEX   = "#ff4d6d"
 # Bottom-toolbar palette — dark neutral background with high-contrast text.
 # Using a flat dark-gray / off-white pair gives uniform readability regardless
 # of terminal theme, and avoids the low-contrast sky+violet clash.
-_BAR_BG_HEX = "#323232"
-_BAR_FG_HEX = "#dedede"
+_BAR_BG_HEX = "#0d0d0d"
+_BAR_BG2_HEX = "#000000"
+_BAR_FG_HEX = "#a8a8a8"
 
 _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/help",    "show available commands"),
@@ -114,14 +116,14 @@ if _AVAILABLE:
     def _build_style() -> Style:
         return Style.from_dict({
             "prompt":                             f"{_VIOLET_HEX} bold",
-            "bottom-toolbar":                     f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX}",
+            "bottom-toolbar":                     f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX} noreverse",
             "bottom-toolbar.cwd":                 f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX} bold",
-            "bottom-toolbar.sep":                 f"bg:{_BAR_BG_HEX} #606060",
+            "bottom-toolbar.sep":                 f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX}",
             "bottom-toolbar.model":               f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX}",
             "bottom-toolbar.msgs":                f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX}",
             "bottom-toolbar.ctx":                 f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX}",
-            "bottom-toolbar.verbose-on":          f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX} bold",
-            "bottom-toolbar.verbose-off":         f"bg:{_BAR_BG_HEX} #606060",
+            "bottom-toolbar.verbose-on":          f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX}",
+            "bottom-toolbar.verbose-off":         f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX}",
             "completion-menu.completion":         f"bg:{_VIOLET_HEX} #ffffff",
             "completion-menu.completion.current": f"bg:{_MINT_HEX} #000000 bold",
         })
@@ -268,7 +270,6 @@ if _AVAILABLE:
             msgs = len(self.history)
             pct = self._ctx_pct() * 100.0
             verbose = bool(getattr(self.cb, "verbose", False))
-            vstate = "verbose on" if verbose else "verbose off"
 
             # Drop the ~ approximation marker when the real tokenizer is in
             # use. Import lazily so tui.py stays independent of token_utils.
@@ -278,16 +279,20 @@ if _AVAILABLE:
                 _exact = False
             ctx_label = f"ctx {pct:.0f}%" if _exact else f"ctx ~{pct:.0f}%"
 
+            verbose_segment = (
+                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> │ </style>'
+                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> verbose </style>'
+            ) if verbose else ""
+
             left = (
                 f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"><b> {cwd} </b></style>'
-                f'<style fg="#606060" bg="{_BAR_BG_HEX}"> │ </style>'
+                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> │ </style>'
                 f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> {model} </style>'
-                f'<style fg="#606060" bg="{_BAR_BG_HEX}"> │ </style>'
+                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> │ </style>'
                 f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> {msgs} msgs </style>'
-                f'<style fg="#606060" bg="{_BAR_BG_HEX}"> │ </style>'
+                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> │ </style>'
                 f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> {ctx_label} </style>'
-                f'<style fg="#606060" bg="{_BAR_BG_HEX}"> │ </style>'
-                f'<style fg="{_BAR_FG_HEX if verbose else "#606060"}" bg="{_BAR_BG_HEX}"> {vstate} </style>'
+                + verbose_segment
             )
 
             # Pad to terminal width so the bar spans the screen.
@@ -295,9 +300,28 @@ if _AVAILABLE:
                 width = os.get_terminal_size().columns
             except OSError:
                 width = 80
-            visible_len = len(f" {cwd}  │  {model}  │  {msgs} msgs  │  {ctx_label}  │  {vstate} ")
+            visible_base = f" {cwd}  │  {model}  │  {msgs} msgs  │  {ctx_label} "
+            visible_len = len(visible_base) + (len("  │   verbose ") if verbose else 0)
             pad = max(0, width - visible_len)
-            return HTML(left + f'<style bg="{_BAR_BG_HEX}">{" " * pad}</style>')
+
+            # Second line: full working directory with $HOME collapsed to ~.
+            full_cwd = os.getcwd()
+            home = os.path.expanduser("~")
+            if full_cwd == home or full_cwd.startswith(home + os.sep):
+                full_cwd = "~" + full_cwd[len(home):]
+            cwd_text = f" {full_cwd} "
+            cwd_pad = max(0, width - len(cwd_text))
+            second = (
+                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG2_HEX}">{html.escape(cwd_text)}</style>'
+                f'<style bg="{_BAR_BG2_HEX}">{" " * cwd_pad}</style>'
+            )
+
+            return HTML(
+                left
+                + f'<style bg="{_BAR_BG_HEX}">{" " * pad}</style>'
+                + "\n"
+                + second
+            )
 
 
     class TuiCallbacks(TerminalCallbacks):

@@ -912,6 +912,14 @@ def _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, for
 
 # ── Logger setup ──────────────────────────────────────────────────────
 
+class _VerboseConsoleFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            return True
+        cb = globals().get("_cb")
+        return bool(cb and getattr(cb, "verbose", False))
+
+
 def _setup_logger():
     """Create a structured logger with levels, rotation, and console output."""
     log_dir_override = _config.get("log_dir")
@@ -933,6 +941,7 @@ def _setup_logger():
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
+    console_handler.addFilter(_VerboseConsoleFilter())
     logger.addHandler(console_handler)
 
     file_handler = logging.handlers.RotatingFileHandler(
