@@ -16,13 +16,15 @@ cd "${WORKDIR}"
 
 OVERRIDE="NOTE: The target repo for this session is ${WORKDIR} — use it in place of /mnt/droid/repos/agent everywhere (worktree parents, gh commands, test runs, etc.)."
 
-AGENT_MD="$(cat ./plan/CICD/agent.md)"
-REVIEWER_MD="$(cat ./plan/CICD/reviewer.md)"
+# Strip @ before path-like refs so agent.py's _expand_file_refs
+# doesn't try to re-expand documentation references in the body text.
+AGENT_MD="$(sed 's/@\([a-zA-Z./]\)/\1/g' ./plan/CICD/agent.md)"
+REVIEWER_MD="$(sed 's/@\([a-zA-Z./]\)/\1/g' ./plan/CICD/reviewer.md)"
 
 echo "==> Running CICD agent"
-python3 /droid/repos/agent/agent.py -a --verbose "${AGENT_MD} ${OVERRIDE} Follow the instructions and continue!"
+python3 /droid/repos/agent/agent.py -a --verbose --nudge "${AGENT_MD} ${OVERRIDE} Follow the instructions and continue!"
 
 echo "==> Running CICD reviewer"
-python3 /droid/repos/agent/agent.py -a --verbose "${REVIEWER_MD} ${OVERRIDE} Follow the instructions and continue!"
+python3 /droid/repos/agent/agent.py -a --verbose --nudge "${REVIEWER_MD} ${OVERRIDE} Follow the instructions and continue!"
 
 echo "==> Done.  Workdir: ${WORKDIR}"
