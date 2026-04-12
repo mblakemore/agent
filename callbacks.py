@@ -182,8 +182,8 @@ class TerminalCallbacks(NullCallbacks):
     # -- session lifecycle ----------------------------------------------
 
     def on_session_start(self, info: dict) -> None:
-        bar = theme.c(theme.VIOLET, "=" * 60, bold=True)
-        title = theme.c(theme.VIOLET, "Agent with File Tools — Interactive Mode", bold=True)
+        bar = theme.c(theme.VIOLET, "─" * 60)
+        title = theme.c(theme.SKY, "Agent with File Tools — Interactive Mode", bold=True)
         self._print(bar)
         self._print(title)
         self._print(bar)
@@ -196,10 +196,10 @@ class TerminalCallbacks(NullCallbacks):
             health = theme.c(theme.MINT, f"● {base_url} ({model})")
         else:
             health = theme.c(theme.AMBER, f"⚠ {base_url} ({detail}) — continuing anyway")
-        self._print(f"API: {health}")
-        self._print(f"Context size: {info.get('ctx_size')} tokens | Max turns: {info.get('max_turns')}")
-        self._print(f"Session log: {info.get('log_path')}")
-        self._print(f"Error log: {info.get('error_log_path')}")
+        self._print(f" › API: {health}")
+        self._print(f"   Context: {info.get('ctx_size')} tokens · {info.get('max_turns')} max turns")
+        self._print(theme.dim(f"   {info.get('log_path')}"))
+        self._print(theme.dim(f"   {info.get('error_log_path')}"))
         self._print(theme.dim("Press Escape twice to cancel. Type /help for commands."))
         self._print(theme.dim("Type 'exit' or 'quit' to end conversation.\n"))
 
