@@ -112,6 +112,12 @@ cd /tmp/agent-cicd/NNN-slug
 
 Small reviewable commits: `CICD NNN (#ISSUE): <step>`. Do not edit files outside the worktree.
 
+**Sanity check after each edit** — before committing, verify the changed files parse cleanly:
+```bash
+python3 -c "import py_compile; py_compile.compile('<file>', doraise=True)"
+```
+If the compile check fails, fix the syntax error before committing. Do not push code that doesn't parse.
+
 ## Phase 7 — VERIFY
 
 In the worktree: run full test suite, re-run the probe against worktree's `agent.py`, compute delta. **Gate**: tests 100% green AND metric improved. If not, debug and retry (max 3 iterations). If still failing → null-result path.
