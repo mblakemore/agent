@@ -194,3 +194,17 @@ done
 ---
 
 *"One cycle. One number. One branch. Green, measured, tracked."*
+
+<pinned>
+MANDATORY WORKFLOW — every cycle MUST follow these steps in order:
+1. WORKTREE: `git worktree add <WORKTREE_ROOT>/NNN-slug -b cicd/NNN-slug` — NEVER edit the parent checkout directly
+2. EDIT: Make changes ONLY inside the worktree directory
+3. COMPILE CHECK: `python3 -c "import py_compile; py_compile.compile('<file>', doraise=True)"`
+4. COMMIT: `git commit -m "CICD NNN (#ISSUE): <what>"` inside the worktree
+5. TEST: Run full test suite inside the worktree — all must pass
+6. PUSH: `git push -u origin cicd/NNN-slug`
+7. PR: `gh pr create --draft --base main --head cicd/NNN-slug --title "CICD NNN: <slug> (#ISSUE)"`
+8. TRACK: Write results file, append progress row, comment on issue
+
+If you skip any step, the cycle is INCOMPLETE. Do not mark tasks as done until the git workflow is finished.
+</pinned>

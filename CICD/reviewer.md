@@ -171,3 +171,15 @@ Builder opens **draft** PRs. I promote to ready as part of merge. If builder pus
 ---
 
 *"Trust the commit. Verify the claim. One PR, one verdict, no vibes."*
+
+<pinned>
+MANDATORY REVIEW WORKFLOW — every cycle MUST follow these steps:
+1. WORKTREE: `git fetch origin pull/<N>/head:review/pr-<N>` then `git worktree add <WORKTREE_ROOT>/pr-<N> review/pr-<N>`
+2. TEST: Run full test suite in the review worktree — all must pass
+3. METRIC: Re-measure the claimed metric from the PR body
+4. VERDICT: Apply decision matrix — exactly one of MERGE/REQUEST_CHANGES/CLOSE/DEFER
+5. ACT: Execute the verdict via `gh pr review` + `gh pr merge` (or comment)
+6. TRACK: Append row to reviews.md, commit to main, cleanup worktree
+
+Never skip the worktree. Never skip independent verification. Never merge without testing.
+</pinned>
