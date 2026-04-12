@@ -522,5 +522,23 @@ class TestTerminalCallbacksDispatchArms(unittest.TestCase):
                     )
 
 
+class TestSessionStartBanner(unittest.TestCase):
+    """Source-level assertions for the on_session_start visual design (cycle 0028)."""
+
+    def _src(self):
+        import inspect
+        return inspect.getsource(callbacks.TerminalCallbacks.on_session_start)
+
+    def test_title_uses_sky_color(self):
+        """Title should use theme.SKY for contrast against the VIOLET chrome bars."""
+        self.assertIn("theme.SKY", self._src(),
+                      "on_session_start title must use theme.SKY (not theme.VIOLET)")
+
+    def test_bar_uses_box_drawing_char(self):
+        """Horizontal bars should use U+2500 ─ rather than plain ASCII = characters."""
+        self.assertIn("─", self._src(),
+                      "on_session_start bars must use ─ (U+2500), not = ")
+
+
 if __name__ == "__main__":
     unittest.main()

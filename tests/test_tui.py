@@ -226,6 +226,14 @@ class TestTuiSessionToolbar(unittest.TestCase):
             self.assertIn("ctx ", str(html.value))
 
 
+    def test_toolbar_uses_unicode_separator(self):
+        """Footer bar segments must be separated by │ (U+2502), not ASCII |."""
+        sess = self._make_session()
+        html = sess._toolbar()
+        self.assertIn("│", str(html.value),
+                      "toolbar must use │ (U+2502) separators between segments")
+
+
 @unittest.skipUnless(tui._AVAILABLE, "prompt_toolkit not installed")
 class TestPromptActiveFlag(unittest.TestCase):
     def tearDown(self):
