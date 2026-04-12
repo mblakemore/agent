@@ -63,7 +63,7 @@ def _emit(method, *args, **kwargs):
     return safe_cb(_cb, method, *args, log=_cb_log, **kwargs)
 
 
-_FILE_REF = re.compile(r"@(\S+)")
+_FILE_REF = re.compile(r"(?<!\w)@(\.{0,2}/\S+|(?![^\s@]*[@:])[A-Za-z_]\S*)")
 
 # ── Configuration ──────────────────────────────────────────────────────
 
@@ -2045,6 +2045,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             _has_committed = True
                             log.info("Commit detected — completion signals now allowed")
                         if "git push" in _cmd:
+                            if not _cycle_persisted:
+                                log.info("Cycle persist detected (git push) — auto-nudge disabled")
                             _cycle_persisted = True
                             _cycle_persisted_turn = _cycle_persisted_turn or turn
                         # Record cycle timestamp automatically
@@ -2059,7 +2061,6 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 log.debug("Cycle %s recorded: %s", _cycle, timestamp)
                             except Exception as e:
                                 log.error("Failed to record cycle timestamp: %s", e)
-                        log.info("Cycle persist detected (git push) — auto-nudge disabled")
 
                     log.debug("TOOL RESULT [%s]: %s", func_name, result_str)
 
