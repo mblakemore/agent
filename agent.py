@@ -1245,9 +1245,9 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     # Auto-detect context size from llama-server /slots endpoint (95% buffer)
     detected = _detect_ctx_size(BASE_URL)
     if detected:
-        ctx_size = int(detected * 0.95)
+        ctx_size = int(detected * 0.85)
         _config["context"]["ctx_size"] = ctx_size
-        log.info("Auto-detected main model n_ctx=%d, using ctx_size=%d (95%%)", detected, ctx_size)
+        log.info("Auto-detected main model n_ctx=%d, using ctx_size=%d (85%%)", detected, ctx_size)
 
     _emit("on_session_start", {
         "api_ok": ok,
@@ -1275,8 +1275,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 # Auto-detect summary model context size
                 summary_ctx = _detect_ctx_size(summary_url)
                 if summary_ctx:
-                    _config["summary"]["ctx_size"] = int(summary_ctx * 0.95)
-                    log.info("Auto-detected summary model n_ctx=%d, using %d (95%%)",
+                    _config["summary"]["ctx_size"] = int(summary_ctx * 0.85)
+                    log.info("Auto-detected summary model n_ctx=%d, using %d (85%%)",
                              summary_ctx, _config["summary"]["ctx_size"])
                 _async_summarizer = AsyncSummarizer(_config, log)
                 log.debug("Async summarizer enabled → %s", summary_url)
