@@ -45,3 +45,7 @@ The bottom toolbar now renders as a uniform dark-gray (`#323232`) bar with off-w
 (`#dedede`) text for all segments. Separators are `#606060` (subtle but visible).
 `verbose off` state uses `#606060` fg for visual distinction from active segments.
 The multi-color saturated palette (sky/mint/amber/violet clash) is gone.
+
+## Reviewer note (R-0012)
+
+Independent verification with plan's measurement command (`awk 'NR>=108 && NR<=295' tui.py | grep -c '_VIOLET_HEX'`) gives **20 before → 2 after**, not 18 → 0 as claimed in PR body and results table. The 2 survivors are `"prompt"` (line 116) and `"completion-menu.completion"` (line 125) — both intentional, documented above. The toolbar-specific count (18 → 0) is correct; the plan's measurement window was wider than the plan's own prose description anticipated (it mentioned only one survivor, not two). Implementation verified correct; improvement is real.
