@@ -1513,8 +1513,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # counter because they don't represent substantive progress.
     _READ_ONLY_TOOLS = {"think", "search_files", "read_pdf", "task_tracker"}
 
-    # Disable auto-nudge after 'git push' — the cycle is done.
+    # After 'git push', allow a few more turns for TRACK work (results file,
+    # progress row, issue comments) before stopping on text-only response.
     _cycle_persisted = False
+    _cycle_persisted_turn = None
+    _CYCLE_GRACE_TURNS = 5
 
     # Detect tool-call loops: same command signature repeated N times.
     _recent_tool_sigs = []  # list of (frozenset of (name, args_hash)) tuples
@@ -1737,11 +1740,15 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             if not _NUDGE_ENABLED:
                 log.info("Stopping: text-only response (no tool calls)")
                 return "done"
-            # If the cycle already persisted (git push happened), stop cleanly.
-            # Check this BEFORE the hallucination guard so it fires immediately.
+            # If the cycle already persisted (git push happened), allow a few
+            # grace turns for TRACK work, then stop on text-only response.
             if _cycle_persisted:
-                log.info("Stopping: cycle already persisted (git push), no more nudges")
-                return "done"
+                grace_used = turn - (_cycle_persisted_turn or turn)
+                if grace_used >= _CYCLE_GRACE_TURNS:
+                    log.info("Stopping: cycle persisted %d turns ago, grace period exhausted", grace_used)
+                    return "done"
+                log.info("Cycle persisted but grace period active (%d/%d turns) — nudging for TRACK work",
+                         grace_used, _CYCLE_GRACE_TURNS)
             # Past turn limit + no tool use = end cycle immediately
             if turn > _MAX_TURNS:
                 log.warning("Overtime + text-only response — ending cycle")
@@ -1760,7 +1767,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 "work is done", "task is complete", "actions taken",
                 "successfully created pull request", "created a pull request",
             )
-            if full_content and any(s in full_content.lower() for s in _completion_signals):
+            # During post-persist grace period, don't stop on completion signals —
+            # the agent still needs to finish TRACK work.
+            _in_grace = _cycle_persisted and (turn - (_cycle_persisted_turn or turn)) < _CYCLE_GRACE_TURNS
+            if not _in_grace and full_content and any(s in full_content.lower() for s in _completion_signals):
                 log.info("Stopping: model signalled cycle completion")
                 return "done"
 
@@ -2023,6 +2033,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     # Detect cycle completion: git push through exec_command
                     if func_name == "exec_command" and "git push" in func_args.get("command", ""):
                         _cycle_persisted = True
+                        _cycle_persisted_turn = _cycle_persisted_turn or turn
                         # Record cycle timestamp automatically
                         if _tracker:
                             try:
