@@ -1519,6 +1519,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _cycle_persisted_turn = None
     _CYCLE_GRACE_TURNS = 5
 
+    # Track whether any commit has been made.  Completion signals are ignored
+    # until a commit lands — prevents the agent from declaring "done" before
+    # any work is actually persisted.
+    _has_committed = False
+
     # Detect tool-call loops: same command signature repeated N times.
     _recent_tool_sigs = []  # list of (frozenset of (name, args_hash)) tuples
     _TOOL_LOOP_THRESHOLD = 3  # inject correction after 3 identical batches
@@ -1767,12 +1772,15 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 "work is done", "task is complete", "actions taken",
                 "successfully created pull request", "created a pull request",
             )
-            # During post-persist grace period, don't stop on completion signals —
-            # the agent still needs to finish TRACK work.
+            # Completion signals are only trusted after a commit has landed —
+            # prevents the agent from declaring "done" before persisting work.
+            # During post-persist grace period, also suppress (TRACK work pending).
             _in_grace = _cycle_persisted and (turn - (_cycle_persisted_turn or turn)) < _CYCLE_GRACE_TURNS
-            if not _in_grace and full_content and any(s in full_content.lower() for s in _completion_signals):
-                log.info("Stopping: model signalled cycle completion")
+            if _has_committed and not _in_grace and full_content and any(s in full_content.lower() for s in _completion_signals):
+                log.info("Stopping: model signalled cycle completion (commit detected)")
                 return "done"
+            if not _has_committed and full_content and any(s in full_content.lower() for s in _completion_signals):
+                log.info("Ignoring completion signal — no commit yet, nudging to continue")
 
             _consecutive_text_only += 1
 
@@ -2030,10 +2038,15 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         "content": result_str,
                     })
 
-                    # Detect cycle completion: git push through exec_command
-                    if func_name == "exec_command" and "git push" in func_args.get("command", ""):
-                        _cycle_persisted = True
-                        _cycle_persisted_turn = _cycle_persisted_turn or turn
+                    # Track commits and pushes through exec_command
+                    if func_name == "exec_command":
+                        _cmd = func_args.get("command", "")
+                        if "git commit" in _cmd:
+                            _has_committed = True
+                            log.info("Commit detected — completion signals now allowed")
+                        if "git push" in _cmd:
+                            _cycle_persisted = True
+                            _cycle_persisted_turn = _cycle_persisted_turn or turn
                         # Record cycle timestamp automatically
                         if _tracker:
                             try:
