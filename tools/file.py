@@ -94,6 +94,8 @@ def _read(path, start_line, end_line):
 
 def _write(path, content, start_line, end_line):
     p = Path(path)
+    if p.name in _BLOCKED_FILENAMES:
+        return f"Error: '{p.name}' is an internal runtime file and cannot be written."
 
     # If file exists but hasn't been read this session, force a read first
     if p.exists() and str(p.resolve()) not in _accessed_files:
@@ -163,6 +165,8 @@ def _write(path, content, start_line, end_line):
 
 def _append(path, content):
     p = Path(path)
+    if p.name in _BLOCKED_FILENAMES:
+        return f"Error: '{p.name}' is an internal runtime file and cannot be written."
     if p.suffix.lower() == '.json':
         return (f"Error: cannot append to JSON file '{path}' — breaks structure. "
                 f"Use action='write' with full contents instead.")
@@ -208,6 +212,8 @@ def _insert(path, content, start_line):
 
 def _delete(path):
     p = Path(path)
+    if p.name in _BLOCKED_FILENAMES:
+        return f"Error: '{p.name}' is an internal runtime file and cannot be deleted."
     if not p.exists():
         return f"Error: '{path}' does not exist"
     if p.is_dir():
