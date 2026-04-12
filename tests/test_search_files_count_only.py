@@ -89,5 +89,39 @@ class TestCountOnlyNoTruncation(unittest.TestCase):
                       "Display mode count should be capped at 100")
 
 
+class TestCountOnlyContextBypass(unittest.TestCase):
+    """Regression tests for CICD 0041: count_only must skip context window building.
+
+    When count_only=True, the context > 0 branch must not build windows or
+    context_groups — it should update total_matches and continue to the next file.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        # Two files with known patterns — uses default context=3
+        Path(self.tmpdir, "x.py").write_text(
+            "def test_alpha(): pass\ndef helper(): pass\ndef test_beta(): pass\n"
+        )
+        Path(self.tmpdir, "y.py").write_text(
+            "def test_gamma(): pass\n"
+        )
+
+    def test_count_only_skips_context_windows_default_context(self):
+        """count_only=True with default context=3 must return header-only, not context lines."""
+        # Default context=3 — before the fix this built context_groups for every file.
+        result = fn(pattern="def test_", path=self.tmpdir, count_only=True)
+        # Correct count must be returned.
+        self.assertIn("3 results", result,
+                      f"Expected 3 results in header, got: {result}")
+        self.assertIn("2 matched", result,
+                      f"Expected 2 matched in header, got: {result}")
+        # No match content (neither hit lines nor context separator).
+        self.assertNotIn("def test_alpha", result)
+        self.assertNotIn("def test_beta", result)
+        self.assertNotIn("def test_gamma", result)
+        self.assertNotIn("--", result,
+                         "Context separator '--' must not appear in count_only output")
+
+
 if __name__ == "__main__":
     unittest.main()
