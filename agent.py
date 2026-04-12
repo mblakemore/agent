@@ -65,6 +65,29 @@ def _emit(method, *args, **kwargs):
 
 _FILE_REF = re.compile(r"(?<!\w)@(\.{0,2}/\S+|(?![^\s@]*[@:])[A-Za-z_]\S*)")
 
+# ── Pinned instructions ───────────────────────────────────────────────
+# Content inside <pinned>...</pinned> tags in the initial prompt is
+# extracted and re-injected into every context-restoration message,
+# surviving summarization.  This ensures critical workflow steps
+# (like "create a worktree before editing") persist across the entire
+# session even as older messages are compressed away.
+_PINNED_RE = re.compile(r"<pinned>(.*?)</pinned>", re.DOTALL)
+_pinned_instructions = ""  # set once from the initial prompt
+
+
+def _extract_pinned(text):
+    """Extract <pinned>...</pinned> blocks from text.
+
+    Returns (cleaned_text, pinned_content).  The pinned blocks are removed
+    from the text to avoid double-counting tokens.
+    """
+    blocks = _PINNED_RE.findall(text)
+    if not blocks:
+        return text, ""
+    cleaned = _PINNED_RE.sub("", text).strip()
+    return cleaned, "\n".join(b.strip() for b in blocks)
+
+
 # ── Configuration ──────────────────────────────────────────────────────
 
 _DEFAULT_CONFIG = {
@@ -815,6 +838,8 @@ def _build_context_footnote(summary_text, initial_files):
         "(e.g. cat > file.json << 'EOF'\\n...\\nEOF). "
         "Do NOT use the file tool with action='write' for JSON content."
     )
+    if _pinned_instructions:
+        parts.append(f"PINNED INSTRUCTIONS (always follow these):\n{_pinned_instructions}")
     return {"role": "user", "content": "\n\n".join(parts)}
 
 
@@ -1373,6 +1398,12 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             return
         if files:
             initial_files = files
+        # Extract <pinned>...</pinned> blocks — these survive summarization
+        global _pinned_instructions
+        expanded, pinned = _extract_pinned(expanded)
+        if pinned:
+            _pinned_instructions = pinned
+            log.info("Pinned instructions extracted (%d chars)", len(pinned))
         conversation_history.append({"role": "user", "content": expanded})
         log.debug("USER: %s", expanded)
         result = run_agent_single(conversation_history, summary_state, initial_files, log,
