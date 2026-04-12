@@ -36,6 +36,21 @@ Never commit to `main` directly.
 
 ---
 
+## Task Tracking
+
+Use `task_tracker` throughout the cycle to track progress. This prevents repeating work and survives context window resets.
+
+At the start, create tasks for each phase:
+```
+task_tracker(action="add", description="PERCEIVE: gather repo state, issues, test status")
+task_tracker(action="add", description="DECIDE: pick issue, state metric and done-when")
+task_tracker(action="add", description="IMPLEMENT: code the fix in worktree")
+task_tracker(action="add", description="VERIFY: tests green + metric improved")
+task_tracker(action="add", description="TRACK: results file, progress row, PR, issue comment")
+```
+
+Mark each task `done` as you complete it. Before starting any work, call `task_tracker(action="list")` to see what's already been done — do not repeat completed tasks. When investigating an issue, mark it done once verified (pass or fail) so you don't re-check it.
+
 ## Phase 1 — PERCEIVE
 
 ```bash
