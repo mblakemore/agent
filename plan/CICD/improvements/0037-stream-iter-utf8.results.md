@@ -2,7 +2,7 @@
 
 - Issue: #70
 - Branch: cicd/0037-stream-iter-utf8
-- PR: (pending)
+- PR: #78
 - Commit range: 2404fc3..2404fc3
 - Date: 2026-04-12
 
