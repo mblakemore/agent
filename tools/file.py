@@ -70,7 +70,7 @@ def _read(path, start_line, end_line):
     if p.is_dir():
         return f"Error: '{path}' is a directory. Use action='list' instead."
 
-    with open(p, 'r') as f:
+    with open(p, 'r', encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
 
     total = len(lines)
@@ -110,7 +110,7 @@ def _write(path, content, start_line, end_line):
         if start_line <= 0:
             start_line = 1
 
-        with open(p, 'r') as f:
+        with open(p, 'r', encoding='utf-8', errors='replace') as f:
             lines = f.readlines()
 
         # Default to single-line replacement if end_line not given
@@ -134,7 +134,7 @@ def _write(path, content, start_line, end_line):
 
         lines[start_idx:end_idx] = new_lines
 
-        with open(p, 'w') as f:
+        with open(p, 'w', encoding='utf-8') as f:
             f.writelines(lines)
 
         old_count = end_line - start_line + 1
@@ -157,7 +157,7 @@ def _write(path, content, start_line, end_line):
                 f"This usually means the path is wrong. Use a relative path from your working directory "
                 f"(e.g. '.agent/state/file.json' not '/droid/repos/.../state/file.json').")
     p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, 'w') as f:
+    with open(p, 'w', encoding='utf-8') as f:
         f.write(content)
     _accessed_files.add(str(p.resolve()))
     return f"Wrote '{path}' ({len(content)} chars)"
@@ -170,7 +170,7 @@ def _append(path, content):
     if p.suffix.lower() == '.json':
         return (f"Error: cannot append to JSON file '{path}' — breaks structure. "
                 f"Use action='write' with full contents instead.")
-    with open(p, 'a') as f:
+    with open(p, 'a', encoding='utf-8') as f:
         f.write(content)
     return f"Appended to '{path}' ({len(content)} chars)"
 
@@ -189,7 +189,7 @@ def _insert(path, content, start_line):
         return (f"Error: '{path}' exists but has not been read this session. "
                 f"You must read the file first (action='read') before inserting.")
 
-    with open(p, 'r') as f:
+    with open(p, 'r', encoding='utf-8', errors='replace') as f:
         lines = f.readlines()
 
     if start_line > len(lines) + 1:
@@ -202,7 +202,7 @@ def _insert(path, content, start_line):
     insert_idx = start_line - 1
     lines[insert_idx:insert_idx] = new_lines
 
-    with open(p, 'w') as f:
+    with open(p, 'w', encoding='utf-8') as f:
         f.writelines(lines)
 
     _accessed_files.add(str(p.resolve()))
