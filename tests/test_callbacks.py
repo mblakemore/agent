@@ -540,5 +540,30 @@ class TestSessionStartBanner(unittest.TestCase):
                       "on_session_start bars must use ─ (U+2500), not = ")
 
 
+class TestRepeatRunStartBanner(unittest.TestCase):
+    """Source-level regression guards for on_repeat_run_start banner style (cycle 0029).
+
+    Ensures the --repeat run boundary banner stays visually consistent with
+    on_session_start (cycle 0028): ─ box-drawing bars (not ASCII =) and SKY
+    color for the run label.
+    """
+
+    def _src(self):
+        import inspect
+        return inspect.getsource(
+            callbacks.TerminalCallbacks.on_repeat_run_start
+        )
+
+    def test_repeat_run_start_uses_box_drawing_char(self):
+        """Horizontal bars should use U+2500 ─ rather than plain ASCII = characters."""
+        self.assertIn("─", self._src(),
+                      "on_repeat_run_start bars must use ─ (U+2500), not = ")
+
+    def test_repeat_run_start_uses_sky_color(self):
+        """The run label should be rendered in SKY color for visual hierarchy."""
+        self.assertIn("theme.SKY", self._src(),
+                      "on_repeat_run_start must apply theme.SKY to the label")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -221,7 +221,9 @@ class TerminalCallbacks(NullCallbacks):
         self._print("  [no checkpoint found — starting fresh]")
 
     def on_repeat_run_start(self, label: str) -> None:
-        self._print(f"\n{'=' * 60}\n{label}\n{'=' * 60}")
+        bar = theme.c(theme.VIOLET, "─" * 60)
+        title = theme.c(theme.SKY, label, bold=True)
+        self._print(f"\n{bar}\n{title}\n{bar}")
 
     def on_repeat_done(self, runs: int) -> None:
         self._print(f"\n\nStopped after {runs} run(s).")
