@@ -52,6 +52,8 @@ Read: `progress.md`, recent 2-3 improvement plans, open issues (especially `bug`
 
 If tests are red on `main`, that IS the improvement — skip PROBE, file a bug issue, go to PLAN.
 
+**If an open issue cannot be reproduced on HEAD** (e.g. tests pass, symptom gone), it is already resolved. Comment "Cannot reproduce on HEAD — already fixed" and move on. Do NOT re-verify more than once. Do not spend turns on resolved issues.
+
 ## Phase 2 — PROBE
 
 Run one probe from the library against live `agent.py` in an isolated temp dir:
