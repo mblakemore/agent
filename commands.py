@@ -38,7 +38,7 @@ def _cmd_help(ctx: SimpleNamespace, args: str) -> None:
         "  /tools [N|all] — show buffered tool calls (default: all; N = last N only)",
         "  exit/quit      — end the session",
     ]
-    print("\n".join(lines))
+    ctx.cb._print("\n".join(lines))
 
 
 def _cmd_clear(ctx: SimpleNamespace, args: str) -> None:
@@ -59,7 +59,7 @@ def _cmd_clear(ctx: SimpleNamespace, args: str) -> None:
 
 def _cmd_context(ctx: SimpleNamespace, args: str) -> None:
     _warn_extra_args(ctx, "/context", args)
-    print(ctx.render_context_bar(ctx.conversation_history, ctx.summary_state, ctx.ctx_size))
+    ctx.cb._print(ctx.render_context_bar(ctx.conversation_history, ctx.summary_state, ctx.ctx_size))
 
 
 def _cmd_model(ctx: SimpleNamespace, args: str) -> None:
@@ -101,7 +101,7 @@ def _cmd_tools(ctx: SimpleNamespace, args: str) -> None:
                         f"/tools N requires a positive integer — got: {args!r}")
                 return
             limit = n
-    print(ctx.cb.render_tools(limit=limit))
+    ctx.cb._print(ctx.cb.render_tools(limit=limit))
 
 
 _COMMANDS: dict[str, Callable[[SimpleNamespace, str], None]] = {
