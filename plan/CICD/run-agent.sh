@@ -14,7 +14,10 @@ echo "==> Cloning repo to ${WORKDIR}"
 git clone "${REPO_URL}" "${WORKDIR}"
 cd "${WORKDIR}"
 
-OVERRIDE="NOTE: The target repo for this session is ${WORKDIR} — use it in place of /mnt/droid/repos/agent everywhere (worktree parents, gh commands, test runs, etc.)."
+WORKTREE_ROOT="${TEMP_ROOT}/cicd-${STAMP}/worktrees"
+mkdir -p "${WORKTREE_ROOT}"
+
+OVERRIDE="NOTE: The target repo for this session is ${WORKDIR} — use it in place of /mnt/droid/repos/agent everywhere. Worktrees MUST be created under ${WORKTREE_ROOT}/ (not /tmp/agent-cicd/ or /tmp/agent-cicd-review/). Example: git worktree add ${WORKTREE_ROOT}/NNN-slug -b cicd/NNN-slug. Review worktrees: git worktree add ${WORKTREE_ROOT}/pr-N review/pr-N. The sandbox blocks paths outside ${TEMP_ROOT}/cicd-${STAMP}/."
 
 # Strip @ before path-like refs so agent.py's _expand_file_refs
 # doesn't try to re-expand documentation references in the body text.
