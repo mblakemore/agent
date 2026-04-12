@@ -155,6 +155,26 @@ _MAX_TOTAL_NUDGES = _config["cycle"]["max_total_nudges"]
 # Auto-nudge on text-only responses. Off by default; enable with --nudge.
 _NUDGE_ENABLED = False
 
+# Classify exec_command calls as read-only vs substantive for nudge counter.
+_WRITE_KEYWORDS = ("git commit", "git push", "cat >", ">>", "tee ",
+                   "sed -i", "patch ", "mv ", "cp ", "rm ", "mkdir ",
+                   "gh pr create", "gh issue create", "gh issue edit",
+                   "gh pr merge", "gh pr close", "gh pr review",
+                   "gh issue close", "gh issue comment")
+_READ_ONLY_COMMANDS = ("grep ", "find ", "ls ", "cat ", "head ", "tail ",
+                       "wc ", "git log", "git diff", "git status",
+                       "git branch", "gh pr list", "gh pr view",
+                       "gh pr diff", "gh issue list", "gh issue view",
+                       "gh pr checks", "python3 -m unittest",
+                       "python3 -m pytest")
+
+def _is_read_only_command(cmd):
+    """A command is read-only if it matches a known read pattern or has no write keywords."""
+    cmd_stripped = cmd.lstrip("# \t\n")
+    if any(cmd_stripped.startswith(rc) for rc in _READ_ONLY_COMMANDS):
+        return True
+    return not any(kw in cmd for kw in _WRITE_KEYWORDS)
+
 # Load agent-specific tools from CWD/.agent/tools/ if it exists.
 # Note: CWD/tools/ is the builtin package already loaded by tools/__init__.py —
 # pointing the loader at it would re-execute every module under a fake
@@ -1484,7 +1504,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
     # Read-only tools: calls to these don't reset the consecutive text-only
     # counter because they don't represent substantive progress.
-    _READ_ONLY_TOOLS = {"think", "search_files", "read_pdf"}
+    _READ_ONLY_TOOLS = {"think", "search_files", "read_pdf", "task_tracker"}
 
     # Disable auto-nudge after 'git push' — the cycle is done.
     _cycle_persisted = False
@@ -1707,6 +1727,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 log.info("Stopping: text-only response (no tool calls)")
                 return "done"
             # If the cycle already persisted (git push happened), stop cleanly.
+            # Check this BEFORE the hallucination guard so it fires immediately.
             if _cycle_persisted:
                 log.info("Stopping: cycle already persisted (git push), no more nudges")
                 return "done"
@@ -1716,13 +1737,17 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 _emit("on_overtime", "text_only")
                 return "done"
 
-            # Fix 1: Detect completion-intent responses.  If the model explicitly
+            # Detect completion-intent responses.  If the model explicitly
             # signals "cycle complete / no improvements / concluding" it has
             # genuinely finished — let it stop instead of nudging endlessly.
+            # Check BEFORE hallucination guard so it fires on the first attempt.
             _completion_signals = (
                 "cycle is complete", "cycle complete", "concluding this cycle",
                 "closing this cycle", "no further actionable", "no remaining",
                 "no improvements", "already met", "already resolved",
+                "i have completed", "has been achieved", "goal of making",
+                "work is done", "task is complete", "actions taken",
+                "successfully created pull request", "created a pull request",
             )
             if full_content and any(s in full_content.lower() for s in _completion_signals):
                 log.info("Stopping: model signalled cycle completion")
@@ -1730,7 +1755,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
             _consecutive_text_only += 1
 
-            # Fix 4: Total nudge budget across the session.
+            # Total nudge budget across the session.
             _total_nudges += 1
             if _total_nudges >= _MAX_TOTAL_NUDGES:
                 log.info("Stopping: total nudge budget exhausted (%d/%d)",
@@ -1814,10 +1839,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             _get_tc_args(tc).get("action") == "read"
             for tc in tool_calls if _get_tc_name(tc) == "file"
         ))
-        _WRITE_KEYWORDS = ("git commit", "git push", "cat >", ">>", "tee ",
-                           "sed -i", "patch ", "mv ", "cp ", "rm ", "mkdir ")
         _is_read_only_exec = (_tool_names == {"exec_command"} and all(
-            not any(kw in _get_tc_args(tc).get("command", "") for kw in _WRITE_KEYWORDS)
+            _is_read_only_command(_get_tc_args(tc).get("command", ""))
             for tc in tool_calls if _get_tc_name(tc) == "exec_command"
         ))
         _substantive = not (
