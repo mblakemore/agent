@@ -2,7 +2,7 @@
 
 - Issue: #76
 - Branch: cicd/0036-search-files-count-only
-- PR: (pending)
+- PR: #77
 - Commit range: 6466607..6466607
 - Date: 2026-04-12
 
