@@ -1824,6 +1824,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 )
                                 if recovered is not None:
                                     result_str = recovered
+                                    _emit("on_notice", "info", f"[recovered: {func_name} succeeded]")
                             except Exception as e:
                                 log.debug("Tool recovery unavailable: %s", e)
 

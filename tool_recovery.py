@@ -204,7 +204,6 @@ def attempt_recovery(tool_name, func_args, error_str, map_fn, llm_call_fn, confi
                 error_str = result  # update for next attempt
                 continue
             log.info("Recovery: succeeded on attempt %d", attempt + 1)
-            print(f"    [recovered: set {pattern['param']}={value}]")
             return result
         except Exception as e:
             log.warning("Recovery: retry raised: %s", e)
