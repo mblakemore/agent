@@ -41,3 +41,4 @@ Running record of improvement cycles. Each row is one end-to-end loop
 | 0033 | 2026-04-12 | plural-toolcall | #71 | #72 | P-count (display-only) | `grep -c '(s)' callbacks.py` ((s) pseudo-plural occurrences) | 4 | 0 | −4 (−100%) | PASS | cicd/0033-plural-toolcall |
 | 0034 | 2026-04-12 | stream-unicode-passthrough | #70 | (pending) | static grep | `grep -c '_sanitize_display' agent.py` (ASCII-downgrade call sites in streaming renderer) | 3 | 0 | −3 (−100%) | PASS | cicd/0034-stream-unicode-passthrough |
 | 0035 | 2026-04-12 | tool-recovery-raw-print | #74 | (pending) | static grep | `grep -c 'print(' tool_recovery.py` (raw print() bypassing callbacks — D12 violation) | 1 | 0 | −1 (−100%) | PASS | cicd/0035-tool-recovery-raw-print |
+| 0036 | 2026-04-12 | search-files-count-only | #76 | #77 | P-count + static grep | `grep -c '"count_only"' tools/search_files.py` (count_only param in definition) | 0 | 1 | +1 (+100%) | PASS | cicd/0036-search-files-count-only |

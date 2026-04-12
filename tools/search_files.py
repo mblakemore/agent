@@ -14,6 +14,7 @@ def fn(
     glob: str = "*",
     ignore_case: bool = True,
     context: int = 3,
+    count_only: bool = False,
 ) -> str:
     """Search file contents for a regex pattern.
 
@@ -25,6 +26,9 @@ def fn(
         context: Lines of context to include before/after each match, like
             grep -C. Capped at _MAX_CONTEXT. Default 3; pass 0 to get the
             legacy bare-match shape.
+        count_only: If True, return only the match count summary (files
+            searched, files matched, total matches) without the match lines.
+            Use this when you only need to know how many matches exist.
     """
     try:
         flags = re.IGNORECASE if ignore_case else 0
@@ -126,6 +130,9 @@ def fn(
         header += " (truncated)"
     header += "]\n"
 
+    if count_only:
+        return header.rstrip("\n")
+
     if total_matches == 0:
         if files_searched == 0:
             return (
@@ -154,6 +161,9 @@ definition = {
             "code, search memory files, review past cycle logs, or locate "
             "specific content across the project. Prefer this over reading "
             "whole files when you only need to look at a handful of matches. "
+            "Pass count_only=true when you only need a match count (e.g. "
+            "how many TODOs, test methods, or call sites) — returns just the "
+            "summary line without match content. "
             "IMPORTANT: always pass `path` explicitly when you know the "
             "directory you want to search. The default `'.'` is the process "
             "working directory, which in automation mode is usually an empty "
@@ -199,6 +209,16 @@ definition = {
                     ),
                     "default": 3,
                     "minimum": 0,
+                },
+                "count_only": {
+                    "type": "boolean",
+                    "description": (
+                        "Return only the match count summary (files searched, "
+                        "files matched, total matches) without the match lines "
+                        "themselves. Use this when you only need to know how "
+                        "many matches exist, not where they are. Default: false."
+                    ),
+                    "default": False,
                 },
             },
             "required": ["pattern"],
