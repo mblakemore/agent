@@ -220,25 +220,7 @@ def _llm_request(log, **kwargs):
 
 # ── Text utilities ─────────────────────────────────────────────────────
 
-_UNICODE_MAP = str.maketrans({
-    "\u2014": "--", "\u2013": "-", "\u2018": "'", "\u2019": "'",
-    "\u201c": '"', "\u201d": '"', "\u2026": "...", "\u2022": "*",
-    "\u00a0": " ", "\u200b": "",
-})
-
-
 _THINK_TAG_RE = re.compile(r'</?think>|<\|channel>thought\n.*?<channel\|>', re.DOTALL)
-
-
-def _sanitize(text):
-    """Replace common Unicode characters with ASCII equivalents and strip think tags."""
-    text = _THINK_TAG_RE.sub('', text)
-    return text.translate(_UNICODE_MAP)
-
-
-def _sanitize_display(text):
-    """Unicode replacement only — think tags are handled by _ReasoningRenderer."""
-    return text.translate(_UNICODE_MAP)
 
 
 class _ReasoningRenderer:
@@ -303,12 +285,12 @@ class _ReasoningRenderer:
     def _emit_plain(self, text):
         if not text:
             return
-        self._write(_sanitize_display(text))
+        self._write(text)
 
     def _emit_think(self, text):
         if not text:
             return
-        self._write(theme.dim(_sanitize_display(text)))
+        self._write(theme.dim(text))
 
     def _open_block(self):
         self._in_think = True
