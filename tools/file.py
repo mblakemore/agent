@@ -254,7 +254,9 @@ definition = {
             "- insert: Insert content BEFORE a line (set start_line). Existing lines shift down. Does NOT replace anything.\n"
             "- append: Append content to end of file (not for JSON files).\n"
             "- delete: Delete a file or empty directory.\n"
-            "- list: List directory contents.\n"
+            "- list: List directory contents. "
+            "IMPORTANT: skip this action if the user's prompt already names the files or paths "
+            "you need — calling list when you already know the paths wastes a turn.\n"
             "IMPORTANT: You MUST read an existing file before writing to it. "
             "The tool will reject writes to files you haven't read this session."
         ),
