@@ -10,6 +10,12 @@ import theme
 from cancel import check_cancelled
 from spinner import StreamStatus
 
+# Injectable output function — agent.py replaces this with a callback-aware
+# writer (lambda text: _emit("on_stream_chunk", text)) so think output flows
+# through the callback system and honours NO_COLOR / TUI mode.  Standalone
+# callers (tests, scripts) get the plain print() default automatically.
+_output = print  # type: ignore[assignment]
+
 DEPTH_MAX_TOKENS = {
     "brief": 1024,
     "normal": 8192,
@@ -114,14 +120,14 @@ def fn(prompt: str, depth: str = "brief", context: str = "") -> str:
     if match:
         reasoning = match.group(1).strip()
         answer = raw[match.end():].strip()
-        print("  " + theme.dim("[Reasoning]"))
-        print("  " + theme.dim(reasoning))
-        print(f"  [Answer] {answer}")
+        _output("  " + theme.dim("[Reasoning]"))
+        _output("  " + theme.dim(reasoning))
+        _output(f"  [Answer] {answer}")
         log.info("THINK REASONING: %s", reasoning)
         log.info("THINK ANSWER: %s", answer)
     else:
         answer = raw.strip()
-        print(f"  [Answer] {answer}")
+        _output(f"  [Answer] {answer}")
         log.info("THINK ANSWER: %s", answer)
 
     return answer if answer else "Error: empty response from model"
