@@ -274,13 +274,13 @@ if _AVAILABLE:
 
             left = (
                 f'<style fg="{_SKY_HEX}" bg="{_VIOLET_HEX}"><b> {cwd} </b></style>'
-                f'<style fg="#707070" bg="{_VIOLET_HEX}"> | </style>'
+                f'<style fg="#505070" bg="{_VIOLET_HEX}"> │ </style>'
                 f'<style fg="{_MINT_HEX}" bg="{_VIOLET_HEX}"> {model} </style>'
-                f'<style fg="#707070" bg="{_VIOLET_HEX}"> | </style>'
+                f'<style fg="#505070" bg="{_VIOLET_HEX}"> │ </style>'
                 f'<style fg="#ffffff" bg="{_VIOLET_HEX}"> {msgs} msgs </style>'
-                f'<style fg="#707070" bg="{_VIOLET_HEX}"> | </style>'
+                f'<style fg="#505070" bg="{_VIOLET_HEX}"> │ </style>'
                 f'<style fg="{_AMBER_HEX}" bg="{_VIOLET_HEX}"> {ctx_label} </style>'
-                f'<style fg="#707070" bg="{_VIOLET_HEX}"> | </style>'
+                f'<style fg="#505070" bg="{_VIOLET_HEX}"> │ </style>'
                 f'<style fg="{_MINT_HEX if verbose else "#909090"}" bg="{_VIOLET_HEX}"> {vstate} </style>'
             )
 
@@ -289,7 +289,7 @@ if _AVAILABLE:
                 width = os.get_terminal_size().columns
             except OSError:
                 width = 80
-            visible_len = len(f" {cwd}  |  {model}  |  {msgs} msgs  |  {ctx_label}  |  {vstate} ")
+            visible_len = len(f" {cwd}  │  {model}  │  {msgs} msgs  │  {ctx_label}  │  {vstate} ")
             pad = max(0, width - visible_len)
             return HTML(left + f'<style bg="{_VIOLET_HEX}">{" " * pad}</style>')
 
