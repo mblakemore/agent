@@ -39,3 +39,4 @@ Running record of improvement cycles. Each row is one end-to-end loop
 | 0031 | 2026-04-12 | toolbar-colors-uniform | #66 | #67 | static grep | toolbar-specific `_VIOLET_HEX` refs in `_build_style` + `_toolbar` scope | 18 | 0 | −18 (−100%) | PASS | cicd/0031-toolbar-colors-uniform |
 | 0032 | 2026-04-12 | build-context-footnote-dedup | #68 | #69 | static grep | `parts = []` blocks inside `_build_context` scope (+ TOOL RULE restored in condensed path) | 2 | 0 | −2 (−100%) | PASS | cicd/0032-build-context-footnote-dedup |
 | 0033 | 2026-04-12 | plural-toolcall | #71 | #72 | P-count (display-only) | `grep -c '(s)' callbacks.py` ((s) pseudo-plural occurrences) | 4 | 0 | −4 (−100%) | PASS | cicd/0033-plural-toolcall |
+| 0034 | 2026-04-12 | stream-unicode-passthrough | #70 | (pending) | static grep | `grep -c '_sanitize_display' agent.py` (ASCII-downgrade call sites in streaming renderer) | 3 | 0 | −3 (−100%) | PASS | cicd/0034-stream-unicode-passthrough |
