@@ -36,3 +36,4 @@ Running record of improvement cycles. Each row is one end-to-end loop
 | 0028 | 2026-04-12 | ui-banner-footer | #60 | (pending) | P-count | combined: theme.SKY refs in on_session_start + │ chars in tui.py | 0 | 6 | +6 (+∞%) | PASS | cicd/0028-ui-banner-footer |
 | 0029 | 2026-04-12 | repeat-banner-box-drawing | #62 | #63 | P-count | `grep -c "'=' \* 60" callbacks.py` (ASCII = separator count) | 1 | 0 | −1 (−100%) | PASS | cicd/0029-repeat-banner-box-drawing |
 | 0030 | 2026-04-12 | local-import-dedup | #64 | (pending) | static grep | `grep -c 'import re as _re\|import hashlib as _hl\|from pathlib import Path as _P' agent.py` (redundant local imports) | 4 | 0 | −4 (−100%) | PASS | cicd/0030-local-import-dedup |
+| 0031 | 2026-04-12 | toolbar-colors-uniform | #66 | #67 | static grep | toolbar-specific `_VIOLET_HEX` refs in `_build_style` + `_toolbar` scope | 18 | 0 | −18 (−100%) | PASS | cicd/0031-toolbar-colors-uniform |
