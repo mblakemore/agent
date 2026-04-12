@@ -5,7 +5,7 @@
 set -euo pipefail
 
 REPO_URL="git@github.com:mblakemore/agent.git"
-TEMP_ROOT="/droid/temp"
+TEMP_ROOT="$(readlink -f /droid/temp)"   # resolve symlinks so sandbox sees real paths
 STAMP="$(date +%Y%m%d_%H%M%S)"
 WORKDIR="${TEMP_ROOT}/cicd-${STAMP}/agent"
 
