@@ -34,3 +34,4 @@ Running record of improvement cycles. Each row is one end-to-end loop
 | 0026 | 2026-04-11 | config-toplevel-merge | #56 | #57 | P-count | top-level user config keys loadable by `_load_config()` (0→2) + test count (140→144) | 0 | 2 | +2 (+100%) | PASS | cicd/0026-config-toplevel-merge |
 | 0027 | 2026-04-11 | file-blocked-write-append-delete | #58 | #59 | P-count | `grep -c 'if p.name in _BLOCKED_FILENAMES' tools/file.py` (guarded actions: read-only → read+write+append+delete) | 1 | 4 | +3 (+300%) | PASS | cicd/0027-file-blocked-write-append-delete |
 | 0028 | 2026-04-12 | ui-banner-footer | #60 | (pending) | P-count | combined: theme.SKY refs in on_session_start + │ chars in tui.py | 0 | 6 | +6 (+∞%) | PASS | cicd/0028-ui-banner-footer |
+| 0029 | 2026-04-12 | repeat-banner-box-drawing | #62 | #63 | P-count | `grep -c "'=' \* 60" callbacks.py` (ASCII = separator count) | 1 | 0 | −1 (−100%) | PASS | cicd/0029-repeat-banner-box-drawing |
