@@ -1509,6 +1509,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # Disable auto-nudge after 'git push' — the cycle is done.
     _cycle_persisted = False
 
+    # Detect tool-call loops: same command signature repeated N times.
+    _recent_tool_sigs = []  # list of (frozenset of (name, args_hash)) tuples
+    _TOOL_LOOP_THRESHOLD = 3  # inject correction after 3 identical batches
+
     _async_summarizer = async_summarizer
 
     while True:
@@ -1850,6 +1854,43 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         )
         if _substantive:
             _consecutive_text_only = 0
+
+        # Detect tool-call loops: if the same set of tool calls (by name +
+        # args hash) repeats N times, the model is stuck.  Inject a correction
+        # nudge instead of executing the Nth repeat.
+        _batch_sig = frozenset(
+            (_get_tc_name(tc), hashlib.md5(
+                json.dumps(_get_tc_args(tc), sort_keys=True).encode()
+            ).hexdigest()[:8])
+            for tc in tool_calls
+        )
+        _recent_tool_sigs.append(_batch_sig)
+        if len(_recent_tool_sigs) > _TOOL_LOOP_THRESHOLD + 2:
+            _recent_tool_sigs.pop(0)
+        # Count consecutive identical signatures at the tail
+        _repeat = 0
+        for _sig in reversed(_recent_tool_sigs):
+            if _sig == _batch_sig:
+                _repeat += 1
+            else:
+                break
+        if _repeat >= _TOOL_LOOP_THRESHOLD:
+            log.warning("Tool-call loop detected: same batch repeated %d times", _repeat)
+            # Remove the assistant message that requested these tool calls
+            conversation_history.pop()
+            conversation_history.append({
+                "role": "user",
+                "content": (
+                    "STOP — you have repeated the exact same tool call(s) "
+                    f"{_repeat} times with no effect. The approach is not working. "
+                    "Try a COMPLETELY DIFFERENT method. For example: "
+                    "use the file tool with action='write' to replace a line directly, "
+                    "or use python -c to do the replacement, "
+                    "or accept the current state and commit what you have."
+                ),
+            })
+            _recent_tool_sigs.clear()
+            continue
 
         # Execute tool calls
         log.debug("Executing %d tool calls", len(tool_calls))
