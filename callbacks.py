@@ -183,7 +183,7 @@ class TerminalCallbacks(NullCallbacks):
 
     def on_session_start(self, info: dict) -> None:
         bar = theme.c(theme.VIOLET, "─" * 60)
-        title = theme.c(theme.SKY, "Agent with File Tools — Interactive Mode", bold=True)
+        title = theme.c(theme.SKY, "Agent", bold=True)
         self._print(bar)
         self._print(title)
         self._print(bar)
