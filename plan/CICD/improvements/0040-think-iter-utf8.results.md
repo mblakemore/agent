@@ -2,7 +2,7 @@
 
 - Issue: #83
 - Branch: cicd/0040-think-iter-utf8
-- PR: (pending)
+- PR: #84 (draft)
 - Commit range: 1f29c65..1f29c65
 - Date: 2026-04-12
 
