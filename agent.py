@@ -1687,8 +1687,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
         try:
             with cancellable():
-                for raw_line in response.iter_lines():
-                    line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+                    for raw_line in response.iter_lines(decode_unicode=False):
+                        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
                     check_cancelled()
                     if not line or not line.startswith("data: "):
                         continue
@@ -2269,4 +2269,9 @@ def main():
 
 
 if __name__ == "__main__":
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+    else:
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     main()
