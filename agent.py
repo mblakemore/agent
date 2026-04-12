@@ -6,6 +6,7 @@ Entry points: ``run_agent_interactive()`` for interactive use, ``run_agent()``
 for single-prompt runs. See ``README.md`` for CLI flags.
 """
 
+import hashlib
 import json
 import logging
 import logging.handlers
@@ -1064,10 +1065,9 @@ def _auto_increment_cycle(log):
             return
 
         # Find the highest committed cycle number from 'C<N>:' patterns
-        import re as _re
         committed_cycles = set()
         for line in result.stdout.strip().split("\n"):
-            m = _re.search(r'\bC(\d+):', line)
+            m = re.search(r'\bC(\d+):', line)
             if m:
                 committed_cycles.add(int(m.group(1)))
 
@@ -1647,8 +1647,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
         # Detect degenerate text loops (model repeating itself)
         if full_content:
-            import hashlib as _hl
-            _text_hash = _hl.md5(full_content.encode()).hexdigest()
+            _text_hash = hashlib.md5(full_content.encode()).hexdigest()
             _recent_text_hashes.append(_text_hash)
             # Keep only recent entries
             if len(_recent_text_hashes) > 10:
@@ -1693,14 +1692,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             if full_content:
                 try:
                     from tools.file import _accessed_files
-                    import re as _re
-                    _read_claims = _re.findall(
+                    _read_claims = re.findall(
                         r'(?:read|found|contents? of|file (?:has|contains|shows))\s+[`"\']?(\S+\.(?:py|json|md|txt|yaml|yml|toml|jsonl|sh|cfg))',
-                        full_content, _re.IGNORECASE
+                        full_content, re.IGNORECASE
                     )
                     for claimed_file in _read_claims:
-                        from pathlib import Path as _P
-                        _resolved = str((_P.cwd() / claimed_file).resolve())
+                        _resolved = str((Path.cwd() / claimed_file).resolve())
                         if _resolved not in _accessed_files:
                             _hallucinated_read = True
                             break
