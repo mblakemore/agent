@@ -25,7 +25,7 @@ def _interactive():
 
 
 class StreamStatus:
-    def __init__(self):
+    def __init__(self, emit=None):
         self._stop = threading.Event()
         self._thread = None
         self._start_time = None
@@ -33,6 +33,7 @@ class StreamStatus:
         self._token_count = 0
         self._prefix = ""
         self._interactive = _interactive()
+        self._emit = emit if emit is not None else lambda event, level, msg: print(msg)
 
     # -- Phase 1: spinner --------------------------------------------------
 
@@ -118,7 +119,7 @@ class StreamStatus:
         total = time.monotonic() - self._start_time
         if self._token_count > 0:
             tps = self._token_count / total if total > 0 else 0
-              _emit("on_notice", "info", theme.dim(f"[{self._token_count} tokens \u00b7 {total:.1f}s \u00b7 {tps:.1f} t/s]"))
+            self._emit("on_notice", "info", theme.dim(f"[{self._token_count} tokens \u00b7 {total:.1f}s \u00b7 {tps:.1f} t/s]"))
         elif self._interactive:
             sys.stdout.write(CLEAR_LINE)
             sys.stdout.flush()

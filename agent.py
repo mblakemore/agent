@@ -1608,7 +1608,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         tool_calls_by_index = {}
         printed_header = False
         receiving_tools = False
-        status = StreamStatus()
+        status = StreamStatus(emit=_emit)
         status.start("\nAssistant: ")
         renderer = _ReasoningRenderer(lambda t: _emit("on_stream_chunk", t))
 
@@ -1645,7 +1645,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             receiving_tools = True
                             if printed_header:
                                 _emit("on_notice", "info", "")
-                                status = StreamStatus()
+                                status = StreamStatus(emit=_emit)
                                 status.start(f"{DIM}  preparing tool calls ")
                         for tc_delta in delta["tool_calls"]:
                             idx = tc_delta["index"]
@@ -1897,7 +1897,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     )
 
                     if use_spinner:
-                        tool_status = StreamStatus()
+                        tool_status = StreamStatus(emit=_emit)
                         tool_status.start(f"  -> {func_name} ")
 
                     if func_name not in MAP_FN:
