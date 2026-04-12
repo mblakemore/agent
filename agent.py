@@ -155,6 +155,10 @@ _MAX_TOTAL_NUDGES = _config["cycle"]["max_total_nudges"]
 # Auto-nudge on text-only responses. Off by default; enable with --nudge.
 _NUDGE_ENABLED = False
 
+# Cap tool result strings stored in conversation_history to limit context pressure.
+# ~20K chars ≈ 5K tokens.  Keeps head + tail so the model sees start and end.
+_MAX_TOOL_RESULT_CHARS = 20_000
+
 # Classify exec_command calls as read-only vs substantive for nudge counter.
 _WRITE_KEYWORDS = ("git commit", "git push", "cat >", ">>", "tee ",
                    "sed -i", "patch ", "mv ", "cp ", "rm ", "mkdir ",
@@ -1242,12 +1246,15 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     model_name = _config["llm"]["model"]
     ok, detail = _check_api_health(BASE_URL)
 
-    # Auto-detect context size from llama-server /slots endpoint (95% buffer)
+    # Auto-detect context size from llama-server /slots endpoint.
+    # Apply 85% buffer, then hard-cap at 85K to avoid llama_decode crashes.
+    _CTX_HARD_CAP = 85_000
     detected = _detect_ctx_size(BASE_URL)
     if detected:
-        ctx_size = int(detected * 0.85)
+        ctx_size = min(int(detected * 0.85), _CTX_HARD_CAP)
         _config["context"]["ctx_size"] = ctx_size
-        log.info("Auto-detected main model n_ctx=%d, using ctx_size=%d (85%%)", detected, ctx_size)
+        log.info("Auto-detected main model n_ctx=%d, using ctx_size=%d (85%% / cap %dk)",
+                 detected, ctx_size, _CTX_HARD_CAP // 1000)
 
     _emit("on_session_start", {
         "api_ok": ok,
@@ -1996,6 +2003,15 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         tool_status.first_token()
                         tool_status.finish()
                     _emit("on_tool_start", func_name, func_args)
+
+                    # Truncate oversized tool results to cap context pressure.
+                    if len(result_str) > _MAX_TOOL_RESULT_CHARS:
+                        half = _MAX_TOOL_RESULT_CHARS // 2
+                        result_str = (
+                            result_str[:half]
+                            + f"\n\n... [{len(result_str) - _MAX_TOOL_RESULT_CHARS} chars truncated] ...\n\n"
+                            + result_str[-half:]
+                        )
 
                     conversation_history.append({
                         "role": "tool",

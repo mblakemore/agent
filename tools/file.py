@@ -5,6 +5,10 @@ from pathlib import Path
 # Paths that would create suspiciously deep nesting are probably mistakes
 _MAX_NEW_DIRS = 3
 
+# When reading an entire file (no start_line/end_line), cap at this many lines
+# to avoid flooding the context window.
+_MAX_READ_LINES = 500
+
 # Track files that have been read or written this session — writes to existing
 # unread files are blocked to prevent blind overwrites.  Shared with exec_command.
 _accessed_files = set()
@@ -77,6 +81,11 @@ def _read(path, start_line, end_line):
     # Default: read entire file
     s = max(1, start_line) if start_line > 0 else 1
     e = min(total, end_line) if end_line > 0 else total
+
+    # Cap full-file reads to avoid flooding the context window
+    full_read = (start_line <= 0 and end_line <= 0)
+    if full_read and (e - s + 1) > _MAX_READ_LINES:
+        e = s + _MAX_READ_LINES - 1
 
     selected = lines[s - 1:e]
     # Number lines for easy reference
