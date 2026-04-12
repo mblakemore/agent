@@ -206,12 +206,15 @@ class ContextOverflowError(Exception):
     pass
 
 
+_LLM_REQUEST_TIMEOUT = 300  # 5 minutes per request
+
 def _llm_request(log, **kwargs):
     """POST to the LLM with retries and exponential backoff.
 
     Raises ContextOverflowError after 3 consecutive 500s (likely context overflow).
-    Other transient errors (503, connection) retry up to _LLM_MAX_RETRIES.
+    Other transient errors (503, connection, timeout) retry up to _LLM_MAX_RETRIES.
     """
+    kwargs.setdefault("timeout", _LLM_REQUEST_TIMEOUT)
     consecutive_500s = 0
     for attempt in range(_LLM_MAX_RETRIES + 1):
         try:
@@ -1920,6 +1923,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         # Execute tool calls
         log.debug("Executing %d tool calls", len(tool_calls))
         _emit("on_tool_batch_start", len(tool_calls))
+        _garbled_count = 0  # track garbled tool calls for retry
         try:
             with cancellable():
                 for tool_call in tool_calls:
@@ -1943,6 +1947,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         func_args = _salvage_tool_args(func_name, raw_args, log)
                         if func_args is None:
                             log.error("Unsalvageable tool args: %s | raw: %s", func_name, raw_args)
+                            _garbled_count += 1
                             conversation_history.append({
                                 "role": "tool", "tool_call_id": tool_id,
                                 "name": func_name,
@@ -1952,6 +1957,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             continue
                     except Exception as e:
                         log.error("Error parsing tool call: %s | raw: %s", e, tool_call)
+                        _garbled_count += 1
                         continue
 
                     # Validate required fields — catch cases where sanitizer
@@ -1960,6 +1966,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         action = func_args.get("action", "")
                         if action in ("read", "write", "insert", "append", "delete") and "path" not in func_args:
                             log.warning("Sanitized file call missing 'path' — returning error")
+                            _garbled_count += 1
                             conversation_history.append({
                                 "role": "tool", "tool_call_id": tool_id,
                                 "name": func_name,
@@ -2148,6 +2155,24 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 _async_summarizer.harvest(summary_state)
             _save_checkpoint(conversation_history, summary_state, turn, initial_files)
             return "cancelled"
+
+        # If ALL tool calls in this turn were garbled, retry the turn once
+        # by removing the assistant message + error responses and re-requesting.
+        if _garbled_count > 0 and _garbled_count >= len(tool_calls):
+            _garble_retries = getattr(run_agent, '_garble_retries', 0)
+            if _garble_retries < 1:
+                log.warning("All %d tool call(s) garbled — retrying turn %d", _garbled_count, turn)
+                # Remove the assistant message and all error tool responses from this turn
+                # The assistant message is right before the tool responses
+                _to_remove = 1 + _garbled_count  # assistant + tool error responses
+                conversation_history[-_to_remove:] = []
+                run_agent._garble_retries = _garble_retries + 1
+                continue  # retry the same turn
+            else:
+                log.warning("Garble retry exhausted — proceeding with error responses")
+                run_agent._garble_retries = 0
+        else:
+            run_agent._garble_retries = 0
 
         # Save checkpoint after each turn so -c can resume from here
         if _async_summarizer:
