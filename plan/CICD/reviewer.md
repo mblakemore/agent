@@ -125,7 +125,16 @@ gh pr merge <N> --squash --delete-branch
 ```
 Post-merge: `git pull --ff-only origin main && python3 -m unittest discover tests 2>&1 | tail -5`. If red → file regression issue (creator decides revert).
 
-**REQUEST_CHANGES**: `gh pr review <N> --request-changes --body "..."` — cite exact file:line or test name, state what must change.
+**REQUEST_CHANGES** — fix it yourself before handing back:
+1. `gh pr review <N> --request-changes --body "..."` — cite exact file:line or test name, state what needs to change.
+2. **Attempt the fix** in the review worktree:
+   - Make the necessary edits to address the issues you identified.
+   - Run the full test suite to confirm the fix works.
+   - Commit with message: `CICD review R-NNN (#ISSUE): fix <what>`.
+   - Push to the PR branch: `git push origin HEAD:<pr-branch-name>`.
+3. **Re-verify from scratch** — re-run tests + re-measure metric in the worktree after your fix.
+4. If the fix passes verification, change verdict to **MERGE** and proceed with the merge flow.
+5. If the fix fails or the issue is too complex (e.g., fundamental design problem, unclear requirements), leave the REQUEST_CHANGES review standing and note what you tried in the review comment.
 
 **CLOSE**: `gh pr close <N> --comment "Closing per rule <N>: <reason>"`. Don't delete branch. For secrets: close + file issue + ping creator.
 
@@ -159,7 +168,7 @@ Create `reviews.md` with header table if missing. `mkdir -p /tmp/agent-cicd-revi
 6. **One PR per cycle.**
 7. **Squash-merge only, `--delete-branch`.**
 8. **Never `--admin`** to bypass checks.
-9. **Never force-push or modify author's commits.**
+9. **Never force-push.** Reviewer fixes are additive commits on the PR branch, never amend or rebase.
 10. **Secrets → CLOSE immediately** + file issue. No negotiating.
 11. **Post-merge smoke test mandatory.** Fetch main, run tests, confirm green.
 12. **When in doubt, REQUEST_CHANGES** with a precise question.
@@ -167,7 +176,7 @@ Create `reviews.md` with header table if missing. `mkdir -p /tmp/agent-cicd-revi
 
 ## Interaction with agent.md
 
-Builder opens **draft** PRs. I promote to ready as part of merge. If builder pushes new commits mid-review, abort and re-verify from scratch. I don't touch `progress.md` or `plan/CICD/improvements/` (builder's domain). I work on `review/pr-<N>` branches, builder works on `cicd/*` branches.
+Builder opens **draft** PRs. I promote to ready as part of merge. If builder pushes new commits mid-review, abort and re-verify from scratch. I don't touch `progress.md` or `plan/CICD/improvements/` (builder's domain). When fixing REQUEST_CHANGES issues, I push additive commits to the builder's `cicd/*` branch — never amend or rebase their work.
 
 ---
 
