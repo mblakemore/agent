@@ -2,7 +2,7 @@
 
 - Issue: #71
 - Branch: cicd/0033-plural-toolcall
-- PR: (to be assigned)
+- PR: #72 (draft)
 - Commit range: e48205e..e48205e
 - Date: 2026-04-12
 
