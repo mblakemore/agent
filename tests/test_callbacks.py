@@ -116,6 +116,47 @@ class TestTerminalCallbacks(unittest.TestCase):
         self.assertTrue(any("x" * 100 in c for c in captured))
         self.assertFalse(any("truncated" in c for c in captured))
 
+    def test_on_tool_batch_start_singular(self):
+        """'Executing 1 tool call...' — no (s) suffix."""
+        cb = callbacks.TerminalCallbacks()
+        captured = []
+        cb._print = lambda text="", end="\n": captured.append(text)
+        cb.on_tool_batch_start(1)
+        out = " ".join(captured)
+        self.assertIn("1 tool call", out)
+        self.assertNotIn("(s)", out)
+        self.assertNotIn("tool calls", out)
+
+    def test_on_tool_batch_start_plural(self):
+        """'Executing 3 tool calls...' — proper plural."""
+        cb = callbacks.TerminalCallbacks()
+        captured = []
+        cb._print = lambda text="", end="\n": captured.append(text)
+        cb.on_tool_batch_start(3)
+        out = " ".join(captured)
+        self.assertIn("3 tool calls", out)
+        self.assertNotIn("(s)", out)
+
+    def test_render_tools_singular_header(self):
+        """'All 1 tool call:' — no (s) suffix."""
+        cb = callbacks.TerminalCallbacks()
+        cb._print = lambda *a, **kw: None
+        cb.on_tool_result("file", {"action": "read"}, "result", False)
+        out = cb.render_tools()
+        self.assertIn("1 tool call", out)
+        self.assertNotIn("(s)", out)
+        self.assertNotIn("tool calls", out)
+
+    def test_render_tools_plural_header(self):
+        """'All 3 tool calls:' — proper plural."""
+        cb = callbacks.TerminalCallbacks()
+        cb._print = lambda *a, **kw: None
+        for i in range(3):
+            cb.on_tool_result(f"t{i}", {}, "r", False)
+        out = cb.render_tools()
+        self.assertIn("3 tool calls", out)
+        self.assertNotIn("(s)", out)
+
     def test_signal_args_surface_in_output(self):
         """Cycle 0017 regression: on_cancelled/on_forced_think/on_text_loop_detected
         must surface every arg they receive — not just print a placeholder.

@@ -66,7 +66,7 @@ class TestToolsPaging(unittest.TestCase):
             self.assertTrue(commands.handle_command("/tools", ctx))
         plain = _plain(buf.getvalue())
         self.assertEqual(_count_entries(plain), 50)
-        self.assertIn("All 50 tool call(s)", plain)
+        self.assertIn("All 50 tool calls", plain)
 
     def test_tools_with_integer_limits_view(self):
         cb = callbacks.TerminalCallbacks()
@@ -126,7 +126,7 @@ class TestToolsPaging(unittest.TestCase):
         _populate(cb, 7)
         out = _plain(cb.render_tools(limit=None))
         self.assertEqual(_count_entries(out), 7)
-        self.assertIn("All 7 tool call(s)", out)
+        self.assertIn("All 7 tool calls", out)
 
     def test_render_tools_explicit_limit_clamps(self):
         cb = callbacks.TerminalCallbacks()
