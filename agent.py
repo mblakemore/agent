@@ -1551,7 +1551,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # progress row, issue comments) before stopping on text-only response.
     _cycle_persisted = False
     _cycle_persisted_turn = None
-    _CYCLE_GRACE_TURNS = 5
+    _CYCLE_GRACE_TURNS = 8
 
     # Track whether any commit has been made.  Completion signals are ignored
     # until a commit lands — prevents the agent from declaring "done" before

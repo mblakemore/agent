@@ -178,7 +178,8 @@ MANDATORY REVIEW WORKFLOW — every cycle MUST follow these steps:
 2. TEST: Run full test suite in the review worktree — all must pass
 3. METRIC: Re-measure the claimed metric from the PR body
 4. VERDICT: Apply decision matrix — exactly one of MERGE/REQUEST_CHANGES/CLOSE/DEFER
-5. ACT: Execute the verdict via `gh pr review` + `gh pr merge` (or comment)
+5. ACT (merge): `gh pr ready <N> && gh pr merge <N> --squash --delete-branch`
+   NEVER use --merge or --rebase. ALWAYS --squash --delete-branch.
 6. TRACK: Append row to reviews.md, commit to main, cleanup worktree
 
 Never skip the worktree. Never skip independent verification. Never merge without testing.
