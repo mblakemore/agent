@@ -204,6 +204,13 @@ PHASE GATES — you MUST complete these in order. Do NOT skip any:
 - IMPLEMENT: Create worktree, edit code, commit, push, open PR
 - VERIFY/TRACK: Run tests, write results, append progress row
 
+MANDATORY THINK before DECIDE — use the think tool to evaluate your top candidate:
+- Is this a real bug or just a style preference? Can I measure before/after?
+- Has this been attempted before? (check closed issues with `gh issue list --state closed --search "..."`)
+- Would the fix require special-casing or hardcoding? If yes, pick a different target.
+- Can I describe the improvement in one sentence with a number? If not, it's not measurable.
+If the answer to any check is "no", pick a different target or declare null result.
+
 NULL RESULT — file a null result and stop if:
 - After 20 turns of PROBE, no issue with a measurable metric has been identified
 - The best candidate is a style/preference change with no measurable improvement
