@@ -175,6 +175,50 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
                     f"the correct directory."
                 )
 
+    # Worktree path guard: ensure worktrees are created in WORKTREE_ROOT
+    wt_match = re.search(r'git\s+worktree\s+add\s+(\S+)', command)
+    if wt_match:
+        wt_root = os.environ.get("WORKTREE_ROOT")
+        if wt_root:
+            wt_path = wt_match.group(1)
+            if not wt_path.startswith(wt_root):
+                return (
+                    f"ERROR: Worktree must be created under {wt_root}, not {wt_path}. "
+                    f"Use: git worktree add {wt_root}/<branch-slug> -b <branch-name>"
+                )
+
+    # Pre-merge validation: ensure PR has a valid linked issue (CICD mode)
+    if os.environ.get("CICD_MODE"):
+        merge_match = re.search(r'gh\s+pr\s+merge\s+(\d+)', command)
+        if merge_match:
+            import subprocess as _sp
+            pr_num = merge_match.group(1)
+            check_cmd = f"gh pr view {pr_num} --json body --jq '.body'"
+            check_result = _sp.run(
+                check_cmd, shell=True, capture_output=True, text=True, cwd=home_cwd
+            )
+            body = check_result.stdout.strip()
+            closes_match = re.search(r'Closes\s+#(\d+)', body)
+            if not closes_match:
+                return (
+                    f"BLOCKED: PR #{pr_num} body does not contain 'Closes #N' "
+                    f"with a valid issue number. "
+                    f"Per decision matrix, CICD PRs without a linked issue "
+                    f"must be CLOSE'd, not merged."
+                )
+            issue_num = closes_match.group(1)
+            verify_cmd = f"gh issue view {issue_num} --json number,state"
+            verify_result = _sp.run(
+                verify_cmd, shell=True, capture_output=True, text=True, cwd=home_cwd
+            )
+            if verify_result.returncode != 0:
+                return (
+                    f"BLOCKED: PR #{pr_num} references issue #{issue_num} "
+                    f"but that issue does not exist or cannot be read. "
+                    f"Per decision matrix, CICD PRs without a valid linked "
+                    f"issue must be CLOSE'd."
+                )
+
     # Shell write guard: if writing to an existing file that hasn't been
     # read or written yet this session, require a read first.
     write_target = _extract_write_target(command)

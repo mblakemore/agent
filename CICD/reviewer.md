@@ -183,11 +183,20 @@ MANDATORY REVIEW WORKFLOW — every cycle MUST follow these steps:
 1. WORKTREE: `git fetch origin pull/<N>/head:review/pr-<N>` then `git worktree add <WORKTREE_ROOT>/pr-<N> review/pr-<N>`
 2. TEST: Run full test suite in the review worktree — all must pass
 3. METRIC: Re-measure the claimed metric from the PR body
-4. VERDICT: Apply decision matrix — exactly one of MERGE/REQUEST_CHANGES/CLOSE/DEFER
-5. ACT (merge): `gh pr ready <N>` then `gh pr merge <N> --squash --delete-branch`
+   - If measurement returns no useful result after 2 attempts → verdict is REQUEST_CHANGES
+   - Never claim "metric verified" unless your measurement produced a comparable number
+   - If PR has no measurable metric, note "N/A" but apply other criteria strictly
+4. PRE-MERGE CHECK (mandatory before ANY gh pr merge):
+   - Extract issue number from PR body "Closes #N" — must be a real number, not placeholder text
+   - Run: `gh issue view <N> --json state` — issue must exist
+   - If issue doesn't exist or "Closes #N" is missing/placeholder → verdict is CLOSE per decision matrix
+5. VERDICT: Apply decision matrix — exactly one of MERGE/REQUEST_CHANGES/CLOSE/DEFER
+6. ACT (merge): `gh pr ready <N>` then `gh pr merge <N> --squash --delete-branch`
    NEVER use --merge or --rebase. ALWAYS --squash --delete-branch.
    NEVER chain with `|| true` — it swallows errors and causes merge to fail on still-draft PRs.
-6. TRACK: Append row to reviews.md (local file, do NOT git commit), cleanup worktree
+7. TRACK: echo "| R-NNN | YYYY-MM-DD | #PR | #ISSUE | VERDICT | metric_result | PASS/FAIL | reason |" >> <CICD_STATE>/reviews.md
+   Always APPEND with >>. Never overwrite. Do NOT git add or git commit reviews.md.
+8. CLEANUP: `git worktree remove <WORKTREE_ROOT>/pr-<N> --force && git branch -D review/pr-<N>`
 
 Never skip the worktree. Never skip independent verification. Never merge without testing.
 </pinned>

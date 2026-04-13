@@ -93,7 +93,12 @@ def _dead_locals(func):
 
     walk(func)
     args = _collect_arg_names(func)
-    return stores - loads - args
+    # Exclude names declared global — they are not locals.
+    globals_ = set()
+    for node in ast.walk(func):
+        if isinstance(node, ast.Global):
+            globals_.update(node.names)
+    return stores - loads - args - globals_
 
 
 class TestNoDeadLocals(unittest.TestCase):

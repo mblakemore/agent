@@ -74,6 +74,13 @@ _FILE_REF = re.compile(r"(?<!\w)@(\.{0,2}/\S+|(?![^\s@]*[@:])[A-Za-z_]\S*)")
 _PINNED_RE = re.compile(r"<pinned>(.*?)</pinned>", re.DOTALL)
 _pinned_instructions = ""  # set once from the initial prompt
 
+# CICD phase tracking — module-level so _build_context_message() can read it.
+# Updated by run_agent() as it detects phase transitions from tool calls.
+_cicd_phase_state = {}
+_cicd_issue_number = None
+_cicd_pr_number = None
+_cicd_branch = None
+
 
 def _extract_pinned(text):
     """Extract <pinned>...</pinned> blocks from text.
@@ -848,6 +855,20 @@ def _build_context_footnote(summary_text, initial_files):
     )
     if _pinned_instructions:
         parts.append(f"PINNED INSTRUCTIONS (always follow these):\n{_pinned_instructions}")
+    # CICD phase checkpoint — injected here so it survives summary compression
+    if _cicd_phase_state and any(_cicd_phase_state.values()):
+        phases = " | ".join(
+            f"{k.upper()} {'✓' if v else '✗'}"
+            for k, v in _cicd_phase_state.items()
+        )
+        phase_line = f"PHASE CHECKPOINT: {phases}"
+        if _cicd_issue_number:
+            phase_line += f"\nIssue: #{_cicd_issue_number}"
+        if _cicd_pr_number:
+            phase_line += f"  PR: #{_cicd_pr_number}"
+        if _cicd_branch:
+            phase_line += f"  Branch: {_cicd_branch}"
+        parts.append(phase_line)
     return {"role": "user", "content": "\n\n".join(parts)}
 
 
@@ -1576,6 +1597,29 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _recent_tool_sigs = []  # list of (frozenset of (name, args_hash)) tuples
     _TOOL_LOOP_THRESHOLD = 3  # inject correction after 3 identical batches
 
+    # Semantic result-loop detection: same tool returning same result despite
+    # different arguments.  Catches cases where the batch-signature detector
+    # misses because args vary slightly each time.
+    _recent_tool_results = []  # list of (func_name, result_hash) tuples
+    _RESULT_LOOP_WINDOW = 8
+    _RESULT_LOOP_THRESHOLD = 3
+
+    # CICD phase tracking — module-level globals so _build_context_message()
+    # can inject them into every context window, surviving summary compression.
+    global _cicd_phase_state, _cicd_issue_number, _cicd_pr_number, _cicd_branch
+    _cicd_phase_state = {
+        "perceive": False,
+        "probe": False,
+        "decide": False,
+        "plan": False,
+        "implement": False,
+        "verify": False,
+        "track": False,
+    }
+    _cicd_issue_number = None
+    _cicd_pr_number = None
+    _cicd_branch = None
+
     _async_summarizer = async_summarizer
 
     while True:
@@ -2132,6 +2176,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         if not _has_edited:
                             log.info("First file edit detected at turn %d", turn)
                         _has_edited = True
+                        # Detect improvement plan writes for CICD phase tracking
+                        _file_path = func_args.get("path", "")
+                        if "improvements/" in _file_path and _file_path.endswith(".md"):
+                            _cicd_phase_state["plan"] = True
+                            log.info("CICD phase: plan written to %s", _file_path)
 
                     # Track commits and pushes through exec_command
                     if func_name == "exec_command":
@@ -2140,11 +2189,57 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             _has_committed = True
                             _has_edited = True  # commit implies edit happened
                             log.info("Commit detected — completion signals now allowed")
+                            _cicd_phase_state["implement"] = True
                         if "git push" in _cmd:
                             if not _cycle_persisted:
                                 log.info("Cycle persist detected (git push) — auto-nudge disabled")
                             _cycle_persisted = True
                             _cycle_persisted_turn = _cycle_persisted_turn or turn
+                            _cicd_phase_state["verify"] = True
+
+                        # ── CICD phase detection ──
+                        if "gh issue list" in _cmd or "gh issue search" in _cmd:
+                            _cicd_phase_state["perceive"] = True
+                        if ("pytest" in _cmd or "python3 -m pytest" in _cmd
+                                or "cat " in _cmd or "grep " in _cmd):
+                            if _cicd_phase_state["perceive"]:
+                                _cicd_phase_state["probe"] = True
+                        if "gh issue create" in _cmd and "exit=0" in result_str:
+                            _cicd_phase_state["decide"] = True
+                            # Extract issue number from gh output
+                            _issue_match = re.search(
+                                r'issues/(\d+)|#(\d+)|Issue #(\d+)', result_str
+                            )
+                            if _issue_match:
+                                _cicd_issue_number = next(
+                                    g for g in _issue_match.groups() if g
+                                )
+                                log.info("CICD phase: issue #%s filed",
+                                         _cicd_issue_number)
+                        if "git worktree add" in _cmd and "exit=0" in result_str:
+                            _cicd_phase_state["implement"] = True
+                            _branch_match = re.search(r'-b\s+(\S+)', _cmd)
+                            if _branch_match:
+                                _cicd_branch = _branch_match.group(1)
+                        if "gh pr create" in _cmd and "exit=0" in result_str:
+                            _pr_match = re.search(
+                                r'pull/(\d+)|#(\d+)', result_str
+                            )
+                            if _pr_match:
+                                _cicd_pr_number = next(
+                                    g for g in _pr_match.groups() if g
+                                )
+                                log.info("CICD phase: PR #%s opened",
+                                         _cicd_pr_number)
+                        if "gh pr merge" in _cmd and "exit=0" in result_str:
+                            _cicd_phase_state["track"] = True
+                        # Detect plan file writes via exec_command (cat/heredoc)
+                        if ("improvements/" in _cmd
+                                and ("cat >" in _cmd or "cat >>" in _cmd
+                                     or "echo" in _cmd or "tee" in _cmd)
+                                and "exit=0" in result_str):
+                            _cicd_phase_state["plan"] = True
+                            log.info("CICD phase: plan written via exec_command")
                         # Record cycle timestamp automatically
                         if _tracker:
                             try:
@@ -2171,6 +2266,34 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                     func_name, _result_repeats)
                         _emit("on_overtime", "repeated_result")
                         return "done"
+
+                    # Semantic result-loop detection: same tool returning same
+                    # result despite different arguments.
+                    _res_hash = hashlib.md5(
+                        result_str[:200].encode()
+                    ).hexdigest()[:8]
+                    _tool_result_key = (func_name, _res_hash)
+                    _recent_tool_results.append(_tool_result_key)
+                    if len(_recent_tool_results) > _RESULT_LOOP_WINDOW:
+                        _recent_tool_results.pop(0)
+                    _same_result_count = sum(
+                        1 for k in _recent_tool_results[-6:]
+                        if k == _tool_result_key
+                    )
+                    if _same_result_count >= _RESULT_LOOP_THRESHOLD:
+                        log.warning(
+                            "Semantic result loop: %s returned same result %d times",
+                            func_name, _same_result_count)
+                        conversation_history.append({
+                            "role": "user",
+                            "content": (
+                                f"SYSTEM: The {func_name} tool has returned the "
+                                f"same result {_same_result_count} times despite "
+                                f"different arguments. Your approach is not working. "
+                                f"Either try a completely different method, or accept "
+                                f"the current state and move on to the next step."
+                            ),
+                        })
 
                     if result_str.startswith("Error"):
                         consecutive = _result_repeats
