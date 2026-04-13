@@ -63,6 +63,8 @@ Claim the PR: `gh pr comment <N> --body "Picked up by CICD reviewer R-NNN. Verif
 
 ## Phase 3 — READ
 
+**Worktree path is critical — get it right the first time.** `<WORKTREE_ROOT>` is the "Worktree root" path from the session override at the bottom of this prompt. It is **NOT** inside the repo clone directory. Read the session override now if you haven't already.
+
 ```bash
 git fetch origin pull/<N>/head:review/pr-<N>
 git worktree add <WORKTREE_ROOT>/pr-<N> review/pr-<N>
@@ -80,7 +82,15 @@ Before verifying, check: Is the claim precise (metric + before/after + measureme
 
 ## Phase 4 — VERIFY
 
-**Step 1 — Test suite** from clean worktree. Run the project's test suite. All must pass. Compare count to PR's claimed before/after. Grep diff for new `skip`/`skipIf`/`skipUnless`.
+**Step 1 — Test suite** from clean worktree.
+
+First, identify which test files are relevant to the PR by examining the diff:
+```bash
+gh pr diff <N> --name-only
+```
+Run the **targeted tests first** (e.g. `pytest tests/test_search_files*.py` for a `search_files.py` change). If those pass, run the full suite. If the full suite has failures, **compare to the main branch baseline** — run the same suite on main and check if the failures are pre-existing. Only failures that are NEW (present on PR branch but not on main) count as regressions. Pre-existing failures (e.g. import errors in unrelated test files) are not caused by the PR and must not block the verdict.
+
+Compare test count to PR's claimed before/after. Grep diff for new `skip`/`skipIf`/`skipUnless`.
 
 **Step 2 — Metric re-measurement**: Run the plan's measurement command myself. Compare to claim:
 - Within 5% correct direction → verified
@@ -113,19 +123,26 @@ Exactly one verdict from the decision matrix:
 
 ## Phase 6 — ACT
 
-**MERGE**:
+**MERGE** — run each command separately, do NOT chain them:
 ```bash
 gh pr review <N> --approve --body "Verified in worktree. Tests: X/X. Metric: measured Y vs claimed Z. Merging."
+```
+Then separately:
+```bash
 gh pr ready <N>
+```
+Then separately (only after ready succeeds):
+```bash
 gh pr merge <N> --squash --delete-branch
 ```
 Post-merge: `git pull --ff-only origin main` then run test suite. If red → file regression issue (creator decides revert).
 
-**REQUEST_CHANGES** — fix it yourself before handing back:
+**REQUEST_CHANGES** — small fixes only, do NOT rewrite the PR:
 1. `gh pr review <N> --request-changes --body "..."` — cite exact file:line or test name, state what needs to change.
-2. **Attempt the fix** in the review worktree:
-   - Make the necessary edits to address the issues you identified.
-   - Run the full test suite to confirm the fix works.
+2. **Attempt a small, targeted fix** (≤20 lines changed) in the review worktree:
+   - Only fix the specific issue you identified (e.g. a missing import, a broken test assertion, a typo).
+   - Do NOT rewrite large sections of the PR's code. If the fix requires rewriting >20 lines, leave REQUEST_CHANGES standing and let the builder fix it.
+   - Run tests to confirm the fix works.
    - Commit with message: `CICD review R-NNN (#ISSUE): fix <what>`.
    - Push to the PR branch: `git push origin HEAD:<pr-branch-name>`.
 3. **Re-verify from scratch** — re-run tests + re-measure metric in the worktree after your fix.
@@ -181,7 +198,9 @@ Builder opens **draft** PRs. I promote to ready as part of merge. If builder pus
 <pinned>
 MANDATORY REVIEW WORKFLOW — every cycle MUST follow these steps:
 1. WORKTREE: `git fetch origin pull/<N>/head:review/pr-<N>` then `git worktree add <WORKTREE_ROOT>/pr-<N> review/pr-<N>`
-2. TEST: Run full test suite in the review worktree — all must pass
+2. TEST: Run targeted tests first (files related to the PR diff), then full suite.
+   If full suite has failures, compare to main baseline — only NEW failures block the verdict.
+   Pre-existing failures (e.g. import errors in unrelated tests) are NOT regressions.
 3. METRIC: Re-measure the claimed metric from the PR body
    - If measurement returns no useful result after 2 attempts → verdict is REQUEST_CHANGES
    - Never claim "metric verified" unless your measurement produced a comparable number

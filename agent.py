@@ -80,6 +80,8 @@ _cicd_phase_state = {}
 _cicd_issue_number = None
 _cicd_pr_number = None
 _cicd_branch = None
+_cicd_edited_files = set()  # tracks edited file paths to survive summary compression
+_cicd_worktree_path = None  # actual worktree path, captured on successful `git worktree add`
 
 
 def _extract_pinned(text):
@@ -587,10 +589,17 @@ def _format_for_summary(messages):
                 parts.append(f"ASSISTANT: {text}")
             for tc in tool_calls:
                 fn_info = tc.get("function", {})
+                fn_name = fn_info.get("name", "?")
                 args = fn_info.get("arguments", "")
+                # For file writes, extract and preserve the path before truncating
+                if fn_name == "file" and '"write"' in args:
+                    _path_m = re.search(r'"path"\s*:\s*"([^"]+)"', args)
+                    if _path_m:
+                        parts.append(f"ASSISTANT called file(action=write, path={_path_m.group(1)})")
+                        continue
                 if len(args) > 200:
                     args = args[:200] + "..."
-                parts.append(f"ASSISTANT called {fn_info.get('name', '?')}({args})")
+                parts.append(f"ASSISTANT called {fn_name}({args})")
         else:
             content = m.get("content", "")
             if len(content) > 800:
@@ -681,6 +690,24 @@ def _build_summary_prompt(old_summary, new_messages):
         "- Always preserve metric baselines and measurements.\n"
         "- Never summarize these as 'made changes' or 'worked on the issue' — be specific."
     )
+
+    # Inject CICD ground-truth state so the summarizer preserves it verbatim
+    cicd_facts = []
+    if _cicd_worktree_path:
+        cicd_facts.append(f"Worktree path: {_cicd_worktree_path}")
+    if _cicd_edited_files:
+        cicd_facts.append(f"Files already edited: {', '.join(sorted(_cicd_edited_files))}")
+    if _cicd_issue_number:
+        cicd_facts.append(f"Issue: #{_cicd_issue_number}")
+    if _cicd_pr_number:
+        cicd_facts.append(f"PR: #{_cicd_pr_number}")
+    if _cicd_branch:
+        cicd_facts.append(f"Branch: {_cicd_branch}")
+    if cicd_facts:
+        structure_instruction += (
+            "\n\nGROUND TRUTH (include verbatim in your summary under STATE):\n"
+            + "\n".join(f"- {f}" for f in cicd_facts)
+        )
 
     if old_summary:
         return (
@@ -868,6 +895,10 @@ def _build_context_footnote(summary_text, initial_files):
             phase_line += f"  PR: #{_cicd_pr_number}"
         if _cicd_branch:
             phase_line += f"  Branch: {_cicd_branch}"
+        if _cicd_worktree_path:
+            phase_line += f"\nWorktree path: {_cicd_worktree_path} (ALL file edits and commands MUST target this path, not the repo clone)"
+        if _cicd_edited_files:
+            phase_line += f"\nFiles already edited (DO NOT re-verify — move to commit/push): {', '.join(sorted(_cicd_edited_files))}"
         parts.append(phase_line)
     return {"role": "user", "content": "\n\n".join(parts)}
 
@@ -1606,7 +1637,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
     # CICD phase tracking — module-level globals so _build_context_message()
     # can inject them into every context window, surviving summary compression.
-    global _cicd_phase_state, _cicd_issue_number, _cicd_pr_number, _cicd_branch
+    global _cicd_phase_state, _cicd_issue_number, _cicd_pr_number, _cicd_branch, _cicd_edited_files, _cicd_worktree_path
     _cicd_phase_state = {
         "perceive": False,
         "probe": False,
@@ -1619,6 +1650,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _cicd_issue_number = None
     _cicd_pr_number = None
     _cicd_branch = None
+    _cicd_think_used = False  # reset each cycle; set True when think() is called
+    _cicd_edited_files = set()  # reset each cycle
+    _cicd_worktree_path = None  # reset each cycle
+    _cicd_pr_ready_called = False  # tracks whether `gh pr ready` was called before merge
 
     _async_summarizer = async_summarizer
 
@@ -1900,16 +1935,21 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 "i have completed", "has been achieved", "goal of making",
                 "work is done", "task is complete", "actions taken",
                 "successfully created pull request", "created a pull request",
+                "has been completed", "process is complete",
+                "no more open pull requests", "no reviewable prs",
+                "standing by", "all tasks", "queue: empty",
             )
-            # Completion signals are only trusted after a commit has landed —
-            # prevents the agent from declaring "done" before persisting work.
+            # Completion signals are trusted after a commit OR a successful
+            # merge (reviewer role).  _cicd_phase_state["track"] is set when
+            # `gh pr merge` exits 0.
+            _has_persisted_work = _has_committed or _cicd_phase_state.get("track", False)
             # During post-persist grace period, also suppress (TRACK work pending).
             _in_grace = _cycle_persisted and (turn - (_cycle_persisted_turn or turn)) < _CYCLE_GRACE_TURNS
-            if _has_committed and not _in_grace and full_content and any(s in full_content.lower() for s in _completion_signals):
-                log.info("Stopping: model signalled cycle completion (commit detected)")
+            if _has_persisted_work and not _in_grace and full_content and any(s in full_content.lower() for s in _completion_signals):
+                log.info("Stopping: model signalled cycle completion (work persisted)")
                 return "done"
-            if not _has_committed and full_content and any(s in full_content.lower() for s in _completion_signals):
-                log.info("Ignoring completion signal — no commit yet, nudging to continue")
+            if not _has_persisted_work and full_content and any(s in full_content.lower() for s in _completion_signals):
+                log.info("Ignoring completion signal — no persisted work yet, nudging to continue")
 
             _consecutive_text_only += 1
 
@@ -2106,6 +2146,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
                     log.debug("TOOL CALL: %s(%s) [id=%s]", func_name, json.dumps(func_args), tool_id)
 
+                    # Track think tool usage for CICD phase-gate enforcement
+                    if func_name == "think":
+                        _cicd_think_used = True
+
                     # Tools that do their own streaming (think) handle
                     # their own console output — don't wrap them in a spinner.
                     # Under NO_COLOR / no-TTY, CLEAR_LINE is empty, so the
@@ -2176,8 +2220,34 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         if not _has_edited:
                             log.info("First file edit detected at turn %d", turn)
                         _has_edited = True
-                        # Detect improvement plan writes for CICD phase tracking
+                        # Track edited file paths for CICD context injection
                         _file_path = func_args.get("path", "")
+                        if _file_path:
+                            _cicd_edited_files.add(_file_path)
+
+                        # Worktree guard: if a worktree exists and the file
+                        # write targets the repo clone instead, inject a
+                        # correction so the model redirects immediately.
+                        if _cicd_worktree_path and _file_path:
+                            _abs_file = str(Path(_file_path).resolve())
+                            _abs_wt = str(Path(_cicd_worktree_path).resolve())
+                            _abs_cwd = str(Path.cwd().resolve())
+                            if (_abs_file.startswith(_abs_cwd)
+                                    and not _abs_file.startswith(_abs_wt)):
+                                _rel = os.path.relpath(_abs_file, _abs_cwd)
+                                _correct = os.path.join(_cicd_worktree_path, _rel)
+                                log.warning("CICD: file write targets repo clone (%s), not worktree (%s)",
+                                            _file_path, _correct)
+                                conversation_history.append({
+                                    "role": "user",
+                                    "content": (
+                                        f"[SYSTEM: WRONG PATH! You wrote to '{_file_path}' which is "
+                                        f"inside the repo clone. Your worktree is at "
+                                        f"'{_cicd_worktree_path}'. You MUST write to "
+                                        f"'{_correct}' instead. Re-do this edit targeting "
+                                        f"the worktree path now.]"
+                                    ),
+                                })
                         if "improvements/" in _file_path and _file_path.endswith(".md"):
                             _cicd_phase_state["plan"] = True
                             log.info("CICD phase: plan written to %s", _file_path)
@@ -2205,7 +2275,16 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             if _cicd_phase_state["perceive"]:
                                 _cicd_phase_state["probe"] = True
                         if "gh issue create" in _cmd and "exit=0" in result_str:
+                            if not _cicd_think_used:
+                                log.warning("CICD: gh issue create without think — injecting reminder")
+                                conversation_history.append({
+                                    "role": "user",
+                                    "content": "[SYSTEM: You filed an issue without using the think tool first. "
+                                    "Per MANDATORY THINK before DECIDE, you must call think() to evaluate "
+                                    "your candidate before filing. Use think now to validate this was the right choice.]",
+                                })
                             _cicd_phase_state["decide"] = True
+                            _cicd_think_used = False  # reset for next gate (verdict)
                             # Extract issue number from gh output
                             _issue_match = re.search(
                                 r'issues/(\d+)|#(\d+)|Issue #(\d+)', result_str
@@ -2218,6 +2297,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                          _cicd_issue_number)
                         if "git worktree add" in _cmd and "exit=0" in result_str:
                             _cicd_phase_state["implement"] = True
+                            _wt_path_match = re.search(r'git\s+worktree\s+add\s+(\S+)', _cmd)
+                            if _wt_path_match:
+                                _cicd_worktree_path = _wt_path_match.group(1)
+                                log.info("CICD: worktree path captured: %s", _cicd_worktree_path)
                             _branch_match = re.search(r'-b\s+(\S+)', _cmd)
                             if _branch_match:
                                 _cicd_branch = _branch_match.group(1)
@@ -2231,8 +2314,48 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 )
                                 log.info("CICD phase: PR #%s opened",
                                          _cicd_pr_number)
-                        if "gh pr merge" in _cmd and "exit=0" in result_str:
-                            _cicd_phase_state["track"] = True
+                        if "gh pr review" in _cmd and "--approve" in _cmd:
+                            if not _cicd_think_used:
+                                log.warning("CICD: gh pr review --approve without think — injecting reminder")
+                                conversation_history.append({
+                                    "role": "user",
+                                    "content": "[SYSTEM: You approved a PR without using the think tool first. "
+                                    "Per MANDATORY THINK before VERDICT, call think() to check: "
+                                    "did tests pass? was the metric measured? is the issue reference valid? "
+                                    "is the diff in-scope? Proceed with merge only after thinking.]",
+                                })
+                        if "gh pr ready" in _cmd and "exit=0" in result_str:
+                            _cicd_pr_ready_called = True
+                            log.info("CICD: gh pr ready called")
+                        if "gh pr merge" in _cmd:
+                            # Guard: must use --squash --delete-branch
+                            if "--squash" not in _cmd:
+                                log.warning("CICD: gh pr merge without --squash — injecting reminder")
+                                conversation_history.append({
+                                    "role": "user",
+                                    "content": "[SYSTEM: You MUST use `gh pr merge --squash --delete-branch`. "
+                                    "Never use --merge or --rebase. Retry with --squash --delete-branch.]",
+                                })
+                            # Guard: must call `gh pr ready` first (draft PRs)
+                            if not _cicd_pr_ready_called and "exit=0" not in result_str:
+                                if "still a draft" in result_str.lower():
+                                    log.warning("CICD: gh pr merge on draft — need gh pr ready first")
+                                    conversation_history.append({
+                                        "role": "user",
+                                        "content": "[SYSTEM: The PR is still a draft. You must run "
+                                        "`gh pr ready <N>` FIRST, then run `gh pr merge <N> --squash "
+                                        "--delete-branch` as a SEPARATE command. Do NOT chain them.]",
+                                    })
+                            if not _cicd_think_used and "exit=0" not in result_str:
+                                log.warning("CICD: gh pr merge without think — injecting reminder")
+                                conversation_history.append({
+                                    "role": "user",
+                                    "content": "[SYSTEM: You attempted to merge without using the think tool first. "
+                                    "Per MANDATORY THINK before VERDICT, you must call think() to verify "
+                                    "tests passed, metric was measured, and issue reference is valid.]",
+                                })
+                            if "exit=0" in result_str:
+                                _cicd_phase_state["track"] = True
                         # Detect plan file writes via exec_command (cat/heredoc)
                         if ("improvements/" in _cmd
                                 and ("cat >" in _cmd or "cat >>" in _cmd

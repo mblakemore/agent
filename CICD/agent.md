@@ -53,7 +53,7 @@ Every turn costs time and context. Minimize turns by:
 
 Use `task_tracker` throughout the cycle to track progress. This prevents repeating work and survives context window resets.
 
-At the start, create tasks for each phase:
+**First**, call `task_tracker(action="list")` to see what already exists. **If any tasks exist, DO NOT add new ones** — use the existing task IDs. Only add the standard tasks if the list is completely empty:
 ```
 task_tracker(action="add", description="PERCEIVE: gather repo state, issues, test status")
 task_tracker(action="add", description="DECIDE: pick issue, state metric and done-when")
@@ -62,24 +62,26 @@ task_tracker(action="add", description="VERIFY: tests green + metric improved")
 task_tracker(action="add", description="TRACK: results file, progress row, PR, issue comment")
 ```
 
-Mark each task `done` as you complete it. Before starting any work, call `task_tracker(action="list")` to see what's already been done — do not repeat completed tasks. When investigating an issue, mark it done once verified (pass or fail) so you don't re-check it.
+Mark each task `done` as you complete it: `task_tracker(action="done", task_id=N)`. Before starting any work, always call `task_tracker(action="list")` first. **NEVER add duplicate tasks.** If you see tasks already exist with similar descriptions, use those IDs — do not create new ones.
 
 ## Phase 1 — PERCEIVE
 
+**Batch these commands in ONE turn** — do not split across multiple turns:
 ```bash
-git fetch origin && git status && git log --oneline -20
-gh issue list --state open --limit 50 --json number,title,labels,updatedAt
-gh issue list --state open --label bug --label cicd --limit 20
-gh issue list --state closed --limit 20 --search "updated:>$(date -d '7 days ago' +%Y-%m-%d)"
+git fetch origin && git status && git log --oneline -10 && \
+gh issue list --state open --label cicd --limit 20 --json number,title,labels,updatedAt && \
+gh pr list --state open --limit 10 --json number,title,isDraft,headRefName,labels
 ```
 
-Run the project's test suite to check current health. Look for a `Makefile`, `pytest.ini`, `package.json` (scripts.test), or similar to determine the correct test command. Common patterns:
+Then in a second turn, run the test suite. Look for a `Makefile`, `pytest.ini`, `package.json` (scripts.test), or similar to determine the correct test command. Common patterns:
 - Python: `python3 -m pytest` or `python3 -m unittest discover tests`
 - Node: `npm test`
 - Go: `go test ./...`
 - Rust: `cargo test`
 
-Read: CICD state `progress.md`, recent 2-3 improvement plans, open issues (especially `bug`/`cicd`/`regression`), project README.
+Read: CICD state `progress.md`, recent 2-3 improvement plans, project README.
+
+Also check for open PRs to avoid racing a parallel cycle — if an open PR already fixes the issue you're considering, skip it.
 
 If tests are red on `main`, that IS the improvement — skip PROBE, file a bug issue, go to PLAN.
 
@@ -132,10 +134,11 @@ Write the improvement plan to the CICD state directory: `<CICD_STATE>/improvemen
 
 ## Phase 6 — IMPLEMENT
 
-Create a worktree from the cloned repo:
+**Worktree path is critical — get it right the first time:**
 ```bash
 git worktree add <WORKTREE_ROOT>/NNN-slug -b cicd/NNN-slug
 ```
+`<WORKTREE_ROOT>` is the "Worktree root" path from the session override at the bottom of this prompt. It is **NOT** inside the repo clone directory. Read the session override now if you haven't already.
 
 Work in the worktree. Small reviewable commits: `CICD NNN (#ISSUE): <step>`.
 

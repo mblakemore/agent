@@ -94,12 +94,19 @@ class TestExecCommandReadWriteEncoding(unittest.TestCase):
 class TestSearchFilesReadEncoding(unittest.TestCase):
 
     def test_search_files_read_uses_utf8(self):
-        """Static: search_files.py file read_text must use encoding='utf-8'."""
+        """Static: search_files.py file I/O must use encoding='utf-8'."""
         src = _src(SEARCH_FILES_PY)
+        # search_files.py may use read_text() or open() — either is fine as
+        # long as encoding='utf-8' and errors='ignore' are passed.
         self.assertIn(
-            "file_path.read_text(encoding='utf-8', errors='ignore')",
+            "encoding='utf-8'",
             src,
-            "search_files.py read_text must pass encoding='utf-8', errors='ignore'",
+            "search_files.py must pass encoding='utf-8' to file reads",
+        )
+        self.assertIn(
+            "errors='ignore'",
+            src,
+            "search_files.py must pass errors='ignore' to file reads",
         )
 
 
