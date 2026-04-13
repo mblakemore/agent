@@ -77,6 +77,15 @@ elif [[ -f "go.mod" ]]; then
     go mod download 2>/dev/null || echo "    (go mod download failed)"
 elif [[ -f "Cargo.toml" ]]; then
     cargo fetch 2>/dev/null || echo "    (cargo fetch failed)"
+elif ls *.py tests/*.py 2>/dev/null | head -1 | grep -q .; then
+    # Python repo without a manifest — create a minimal venv with pytest
+    python3 -m venv "${SESSION_DIR}/.venv" 2>/dev/null && {
+        # shellcheck disable=SC1091
+        . "${SESSION_DIR}/.venv/bin/activate"
+        pip install --quiet --upgrade pip 2>/dev/null || true
+        pip install --quiet pytest 2>/dev/null || true
+        echo "    Python venv (pytest only): ${SESSION_DIR}/.venv"
+    } || echo "    (venv creation failed — skipping Python deps)"
 else
     echo "    (no recognized dependency file — skipping)"
 fi

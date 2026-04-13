@@ -1685,6 +1685,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         tool_calls_by_index = {}
         printed_header = False
         receiving_tools = False
+        _stream_deadline = time.monotonic() + 600  # 10 minute wall-clock cap
         status = StreamStatus(emit=_emit)
         status.start("\nAssistant: ")
         renderer = _ReasoningRenderer(lambda t: _emit("on_stream_chunk", t))
@@ -1694,6 +1695,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 for raw_line in response.iter_lines(decode_unicode=False):
                     line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
                     check_cancelled()
+                    if time.monotonic() > _stream_deadline:
+                        log.warning("Streaming wall-clock deadline exceeded (600s) — aborting response")
+                        response.close()
+                        break
                     if not line or not line.startswith("data: "):
                         continue
                     payload = line[len("data: "):]
