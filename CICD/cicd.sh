@@ -56,6 +56,10 @@ echo "==> Cloning ${REPO_URL} to ${CLONE_DIR}"
 git clone "${REPO_URL}" "${CLONE_DIR}"
 cd "${CLONE_DIR}"
 
+# Record system python before any venv activation so agent.py always runs
+# with the host interpreter (which has `requests` etc.).
+SYSTEM_PYTHON3="$(command -v python3)"
+
 # ── Bootstrap dependencies ────────────────────────────────────────────
 # Attempt to install project dependencies so the agent has a working
 # test environment.  Failures are non-fatal — the agent can still run.
@@ -92,9 +96,6 @@ fi
 
 # ── Build override message ────────────────────────────────────────────
 # Tell the agent the real paths so it doesn't use template placeholders.
-# Record system python BEFORE any venv activation so agent.py always runs
-# with the host interpreter (which has `requests` etc.).
-SYSTEM_PYTHON3="$(command -v python3)"
 VENV_NOTE=""
 if [[ -d "${SESSION_DIR}/.venv" ]]; then
     export PATH="${SESSION_DIR}/.venv/bin:${PATH}"
