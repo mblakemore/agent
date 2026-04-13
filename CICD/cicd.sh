@@ -92,7 +92,9 @@ fi
 
 # ── Build override message ────────────────────────────────────────────
 # Tell the agent the real paths so it doesn't use template placeholders.
-# If a venv was created, export its PATH so agent subprocesses use it
+# Record system python BEFORE any venv activation so agent.py always runs
+# with the host interpreter (which has `requests` etc.).
+SYSTEM_PYTHON3="$(command -v python3)"
 VENV_NOTE=""
 if [[ -d "${SESSION_DIR}/.venv" ]]; then
     export PATH="${SESSION_DIR}/.venv/bin:${PATH}"
@@ -121,7 +123,7 @@ REVIEWER_MD="$(sed 's/@\([a-zA-Z./]\)/\1/g' "${CICD_HOME}/reviewer.md")"
 
 # ── Run builder ───────────────────────────────────────────────────────
 echo "==> Running CICD builder agent"
-python3 "${AGENT_PY}" -a --verbose --nudge "${AGENT_MD}
+"${SYSTEM_PYTHON3}" "${AGENT_PY}" -a --verbose --nudge "${AGENT_MD}
 
 ${OVERRIDE}
 
@@ -129,7 +131,7 @@ Follow the instructions and continue!"
 
 # ── Run reviewer ──────────────────────────────────────────────────────
 echo "==> Running CICD reviewer agent"
-python3 "${AGENT_PY}" -a --verbose --nudge "${REVIEWER_MD}
+"${SYSTEM_PYTHON3}" "${AGENT_PY}" -a --verbose --nudge "${REVIEWER_MD}
 
 ${OVERRIDE}
 
