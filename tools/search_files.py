@@ -58,6 +58,8 @@ def fn(
     truncated = False
 
     for file_path in sorted(search_path.rglob(glob)):
+        if truncated:
+            break
         if not file_path.is_file():
             continue
         rel = str(file_path.relative_to(search_path))
@@ -86,11 +88,6 @@ def fn(
                 continue
 
             if context == 0:
-                # In this case we just need the hit lines. We can read the file again
-                # or we could have stored the lines in Pass 1. Since we want 
-                # to avoid storing the whole file, reading again for hits 
-                # is fine if we only keep the hit lines.
-                # Actually, let's just read the file again and pick the hit_nums.
                 with file_path.open(encoding='utf-8', errors='ignore') as f:
                     for line_num, line in enumerate(f, 1):
                         if line_num in hit_nums:
@@ -111,7 +108,6 @@ def fn(
                         windows.append([lo, hi])
                 
                 hit_set = set(hit_nums)
-                # PASS 2: Extract lines for the merged windows.
                 with file_path.open(encoding='utf-8', errors='ignore') as f:
                     window_idx = 0
                     current_group: list[str] = []
@@ -123,12 +119,10 @@ def fn(
                         if line_num < lo:
                             continue
                         if line_num > hi:
-                            # End of current window, save it and move to next
                             if current_group:
                                 context_groups.append(current_group)
                             current_group = []
                             window_idx += 1
-                            # The current line might be in the next window
                             while window_idx < len(windows) and line_num > windows[window_idx][1]:
                                 window_idx += 1
                             if window_idx >= len(windows):
@@ -137,21 +131,22 @@ def fn(
                             if line_num < lo:
                                 continue
                         
-                        # Line is within the current window
                         text_line = line.rstrip()
                         if line_num in hit_set:
                             current_group.append(f"{rel}:{line_num}: {text_line}")
                         else:
                             current_group.append(f"{rel}-{line_num}- {text_line}")
                     
-                    # Save the last group if it exists
                     if current_group:
                         context_groups.append(current_group)
+                
+                # Truncate context groups if we've exceeded the limit
+                if len(context_groups) > _MAX_RESULTS:
+                    context_groups = context_groups[:_MAX_RESULTS]
+                    truncated = True
 
-            if not count_only and total_matches >= _MAX_RESULTS:
+            if not count_only and (len(match_lines) >= _MAX_RESULTS or len(context_groups) >= _MAX_RESULTS):
                 truncated = True
-                # Note: we continue searching other files unless we've hit a hard limit,
-                # but we mark as truncated.
 
         except Exception:
             continue
@@ -198,6 +193,7 @@ definition = {
             "code, search memory files, review past cycle logs, or locate "
             "specific content across the project. Prefer this over reading "
             "whole files when you only need to look at a handful of matches. "
+            "Pass count_only=true when you only need to look at a handful of matches. "
             "Pass count_only=true when you only need a match count (e.g. "
             "how many TODOs, test methods, or call sites) — returns just the "
             "summary line without match content. "
@@ -221,7 +217,7 @@ definition = {
                         "mode is usually an empty temp dir — pass the "
                         "absolute path to the directory you actually want "
                         "to search whenever you know it."
-                    ),
+                        ),
                     "default": ".",
                 },
                 "glob": {
@@ -242,7 +238,7 @@ definition = {
                         "Disjoint groups are separated by '--'. Capped at 20. "
                         "Default 3 — pass 0 only if you want the legacy "
                         "bare-match shape."
-                    ),
+                        ),
                     "default": 3,
                     "minimum": 0,
                 },
@@ -252,7 +248,7 @@ definition = {
                         "Return only the match count summary (files searched, "
                         "files matched, total matches) without the match lines "
                         "themselves. Use this when you only need to know how many matches exist, not where they are. Default: false."
-                    ),
+                        ),
                     "default": False,
                 },
             },
