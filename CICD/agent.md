@@ -196,7 +196,21 @@ done
 *"One cycle. One number. One branch. Green, measured, tracked."*
 
 <pinned>
-MANDATORY WORKFLOW — every cycle MUST follow these steps in order:
+PHASE GATES — you MUST complete these in order. Do NOT skip any:
+- PERCEIVE: git fetch, check issues, run tests on main
+- PROBE: Examine code for improvement targets
+- DECIDE: File a GitHub issue with `gh issue create`. You MUST have a real issue number before proceeding.
+- PLAN: Write improvement plan to <CICD_STATE>/improvements/NNN-slug.md
+- IMPLEMENT: Create worktree, edit code, commit, push, open PR
+- VERIFY/TRACK: Run tests, write results, append progress row
+
+NULL RESULT — file a null result and stop if:
+- After 20 turns of PROBE, no issue with a measurable metric has been identified
+- The best candidate is a style/preference change with no measurable improvement
+- The change would require special-casing or hardcoding
+A null result is a valid outcome. Do not force a change.
+
+MANDATORY IMPLEMENTATION WORKFLOW:
 1. WORKTREE: `git worktree add <WORKTREE_ROOT>/NNN-slug -b cicd/NNN-slug` — NEVER edit the parent checkout directly.
    <WORKTREE_ROOT> is the "Worktree root" path from the session override. NEVER create worktrees inside the repo clone directory.
 2. EDIT: Make changes ONLY inside the worktree directory
@@ -205,7 +219,7 @@ MANDATORY WORKFLOW — every cycle MUST follow these steps in order:
 5. TEST: Run full test suite inside the worktree — all must pass
 6. PUSH: `git push -u origin cicd/NNN-slug`
 7. PR: `gh pr create --draft --base main --head cicd/NNN-slug --title "CICD NNN: <slug> (#ISSUE)" --body "Summary... Closes #ISSUE"`
-   The body MUST contain "Closes #N" to auto-close the issue on merge. Never omit this trailer.
+   The body MUST contain "Closes #N" with a REAL issue number. Never use placeholder text like "#ISSUE".
 8. TRACK: Write results file, append progress row, comment on issue
 
 If you skip any step, the cycle is INCOMPLETE. Do not mark tasks as done until the git workflow is finished.

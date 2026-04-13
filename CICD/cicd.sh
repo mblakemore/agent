@@ -43,6 +43,8 @@ STAMP="$(date +%Y%m%d_%H%M%S)"
 SESSION_DIR="${WORKSPACE}/temp/${STAMP}"
 CLONE_DIR="${SESSION_DIR}/repo"
 WORKTREE_ROOT="${SESSION_DIR}/worktrees"
+export WORKTREE_ROOT
+export CICD_MODE=1
 
 mkdir -p "${WORKTREE_ROOT}"
 
