@@ -17,6 +17,11 @@ def _load_tasks():
     except (json.JSONDecodeError, IOError):
         return []
 
+def get_tasks():
+    """Return the current list of tasks."""
+    return _load_tasks()
+
+
 
 def _save_tasks(tasks):
     p = Path(_TASKS_FILE)

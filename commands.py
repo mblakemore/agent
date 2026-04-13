@@ -18,6 +18,8 @@ from typing import Callable
 
 import theme
 from callbacks import safe_cb
+from tools.task_tracker import get_tasks
+
 
 
 def _warn_extra_args(ctx: SimpleNamespace, verb: str, args: str) -> None:
@@ -36,6 +38,7 @@ def _cmd_help(ctx: SimpleNamespace, args: str) -> None:
         "  /model         — pick a different model from the server",
         "  /verbose       — toggle compact/full tool output",
         "  /tools [N|all] — show buffered tool calls (default: all; N = last N only)",
+        "  /phase         — show current phase checkpoint",
         "  exit/quit      — end the session",
     ]
     ctx.cb._print("\n".join(lines))
@@ -104,6 +107,27 @@ def _cmd_tools(ctx: SimpleNamespace, args: str) -> None:
     ctx.cb._print(ctx.cb.render_tools(limit=limit))
 
 
+def _cmd_phase(ctx: SimpleNamespace, args: str) -> None:
+    _warn_extra_args(ctx, "/phase", args)
+    phases = ["PERCEIVE", "PROBE", "DECIDE", "PLAN", "IMPLEMENT", "VERIFY", "TRACK"]
+    try:
+        tasks = get_tasks()
+    except Exception as e:
+        ctx.cb._print(f"Error loading tasks: {e}")
+        return
+    
+    results = []
+    for phase in phases:
+        is_done = any(
+            phase.lower() in t.get("description", "").lower() 
+            and t.get("status") == "done" 
+            for t in tasks
+        )
+        results.append(f"{phase} {'✓' if is_done else '✗'}")
+    
+    ctx.cb._print("PHASE CHECKPOINT: " + " | ".join(results))
+
+
 _COMMANDS: dict[str, Callable[[SimpleNamespace, str], None]] = {
     "/help": _cmd_help,
     "/clear": _cmd_clear,
@@ -111,6 +135,7 @@ _COMMANDS: dict[str, Callable[[SimpleNamespace, str], None]] = {
     "/model": _cmd_model,
     "/verbose": _cmd_verbose,
     "/tools": _cmd_tools,
+    "/phase": _cmd_phase,
 }
 
 
