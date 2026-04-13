@@ -1752,6 +1752,22 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             log.info("CANCELLED during streaming")
             # Keep partial history so caller can inject user guidance
             return "cancelled"
+        except requests.exceptions.RequestException as e:
+            renderer.flush()
+            status.finish()
+            response.close()
+            log.error("Streaming connection lost: %s", e)
+            _emit("on_error", f"Streaming error: {e}")
+            # Treat as empty response — the text-only handler will nudge or stop
+        except Exception as e:
+            renderer.flush()
+            status.finish()
+            try:
+                response.close()
+            except Exception:
+                pass
+            log.error("Unexpected error during streaming: %s", e, exc_info=True)
+            _emit("on_error", f"Streaming error: {e}")
 
         renderer.flush()
         if content_parts and not receiving_tools:
