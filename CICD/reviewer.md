@@ -38,7 +38,7 @@ Paths are provided in the session override at the end of this prompt. The layout
 ```bash
 git fetch origin && git status && git log --oneline -20
 gh pr list --state open --limit 30 --json number,title,isDraft,headRefName,labels,updatedAt,mergeable
-gh pr list --state merged --limit 10
+gh pr list --state merged --limit 10 --json number,title,state
 ```
 
 Read: CICD state `reviews.md`, `progress.md`, recent improvement plans.
@@ -69,6 +69,12 @@ git worktree add <WORKTREE_ROOT>/pr-<N> review/pr-<N>
 ```
 
 Read in order: PR body → linked plan → results file → full diff (`gh pr diff <N>`) → linked issue.
+
+**Important:** Always use `--json` with `gh pr view` to avoid GraphQL deprecation errors:
+```bash
+gh pr view <N> --json title,body,number,headRefName,labels,mergeable
+```
+Never use bare `gh pr view <N>` — it will fail.
 
 Before verifying, check: Is the claim precise (metric + before/after + measurement command)? Is the diff in-scope per plan's `In:` list? Does it actually address the linked issue?
 
@@ -110,7 +116,7 @@ Exactly one verdict from the decision matrix:
 **MERGE**:
 ```bash
 gh pr review <N> --approve --body "Verified in worktree. Tests: X/X. Metric: measured Y vs claimed Z. Merging."
-gh pr ready <N> 2>/dev/null || true
+gh pr ready <N>
 gh pr merge <N> --squash --delete-branch
 ```
 Post-merge: `git pull --ff-only origin main` then run test suite. If red → file regression issue (creator decides revert).
@@ -178,8 +184,9 @@ MANDATORY REVIEW WORKFLOW — every cycle MUST follow these steps:
 2. TEST: Run full test suite in the review worktree — all must pass
 3. METRIC: Re-measure the claimed metric from the PR body
 4. VERDICT: Apply decision matrix — exactly one of MERGE/REQUEST_CHANGES/CLOSE/DEFER
-5. ACT (merge): `gh pr ready <N> && gh pr merge <N> --squash --delete-branch`
+5. ACT (merge): `gh pr ready <N>` then `gh pr merge <N> --squash --delete-branch`
    NEVER use --merge or --rebase. ALWAYS --squash --delete-branch.
+   NEVER chain with `|| true` — it swallows errors and causes merge to fail on still-draft PRs.
 6. TRACK: Append row to reviews.md (local file, do NOT git commit), cleanup worktree
 
 Never skip the worktree. Never skip independent verification. Never merge without testing.
