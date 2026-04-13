@@ -2,7 +2,7 @@
 
 import re
 from pathlib import Path
-
+from collections import deque
 
 _MAX_RESULTS = 100
 _MAX_CONTEXT = 20
@@ -68,63 +68,93 @@ def fn(
 
         files_searched += 1
         try:
-            text = file_path.read_text(encoding='utf-8', errors='ignore')
-        except Exception:
-            continue
+            # PASS 1: Find all hit line numbers in the file.
+            hit_nums: list[int] = []
+            with file_path.open(encoding='utf-8', errors='ignore') as f:
+                for line_num, line in enumerate(f, 1):
+                    if regex.search(line):
+                        hit_nums.append(line_num)
+            
+            if not hit_nums:
+                continue
 
-        lines = text.splitlines()
-        hit_nums: list[int] = []
-        for line_num, line in enumerate(lines, 1):
-            if regex.search(line):
-                hit_nums.append(line_num)
-                if not count_only and total_matches + len(hit_nums) >= _MAX_RESULTS:
-                    break
+            files_matched += 1
+            num_hits = len(hit_nums)
+            total_matches += num_hits
 
-        if not hit_nums:
-            continue
+            if count_only:
+                continue
 
-        files_matched += 1
+            if context == 0:
+                # In this case we just need the hit lines. We can read the file again
+                # or we could have stored the lines in Pass 1. Since we want 
+                # to avoid storing the whole file, reading again for hits 
+                # is fine if we only keep the hit lines.
+                # Actually, let's just read the file again and pick the hit_nums.
+                with file_path.open(encoding='utf-8', errors='ignore') as f:
+                    for line_num, line in enumerate(f, 1):
+                        if line_num in hit_nums:
+                            match_lines.append(f"{rel}:{line_num}: {line.rstrip()}")
+                            if len(match_lines) >= _MAX_RESULTS:
+                                truncated = True
+                                break
+            else:
+                # Merge overlapping windows
+                windows: list[list[int]] = []
+                for n in hit_nums:
+                    lo = max(1, n - context)
+                    hi = n + context
+                    if windows and lo <= windows[-1][1] + 1:
+                        if hi > windows[-1][1]:
+                            windows[-1][1] = hi
+                    else:
+                        windows.append([lo, hi])
+                
+                hit_set = set(hit_nums)
+                # PASS 2: Extract lines for the merged windows.
+                with file_path.open(encoding='utf-8', errors='ignore') as f:
+                    window_idx = 0
+                    current_group: list[str] = []
+                    for line_num, line in enumerate(f, 1):
+                        if window_idx >= len(windows):
+                            break
+                        
+                        lo, hi = windows[window_idx]
+                        if line_num < lo:
+                            continue
+                        if line_num > hi:
+                            # End of current window, save it and move to next
+                            if current_group:
+                                context_groups.append(current_group)
+                            current_group = []
+                            window_idx += 1
+                            # The current line might be in the next window
+                            while window_idx < len(windows) and line_num > windows[window_idx][1]:
+                                window_idx += 1
+                            if window_idx >= len(windows):
+                                break
+                            lo, hi = windows[window_idx]
+                            if line_num < lo:
+                                continue
+                        
+                        # Line is within the current window
+                        text_line = line.rstrip()
+                        if line_num in hit_set:
+                            current_group.append(f"{rel}:{line_num}: {text_line}")
+                        else:
+                            current_group.append(f"{rel}-{line_num}- {text_line}")
+                    
+                    # Save the last group if it exists
+                    if current_group:
+                        context_groups.append(current_group)
 
-        if context == 0:
-            for n in hit_nums:
-                match_lines.append(f"{rel}:{n}: {lines[n - 1].rstrip()}")
-            total_matches += len(hit_nums)
             if not count_only and total_matches >= _MAX_RESULTS:
                 truncated = True
-                break
+                # Note: we continue searching other files unless we've hit a hard limit,
+                # but we mark as truncated.
+
+        except Exception:
             continue
-
-        # context > 0: build merged windows — skip entirely when count_only
-        if count_only:
-            total_matches += len(hit_nums)
-            continue
-
-        total = len(lines)
-        windows: list[list[int]] = []
-        for n in hit_nums:
-            lo = max(1, n - context)
-            hi = min(total, n + context)
-            if windows and lo <= windows[-1][1] + 1:
-                if hi > windows[-1][1]:
-                    windows[-1][1] = hi
-            else:
-                windows.append([lo, hi])
-
-        hit_set = set(hit_nums)
-        for lo, hi in windows:
-            group: list[str] = []
-            for n in range(lo, hi + 1):
-                text_line = lines[n - 1].rstrip()
-                if n in hit_set:
-                    group.append(f"{rel}:{n}: {text_line}")
-                else:
-                    group.append(f"{rel}-{n}- {text_line}")
-            context_groups.append(group)
-
-        total_matches += len(hit_nums)
-        if not count_only and total_matches >= _MAX_RESULTS:
-            truncated = True
-            break
 
     header = (
         f"[Searched '{resolved}' "
@@ -142,7 +172,7 @@ def fn(
             return (
                 header
                 + f"No files were searched under '{resolved}'. "
-                f"If you meant a different directory, pass path= with an absolute path."
+                + f"If you meant a different directory, pass path= with an absolute path."
             )
         return header + "No matches found."
 
@@ -194,7 +224,6 @@ definition = {
                 "glob": {
                     "type": "string",
                     "description": "File glob to filter, e.g. '*.py', '*.json', '*.md' (default: all files).",
-                    "default": "*",
                 },
                 "ignore_case": {
                     "type": "boolean",
@@ -219,8 +248,7 @@ definition = {
                     "description": (
                         "Return only the match count summary (files searched, "
                         "files matched, total matches) without the match lines "
-                        "themselves. Use this when you only need to know how "
-                        "many matches exist, not where they are. Default: false."
+                        "themselves. Use this when you only need to know how many matches exist, not where they are. Default: false."
                     ),
                     "default": False,
                 },
