@@ -203,7 +203,8 @@ MANDATORY WORKFLOW — every cycle MUST follow these steps in order:
 4. COMMIT: `git commit -m "CICD NNN (#ISSUE): <what>"` inside the worktree
 5. TEST: Run full test suite inside the worktree — all must pass
 6. PUSH: `git push -u origin cicd/NNN-slug`
-7. PR: `gh pr create --draft --base main --head cicd/NNN-slug --title "CICD NNN: <slug> (#ISSUE)"`
+7. PR: `gh pr create --draft --base main --head cicd/NNN-slug --title "CICD NNN: <slug> (#ISSUE)" --body "Summary... Closes #ISSUE"`
+   The body MUST contain "Closes #N" to auto-close the issue on merge. Never omit this trailer.
 8. TRACK: Write results file, append progress row, comment on issue
 
 If you skip any step, the cycle is INCOMPLETE. Do not mark tasks as done until the git workflow is finished.
