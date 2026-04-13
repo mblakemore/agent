@@ -20,7 +20,6 @@ nipype==1.11.0
 numpy==2.4.4
 packaging==26.0
 pandas==3.0.2
-pathlib==1.0.1
 pluggy==1.6.0
 prompt-toolkit==3.0.52
 prov==2.1.1
