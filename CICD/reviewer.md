@@ -190,13 +190,19 @@ MANDATORY REVIEW WORKFLOW — every cycle MUST follow these steps:
    - Extract issue number from PR body "Closes #N" — must be a real number, not placeholder text
    - Run: `gh issue view <N> --json state` — issue must exist
    - If issue doesn't exist or "Closes #N" is missing/placeholder → verdict is CLOSE per decision matrix
-5. VERDICT: Apply decision matrix — exactly one of MERGE/REQUEST_CHANGES/CLOSE/DEFER
-6. ACT (merge): `gh pr ready <N>` then `gh pr merge <N> --squash --delete-branch`
+5. MANDATORY THINK before VERDICT — use the think tool to check your evidence:
+   - Did my metric measurement produce a real, comparable number? (not "N/A" or "0 matches")
+   - Does the PR body reference a real issue number? (not placeholder text)
+   - Did ALL tests actually pass? (check the count matches expectations)
+   - Is the diff in-scope per the plan? Any stray changes?
+   If any check fails, the verdict MUST be REQUEST_CHANGES or CLOSE, not MERGE.
+6. VERDICT: Apply decision matrix — exactly one of MERGE/REQUEST_CHANGES/CLOSE/DEFER
+7. ACT (merge): `gh pr ready <N>` then `gh pr merge <N> --squash --delete-branch`
    NEVER use --merge or --rebase. ALWAYS --squash --delete-branch.
    NEVER chain with `|| true` — it swallows errors and causes merge to fail on still-draft PRs.
-7. TRACK: echo "| R-NNN | YYYY-MM-DD | #PR | #ISSUE | VERDICT | metric_result | PASS/FAIL | reason |" >> <CICD_STATE>/reviews.md
+8. TRACK: echo "| R-NNN | YYYY-MM-DD | #PR | #ISSUE | VERDICT | metric_result | PASS/FAIL | reason |" >> <CICD_STATE>/reviews.md
    Always APPEND with >>. Never overwrite. Do NOT git add or git commit reviews.md.
-8. CLEANUP: `git worktree remove <WORKTREE_ROOT>/pr-<N> --force && git branch -D review/pr-<N>`
+9. CLEANUP: `git worktree remove <WORKTREE_ROOT>/pr-<N> --force && git branch -D review/pr-<N>`
 
 Never skip the worktree. Never skip independent verification. Never merge without testing.
 </pinned>
