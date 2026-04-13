@@ -1586,6 +1586,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 f"Do not start anything new.]"
             )
             log.warning("Overtime: %d turns past limit (%d)", overtime, _MAX_TURNS)
+            # Hard cap: never exceed 2x the turn limit regardless of state
+            if overtime >= _MAX_TURNS:
+                log.error("Hard overtime cap reached (%d turns) — force stopping", turn)
+                return "done"
 
         # Harvest any completed async summary before building context
         if _async_summarizer and _async_summarizer.harvest(summary_state):
@@ -1687,8 +1691,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
         try:
             with cancellable():
-                    for raw_line in response.iter_lines(decode_unicode=False):
-                        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+                for raw_line in response.iter_lines(decode_unicode=False):
+                    line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
                     check_cancelled()
                     if not line or not line.startswith("data: "):
                         continue
