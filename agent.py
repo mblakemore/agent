@@ -664,7 +664,15 @@ def _build_summary_prompt(old_summary, new_messages):
         "FAILED: Approaches that failed and why (one line each).\n"
         "STATE: Current state in 1-2 sentences.\n"
         "NEXT: The single next action.\n"
-        "Be terse. Use file paths, not descriptions. No filler."
+        "Be terse. Use file paths, not descriptions. No filler.\n\n"
+        "CRITICAL PRESERVATION RULES:\n"
+        "- Always preserve EXACT file paths and line numbers that were modified.\n"
+        "- Always preserve the specific code change (e.g. 'added sys.stdout.reconfigure() to agent.py:main()').\n"
+        "- Always preserve git branch names, commit hashes, and PR numbers.\n"
+        "- Always preserve GitHub issue numbers and whether they were opened, closed, or commented on.\n"
+        "- Always preserve installed dependencies and environment setup steps.\n"
+        "- Always preserve metric baselines and measurements.\n"
+        "- Never summarize these as 'made changes' or 'worked on the issue' — be specific."
     )
 
     if old_summary:
@@ -1558,6 +1566,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # any work is actually persisted.
     _has_committed = False
 
+    # Track whether any file has been written/edited.  If no edit by turn 30,
+    # inject a nudge telling the agent to start coding or declare null result.
+    _has_edited = False
+    _EDIT_DEADLINE_TURN = 30
+    _edit_nudge_sent = False
+
     # Detect tool-call loops: same command signature repeated N times.
     _recent_tool_sigs = []  # list of (frozenset of (name, args_hash)) tuples
     _TOOL_LOOP_THRESHOLD = 3  # inject correction after 3 identical batches
@@ -1566,6 +1580,18 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
     while True:
         turn += 1
+
+        # ── Edit deadline nudge ──
+        if (turn == _EDIT_DEADLINE_TURN and not _has_edited
+                and not _edit_nudge_sent and _NUDGE_ENABLED):
+            _edit_nudge_sent = True
+            _edit_nudge = (
+                f"[SYSTEM: You have spent {turn} turns without making a code change. "
+                f"Create your worktree NOW and make your edit, or declare a null result. "
+                f"Do not continue investigating — act immediately.]"
+            )
+            conversation_history.append({"role": "user", "content": _edit_nudge})
+            log.warning("Edit deadline: %d turns with no file edit — nudging", turn)
 
         # ── Wind-down and overtime warnings ──
         remaining = _MAX_TURNS - turn
@@ -2101,11 +2127,18 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         "content": result_str,
                     })
 
+                    # Track file edits (file tool with action=write/create)
+                    if func_name == "file" and func_args.get("action") in ("write", "create"):
+                        if not _has_edited:
+                            log.info("First file edit detected at turn %d", turn)
+                        _has_edited = True
+
                     # Track commits and pushes through exec_command
                     if func_name == "exec_command":
                         _cmd = func_args.get("command", "")
                         if "git commit" in _cmd:
                             _has_committed = True
+                            _has_edited = True  # commit implies edit happened
                             log.info("Commit detected — completion signals now allowed")
                         if "git push" in _cmd:
                             if not _cycle_persisted:
