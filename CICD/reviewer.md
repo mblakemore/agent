@@ -134,7 +134,7 @@ Post-merge: `git pull --ff-only origin main` then run test suite. If red → fil
 
 Append to CICD state `reviews.md`: `| R-NNN | date | #PR | #ISSUE | verdict | metric? | tests | reason |`
 
-Commit directly to main: `git commit -m "CICD review R-NNN: #<PR> → <verdict>"`
+Note: `reviews.md` lives in the CICD state directory which is OUTSIDE the git repo clone. Do NOT attempt to `git add` or `git commit` it — just write the file directly. It is local tracking only.
 
 Cleanup:
 ```bash
@@ -162,7 +162,7 @@ Create `reviews.md` in CICD state directory with header table if missing. Pick `
 10. **Secrets → CLOSE immediately** + file issue. No negotiating.
 11. **Post-merge smoke test mandatory.** Fetch main, run tests, confirm green.
 12. **When in doubt, REQUEST_CHANGES** with a precise question.
-13. **Commit messages**: `CICD review R-NNN: #<PR> → <verdict>`.
+13. **reviews.md is local only** — it lives outside the repo clone. Never `git add` or `git commit` it.
 
 ## Interaction with Builder
 
@@ -180,7 +180,7 @@ MANDATORY REVIEW WORKFLOW — every cycle MUST follow these steps:
 4. VERDICT: Apply decision matrix — exactly one of MERGE/REQUEST_CHANGES/CLOSE/DEFER
 5. ACT (merge): `gh pr ready <N> && gh pr merge <N> --squash --delete-branch`
    NEVER use --merge or --rebase. ALWAYS --squash --delete-branch.
-6. TRACK: Append row to reviews.md, commit to main, cleanup worktree
+6. TRACK: Append row to reviews.md (local file, do NOT git commit), cleanup worktree
 
 Never skip the worktree. Never skip independent verification. Never merge without testing.
 </pinned>
