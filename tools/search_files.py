@@ -61,7 +61,7 @@ def fn(
         if not file_path.is_file():
             continue
         rel = str(file_path.relative_to(search_path))
-        if any(part.startswith(".") for part in file_path.parts if part != "."):
+        if any(part.startswith(".") for part in file_path.parts if part != "." and part != ".agent"):
             continue
         if "__pycache__" in rel or "node_modules" in rel:
             continue
