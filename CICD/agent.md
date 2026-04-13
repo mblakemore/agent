@@ -197,7 +197,8 @@ done
 
 <pinned>
 MANDATORY WORKFLOW — every cycle MUST follow these steps in order:
-1. WORKTREE: `git worktree add <WORKTREE_ROOT>/NNN-slug -b cicd/NNN-slug` — NEVER edit the parent checkout directly
+1. WORKTREE: `git worktree add <WORKTREE_ROOT>/NNN-slug -b cicd/NNN-slug` — NEVER edit the parent checkout directly.
+   <WORKTREE_ROOT> is the "Worktree root" path from the session override. NEVER create worktrees inside the repo clone directory.
 2. EDIT: Make changes ONLY inside the worktree directory
 3. COMPILE CHECK: `python3 -c "import py_compile; py_compile.compile('<file>', doraise=True)"`
 4. COMMIT: `git commit -m "CICD NNN (#ISSUE): <what>"` inside the worktree
