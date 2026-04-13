@@ -22,11 +22,13 @@ def _resolve_path(path):
         # Detect when the agent passes something like "droid/repos/project/e2/file"
         # which duplicates the cwd structure. Try to resolve it.
         try:
-            # Check if the relative path starts with parts of the cwd
-            if path.startswith(str(cwd)[1:]):  # e.g. "droid/repos/..." matching "/droid/repos/..."
-                # Strip the cwd prefix from the relative path
-                stripped = "/" + path
-                return Path(stripped)
+            cwd_str = str(cwd)
+            # Ensure we have a trailing slash to avoid prefix collisions with similar dir names
+            prefix = cwd_str[1:] if cwd_str.endswith('/') else cwd_str[1:] + '/'
+            if path.startswith(prefix):
+                # Strip the cwd prefix from the relative path and make it absolute
+                # We already know it starts with 'prefix', so we just prepend '/'
+                return Path("/" + path)
         except (ValueError, OSError):
             pass
     return p
