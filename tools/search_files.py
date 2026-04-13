@@ -156,14 +156,17 @@ def fn(
         except Exception:
             continue
 
+    display_count = total_matches
+    if not count_only and truncated:
+        display_count = _MAX_RESULTS
+
     header = (
         f"[Searched '{resolved}' "
-        f"({files_searched} files, {files_matched} matched, {total_matches} results)"
+        f"({files_searched} files, {files_matched} matched, {display_count} results)"
     )
     if truncated:
         header += " (truncated)"
     header += "]\n"
-
     if count_only:
         return header.rstrip("\n")
 
