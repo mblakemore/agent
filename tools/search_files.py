@@ -28,7 +28,7 @@ def fn(
             legacy bare-match shape.
         count_only: If True, return only the match count summary (files
             searched, files matched, total matches) without the match lines.
-            Use this when you only need to know how many matches exist.
+            Use this when you only need to know how many matches exist, not where they are.
     """
     if not pattern or not pattern.strip():
         return "Error: Search pattern cannot be empty."
@@ -72,6 +72,7 @@ def fn(
             continue
 
         files_searched += 1
+        file_has_match = False
         try:
             with file_path.open(encoding='utf-8', errors='ignore') as f:
                 if count_only:
@@ -87,12 +88,14 @@ def fn(
                 if context == 0:
                     for line_num, line in enumerate(f, 1):
                         if regex.search(line):
-                            files_matched += 1
+                            file_has_match = True
                             total_matches += 1
                             match_lines.append(f"{rel}:{line_num}: {line.rstrip()}")
                             if len(match_lines) >= _MAX_RESULTS:
                                 truncated = True
                                 break
+                    if file_has_match:
+                        files_matched += 1
                 else:
                     buffer = deque(maxlen=context)
                     current_group = []
@@ -103,7 +106,7 @@ def fn(
                         is_match = bool(regex.search(text_line))
                         
                         if is_match:
-                            files_matched += 1
+                            file_has_match = True
                             total_matches += 1
                             if not current_group:
                                 for b_num, b_text in buffer:
@@ -123,6 +126,8 @@ def fn(
                     
                     if current_group:
                         context_groups.append(current_group)
+                    if file_has_match:
+                        files_matched += 1
 
             if not count_only:
                 if len(match_lines) >= _MAX_RESULTS or len(context_groups) >= _MAX_RESULTS:
@@ -181,7 +186,7 @@ definition = {
             "directory you want to search. The default `'.'` is the process "
             "working directory, which in automation mode is usually an empty "
             "temp dir — not the repo the user asked about."
-        ),
+            ),
         "parameters": {
             "type": "object",
             "properties": {
