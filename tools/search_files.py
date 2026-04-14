@@ -30,6 +30,9 @@ def fn(
             searched, files matched, total matches) without the match lines.
             Use this when you only need to know how many matches exist.
     """
+    if not pattern or not pattern.strip():
+        return "Error: Search pattern cannot be empty."
+    
     try:
         flags = re.IGNORECASE if ignore_case else 0
         regex = re.compile(pattern, flags)
