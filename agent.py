@@ -2324,6 +2324,16 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                     "did tests pass? was the metric measured? is the issue reference valid? "
                                     "is the diff in-scope? Proceed with merge only after thinking.]",
                                 })
+                            if ("exit=0" not in result_str
+                                    and "approve your own pull request" in result_str.lower()):
+                                log.warning("CICD: self-approve failed — injecting skip-approval reminder")
+                                conversation_history.append({
+                                    "role": "user",
+                                    "content": "[SYSTEM: You cannot approve your own PR (same-account setup). "
+                                    "SKIP the approval step entirely. Go directly to: "
+                                    "`gh pr ready <N>` (separate command), then "
+                                    "`gh pr merge <N> --squash --delete-branch` (separate command).]",
+                                })
                         if "gh pr ready" in _cmd and "exit=0" in result_str:
                             _cicd_pr_ready_called = True
                             log.info("CICD: gh pr ready called")
