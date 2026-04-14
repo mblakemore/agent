@@ -32,7 +32,7 @@ def fn(
     """
     if not pattern or not pattern.strip():
         return "Error: Search pattern cannot be empty."
-    
+
     try:
         flags = re.IGNORECASE if ignore_case else 0
         regex = re.compile(pattern, flags)
@@ -73,83 +73,60 @@ def fn(
 
         files_searched += 1
         try:
-            # PASS 1: Find all hit line numbers in the file.
-            hit_nums: list[int] = []
             with file_path.open(encoding='utf-8', errors='ignore') as f:
-                for line_num, line in enumerate(f, 1):
-                    if regex.search(line):
-                        hit_nums.append(line_num)
-            
-            if not hit_nums:
-                continue
+                if count_only:
+                    file_hits = 0
+                    for line in f:
+                        if regex.search(line):
+                            file_hits += 1
+                    if file_hits > 0:
+                        files_matched += 1
+                        total_matches += file_hits
+                    continue
 
-            files_matched += 1
-            num_hits = len(hit_nums)
-            total_matches += num_hits
-
-            if count_only:
-                continue
-
-            if context == 0:
-                with file_path.open(encoding='utf-8', errors='ignore') as f:
+                if context == 0:
                     for line_num, line in enumerate(f, 1):
-                        if line_num in hit_nums:
+                        if regex.search(line):
+                            files_matched += 1
+                            total_matches += 1
                             match_lines.append(f"{rel}:{line_num}: {line.rstrip()}")
                             if len(match_lines) >= _MAX_RESULTS:
                                 truncated = True
                                 break
-            else:
-                # Merge overlapping windows
-                windows: list[list[int]] = []
-                for n in hit_nums:
-                    lo = max(1, n - context)
-                    hi = n + context
-                    if windows and lo <= windows[-1][1] + 1:
-                        if hi > windows[-1][1]:
-                            windows[-1][1] = hi
-                    else:
-                        windows.append([lo, hi])
-                
-                hit_set = set(hit_nums)
-                with file_path.open(encoding='utf-8', errors='ignore') as f:
-                    window_idx = 0
-                    current_group: list[str] = []
+                else:
+                    buffer = deque(maxlen=context)
+                    current_group = []
+                    lines_to_emit = 0
+                    
                     for line_num, line in enumerate(f, 1):
-                        if window_idx >= len(windows):
-                            break
-                        
-                        lo, hi = windows[window_idx]
-                        if line_num < lo:
-                            continue
-                        if line_num > hi:
-                            if current_group:
-                                context_groups.append(current_group)
-                            current_group = []
-                            window_idx += 1
-                            while window_idx < len(windows) and line_num > windows[window_idx][1]:
-                                window_idx += 1
-                            if window_idx >= len(windows):
-                                break
-                            lo, hi = windows[window_idx]
-                            if line_num < lo:
-                                continue
-                        
                         text_line = line.rstrip()
-                        if line_num in hit_set:
+                        is_match = bool(regex.search(text_line))
+                        
+                        if is_match:
+                            files_matched += 1
+                            total_matches += 1
+                            if not current_group:
+                                for b_num, b_text in buffer:
+                                    current_group.append(f"{rel}-{b_num}- {b_text}")
                             current_group.append(f"{rel}:{line_num}: {text_line}")
+                            lines_to_emit = context
                         else:
-                            current_group.append(f"{rel}-{line_num}- {text_line}")
+                            if current_group:
+                                if lines_to_emit > 0:
+                                    current_group.append(f"{rel}-{line_num}- {text_line}")
+                                    lines_to_emit -= 1
+                                else:
+                                    context_groups.append(current_group)
+                                    current_group = []
+                            
+                            buffer.append((line_num, text_line))
                     
                     if current_group:
                         context_groups.append(current_group)
-                
-                # Truncate context groups if we've exceeded the limit
-                if len(context_groups) > _MAX_RESULTS:
-                    context_groups = context_groups[:_MAX_RESULTS]
-                    truncated = True
 
-            if not count_only and (len(match_lines) >= _MAX_RESULTS or len(context_groups) >= _MAX_RESULTS):
-                truncated = True
+            if not count_only:
+                if len(match_lines) >= _MAX_RESULTS or len(context_groups) >= _MAX_RESULTS:
+                    truncated = True
 
         except Exception:
             continue
