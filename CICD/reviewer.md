@@ -125,16 +125,13 @@ Exactly one verdict from the decision matrix:
 
 **MERGE** — run each command separately, do NOT chain them:
 ```bash
-gh pr review <N> --approve --body "Verified in worktree. Tests: X/X. Metric: measured Y vs claimed Z. Merging."
-```
-Then separately:
-```bash
 gh pr ready <N>
 ```
 Then separately (only after ready succeeds):
 ```bash
 gh pr merge <N> --squash --delete-branch
 ```
+(On same-account setups `gh pr review --approve` fails with "Can not approve your own pull request" — skip approval entirely. The squash-merge itself is the verdict.)
 Post-merge: `git pull --ff-only origin main` then run test suite. If red → file regression issue (creator decides revert).
 
 **REQUEST_CHANGES** — small fixes only, do NOT rewrite the PR:

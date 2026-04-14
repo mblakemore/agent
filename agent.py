@@ -1621,7 +1621,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # Track whether any file has been written/edited.  If no edit by turn 30,
     # inject a nudge telling the agent to start coding or declare null result.
     _has_edited = False
-    _EDIT_DEADLINE_TURN = 30
+    _EDIT_DEADLINE_TURN = 20
     _edit_nudge_sent = False
 
     # Detect tool-call loops: same command signature repeated N times.
