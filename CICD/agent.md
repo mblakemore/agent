@@ -148,6 +148,8 @@ python3 -c "import py_compile; py_compile.compile('<file>', doraise=True)"
 ```
 For other languages, use the appropriate syntax check. If it fails, fix before committing. Do not push code that doesn't parse.
 
+**Extend existing test files; don't create siblings.** If the code you're changing has a sibling test file (e.g., `tools/search_files.py` → `tests/test_search_files.py`), add cases there. Do NOT create `tests/test_<module>_bug.py` or `tests/test_<module>_new.py` — new sibling files re-derive imports and often hit venv-shadowing traps where a pip-installed package of the same name beats the local directory. If a new test file is genuinely required (testing a new module), `head -10` the nearest existing test file and copy its import prelude verbatim (many repos rely on a manual `sys.path.insert(0, os.path.dirname(...))` line before `from tools import ...`).
+
 ## Phase 7 — VERIFY
 
 In the worktree: run full test suite, compute delta on the metric. **Gate**: tests 100% green AND metric improved. If not, debug and retry (max 3 iterations). If still failing → null-result path.
