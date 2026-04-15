@@ -4,6 +4,7 @@ import os
 import tempfile
 import difflib
 from pathlib import Path
+import theme
 
 # Paths that would create suspiciously deep nesting are probably mistakes
 _MAX_NEW_DIRS = 3
@@ -41,21 +42,21 @@ def _resolve_path(path):
     return p
 
 
-def _get_diff(old_content, new_content):
-    """Generate a colorized unified diff between old and new content."""
-    old_lines = old_content.splitlines(keepends=True)
-    new_lines = new_content.splitlines(keepends=True)
-    diff = difflib.unified_diff(old_lines, new_lines, lineterm='')
-    
-    result = []
-    for line in diff:
-        if line.startswith('+') and not line.startswith('+++'):
-            result.append(f"\033[32m{line}\033[0m")
-        elif line.startswith('-') and not line.startswith('---'):
-            result.append(f"\033[31m{line}\033[0m")
-        else:
-            result.append(line)
-    return "\n".join(result)
+    def _get_diff(old_content, new_content):
+        """Generate a colorized unified diff between old and new content."""
+        old_lines = old_content.splitlines(keepends=True)
+        new_lines = new_content.splitlines(keepends=True)
+        diff = difflib.unified_diff(old_lines, new_lines, lineterm='')
+        
+        result = []
+        for line in diff:
+            if line.startswith('+') and not line.startswith('+++'):
+                result.append(theme.c(theme.MINT, line))
+            elif line.startswith('-') and not line.startswith('---'):
+                result.append(theme.c(theme.ROSE, line))
+            else:
+                result.append(line)
+        return "\n".join(result)
 
 
 def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end_line: int = 0) -> str:
