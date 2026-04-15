@@ -1627,6 +1627,14 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _EDIT_DEADLINE_TURN = 20
     _edit_nudge_sent = False
 
+    # Reviewer sessions rarely make code edits (they verify and merge), so the
+    # edit-deadline nudge is a false positive for that role.  Detect by
+    # scanning the initial prompt for the reviewer-template marker.
+    _is_reviewer_role = any(
+        isinstance(m.get("content"), str) and "CICD Reviewer" in m["content"]
+        for m in conversation_history[:2]
+    )
+
     # Detect tool-call loops: same command signature repeated N times.
     _recent_tool_sigs = []  # list of (frozenset of (name, args_hash)) tuples
     _TOOL_LOOP_THRESHOLD = 3  # inject correction after 3 identical batches
@@ -1664,8 +1672,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         turn += 1
 
         # ── Edit deadline nudge ──
+        # Reviewers don't edit — suppress the nudge for that role.
         if (turn == _EDIT_DEADLINE_TURN and not _has_edited
-                and not _edit_nudge_sent and _NUDGE_ENABLED):
+                and not _edit_nudge_sent and _NUDGE_ENABLED
+                and not _is_reviewer_role):
             _edit_nudge_sent = True
             _edit_nudge = (
                 f"[SYSTEM: You have spent {turn} turns without making a code change. "
