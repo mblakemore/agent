@@ -77,29 +77,36 @@ def _read(path, start_line, end_line):
         return f"Error: '{path}' is a directory. Use action='list' instead."
 
     with open(p, 'r', encoding='utf-8', errors='replace') as f:
-        lines = f.readlines()
+        s = max(1, start_line) if start_line > 0 else 1
+        full_read = (start_line <= 0 and end_line <= 0)
+        
+        if end_line > 0:
+            e = end_line
+        elif full_read:
+            e = s + _MAX_READ_LINES - 1
+        else:
+            e = float('inf')
 
-    total = len(lines)
-    # Default: read entire file
-    s = max(1, start_line) if start_line > 0 else 1
-    e = min(total, end_line) if end_line > 0 else total
+        lines_to_return = []
+        total = 0
+        for line in f:
+            total += 1
+            if s <= total <= e:
+                lines_to_return.append(line)
+    
+    if not lines_to_return:
+        if total == 0:
+            return f"[{path}: 0 lines of 0]\n(empty file)"
+        if s > total:
+            return f"Error: start_line ({s}) exceeds file length ({total} lines)"
 
-    # Cap full-file reads to avoid flooding the context window
-    full_read = (start_line <= 0 and end_line <= 0)
-    if full_read and (e - s + 1) > _MAX_READ_LINES:
-        e = s + _MAX_READ_LINES - 1
+    actual_end = int(min(total, e)) if e != float('inf') else total
+    numbered = "".join(f"{i:4d}  {line}" for i, line in enumerate(lines_to_return, s))
+    info = f"[{path}: lines {s}-{actual_end} of {total}]\n"
+    if actual_end < total:
+        info += f"[Use start_line={actual_end + 1} to continue reading]\n"
 
-    selected = lines[s - 1:e]
-    # Number lines for easy reference
-    numbered = "".join(f"{i:4d}  {line}" for i, line in enumerate(selected, s))
-
-    info = f"[{path}: lines {s}-{e} of {total}]\n"
-    if e < total:
-        info += f"[Use start_line={e + 1} to continue reading]\n"
-
-    # Track that this file has been read
     _accessed_files.add(str(p.resolve()))
-
     return info + numbered
 
 
