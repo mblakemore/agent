@@ -231,28 +231,28 @@ def _insert(path, content, start_line):
     # Get total lines to validate start_line
     with open(p, 'r', encoding='utf-8', errors='replace') as f:
         total_lines = sum(1 for _ in f)
-    
+
     if start_line > total_lines + 1:
         return f"Error: start_line ({start_line}) exceeds file length + 1 ({total_lines} lines)"
 
     new_lines = content.splitlines(True)
     if new_lines and not new_lines[-1].endswith("\n"):
-        # If inserting before the last line or into a file that already ends in newline, add one.
-        # But if inserting at the very end (start_line == total_lines + 1), 
-        # we only add it if we want to maintain consistency.
-        # The original code just added it always.
         new_lines[-1] += "\n"
 
     temp_fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
     try:
         with os.fdopen(temp_fd, 'w', encoding='utf-8') as temp_f:
+            last_line = ""
             with open(p, 'r', encoding='utf-8', errors='replace') as src_f:
                 for i, line in enumerate(src_f, 1):
                     if i == start_line:
                         temp_f.writelines(new_lines)
                     temp_f.write(line)
+                    last_line = line
                 # Handle insertion at the very end
                 if start_line == total_lines + 1:
+                    if last_line and not last_line.endswith('\n'):
+                        temp_f.write('\n')
                     temp_f.writelines(new_lines)
         os.replace(temp_path, p)
     except Exception as e:
@@ -263,8 +263,6 @@ def _insert(path, content, start_line):
     _accessed_files.add(str(p.resolve()))
     return (f"Inserted {len(new_lines)} line(s) before line {start_line} in '{path}'. "
             f"File now has {total_lines + len(new_lines)} lines.")
-
-
 def _delete(path):
     p = Path(path)
     if p.name in _BLOCKED_FILENAMES:
@@ -278,7 +276,6 @@ def _delete(path):
         return f"Deleted empty directory '{path}'"
     p.unlink()
     return f"Deleted '{path}'"
-
 
 def _list(path):
     p = Path(path)
