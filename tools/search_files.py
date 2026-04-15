@@ -108,6 +108,9 @@ def fn(
                         if is_match:
                             file_has_match = True
                             total_matches += 1
+                            if total_matches >= _MAX_RESULTS:
+                                truncated = True
+                                break
                             if not current_group:
                                 for b_num, b_text in buffer:
                                     current_group.append(f"{rel}-{b_num}- {b_text}")
@@ -129,9 +132,9 @@ def fn(
                     if file_has_match:
                         files_matched += 1
 
-            if not count_only:
-                if len(match_lines) >= _MAX_RESULTS or len(context_groups) >= _MAX_RESULTS:
-                    truncated = True
+                if not count_only:
+                    if len(match_lines) >= _MAX_RESULTS or len(context_groups) >= _MAX_RESULTS:
+                        truncated = True
 
         except Exception:
             continue
@@ -156,7 +159,7 @@ def fn(
                 header
                 + f"No files were searched under '{resolved}'. "
                 + f"If you meant a different directory, pass path= with an absolute path."
-            )
+                )
         return header + "No matches found."
 
     if context == 0:
