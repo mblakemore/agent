@@ -4,6 +4,7 @@ import os
 import tempfile
 import difflib
 from pathlib import Path
+import theme
 
 # Paths that would create suspiciously deep nesting are probably mistakes
 _MAX_NEW_DIRS = 3
@@ -50,9 +51,9 @@ def _get_diff(old_content, new_content):
     result = []
     for line in diff:
         if line.startswith('+') and not line.startswith('+++'):
-            result.append(f"\033[32m{line}\033[0m")
+            result.append(theme.c(theme.MINT, line))
         elif line.startswith('-') and not line.startswith('---'):
-            result.append(f"\033[31m{line}\033[0m")
+            result.append(theme.c(theme.ROSE, line))
         else:
             result.append(line)
     return "\n".join(result)
