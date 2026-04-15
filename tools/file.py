@@ -26,6 +26,10 @@ def _resolve_path(path):
         try:
             cwd_str = str(cwd)
             # Ensure we have a trailing slash to avoid prefix collisions with similar dir names
+            # Also ensure we aren't just at root '/', which would cause almost any path to start with prefix.
+            if cwd_str == '/':
+                return p
+            
             prefix = cwd_str[1:] if cwd_str.endswith('/') else cwd_str[1:] + '/'
             if path.startswith(prefix):
                 # Strip the cwd prefix from the relative path and make it absolute
