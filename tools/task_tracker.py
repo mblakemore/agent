@@ -63,6 +63,12 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
 
     if action == "add":
         if not description:
+            if status and task_id > 0:
+                return (f"Error: 'add' requires description. To change status of an "
+                        f"existing task, use action='update' with task_id={task_id}, status='{status}'.")
+            if status:
+                return (f"Error: 'add' requires description. To set status on an "
+                        f"existing task, use action='update' with task_id=<N>, status='{status}'.")
             return "Error: description required for 'add'"
         existing = next((t for t in tasks if t["status"] not in ("done", "completed")
                          and t["description"].strip() == description.strip()), None)
