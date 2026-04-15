@@ -64,6 +64,10 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
     if action == "add":
         if not description:
             return "Error: description required for 'add'"
+        existing = next((t for t in tasks if t["status"] not in ("done", "completed")
+                         and t["description"].strip() == description.strip()), None)
+        if existing:
+            return f"Task #{existing['id']} already exists (open): {description}"
         task = {
             "id": _next_id(tasks),
             "description": description,
