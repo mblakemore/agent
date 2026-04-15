@@ -142,11 +142,11 @@ git worktree add <WORKTREE_ROOT>/NNN-slug -b cicd/NNN-slug
 
 Work in the worktree. Small reviewable commits: `CICD NNN (#ISSUE): <step>`.
 
-**Sanity check after each edit** — before committing, verify changed files parse cleanly. For Python:
+**Sanity check after each edit — MANDATORY, immediately.** The moment any `.py` file is written, before the next tool call that might import it (pytest, a repro script, anything), run:
 ```bash
 python3 -c "import py_compile; py_compile.compile('<file>', doraise=True)"
 ```
-For other languages, use the appropriate syntax check. If it fails, fix before committing. Do not push code that doesn't parse.
+A SyntaxError in an edited file will surface via unrelated import chains (e.g. `tools/__init__.py` auto-discovery) and burn turns chasing a ghost. Compile-check first, then run. For other languages, use the appropriate syntax check. If it fails, fix before doing anything else.
 
 **Extend existing test files; don't create siblings.** If the code you're changing has a sibling test file (e.g., `tools/search_files.py` → `tests/test_search_files.py`), add cases there. Do NOT create `tests/test_<module>_bug.py` or `tests/test_<module>_new.py` — new sibling files re-derive imports and often hit venv-shadowing traps where a pip-installed package of the same name beats the local directory. If a new test file is genuinely required (testing a new module), `head -10` the nearest existing test file and copy its import prelude verbatim (many repos rely on a manual `sys.path.insert(0, os.path.dirname(...))` line before `from tools import ...`).
 
