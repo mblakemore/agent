@@ -130,6 +130,21 @@ EOVERRIDE
 AGENT_MD="$(sed 's/@\([a-zA-Z./]\)/\1/g' "${CICD_HOME}/agent.md")"
 REVIEWER_MD="$(sed 's/@\([a-zA-Z./]\)/\1/g' "${CICD_HOME}/reviewer.md")"
 
+# ── Pre-seed builder task list ────────────────────────────────────────
+# Saves ~5 turns the builder would otherwise spend adding standard tasks
+# one per turn (LLM output pattern). Template instructs the builder to
+# `list` first and not re-add if present.
+mkdir -p "${CLONE_DIR}/.agent/state"
+cat > "${CLONE_DIR}/.agent/state/tasks.json" <<'EOT'
+[
+  {"id": 1, "description": "PERCEIVE: gather repo state, issues, test status", "status": "open", "created": "pre-seeded"},
+  {"id": 2, "description": "DECIDE: pick issue, state metric and done-when", "status": "open", "created": "pre-seeded"},
+  {"id": 3, "description": "IMPLEMENT: code the fix in worktree", "status": "open", "created": "pre-seeded"},
+  {"id": 4, "description": "VERIFY: tests green + metric improved", "status": "open", "created": "pre-seeded"},
+  {"id": 5, "description": "TRACK: results file, progress row, PR, issue comment", "status": "open", "created": "pre-seeded"}
+]
+EOT
+
 # ── Run builder ───────────────────────────────────────────────────────
 echo "==> Running CICD builder agent"
 "${SYSTEM_PYTHON3}" "${AGENT_PY}" -a --verbose --nudge "${AGENT_MD}

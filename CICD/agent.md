@@ -53,16 +53,10 @@ Every turn costs time and context. Minimize turns by:
 
 Use `task_tracker` throughout the cycle to track progress. This prevents repeating work and survives context window resets.
 
-**First**, call `task_tracker(action="list")` to see what already exists. **If any tasks exist, DO NOT add new ones** — use the existing task IDs. Only add the standard tasks if the list is completely empty:
-```
-task_tracker(action="add", description="PERCEIVE: gather repo state, issues, test status")
-task_tracker(action="add", description="DECIDE: pick issue, state metric and done-when")
-task_tracker(action="add", description="IMPLEMENT: code the fix in worktree")
-task_tracker(action="add", description="VERIFY: tests green + metric improved")
-task_tracker(action="add", description="TRACK: results file, progress row, PR, issue comment")
-```
+**The standard cycle tasks are pre-seeded** by `cicd.sh` before the builder starts:
+- #1 PERCEIVE, #2 DECIDE, #3 IMPLEMENT, #4 VERIFY, #5 TRACK
 
-Mark each task `done` as you complete it: `task_tracker(action="done", task_id=N)`. Before starting any work, always call `task_tracker(action="list")` first. **NEVER add duplicate tasks.** If you see tasks already exist with similar descriptions, use those IDs — do not create new ones.
+Call `task_tracker(action="list")` once to confirm. **Do NOT add the standard tasks** — they already exist. Mark each `done` as you complete it: `task_tracker(action="done", task_id=N)`. Only add new tasks for genuinely unplanned sub-work that needs to survive a context reset.
 
 ## Phase 1 — PERCEIVE
 
