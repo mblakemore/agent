@@ -1612,6 +1612,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _cycle_persisted = False
     _cycle_persisted_turn = None
     _CYCLE_GRACE_TURNS = 8
+    # Hard cap: even with ongoing tool calls, end the cycle this many turns
+    # after persist.  Prevents post-TRACK drift into a second PERCEIVE.
+    _CYCLE_HARD_STOP_TURNS = 15
 
     # Track whether any commit has been made.  Completion signals are ignored
     # until a commit lands — prevents the agent from declaring "done" before
@@ -1903,6 +1906,15 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 log.warning("Text loop detected: same output %d times — stopping",
                             _repeat_count)
                 _emit("on_text_loop_detected", _repeat_count)
+                return "done"
+
+        # Hard cap on post-persist drift.  After cycle persisted (git push),
+        # the agent must wrap TRACK within _CYCLE_HARD_STOP_TURNS.  Longer
+        # runs mean it started a second PERCEIVE — ignore and stop.
+        if _cycle_persisted:
+            _grace_used = turn - (_cycle_persisted_turn or turn)
+            if _grace_used >= _CYCLE_HARD_STOP_TURNS:
+                log.info("Stopping: cycle persisted %d turns ago, hard cap reached", _grace_used)
                 return "done"
 
         if not tool_calls:
