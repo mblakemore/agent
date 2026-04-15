@@ -2516,7 +2516,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         # If ALL tool calls in this turn were garbled, retry the turn once
         # by removing the assistant message + error responses and re-requesting.
         if _garbled_count > 0 and _garbled_count >= len(tool_calls):
-            _garble_retries = getattr(run_agent, '_garble_retries', 0)
+            _garble_retries = getattr(run_agent_single, '_garble_retries', 0)
             if _garble_retries < 1:
                 log.warning("All %d tool call(s) garbled — retrying turn %d", _garbled_count, turn)
                 # Remove the assistant message and all error tool responses from this turn
