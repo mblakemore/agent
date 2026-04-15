@@ -1,5 +1,7 @@
 """Unified file operations tool — read, write, insert, append, delete, list."""
 
+import os
+import tempfile
 from pathlib import Path
 
 # Paths that would create suspiciously deep nesting are probably mistakes
@@ -127,33 +129,53 @@ def _write(path, content, start_line, end_line):
             return f"Error: cannot replace lines — '{path}' does not exist"
         if start_line <= 0:
             start_line = 1
-
-        with open(p, 'r', encoding='utf-8', errors='replace') as f:
-            lines = f.readlines()
-
-        # Default to single-line replacement if end_line not given
         if end_line <= 0:
             end_line = start_line
-
         if start_line > end_line:
             return f"Error: start_line ({start_line}) > end_line ({end_line})"
-        if start_line > len(lines):
-            return f"Error: start_line ({start_line}) exceeds file length ({len(lines)} lines)"
-        if end_line > len(lines):
-            return f"Error: end_line ({end_line}) exceeds file length ({len(lines)} lines)"
+        
+        # We need to know total lines to validate start_line/end_line.
+        # To avoid loading the whole file, we'll count lines first.
+        with open(p, 'r', encoding='utf-8', errors='replace') as f:
+            total_lines = sum(1 for _ in f)
+        
+        if start_line > total_lines:
+            return f"Error: start_line ({start_line}) exceeds file length ({total_lines} lines)"
+        if end_line > total_lines:
+            # We can allow end_line to be > total_lines, effectively replacing until EOF.
+            # But the original code returned an error. Let's keep the error for consistency.
+            return f"Error: end_line ({end_line}) exceeds file length ({total_lines} lines)"
 
-        start_idx = start_line - 1
-        end_idx = end_line
-
+        # Prepare new content
         new_lines = content.splitlines(True) if content else []
+        # Ensure trailing newline if replacing lines in the middle or at the end
+        # provided the original file had one or we aren't at the very end of a file that didn't.
+        # For simplicity and consistency with the original logic:
         if new_lines and not new_lines[-1].endswith("\n"):
-            if end_idx < len(lines) or (lines and lines[-1].endswith("\n")):
+            # Original logic checked if it was before the end or if the last line of the file had a newline.
+            # Since we are streaming, we'll assume if we aren't replacing the very last line of the file,
+            # we should add a newline.
+            if end_line < total_lines:
                 new_lines[-1] += "\n"
 
-        lines[start_idx:end_idx] = new_lines
-
-        with open(p, 'w', encoding='utf-8') as f:
-            f.writelines(lines)
+        # Streaming replace
+        temp_fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
+        try:
+            with os.fdopen(temp_fd, 'w', encoding='utf-8') as temp_f:
+                with open(p, 'r', encoding='utf-8', errors='replace') as src_f:
+                    for i, line in enumerate(src_f, 1):
+                        if i < start_line:
+                            temp_f.write(line)
+                        elif i == start_line:
+                            # Write the replacement content
+                            temp_f.writelines(new_lines)
+                        elif i > end_line:
+                            temp_f.write(line)
+            os.replace(temp_path, p)
+        except Exception as e:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            return f"Error during streaming write: {e}"
 
         old_count = end_line - start_line + 1
         new_count = len(new_lines)
@@ -161,10 +183,9 @@ def _write(path, content, start_line, end_line):
         delta_str = f"+{delta}" if delta > 0 else str(delta)
         return (f"Replaced lines {start_line}-{end_line} in '{path}' "
                 f"({old_count} → {new_count} lines, {delta_str}). "
-                f"File now has {len(lines)} lines.")
+                f"File now has {total_lines - old_count + new_count} lines.")
 
     # Full file write
-    # Guard against creating suspiciously deep directory trees
     dirs_to_create = []
     check = p.parent
     while check and not check.exists():
@@ -207,25 +228,41 @@ def _insert(path, content, start_line):
         return (f"Error: '{path}' exists but has not been read this session. "
                 f"You must read the file first (action='read') before inserting.")
 
+    # Get total lines to validate start_line
     with open(p, 'r', encoding='utf-8', errors='replace') as f:
-        lines = f.readlines()
-
-    if start_line > len(lines) + 1:
-        return f"Error: start_line ({start_line}) exceeds file length + 1 ({len(lines)} lines)"
+        total_lines = sum(1 for _ in f)
+    
+    if start_line > total_lines + 1:
+        return f"Error: start_line ({start_line}) exceeds file length + 1 ({total_lines} lines)"
 
     new_lines = content.splitlines(True)
     if new_lines and not new_lines[-1].endswith("\n"):
+        # If inserting before the last line or into a file that already ends in newline, add one.
+        # But if inserting at the very end (start_line == total_lines + 1), 
+        # we only add it if we want to maintain consistency.
+        # The original code just added it always.
         new_lines[-1] += "\n"
 
-    insert_idx = start_line - 1
-    lines[insert_idx:insert_idx] = new_lines
-
-    with open(p, 'w', encoding='utf-8') as f:
-        f.writelines(lines)
+    temp_fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
+    try:
+        with os.fdopen(temp_fd, 'w', encoding='utf-8') as temp_f:
+            with open(p, 'r', encoding='utf-8', errors='replace') as src_f:
+                for i, line in enumerate(src_f, 1):
+                    if i == start_line:
+                        temp_f.writelines(new_lines)
+                    temp_f.write(line)
+                # Handle insertion at the very end
+                if start_line == total_lines + 1:
+                    temp_f.writelines(new_lines)
+        os.replace(temp_path, p)
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return f"Error during streaming insert: {e}"
 
     _accessed_files.add(str(p.resolve()))
     return (f"Inserted {len(new_lines)} line(s) before line {start_line} in '{path}'. "
-            f"File now has {len(lines)} lines.")
+            f"File now has {total_lines + len(new_lines)} lines.")
 
 
 def _delete(path):
