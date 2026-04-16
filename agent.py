@@ -2336,6 +2336,22 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 )
                                 log.info("CICD phase: PR #%s opened",
                                          _cicd_pr_number)
+                            # Guard: PR body must contain `Closes #N` trailer
+                            # so the linked issue auto-closes on merge. Missing
+                            # trailer is a recurring builder failure that
+                            # causes the reviewer to CLOSE the PR.
+                            if not re.search(r'Closes\s+#\d+', _cmd, re.IGNORECASE) and _cicd_pr_number:
+                                log.warning("CICD: gh pr create without `Closes #N` trailer — injecting reminder")
+                                conversation_history.append({
+                                    "role": "user",
+                                    "content": (
+                                        f"[SYSTEM: PR #{_cicd_pr_number} was created without a `Closes #<issue>` "
+                                        f"trailer in the body. The reviewer will CLOSE this PR for the missing "
+                                        f"trailer (per pre-merge check rule #4), wasting the cycle. Fix it NOW: "
+                                        f"`gh pr edit {_cicd_pr_number} --body \"<existing body>\\n\\nCloses #<issue>\"` "
+                                        f"— use the real issue number this cycle targets.]"
+                                    ),
+                                })
                         if "gh pr review" in _cmd and "--approve" in _cmd:
                             if not _cicd_think_used:
                                 log.warning("CICD: gh pr review --approve without think — injecting reminder")
