@@ -2439,15 +2439,29 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         log.warning(
                             "Semantic result loop: %s returned same result %d times",
                             func_name, _same_result_count)
-                        conversation_history.append({
-                            "role": "user",
-                            "content": (
+                        if func_name == "exec_command":
+                            _cmd_preview = ""
+                            if isinstance(func_args, dict):
+                                _cmd_preview = str(func_args.get("command", ""))[:120]
+                            _hint = (
+                                f"SYSTEM: exec_command has returned the same output "
+                                f"{_same_result_count} times (e.g. `{_cmd_preview}`). "
+                                f"If you are re-verifying a check (tests, lint, gh status), "
+                                f"the prior output is authoritative — do not re-run it. "
+                                f"Move to the next step (commit, push, open PR) or take a "
+                                f"materially different action."
+                            )
+                        else:
+                            _hint = (
                                 f"SYSTEM: The {func_name} tool has returned the "
                                 f"same result {_same_result_count} times despite "
                                 f"different arguments. Your approach is not working. "
                                 f"Either try a completely different method, or accept "
                                 f"the current state and move on to the next step."
-                            ),
+                            )
+                        conversation_history.append({
+                            "role": "user",
+                            "content": _hint,
                         })
 
                     if result_str.startswith("Error"):
