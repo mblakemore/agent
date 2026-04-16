@@ -82,13 +82,17 @@ Before verifying, check: Is the claim precise (metric + before/after + measureme
 
 ## Phase 4 — VERIFY
 
-**Step 1 — Test suite** from clean worktree.
+**Step 1 — Test suite** from clean worktree. **One pytest invocation per PR.**
 
-First, identify which test files are relevant to the PR by examining the diff:
+Identify which test files are relevant to the PR:
 ```bash
 gh pr diff <N> --name-only
 ```
-Run the **targeted tests first** (e.g. `pytest tests/test_search_files*.py` for a `search_files.py` change). If those pass, run the full suite. If the full suite has failures, **compare to the main branch baseline** — run the same suite on main and check if the failures are pre-existing. Only failures that are NEW (present on PR branch but not on main) count as regressions. Pre-existing failures (e.g. import errors in unrelated test files) are not caused by the PR and must not block the verdict.
+Then pick ONE pytest invocation based on scope:
+- **Narrow scope (≤2 source files touched)**: targeted run only (e.g. `pytest tests/test_search_files*.py`). One command, one result.
+- **Broad scope (≥3 source files) or `tests/` itself changed**: full suite once.
+
+**Do not run the targeted suite and then the full suite as a double-check** — this is the #1 source of reviewer-session semantic loops. If the first run is green, it is green. If it has failures, compare against main baseline (same command on main) — only NEW failures block.
 
 Compare test count to PR's claimed before/after. Grep diff for new `skip`/`skipIf`/`skipUnless`.
 
@@ -170,7 +174,7 @@ Create `reviews.md` in CICD state directory with header table if missing. Pick `
 
 ## Hard Rules
 
-1. **Independent verification mandatory.** Re-run tests, re-measure metric from clean worktree.
+1. **Independent verification mandatory — but exactly once.** Re-run tests ONE time and re-measure metric ONE time from the clean worktree. A passing result is authoritative; re-running it wastes turns.
 2. **Metric within 5%** of claim in improvement direction.
 3. **Scope must match plan's `In:` list.** Stray edits → REQUEST_CHANGES.
 4. **All tests pass, no unjustified skips.**
