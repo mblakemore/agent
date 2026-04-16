@@ -44,14 +44,16 @@ def fn(url: str) -> str:
             # 2. Stream content to avoid OOM
             chunks = []
             bytes_read = 0
-            for chunk in resp.iter_content(chunk_size=8192, decode_unicode=True):
+            for chunk in resp.iter_content(chunk_size=8192):
                 if chunk:
                     chunks.append(chunk)
                     bytes_read += len(chunk)
                     if bytes_read > _MAX_BYTES:
                         break
             
-            text = "".join(chunks)
+            # Join bytes and decode to string
+            full_content = b"".join(chunks)
+            text = full_content.decode(resp.encoding or 'utf-8', errors='replace')
             
             # Trim to _MAX_CHARS if we exceeded it during streaming
             if len(text) > _MAX_CHARS:
