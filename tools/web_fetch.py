@@ -12,6 +12,7 @@ from markdownify import markdownify
 
 
 _MAX_CHARS = 50000
+_MAX_BYTES = 1024 * 1024  # 1MB limit to prevent OOM
 _TIMEOUT = 30
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; agent/1.0)"
@@ -30,38 +31,60 @@ def fn(url: str) -> str:
         url: The URL to fetch.
     """
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=_TIMEOUT)
-        resp.raise_for_status()
+        with requests.get(url, headers=_HEADERS, timeout=_TIMEOUT, stream=True) as resp:
+            resp.raise_for_status()
+            
+            content_type = resp.headers.get("content-type", "").lower()
+            
+            # 1. Fast-fail if Content-Length is obviously too large
+            content_length = resp.headers.get("content-length")
+            if content_length and int(content_length) > _MAX_BYTES:
+                return f"Error: Remote file is too large ({content_length} bytes). Max allowed is {_MAX_BYTES}."
+
+            # 2. Stream content to avoid OOM
+            chunks = []
+            bytes_read = 0
+            for chunk in resp.iter_content(chunk_size=8192, decode_unicode=True):
+                if chunk:
+                    chunks.append(chunk)
+                    bytes_read += len(chunk)
+                    if bytes_read > _MAX_BYTES:
+                        break
+            
+            text = "".join(chunks)
+            
+            # Trim to _MAX_CHARS if we exceeded it during streaming
+            if len(text) > _MAX_CHARS:
+                text = text[:_MAX_CHARS]
+
+            # Handle HTML conversion
+            if "text/html" in content_type:
+                try:
+                    md = markdownify(text, strip=["img", "script", "style", "nav", "footer", "header"])
+                    # Clean up excessive blank lines
+                    lines = md.splitlines()
+                    cleaned = []
+                    blank_count = 0
+                    for line in lines:
+                        if not line.strip():
+                            blank_count += 1
+                            if blank_count <= 2:
+                                cleaned.append("")
+                        else:
+                            blank_count = 0
+                            cleaned.append(line)
+                    text = "\n".join(cleaned).strip()
+                except Exception:
+                    pass  # Fallback to the streamed text
+            
+            # Final safety trim
+            if len(text) > _MAX_CHARS:
+                text = text[:_MAX_CHARS]
+
     except requests.exceptions.RequestException as e:
         return f"Error fetching URL: {e}"
-
-    content_type = resp.headers.get("content-type", "")
-
-    # Plain text or JSON — use as-is
-    if "text/plain" in content_type or "application/json" in content_type:
-        text = resp.text[:_MAX_CHARS]
-    else:
-        # HTML — convert to markdown
-        try:
-            md = markdownify(resp.text, strip=["img", "script", "style", "nav", "footer", "header"])
-            # Clean up excessive blank lines
-            lines = md.splitlines()
-            cleaned = []
-            blank_count = 0
-            for line in lines:
-                if not line.strip():
-                    blank_count += 1
-                    if blank_count <= 2:
-                        cleaned.append("")
-                else:
-                    blank_count = 0
-                    cleaned.append(line)
-            text = "\n".join(cleaned).strip()
-        except Exception:
-            text = resp.text
-
-        if len(text) > _MAX_CHARS:
-            text = text[:_MAX_CHARS]
+    except Exception as e:
+        return f"Unexpected error: {e}"
 
     # Save to file so the full content survives context compression
     url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
