@@ -16,6 +16,7 @@ os.environ.setdefault("HF_HUB_VERBOSITY", "error")
 
 _tokenizer = None
 _EXACT_TOKENIZER_AVAILABLE = False
+_TOKENIZER_ERROR = None
 
 try:
     from transformers import AutoTokenizer, logging as tf_logging
@@ -23,12 +24,13 @@ try:
     _tokenizer = AutoTokenizer.from_pretrained("unsloth/gemma-3-4b-it")
     _EXACT_TOKENIZER_AVAILABLE = True
 except ImportError:
-    logging.warning("transformers not installed — run: pip install transformers")
+    _TOKENIZER_ERROR = "transformers not installed — run: pip install transformers"
 except Exception as e:
-    logging.warning(f"Failed to load Gemma tokenizer: {e}")
+    _TOKENIZER_ERROR = f"Failed to load Gemma tokenizer: {e}"
 
 if not _EXACT_TOKENIZER_AVAILABLE:
-    logging.warning("Using character/3.0 fallback for token estimation (conservative)")
+    if _TOKENIZER_ERROR is None:
+        _TOKENIZER_ERROR = "Using character/3.0 fallback for token estimation (conservative)"
 
 # Conservative chars-per-token that errs on overestimating (safer than underestimating)
 _CHARS_PER_TOKEN_FALLBACK = 3.0
