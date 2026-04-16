@@ -60,7 +60,7 @@ def fn(
     files_matched = 0
     truncated = False
 
-    for file_path in sorted(search_path.rglob(glob)):
+    for file_path in search_path.rglob(glob):
         if truncated:
             break
         if not file_path.is_file():
