@@ -47,7 +47,7 @@ Every turn costs time and context. Minimize turns by:
 2. **Read, don't grep repeatedly.** When investigating a specific file, use `file(action="read", path="...", start_line=N, end_line=M)` to read the relevant section once. Do NOT run 5+ separate `grep` commands against the same file — that wastes turns. One grep to find the line number, then one read to get context.
 3. **Use `search_files` for codebase-wide searches.** It searches all files at once — faster than multiple `grep` commands.
 4. **Run tests once.** If tests pass, they pass. Do not re-run the same test suite more than once to "make sure." Mark the verification as done in `task_tracker` and move on.
-5. **Decide fast.** PERCEIVE + REFLECT + DECIDE should take ≤10 turns total. If you're past turn 10 without a DECIDE, pick the best candidate you have and go.
+5. **Decide fast.** Per-phase budget: PERCEIVE ≤5 turns, REFLECT ≤3, DECIDE ≤2 (≤10 total to issue filed). If you're past turn 10 without a filed issue, pick the best candidate and go with it. Do not keep grading candidates.
 
 ## Task Tracking
 
@@ -76,6 +76,8 @@ Then in a second turn, run the test suite. Look for a `Makefile`, `pytest.ini`, 
 Read: CICD state `progress.md`, recent 2-3 improvement plans, project README.
 
 Also check for open PRs to avoid racing a parallel cycle — if an open PR already fixes the issue you're considering, skip it.
+
+**Inherited REQUEST_CHANGES PR**: if `gh pr list` surfaces a PR on a prior `cicd/NNN-slug` branch in `REQUEST_CHANGES` state, **that is this cycle's work**. Read the reviewer's comment (`gh pr view <N> --comments`), address it on the existing branch (new commit, push), and re-request review. Do NOT file a new issue until the inherited PR is resolved (merged, closed, or abandoned with a clear reason). Only one exception: if the reviewer's concern is fundamental (wrong approach), close the PR with a comment, reopen the issue, and pivot to a different target.
 
 If tests are red on `main`, that IS the improvement — skip PROBE, file a bug issue, go to PLAN.
 
@@ -135,6 +137,8 @@ git worktree add <WORKTREE_ROOT>/NNN-slug -b cicd/NNN-slug
 `<WORKTREE_ROOT>` is the "Worktree root" path from the session override at the bottom of this prompt. It is **NOT** inside the repo clone directory. Read the session override now if you haven't already.
 
 Work in the worktree. Small reviewable commits: `CICD NNN (#ISSUE): <step>`.
+
+**No-op edit detection — hard rule.** If `git commit` returns `nothing to commit, working tree clean` or `git diff` shows no changes after an edit, the target is already implemented on HEAD. Do NOT retry the same edit, do NOT re-plan the same target, do NOT rewrite the file from scratch. Within **3 turns** of the first no-op signal: close the issue (`gh issue close <N> -c "Already implemented on HEAD. <specific evidence>"`), remove the worktree + branch, return to REFLECT, pick a different target. One 60-turn spin on a no-op edit costs an entire cycle.
 
 **Sanity check after each edit — MANDATORY, immediately.** The moment any `.py` file is written, before the next tool call that might import it (pytest, a repro script, anything), run:
 ```bash
