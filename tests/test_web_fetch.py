@@ -10,6 +10,11 @@ def mock_resp():
     mock.text = "Hello World"
     mock.headers = {"content-type": "text/plain"}
     mock.status_code = 200
+    mock.encoding = 'utf-8'
+    # iter_content returns bytes
+    mock.iter_content.side_effect = lambda chunk_size=None: [mock.text.encode('utf-8')]
+    # Ensure context manager returns the mock itself
+    mock.__enter__.return_value = mock
     return mock
 
 def test_web_fetch_plain_text(mock_resp):
@@ -22,15 +27,15 @@ def test_web_fetch_plain_text(mock_resp):
 def test_web_fetch_json(mock_resp):
     mock_resp.headers = {"content-type": "application/json"}
     mock_resp.text = '{"key": "value"}'
+    mock_resp.iter_content.side_effect = lambda chunk_size=None: [mock_resp.text.encode('utf-8')]
     with patch("requests.get", return_value=mock_resp):
         result = fn("http://example.com/data.json")
         assert '{"key": "value"}' in result
 
 def test_web_fetch_html(mock_resp):
     mock_resp.headers = {"content-type": "text/html"}
-    # markdownify might not strip everything perfectly depending on version/tags, 
-    # but let's test that it handles the conversion.
     mock_resp.text = "<html><body><h1>Title</h1><p>Content</p></body></html>"
+    mock_resp.iter_content.side_effect = lambda chunk_size=None: [mock_resp.text.encode('utf-8')]
     with patch("requests.get", return_value=mock_resp):
         result = fn("http://example.com/page.html")
         assert "Title" in result
@@ -44,6 +49,7 @@ def test_web_fetch_error():
 def test_web_fetch_truncated(mock_resp):
     mock_resp.headers = {"content-type": "text/plain"}
     mock_resp.text = "A" * 3000
+    mock_resp.iter_content.side_effect = lambda chunk_size=None: [mock_resp.text.encode('utf-8')]
     with patch("requests.get", return_value=mock_resp):
         result = fn("http://example.com/long.txt")
         assert "[... truncated" in result
@@ -51,14 +57,16 @@ def test_web_fetch_truncated(mock_resp):
 
 def test_web_fetch_html_exception(mock_resp):
     mock_resp.headers = {"content-type": "text/html"}
+    mock_resp.iter_content.side_effect = lambda chunk_size=None: [mock_resp.text.encode('utf-8')]
     with patch("requests.get", return_value=mock_resp), \
          patch("tools.web_fetch.markdownify", side_effect=Exception("MD Error")):
         result = fn("http://example.com/fail.html")
-        assert "Hello World" in result # Should fallback to resp.text
+        assert "Hello World" in result # Should fallback to streamed text
 
 def test_web_fetch_max_chars(mock_resp):
     mock_resp.headers = {"content-type": "text/plain"}
     mock_resp.text = "A" * 60000
+    mock_resp.iter_content.side_effect = lambda chunk_size=None: [mock_resp.text.encode('utf-8')]
     with patch("requests.get", return_value=mock_resp):
         result = fn("http://example.com/huge.txt")
         assert "50000 chars total" in result
