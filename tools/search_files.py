@@ -1,5 +1,6 @@
 """Search files tool — grep through files for patterns."""
 
+import os
 import re
 from pathlib import Path
 from collections import deque
@@ -59,85 +60,112 @@ def fn(
     files_searched = 0
     files_matched = 0
     truncated = False
+    permission_errors = 0
 
-    for file_path in search_path.rglob(glob):
-        if truncated:
-            break
-        if not file_path.is_file():
-            continue
-        rel = str(file_path.relative_to(search_path))
-        if any(part.startswith(".") for part in file_path.parts if part != "." and part != ".agent"):
-            continue
-        if "__pycache__" in rel or "node_modules" in rel:
-            continue
+    # We use os.walk instead of rglob to capture PermissionErrors via the onerror callback.
+    # os.walk(top, topdown=True, onerror=onerror)
+    def handle_error(os_error):
+        nonlocal permission_errors
+        if isinstance(os_error, PermissionError):
+            permission_errors += 1
 
-        files_searched += 1
-        file_has_match = False
-        try:
-            with file_path.open(encoding='utf-8', errors='ignore') as f:
-                if count_only:
-                    file_hits = 0
-                    for line in f:
-                        if regex.search(line):
+    for root, dirs, files in os.walk(resolved, onerror=handle_error):
+        # Filter directories to skip hidden ones (mimicking rglob behavior with .agent filter)
+        # Modifying 'dirs' in-place allows os.walk to prune the search tree.
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d != ".agent"]
+        
+        # Further exclude common large/unnecessary directories
+        if "__pycache__" in root or "node_modules" in root:
+            continue
+            
+        for file_name in files:
+            # Basic glob filter. For simplicity and consistency with the previous 
+            # rglob implementation, we'll support basic globbing via fnmatch.
+            # If the user provided a specific glob like '*.py', we filter here.
+            import fnmatch
+            if not fnmatch.fnmatch(file_name, glob):
+                continue
+            
+            # Skip hidden files
+            if file_name.startswith("."):
+                continue
+
+            file_path = Path(root) / file_name
+            
+            if truncated:
+                break
+            
+            rel = str(file_path.relative_to(search_path))
+            files_searched += 1
+            file_has_match = False
+            
+            try:
+                with file_path.open(encoding='utf-8', errors='ignore') as f:
+                    if count_only:
+                        file_hits = 0
+                        for line in f:
+                            if regex.search(line):
                             file_hits += 1
-                    if file_hits > 0:
-                        files_matched += 1
-                        total_matches += file_hits
-                    continue
+                        if file_hits > 0:
+                            files_matched += 1
+                            total_matches += file_hits
+                        continue
 
-                if context == 0:
-                    for line_num, line in enumerate(f, 1):
-                        if regex.search(line):
-                            file_has_match = True
-                            total_matches += 1
-                            match_lines.append(f"{rel}:{line_num}: {line.rstrip()}")
-                            if len(match_lines) >= _MAX_RESULTS:
-                                truncated = True
-                                break
-                    if file_has_match:
-                        files_matched += 1
-                else:
-                    buffer = deque(maxlen=context)
-                    current_group = []
-                    lines_to_emit = 0
-                    
-                    for line_num, line in enumerate(f, 1):
-                        text_line = line.rstrip()
-                        is_match = bool(regex.search(text_line))
+                    if context == 0:
+                        for line_num, line in enumerate(f, 1):
+                            if regex.search(line):
+                                file_has_match = True
+                                total_matches += 1
+                                match_lines.append(f"{rel}:{line_num}: {line.rstrip()}")
+                                if len(match_lines) >= _MAX_RESULTS:
+                                    truncated = True
+                                    break
+                        if file_has_match:
+                            files_matched += 1
+                    else:
+                        buffer = deque(maxlen=context)
+                        current_group = []
+                        lines_to_emit = 0
                         
-                        if is_match:
-                            file_has_match = True
-                            total_matches += 1
-                            if total_matches >= _MAX_RESULTS:
-                                truncated = True
-                                break
-                            if not current_group:
-                                for b_num, b_text in buffer:
-                                    current_group.append(f"{rel}-{b_num}- {b_text}")
-                            current_group.append(f"{rel}:{line_num}: {text_line}")
-                            lines_to_emit = context
-                        else:
-                            if current_group:
-                                if lines_to_emit > 0:
-                                    current_group.append(f"{rel}-{line_num}- {text_line}")
-                                    lines_to_emit -= 1
-                                else:
-                                    context_groups.append(current_group)
-                                    current_group = []
+                        for line_num, line in enumerate(f, 1):
+                            text_line = line.rstrip()
+                            is_match = bool(regex.search(text_line))
                             
-                            buffer.append((line_num, text_line))
-                    
-                    if current_group:
-                        context_groups.append(current_group)
-                    if file_has_match:
-                        files_matched += 1
+                            if is_match:
+                                file_has_match = True
+                                total_matches += 1
+                                if total_matches >= _MAX_RESULTS:
+                                    truncated = True
+                                    break
+                                if not current_group:
+                                    for b_num, b_text in buffer:
+                                        current_group.append(f"{rel}-{b_num}- {b_text}")
+                                current_group.append(f"{rel}:{line_num}: {text_line}")
+                                lines_to_emit = context
+                            else:
+                                if current_group:
+                                    if lines_to_emit > 0:
+                                        current_group.append(f"{rel}-{line_num}- {text_line}")
+                                        lines_to_emit -= 1
+                                    else:
+                                        context_groups.append(current_group)
+                                        current_group = []
+                                
+                                buffer.append((line_num, text_line))
+                        
+                        if current_group:
+                            context_groups.append(current_group)
+                        if file_has_match:
+                            files_matched += 1
 
-                if not count_only:
-                    if len(match_lines) >= _MAX_RESULTS or len(context_groups) >= _MAX_RESULTS:
-                        truncated = True
+                    if not count_only:
+                        if len(match_lines) >= _MAX_RESULTS or len(context_groups) >= _MAX_RESULTS:
+                            truncated = True
 
-        except Exception:
-            continue
+            except Exception:
+                # Individual file open errors are still skipped silently as before, 
+                # but we don't count them as 'PermissionError' for the directory-level skip.
+                continue
 
     display_count = total_matches
     if not count_only and truncated:
@@ -149,7 +177,10 @@ def fn(
     )
     if truncated:
         header += " (truncated)"
+    if permission_errors > 0:
+        header += f" (Warning: {permission_errors} directories skipped due to permissions)"
     header += "]\n"
+    
     if count_only:
         return header.rstrip("\n")
 
@@ -174,7 +205,7 @@ definition = {
         "name": "search_files",
         "description": (
             "Search file contents for a regex pattern (like grep). "
-            "Searches recursively through a directory and returns each hit "
+            "Searches recursively through through a directory and returns each hit "
             "with surrounding context lines by default, so you can tell a "
             "definition from a call from a documentation mention without "
             "needing a follow-up file read. Use this to find patterns in "
@@ -202,7 +233,8 @@ definition = {
                     "description": (
                         "Directory to search in. The default '.' is the "
                         "process working directory, which in automation "
-                        "mode is usually an empty temp dir — pass the "
+                        "mode is usually an empty "
+                        "temp dir — pass the "
                         "absolute path to the directory you actually want "
                         "to search whenever you know it."
                         ),
@@ -220,27 +252,24 @@ definition = {
                 "context": {
                     "type": "integer",
                     "description": (
-                        "Lines of context to show before and after each hit, "
-                        "like grep -C. Matched lines are emitted as "
-                        "'path:line: text'; context lines use 'path-line- text'. "
-                        "Disjoint groups are separated by '--'. Capped at 20. "
-                        "Default 3 — pass 0 only if you want the legacy "
+                        "Lines of context to show before and after each match, like grep -C. "
+                        "Capped at 20. Default 3 — pass 0 only if you want the legacy "
                         "bare-match shape."
                         ),
-                    "default": 3,
-                    "minimum": 0,
-                },
+                        "default": 3,
+                        "minimum": 0,
+                    },
                 "count_only": {
                     "type": "boolean",
                     "description": (
-                        "Return only the match count summary (files searched, "
-                        "files matched, total matches) without the match lines "
+                        "Return only the match count summary (files searched, files matched, total matches) without the match lines "
                         "themselves. Use this when you only need to know how many matches exist, not where they are. Default: false."
                         ),
-                    "default": False,
+                        "default": False,
+                    },
                 },
+                "required": ["pattern"],
             },
-            "required": ["pattern"],
         },
-    },
+    }
 }
