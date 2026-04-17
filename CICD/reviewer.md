@@ -140,15 +140,16 @@ Post-merge: `git pull --ff-only origin main` then run test suite. If red → fil
 
 **REQUEST_CHANGES** — small fixes only, do NOT rewrite the PR:
 1. `gh pr review <N> --request-changes --body "..."` — cite exact file:line or test name, state what needs to change.
-2. **Attempt a small, targeted fix** (≤20 lines changed) in the review worktree:
+2. **Attempt a small, targeted fix** (≤20 lines changed, **max 2 attempts**) in the review worktree:
    - Only fix the specific issue you identified (e.g. a missing import, a broken test assertion, a typo).
    - Do NOT rewrite large sections of the PR's code. If the fix requires rewriting >20 lines, leave REQUEST_CHANGES standing and let the builder fix it.
    - Run tests to confirm the fix works.
    - Commit with message: `CICD review R-NNN (#ISSUE): fix <what>`.
    - Push to the PR branch: `git push origin HEAD:<pr-branch-name>`.
+   - **If tests still fail after 2 fix attempts, STOP.** Leave REQUEST_CHANGES standing, note what you tried in the review comment, and move on to the next PR. Do NOT keep retrying — a fix-retry spiral wastes the entire session.
 3. **Re-verify from scratch** — re-run tests + re-measure metric in the worktree after your fix.
 4. If the fix passes verification, change verdict to **MERGE** and proceed with the merge flow.
-5. If the fix fails or the issue is too complex (e.g., fundamental design problem, unclear requirements), leave the REQUEST_CHANGES review standing and note what you tried in the review comment.
+5. If the fix fails after 2 attempts or the issue is too complex (e.g., fundamental design problem, unclear requirements), leave the REQUEST_CHANGES review standing and note what you tried in the review comment. Move on immediately.
 
 **CLOSE**: `gh pr close <N> --comment "Closing per rule <N>: <reason>"`. Don't delete branch. For secrets: close + file issue + ping creator.
 
