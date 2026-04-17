@@ -10,6 +10,7 @@ request_cancel() on its own keybinding.
 """
 
 import atexit
+import io
 import select
 import sys
 import termios
@@ -23,6 +24,7 @@ class CancelledError(Exception):
     pass
 
 
+# Global state for terminal restoration
 _cancel_event = threading.Event()
 _monitor_active = threading.Event()
 _original_termios = None
@@ -97,9 +99,13 @@ class cbreak_mode:
 
 def _read_byte(timeout):
     """Read a single byte from stdin with timeout. Returns byte or None."""
-    ready, _, _ = select.select([sys.stdin], [], [], timeout)
-    if ready:
-        return sys.stdin.read(1)
+    try:
+        if hasattr(sys.stdin, 'fileno'):
+            ready, _, _ = select.select([sys.stdin], [], [], timeout)
+            if ready:
+                return sys.stdin.read(1)
+    except (io.UnsupportedOperation, ValueError, select.error):
+        return None
     return None
 
 
@@ -141,6 +147,8 @@ def _monitor_loop():
                         c = _read_byte(0.05)
                         if c is None or ('\x40' <= c <= '\x7e'):
                             break
+                    # Note: this was duplicated in _consume_ansi_sequence,
+                    # but we keep the logic for the loop's primary read.
                 elif next_ch == 'O':
                     _read_byte(0.05)
                 # else: two-char sequence, consumed
@@ -198,6 +206,7 @@ def _restore_terminal():
     if _original_termios is not None:
         try:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, _original_termios)
+            # Use a try-except here as well because we might be in a weird state
         except Exception:
             pass
 
