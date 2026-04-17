@@ -2,6 +2,7 @@ import os
 import pytest
 import re
 import time
+from unittest.mock import patch, MagicMock
 from tools.exec_command import fn, cleanup_temp_sessions
 
 def setup_function(function):
@@ -35,13 +36,13 @@ def test_exec_command_cd_guard_unsafe():
 
 def test_exec_command_worktree_guard_safe():
     # We need WORKTREE_ROOT set to test this
-    os.environ["WORKTREE_ROOT"] = "/mnt/droid/repos/agent/temp/20260416_235701/worktrees"
-    result = fn(command="git worktree add /mnt/droid/repos/agent/temp/20260416_235701/worktrees/test-wt-safe -b test-branch-safe")
+    os.environ["WORKTREE_ROOT"] = "/mnt/droid/repos/agent/temp/20260417_202516/worktrees"
+    result = fn(command="git worktree add /mnt/droid/repos/agent/temp/20260417_202516/worktrees/test-wt-safe -b test-branch-safe")
     if "ERROR: Worktree must be created under" in result:
         pytest.fail("Guard blocked a valid worktree path")
 
 def test_exec_command_worktree_guard_unsafe():
-    os.environ["WORKTREE_ROOT"] = "/mnt/droid/repos/agent/temp/20260416_235701/worktrees"
+    os.environ["WORKTREE_ROOT"] = "/mnt/droid/repos/agent/temp/20260417_202516/worktrees"
     result = fn(command="git worktree add /tmp/bad-wt -b test-branch")
     assert "ERROR: Worktree must be created under" in result
 
@@ -118,3 +119,113 @@ def test_exec_command_write_sanitizer():
     assert "content" in content
     
     os.remove("test_sanitizer.txt")
+
+def test_exec_command_heredoc_write_target():
+    # Test line 29: return m.group(1) in _extract_write_target
+    result = fn(command="cat > test_heredoc.py <<'EOF'\nprint('hello')\nEOF")
+    assert "exit=0" in result
+    os.remove("test_heredoc.py")
+
+def test_exec_command_invalid_session_id():
+    # Test line 63: return None, f"Error: session '{session_id}' does not exist"
+    result = fn(session_id="nonexistent-session-123")
+    assert "Error: session 'nonexistent-session-123' does not exist" in result
+
+def test_exec_command_idle_session():
+    # Test line 151: return f"[session: {sid}] (idle)"
+    # Create a session that has no active process
+    sid_res = fn(command="echo 1", new_session=True)
+    sid = re.search(r'\[session: ([^\]]+)\]', sid_res).group(1)
+    # Now poll it without a command
+    result = fn(session_id=sid)
+    # Since it was a simple command, it finished immediately. 
+    # The first poll might see it as finished, but let's ensure we get to 'idle'.
+    # We need to poll it AFTER it has finished and the process is set to None.
+    # Wait for it to finish if it's a background process, but here it's foreground.
+    # Foreground commands don't set bg_proc.
+    # So a new session that just ran a foreground command should be idle.
+    assert "(idle)" in result
+
+def test_exec_command_popen_failure():
+    # Test line 252-253: Exception handler for subprocess.Popen
+    with patch('subprocess.Popen', side_effect=Exception("Popen failed")):
+        result = fn(command="echo 1", background=True)
+        assert "Error starting background command: Popen failed" in result
+
+def test_exec_command_resolve_failure():
+    # Test line 231-232: Exception handler for target_path.resolve()
+    # We mock Path.resolve to raise an exception
+    with patch('tools.exec_command.Path.resolve', side_effect=OSError("Resolve failed")):
+        # We need a write target to trigger the resolve() call
+        result = fn(command="echo 1 > test_resolve_fail.txt")
+        # It should not crash, but rather use the target_path string
+        assert "exit=0" in result
+        os.remove("test_resolve_fail.txt")
+
+def test_exec_command_read_resolve_failure():
+    # Test line 308-309: Exception handler for rp.resolve()
+    with patch('tools.exec_command.Path.resolve', side_effect=OSError("Resolve failed")):
+        result = fn(command="cat test_resolve_fail_read.txt")
+        # It should not crash
+        assert "exit=1" in result # file doesn't exist, but resolve() was called
+
+def test_exec_command_sanitizer_failure():
+    # Test line 294-295: Exception handler in post-write sanitizer
+    # We mock read_text to fail
+    with patch('tools.exec_command.Path.read_text', side_effect=Exception("Read failed")):
+        result = fn(command="echo 1 > test_sanitizer_fail.txt")
+        assert "exit=0" in result
+        os.remove("test_sanitizer_fail.txt")
+
+def test_exec_command_cleanup_failure():
+    # Test line 108-111: Exception handler in cleanup_temp_sessions
+    # Mock a process to fail on .kill()
+    mock_proc = MagicMock()
+    mock_proc.kill.side_effect = Exception("Kill failed")
+    
+    # We need to inject this mock_proc into the _sessions dict
+    from tools.exec_command import _sessions
+    _sessions["test-fail-session"] = {"bg_proc": mock_proc, "bg_output": ""}
+    
+    cleanup_temp_sessions()
+    # Should not crash
+    assert True
+
+def test_exec_command_bg_read_failure():
+    # Test line 98-99: Exception handler in _read_bg_output
+    # This is harder because it runs in a thread. 
+    # We'll mock the stdout iterator to fail.
+    with patch('subprocess.Popen', wraps=subprocess.Popen) as mock_popen:
+        # Create a mock process with a stdout that raises an exception when iterated
+        mock_proc = MagicMock()
+        mock_proc.stdout = iter([b"line1\n", Exception("Read error")]) 
+        # This is not quite right for the a real Popen.
+        # a better way is to mock the process object entirely.
+        pass
+def test_exec_command_bg_read_failure():
+    # Test line 98-99: Exception handler in _read_bg_output
+    # We use a mock process that raises an exception during stdout iteration
+    with patch('subprocess.Popen') as mock_popen:
+        mock_proc = MagicMock()
+        # Simulate an exception when iterating over stdout
+        mock_proc.stdout = iter([b"some output", Exception("Read error")])
+        # Actually, the for loop will just see the Exception object as an item.
+        # We need the iterator itself to raise the exception.
+        class FailingIterator:
+            def __iter__(self): return self
+            def __next__(self): raise Exception("Read error")
+        
+        mock_proc.stdout = FailingIterator()
+        mock_proc.wait.return_value = 0
+        mock_popen.return_value = mock_proc
+        
+        # Start background process
+        res = fn(command="echo 1", background=True)
+        sid = re.search(r'\[session: ([^\]]+)\]', res).group(1)
+        
+        # Wait for the thread to run
+        time.sleep(0.5)
+        
+        # Poll the session
+        result = fn(session_id=sid)
+        assert "Error reading output: Read error" in result
