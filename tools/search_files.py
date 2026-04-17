@@ -105,7 +105,7 @@ def fn(
                         file_hits = 0
                         for line in f:
                             if regex.search(line):
-                            file_hits += 1
+                                                                file_hits += 1
                         if file_hits > 0:
                             files_matched += 1
                             total_matches += file_hits
@@ -205,7 +205,7 @@ definition = {
         "name": "search_files",
         "description": (
             "Search file contents for a regex pattern (like grep). "
-            "Searches recursively through through a directory and returns each hit "
+            "Searches recursively through a directory and returns each hit "
             "with surrounding context lines by default, so you can tell a "
             "definition from a call from a documentation mention without "
             "needing a follow-up file read. Use this to find patterns in "
@@ -272,4 +272,3 @@ definition = {
             },
         },
     }
-}
