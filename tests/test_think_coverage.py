@@ -51,19 +51,20 @@ class TestThinkCoverage(unittest.TestCase):
         mock_response = MagicMock()
         mock_response.raise_for_status.return_value = None
         # Correct thinking block pattern: <|channel>thought\n...\<channel|>
-        # Note: the regex is r'<\|channel>thought\n(.*?)<channel\|>'
-        full_content = "<|channel>thought\nI should add 1 and 1.<channel|>The answer is 2"
+        full_content = '<|channel>thought\nI should add 1 and 1.<channel|>The answer is 2'
         
-        # Split into chunks to simulate streaming
         chunks = []
         current = ""
         for char in full_content:
             current += char
-            if len(current) > 5: 
-                chunks.append(f'data: {{"choices": [{{ "delta": {{"content": "{current}"}} }}]}}'.encode())
+            if len(current) > 5:
+                chunk_json = json.dumps({"choices": [{"delta": {"content": current}}]})
+                chunks.append(f"data: {chunk_json}".encode())
                 current = ""
-        chunks.append(f'data: {{"choices": [{{ "delta": {{"content": "{current}"}} }}]}}'.encode())
-        chunks.append(b'data: [DONE]')
+        if current:
+            chunk_json = json.dumps({"choices": [{"delta": {"content": current}}]})
+            chunks.append(f"data: {chunk_json}".encode())
+        chunks.append(b"data: [DONE]")
         
         mock_response.iter_lines.return_value = chunks
         mock_post.return_value = mock_response
