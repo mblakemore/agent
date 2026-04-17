@@ -40,14 +40,13 @@ def fn(
     except re.error as e:
         return f"Error: invalid regex pattern: {e}"
 
-    search_path = Path(path)
+    # Resolve search_path immediately to avoid absolute vs relative mismatch in relative_to()
+    search_path = Path(path).resolve()
     if not search_path.exists():
         return f"Error: path '{path}' does not exist"
 
-    try:
-        resolved = search_path.resolve()
-    except (OSError, RuntimeError):
-        resolved = search_path.absolute()
+    # Since search_path is now already resolved, we can use it directly for os.walk
+    resolved = search_path
 
     if context < 0:
         context = 0
@@ -211,7 +210,7 @@ definition = {
             "needing a follow-up file read. Use this to find patterns in "
             "code, search memory files, review past cycle logs, or locate "
             "specific content across the project. Prefer this over reading "
-            "whole files when you only need to look at a handful of matches. "
+            "whole files when you only need to know how many matches exist, not where they are. "
             "Pass count_only=true when you only need to look at a handful of matches. "
             "Pass count_only=true when you only need a match count (e.g. "
             "how many TODOs, test methods, or call sites) — returns just the "
@@ -245,9 +244,9 @@ definition = {
                           "description": "File glob to filter, e.g. '*.py', '*.json', '*.md' (default: all files).",
                       },
                       "ignore_case": {
-                          "type": "boolean",
-                          "description": "Case-insensitive search (default: true).",
-                          "default": True,
+                        "type": "boolean",
+                        "description": "Case-insensitive search (default: true).",
+                        "default": True,
                       },
                       "context": {
                           "type": "integer",
@@ -261,10 +260,7 @@ definition = {
                       },
                       "count_only": {
                           "type": "boolean",
-                          "description": (
-                              "Return only the match count summary (files searched, files matched, total matches) without the match lines "
-                              "themselves. Use this when you only need to know how many matches exist, not where they are. Default: false."
-                              ),
+                          "description": "If True, return only the match count summary (files searched, files matched, total matches) without the match lines. Use this when you only need to know how many matches exist, not where they are. Default: false.",
                           "default": False,
                       },
                   },
