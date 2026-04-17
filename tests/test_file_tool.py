@@ -239,3 +239,123 @@ class TestFileList(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestFileCoverageGaps(unittest.TestCase):
+    """Tests specifically targeting missing lines in tools/file.py."""
+
+    def test_read_empty_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "empty.txt"
+            target.write_text("", encoding="utf-8")
+            result = file_tool.fn(action="read", path=str(target))
+            self.assertIn("(empty file)", result)
+
+    def test_read_start_line_exceeds_length(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "short.txt"
+            target.write_text("line1\n", encoding="utf-8")
+            result = file_tool.fn(action="read", path=str(target), start_line=5)
+            self.assertIn("Error: start_line (5) exceeds file length", result)
+
+    def test_write_replace_range_nonexistent(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "nonexistent.txt"
+            result = file_tool.fn(action="write", path=str(target), content="hi", start_line=1, end_line=1)
+            self.assertIn("Error: cannot replace lines", result)
+
+    def test_write_replace_range_invalid_lines(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("line1\nline2", encoding="utf-8")
+            file_tool.fn(action="read", path=str(target))
+            
+            # start_line > end_line
+            result = file_tool.fn(action="write", path=str(target), content="hi", start_line=2, end_line=1)
+            self.assertIn("Error: start_line (2) > end_line (1)", result)
+            
+            # start_line > total_lines
+            result = file_tool.fn(action="write", path=str(target), content="hi", start_line=5, end_line=5)
+            self.assertIn("Error: start_line (5) exceeds file length", result)
+            
+            # end_line > total_lines
+            result = file_tool.fn(action="write", path=str(target), content="hi", start_line=1, end_line=5)
+            self.assertIn("Error: end_line (5) exceeds file length", result)
+
+    def test_write_replace_range_streaming_error(self):
+        # To simulate a streaming write error, we can use a read-only directory
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("line1\nline2", encoding="utf-8")
+            file_tool.fn(action="read", path=str(target))
+            
+            # Make directory read-only to cause mkstemp or os.replace to fail
+            import os
+            os.chmod(d, 0o555)
+            try:
+                result = file_tool.fn(action="write", path=str(target), content="hi", start_line=1, end_line=1)
+                self.assertIn("Permission denied", result)
+            finally:
+                os.chmod(d, 0o755)
+
+    def test_insert_nonexistent(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "nonexistent.txt"
+            result = file_tool.fn(action="insert", path=str(target), content="hi", start_line=1)
+            self.assertIn("Error: cannot insert", result)
+
+    def test_insert_no_content(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("hi")
+            file_tool.fn(action="read", path=str(target))
+            result = file_tool.fn(action="insert", path=str(target), content="", start_line=1)
+            self.assertIn("Error: no content to insert", result)
+
+    def test_insert_invalid_start_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("hi")
+            file_tool.fn(action="read", path=str(target))
+            result = file_tool.fn(action="insert", path=str(target), content="hi", start_line=0)
+            self.assertIn("Error: start_line must be >= 1", result)
+
+    def test_insert_start_line_too_high(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("hi")
+            file_tool.fn(action="read", path=str(target))
+            result = file_tool.fn(action="insert", path=str(target), content="hi", start_line=5)
+            self.assertIn("Error: start_line (5) exceeds file length + 1", result)
+
+    def test_insert_streaming_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("hi")
+            file_tool.fn(action="read", path=str(target))
+            import os
+            os.chmod(d, 0o555)
+            try:
+                result = file_tool.fn(action="insert", path=str(target), content="hi", start_line=1)
+                self.assertIn("Permission denied", result)
+            finally:
+                os.chmod(d, 0o755)
+
+    def test_delete_blocked_filename(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "conversation_checkpoint.json"
+            target.write_text("{}")
+            result = file_tool.fn(action="delete", path=str(target))
+            self.assertIn("internal runtime file", result)
+
+    def test_list_empty_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            result = file_tool.fn(action="list", path=d)
+            self.assertEqual(result, "(empty directory)")
+
+    def test_list_not_a_dir(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "file.txt"
+            target.write_text("hi")
+            result = file_tool.fn(action="list", path=str(target))
+            self.assertIn("Error: '", result)
+            self.assertIn("not a directory", result)
