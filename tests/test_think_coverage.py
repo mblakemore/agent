@@ -50,28 +50,27 @@ class TestThinkCoverage(unittest.TestCase):
         
         mock_response = MagicMock()
         mock_response.raise_for_status.return_value = None
-        # Correct thinking block pattern: <|channel>thought\n...\<channel|>
-        # Note: the regex is r'<\|channel>thought\n(.*?)<channel\|>'
         full_content = "<|channel>thought\nI should add 1 and 1.<channel|>The answer is 2"
         
-        # Split into chunks to simulate streaming
         chunks = []
         current = ""
         for char in full_content:
             current += char
-            if len(current) > 5: 
-                chunks.append(f'data: {{"choices": [{{ "delta": {{"content": "{current}"}} }}]}}'.encode())
+            if len(current) > 5:
+                chunk = "data: " + json.dumps({"choices": [{"delta": {"content": current}}]})
+                chunks.append(chunk.encode())
                 current = ""
-        chunks.append(f'data: {{"choices": [{{ "delta": {{"content": "{current}"}} }}]}}'.encode())
-        chunks.append(b'data: [DONE]')
+        if current:
+            chunk = "data: " + json.dumps({"choices": [{"delta": {"content": current}}]})
+            chunks.append(chunk.encode())
+        chunks.append(b"data: [DONE]")
         
         mock_response.iter_lines.return_value = chunks
         mock_post.return_value = mock_response
-
+        
         result = think_mod.fn("What is 1+1?", depth="brief")
         
         self.assertEqual(result, "The answer is 2")
-        # Check if reasoning was output
         calls = [call.args[0] for call in think_mod._output.call_args_list]
         self.assertTrue(any("I should add 1 and 1" in c for c in calls))
 
