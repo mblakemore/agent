@@ -1,4 +1,10 @@
 [run]
-omit =
+source = .
+omit = 
+    tests/*
+    setup.py
     */tmp/*
     .agent/*
+
+[report]
+show_missing = True
