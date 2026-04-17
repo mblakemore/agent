@@ -23,7 +23,7 @@ DEPTH_MAX_TOKENS = {
 }
 
 # Gemma 4 thinking block pattern
-_THINK_RE = re.compile(r'<\|channel>thought\n(.*?)<channel\|>', re.DOTALL)
+_THINK_RE = re.compile(r'<\|channel>thought\n(.*?)(?:<channel\|>|$)', re.DOTALL)
 
 
 def _get_base_url():
@@ -51,8 +51,8 @@ def fn(prompt: str, depth: str = "brief", context: str = "") -> str:
     max_tokens = DEPTH_MAX_TOKENS.get(depth, DEPTH_MAX_TOKENS["normal"])
     base_url = _get_base_url()
 
-    # <|think|> in system prompt enables Gemma 4 thinking
-    messages = [{"role": "system", "content": "<|think|>"}]
+    # <|channel>thought\n in system prompt enables Gemma 4 thinking
+    messages = [{"role": "system", "content": "<|channel>thought\n"}]
     if context:
         messages.append({"role": "user", "content": context})
         messages.append({"role": "assistant", "content": "Understood. I have the context."})
