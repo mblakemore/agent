@@ -11,7 +11,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import theme
 import spinner
 
-
 def _sample_rgbs(n=120, dt=0.05):
     """Sample pulse_rgb across one full cycle (3s)."""
     return [theme.pulse_rgb(i * dt) for i in range(n)]
@@ -87,6 +86,77 @@ class TestSpinnerInteractivity(unittest.TestCase):
                 m_stdout.write.assert_any_call("hello ")
             status.finish()
 
+
+class TestStreamStatusFullLifecycle(unittest.TestCase):
+    def test_start_with_leading_newlines(self):
+        """Verify that leading newlines in prefix are printed immediately."""
+        with mock.patch.object(theme, "_no_color", return_value=True):
+            status = spinner.StreamStatus()
+            with mock.patch("sys.stdout") as m_stdout:
+                status.start(prefix="\n\nHello")
+                m_stdout.write.assert_any_call("\n\n")
+                m_stdout.write.assert_any_call("Hello")
+            status.finish()
+
+    def test_interactive_lifecycle(self):
+        """Test the full interactive spinner lifecycle: start -> spin -> first_token -> count -> finish."""
+        with mock.patch.object(theme, "_no_color", return_value=False):
+            with mock.patch("sys.stdout") as m_stdout:
+                status = spinner.StreamStatus()
+                self.assertTrue(status._interactive)
+                
+                # 1. Start
+                status.start(prefix="Loading...")
+                self.assertIsNotNone(status._thread)
+                self.assertTrue(status._thread.is_alive())
+                
+                import time
+                time.sleep(0.2)
+                
+                found_spin_call = any(
+                    spinner.theme.CLEAR_LINE in call.args[0] and "Loading..." in call.args[0]
+                    for call in m_stdout.write.call_args_list
+                )
+                self.assertTrue(found_spin_call, "Spinner thread did not write to stdout")
+                
+                # 2. First Token
+                status.first_token()
+                self.assertIsNone(status._thread)
+                m_stdout.write.assert_any_call(f"{spinner.theme.CLEAR_LINE}Loading...")
+                
+                # 3. Count Tokens
+                for i in range(5):
+                    status.count_token()
+                
+                found_title_call = any(
+                    call.args[0].startswith("\033]0;")
+                    for call in m_stdout.write.call_args_list
+                )
+                self.assertTrue(found_title_call, "Terminal title was not updated after 5 tokens")
+                
+                # 4. Finish
+                with mock.patch.object(status, "_emit") as m_emit:
+                    status.finish()
+                    m_emit.assert_called_once()
+                    m_stdout.write.assert_any_call("\033]0;\007")
+
+    def test_finish_without_start(self):
+        """Verify finish() handles cases where start() was never called."""
+        # Force non-interactive to avoid the title reset write
+        with mock.patch.object(theme, "_no_color", return_value=True):
+            status = spinner.StreamStatus()
+            with mock.patch("sys.stdout") as m_stdout:
+                status.finish()
+                m_stdout.write.assert_not_called()
+
+    def test_finish_interactive_no_tokens(self):
+        """Verify finish() writes CLEAR_LINE when interactive and no tokens were counted."""
+        with mock.patch.object(theme, "_no_color", return_value=False):
+            status = spinner.StreamStatus()
+            with mock.patch("sys.stdout") as m_stdout:
+                status.start(prefix="Test")
+                status.finish()
+                m_stdout.write.assert_any_call(spinner.theme.CLEAR_LINE)
 
 if __name__ == "__main__":
     unittest.main()
