@@ -42,21 +42,21 @@ def _resolve_path(path):
     return p
 
 
-    def _get_diff(old_content, new_content):
-        """Generate a colorized unified diff between old and new content."""
-        old_lines = old_content.splitlines(keepends=True)
-        new_lines = new_content.splitlines(keepends=True)
-        diff = difflib.unified_diff(old_lines, new_lines, lineterm='')
-        
-        result = []
-        for line in diff:
-            if line.startswith('+') and not line.startswith('+++'):
-                result.append(theme.c(theme.MINT, line))
-            elif line.startswith('-') and not line.startswith('---'):
-                result.append(theme.c(theme.ROSE, line))
-            else:
-                result.append(line)
-        return "\n".join(result)
+def _get_diff(old_content, new_content):
+    """Generate a colorized unified diff between old and new content."""
+    old_lines = old_content.splitlines(keepends=True)
+    new_lines = new_content.splitlines(keepends=True)
+    diff = difflib.unified_diff(old_lines, new_lines, lineterm='')
+    
+    result = []
+    for line in diff:
+        if line.startswith('+') and not line.startswith('+++'):
+            result.append(theme.c(theme.MINT, line))
+        elif line.startswith('-') and not line.startswith('---'):
+            result.append(theme.c(theme.ROSE, line))
+        else:
+            result.append(line)
+    return "\n".join(result)
 
 
 def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end_line: int = 0) -> str:
@@ -214,9 +214,9 @@ def _write(path, content, start_line, end_line):
         check = check.parent
     if len(dirs_to_create) > _MAX_NEW_DIRS:
         return (f"Error: writing '{path}' would create {len(dirs_to_create)} nested directories. "
-                f"This usually means the path is wrong. Use a relative path from your working directory "
-                f"(e.g. '.agent/state/file.json' not '/droid/repos/.../state/file.json').")
-    
+               f"This usually means the path is wrong. Use a relative path from your working directory "
+               f"(e.g. '.agent/state/file.json' not '/droid/repos/.../state/file.json').")
+
     old_content = ""
     if p.exists():
         with open(p, 'r', encoding='utf-8', errors='replace') as f:
@@ -226,7 +226,7 @@ def _write(path, content, start_line, end_line):
     with open(p, 'w', encoding='utf-8') as f:
         f.write(content)
     _accessed_files.add(str(p.resolve()))
-    
+
     if old_content:
         diff_text = _get_diff(old_content, content)
         return f"Wrote '{path}' ({len(content)} chars)\n\nDiff:\n{diff_text}"
@@ -239,8 +239,8 @@ def _append(path, content):
         return f"Error: '{p.name}' is an internal runtime file and cannot be written."
     if p.suffix.lower() == '.json':
         return (f"Error: cannot append to JSON file '{path}' — breaks structure. "
-                f"Use action='write' with full contents instead.")
-    
+               f"Use action='write' with full contents instead.")
+
     old_content = ""
     if p.exists():
         with open(p, 'r', encoding='utf-8', errors='replace') as f:
@@ -248,10 +248,10 @@ def _append(path, content):
 
     with open(p, 'a', encoding='utf-8') as f:
         f.write(content)
-    
+
     with open(p, 'r', encoding='utf-8', errors='replace') as f:
         new_content = f.read()
-    
+
     diff_text = _get_diff(old_content, new_content)
     return f"Appended to '{path}' ({len(content)} chars)\n\nDiff:\n{diff_text}"
 
@@ -268,12 +268,12 @@ def _insert(path, content, start_line):
 
     if p.exists() and str(p.resolve()) not in _accessed_files:
         return (f"Error: '{path}' exists but has not been read this session. "
-                f"You must read the file first (action='read') before inserting.")
+               f"You must read the file first (action='read') before inserting.")
 
     with open(p, 'r', encoding='utf-8', errors='replace') as f:
         old_content = f.read()
         total_lines = len(old_content.splitlines(True))
-    
+
     if start_line > total_lines + 1:
         return f"Error: start_line ({start_line}) exceeds file length + 1 ({total_lines} lines)"
 
@@ -301,7 +301,7 @@ def _insert(path, content, start_line):
         new_content = f.read()
 
     diff_text = _get_diff(old_content, new_content)
-    
+
     _accessed_files.add(str(p.resolve()))
     return (f"Inserted {len(new_lines)} line(s) before line {start_line} in '{path}'. "
             f"File now has {total_lines + len(new_lines)} lines.\n\nDiff:\n{diff_text}")
