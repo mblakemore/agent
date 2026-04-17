@@ -104,8 +104,8 @@ def fn(
                     if count_only:
                         file_hits = 0
                         for line in f:
-                            if regex.search(line):
-                            file_hits += 1
+                              if regex.search(line):
+                                                                    file_hits += 1
                         if file_hits > 0:
                             files_matched += 1
                             total_matches += file_hits
@@ -238,38 +238,37 @@ definition = {
                         "absolute path to the directory you actually want "
                         "to search whenever you know it."
                         ),
-                    "default": ".",
-                },
-                "glob": {
-                    "type": "string",
-                    "description": "File glob to filter, e.g. '*.py', '*.json', '*.md' (default: all files).",
-                },
-                "ignore_case": {
-                    "type": "boolean",
-                    "description": "Case-insensitive search (default: true).",
-                    "default": True,
-                },
-                "context": {
-                    "type": "integer",
-                    "description": (
-                        "Lines of context to show before and after each match, like grep -C. "
-                        "Capped at 20. Default 3 — pass 0 only if you want the legacy "
-                        "bare-match shape."
-                        ),
-                        "default": 3,
-                        "minimum": 0,
-                    },
-                "count_only": {
-                    "type": "boolean",
-                    "description": (
-                        "Return only the match count summary (files searched, files matched, total matches) without the match lines "
-                        "themselves. Use this when you only need to know how many matches exist, not where they are. Default: false."
-                        ),
-                        "default": False,
-                    },
-                },
-                "required": ["pattern"],
-            },
-        },
-    }
-}
+                                  "default": ".",
+                              },
+                      "glob": {
+                          "type": "string",
+                          "description": "File glob to filter, e.g. '*.py', '*.json', '*.md' (default: all files).",
+                      },
+                      "ignore_case": {
+                          "type": "boolean",
+                          "description": "Case-insensitive search (default: true).",
+                          "default": True,
+                      },
+                      "context": {
+                          "type": "integer",
+                          "description": (
+                              "Lines of context to show before and after each match, like grep -C. "
+                              "Capped at 20. Default 3 — pass 0 only if you want the legacy "
+                              "bare-match shape."
+                              ),
+                          "default": 3,
+                          "minimum": 0,
+                      },
+                      "count_only": {
+                          "type": "boolean",
+                          "description": (
+                              "Return only the match count summary (files searched, files matched, total matches) without the match lines "
+                              "themselves. Use this when you only need to know how many matches exist, not where they are. Default: false."
+                              ),
+                          "default": False,
+                      },
+                  },
+                  "required": ["pattern"],
+              },
+          },
+      }
