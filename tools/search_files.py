@@ -105,7 +105,7 @@ def fn(
                         file_hits = 0
                         for line in f:
                             if regex.search(line):
-                            file_hits += 1
+                                file_hits += 1
                         if file_hits > 0:
                             files_matched += 1
                             total_matches += file_hits
@@ -272,4 +272,3 @@ definition = {
             },
         },
     }
-}
