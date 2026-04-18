@@ -9,7 +9,7 @@ def test_tool_loop_forced_think():
     conversation_history = []
     summary_state = {"text": "", "up_to": 0}
     log = MagicMock()
-    
+
     # Mock LLM to return tool call, then eventually stop
     with patch('agent._llm_request') as mock_llm:
         mock_tool_resp = MagicMock()
@@ -18,7 +18,7 @@ def test_tool_loop_forced_think():
             b'data: [DONE]'
         ]
         mock_tool_resp.status_code = 200
-        
+
         mock_done_resp = MagicMock()
         mock_done_resp.iter_lines.return_value = [
             b'data: {"choices": [{"delta": {"content": "I am done"}}]}',
@@ -38,23 +38,28 @@ def test_tool_loop_forced_think():
 
         call_count = 0
         mock_llm.side_effect = llm_side_effect
-        
+
         with patch('agent.MAP_FN') as mock_map:
             # Mock the tool to return an "Error" string
             mock_fail_tool = MagicMock(return_value="Error: tool failed")
-            
+
             # Important: MAP_FN is used like a dict
             mock_map.__getitem__.side_effect = lambda k: mock_fail_tool if k == "fail_tool" else MagicMock()
             mock_map.__contains__.side_effect = lambda k: True 
-            
+
             # Also mock 'think' tool since forced think calls it
             mock_think_tool = MagicMock(return_value="I have thought about it.")
             mock_map.__getitem__.side_effect = lambda k: mock_think_tool if k == "think" else (mock_fail_tool if k == "fail_tool" else MagicMock())
 
             run_agent_single(conversation_history, summary_state, None, log)
-            
-            reflection_found = any("MANDATORY REFLECTION" in str(msg.get("content", "")) 
-                                   for msg in conversation_history)
+
+            reflection_found = False
+            for msg in conversation_history:
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        if "MANDATORY REFLECTION" in str(tc.get("function", {}).get("arguments", "")):
+                            reflection_found = True
+                            break
             assert reflection_found, "Forced think prompt should have been injected"
 
 def test_tool_loop_hard_bail():
