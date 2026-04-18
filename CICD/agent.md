@@ -77,7 +77,7 @@ Read: CICD state `progress.md`, recent 2-3 improvement plans, project README.
 
 Also check for open PRs to avoid racing a parallel cycle — if an open PR already fixes the issue you're considering, skip it.
 
-**Inherited REQUEST_CHANGES PR**: if `gh pr list` surfaces a PR on a prior `cicd/NNN-slug` branch in `REQUEST_CHANGES` state, **that is this cycle's work**. Read the reviewer's comment (`gh pr view <N> --comments`), address it on the existing branch (new commit, push), and re-request review. Do NOT file a new issue until the inherited PR is resolved (merged, closed, or abandoned with a clear reason). Only one exception: if the reviewer's concern is fundamental (wrong approach), close the PR with a comment, reopen the issue, and pivot to a different target.
+**Inherited PR from prior cycle**: if `gh pr list` surfaces any open PR on a prior `cicd/NNN-slug` branch, **that is this cycle's work** — regardless of `reviewDecision`. Self-account PRs cannot have the GitHub review API set REQUEST_CHANGES, so the reviewer delivers verdicts via `gh pr comment` instead; the PR looks unreviewed but isn't. Always read comments with `gh pr view <N> --json comments --jq '.comments[].body'` (the bare `gh pr view <N>` and `gh pr view <N> --comments` forms fail with GraphQL deprecation — do not retry them). Address the feedback on the existing branch (new commit, push), and re-request review. Do NOT file a new issue until the inherited PR is resolved (merged, closed, or abandoned with a clear reason). Only one exception: if the reviewer's concern is fundamental (wrong approach), close the PR with a comment, reopen the issue, and pivot to a different target.
 
 If tests are red on `main`, that IS the improvement — skip PROBE, file a bug issue, go to PLAN.
 
