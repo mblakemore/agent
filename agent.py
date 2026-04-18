@@ -1623,6 +1623,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # any work is actually persisted.
     _has_committed = False
 
+    # Reviewer-role persistence signal.  Reviewers rarely commit code; their
+    # persistent outputs are `gh pr review` verdicts and appends to
+    # CICD/reviews.md.  Tracked separately so completion signals are honored
+    # once a verdict has actually landed.
+    _has_reviewer_persisted = False
+
     # Track whether any file has been written/edited.  If no edit by turn 30,
     # inject a nudge telling the agent to start coding or declare null result.
     _has_edited = False
@@ -1966,7 +1972,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             # Completion signals are trusted after a commit OR a successful
             # merge (reviewer role).  _cicd_phase_state["track"] is set when
             # `gh pr merge` exits 0.
-            _has_persisted_work = _has_committed or _cicd_phase_state.get("track", False)
+            _has_persisted_work = (_has_committed
+                                   or _cicd_phase_state.get("track", False)
+                                   or _has_reviewer_persisted)
             # During post-persist grace period, also suppress (TRACK work pending).
             _in_grace = _cycle_persisted and (turn - (_cycle_persisted_turn or turn)) < _CYCLE_GRACE_TURNS
             if _has_persisted_work and not _in_grace and full_content and any(s in full_content.lower() for s in _completion_signals):
@@ -2275,6 +2283,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         if "improvements/" in _file_path and _file_path.endswith(".md"):
                             _cicd_phase_state["plan"] = True
                             log.info("CICD phase: plan written to %s", _file_path)
+                        if _file_path.endswith("reviews.md"):
+                            if not _has_reviewer_persisted:
+                                log.info("Reviewer persistence detected (reviews.md write) — completion signals now allowed")
+                            _has_reviewer_persisted = True
 
                     # Track commits and pushes through exec_command
                     if func_name == "exec_command":
@@ -2354,6 +2366,20 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                         f"— use the real issue number this cycle targets.]"
                                     ),
                                 })
+                        if ("gh pr review" in _cmd
+                                and ("--request-changes" in _cmd
+                                     or "--approve" in _cmd
+                                     or "--comment" in _cmd)
+                                and "exit=0" in result_str):
+                            if not _has_reviewer_persisted:
+                                log.info("Reviewer persistence detected (gh pr review) — completion signals now allowed")
+                            _has_reviewer_persisted = True
+                        if ("reviews.md" in _cmd
+                                and (">>" in _cmd or "tee -a" in _cmd or "tee --append" in _cmd)
+                                and "exit=0" in result_str):
+                            if not _has_reviewer_persisted:
+                                log.info("Reviewer persistence detected (reviews.md append) — completion signals now allowed")
+                            _has_reviewer_persisted = True
                         if "gh pr review" in _cmd and "--approve" in _cmd:
                             if not _cicd_think_used:
                                 log.warning("CICD: gh pr review --approve without think — injecting reminder")
