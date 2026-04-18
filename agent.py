@@ -270,8 +270,10 @@ def _llm_request(log, **kwargs):
                 requests.exceptions.HTTPError) as e:
             if attempt == _LLM_MAX_RETRIES:
                 raise
-            if hasattr(e, 'response') and e.response is not None and e.response.status_code < 500:
-                raise
+            if isinstance(e, requests.exceptions.HTTPError):
+                resp = getattr(e, 'response', None)
+                if resp is None or resp.status_code < 500:
+                    raise
             delay = _calculate_retry_delay(attempt)
             log.warning("LLM request failed (attempt %d/%d): %s — retrying in %ds",
                         attempt + 1, _LLM_MAX_RETRIES + 1, e, delay)
