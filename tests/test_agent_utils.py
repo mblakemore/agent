@@ -76,3 +76,73 @@ def test_load_config_invalid_json():
         with patch("builtins.open", mock_open(read_data="not-json")):
             config = _load_config()
             assert config["llm"]["model"] == "gemma-4-31B"
+
+import requests
+from agent import _check_api_health, _detect_ctx_size, _list_available_models, _render_context_bar
+
+@pytest.mark.parametrize("status_code, expected_ok, expected_detail", [
+    (200, True, "ok"),
+    (404, False, "HTTP 404"),
+    (500, False, "HTTP 500"),
+])
+def test_check_api_health_responses(status_code, expected_ok, expected_detail):
+    with patch("requests.get") as mock_get:
+        mock_get.return_value.status_code = status_code
+        ok, detail = _check_api_health("http://api", timeout=1)
+        assert ok == expected_ok
+        assert detail == expected_detail
+
+def test_check_api_health_timeout():
+    with patch("requests.get", side_effect=requests.Timeout):
+        ok, detail = _check_api_health("http://api", timeout=1)
+        assert ok is False
+        assert detail == "timeout"
+
+def test_check_api_health_connection_error():
+    with patch("requests.get", side_effect=requests.ConnectionError):
+        ok, detail = _check_api_health("http://api", timeout=1)
+        assert ok is False
+        assert detail == "unreachable"
+
+def test_detect_ctx_size_success():
+    with patch("requests.get") as mock_get:
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = [{"n_ctx": 32768}]
+        assert _detect_ctx_size("http://api") == 32768
+
+def test_detect_ctx_size_failure():
+    with patch("requests.get") as mock_get:
+        mock_get.return_value.status_code = 500
+        assert _detect_ctx_size("http://api") is None
+
+def test_list_available_models_success():
+    with patch("requests.get") as mock_get:
+        mock_get.return_value.status_code = 200
+        mock_get.return_value.json.return_value = {
+            "data": [
+                {"id": "model-1"},
+                {"id": "model-2"},
+                {"id": None},
+                {},
+            ]
+        }
+        assert _list_available_models("http://api") == ["model-1", "model-2"]
+
+def test_list_available_models_failure():
+    with patch("requests.get") as mock_get:
+        mock_get.return_value.status_code = 404
+        assert _list_available_models("http://api") == []
+
+def test_render_context_bar():
+    # Mock estimate_tokens as a simple constant for predictability
+    with patch("agent._estimate_tokens", return_value=10):
+        history = [{"role": "user", "content": "test"}]
+        summary_state = {"text": "sum"}
+        ctx_size = 100
+        # body_tokens = 1 * 10 = 10
+        # summary_tokens = 1 * 10 = 10
+        # total = 20. pct = 0.2.
+        result = _render_context_bar(history, summary_state, ctx_size)
+        assert "history: 10 tokens" in result
+        assert "summary: 10 tokens" in result
+        assert "budget:  20 / 100 tokens" in result
