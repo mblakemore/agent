@@ -209,7 +209,10 @@ MANDATORY REVIEW WORKFLOW — every cycle MUST follow these steps:
    - If PR has no measurable metric, note "N/A" but apply other criteria strictly
 4. PRE-MERGE CHECK (mandatory before ANY gh pr merge):
    - Extract issue number from PR body "Closes #N" — must be a real number, not placeholder text
-   - Run: `gh issue view <N> --json state` — issue must exist
+   - Run: `gh issue view <N> --json state,labels,title,createdAt` — issue must exist
+   - **Issue must be OPEN.** If `state == "CLOSED"` at review time, the builder fabricated the trailer (Closes re-closes an already-closed issue as a no-op, masking that no real issue backs this work) → verdict is **CLOSE** with comment citing the pre-closed target.
+   - **Issue must be tracked as in-progress for this cycle.** Labels must include `in-progress` OR `cicd-cycle-*`. If neither is present, the builder skipped the DECIDE step (did not file/claim the issue) → verdict is **CLOSE** with comment "no tracking issue — Closes #N references an unrelated issue without in-progress label."
+   - **Issue title/body must be topically related to the PR.** Read the issue body; if the issue's subject has no keyword overlap with the PR's diff scope (e.g., PR adds tests for utility functions but issue is about a UI bug), → verdict is **CLOSE** — fabricated linkage.
    - If issue doesn't exist or "Closes #N" is missing/placeholder → verdict is CLOSE per decision matrix
 5. MANDATORY THINK before VERDICT — use the think tool to check your evidence:
    - Did my metric measurement produce a real, comparable number? (not "N/A" or "0 matches")
