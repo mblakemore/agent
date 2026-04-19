@@ -2517,7 +2517,26 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                         func_name, consecutive)
                             _emit("on_forced_think", func_name, consecutive)
                             if "think" in MAP_FN:
+                                # Record the forced tool call in history so the LLM sees it
+                                conversation_history.append({
+                                    "role": "assistant",
+                                    "tool_calls": [{
+                                        "id": f"forced_think_{consecutive}",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "think",
+                                            "arguments": json.dumps({"prompt": think_prompt})
+                                        }
+                                    }]
+                                })
                                 think_result = MAP_FN["think"](prompt=think_prompt)
+                                # Record the tool result in history
+                                conversation_history.append({
+                                    "role": "tool",
+                                    "tool_call_id": f"forced_think_{consecutive}",
+                                    "name": "think",
+                                    "content": think_result
+                                })
                                 # Inject as assistant thought + tool response
                                 think_id = f"forced_think_{turn}_{consecutive}"
                                 conversation_history.append({
