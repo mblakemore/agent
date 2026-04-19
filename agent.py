@@ -2511,7 +2511,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 f"3. What is a DIFFERENT way to accomplish my goal "
                                 f"without repeating the same call?\n"
                                 f"4. Should I just skip this step and move on to "
-                                f"CONSOLIDATE and PERSIST?"
+                                f"CONSOLIDATED and PERSIST?"
                             )
                             log.warning("Loop detected: %s x%d — forcing think",
                                         func_name, consecutive)
