@@ -77,7 +77,16 @@ Read: CICD state `progress.md`, recent 2-3 improvement plans, project README.
 
 Also check for open PRs to avoid racing a parallel cycle — if an open PR already fixes the issue you're considering, skip it.
 
-**Inherited PR from prior cycle**: if `gh pr list` surfaces any open PR on a prior `cicd/NNN-slug` branch, **that is this cycle's work** — regardless of `reviewDecision`. Self-account PRs cannot have the GitHub review API set REQUEST_CHANGES, so the reviewer delivers verdicts via `gh pr comment` instead; the PR looks unreviewed but isn't. Always read comments with `gh pr view <N> --json comments --jq '.comments[].body'` (the bare `gh pr view <N>` and `gh pr view <N> --comments` forms fail with GraphQL deprecation — do not retry them). Address the feedback on the existing branch (new commit, push), and re-request review. Do NOT file a new issue until the inherited PR is resolved (merged, closed, or abandoned with a clear reason). Only one exception: if the reviewer's concern is fundamental (wrong approach), close the PR with a comment, reopen the issue, and pivot to a different target.
+**Inherited PR from prior cycle**: if `gh pr list` surfaces any open PR on a prior `cicd/NNN-slug` branch, **that is this cycle's work** — regardless of `reviewDecision`. Self-account PRs cannot have the GitHub review API set REQUEST_CHANGES, so the reviewer delivers verdicts via `gh pr comment` instead; the PR looks unreviewed but isn't. Always read comments with `gh pr view <N> --json comments --jq '.comments[].body'` (the bare `gh pr view <N>` and `gh pr view <N> --comments` forms fail with GraphQL deprecation — do not retry them).
+
+To address feedback on an inherited PR, follow these steps EXACTLY (do NOT use the fresh-cycle WORKTREE/PUSH/PR steps):
+1. Capture the PR's branch name: `BR=$(gh pr view <N> --json headRefName --jq '.headRefName')` — this is the existing `cicd/NNN-slug` branch, NOT a new one.
+2. Fetch and check it out into a worktree, **without `-b`**: `git fetch origin "$BR" && git worktree add <WORKTREE_ROOT>/inherited-<N> "origin/$BR"`. Using `-b cicd/anything-else` creates a NEW branch from main and your fix won't include the PR's existing files (e.g. test files added on the PR branch will be missing).
+3. Inside that worktree: edit, `git add`, `git commit`, then `git push origin "HEAD:$BR"` to update the existing PR branch.
+4. Do NOT run `gh pr create` — the PR already exists; the push above updates it. (`gh pr create --head <existing-branch>` will fail with "PR already exists at #<N>", which means you correctly noticed but should treat as expected — do not retry on a different head.)
+5. Re-request review with `gh pr ready <N>` only if reviewer asked for merge.
+
+Do NOT file a new issue until the inherited PR is resolved (merged, closed, or abandoned with a clear reason). Only one exception: if the reviewer's concern is fundamental (wrong approach), close the PR with a comment, reopen the issue, and pivot to a different target.
 
 If tests are red on `main`, that IS the improvement — skip PROBE, file a bug issue, go to PLAN.
 
