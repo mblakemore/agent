@@ -81,8 +81,8 @@ Also check for open PRs to avoid racing a parallel cycle — if an open PR alrea
 
 To address feedback on an inherited PR, follow these steps EXACTLY (do NOT use the fresh-cycle WORKTREE/PUSH/PR steps):
 1. Capture the PR's branch name: `BR=$(gh pr view <N> --json headRefName --jq '.headRefName')` — this is the existing `cicd/NNN-slug` branch, NOT a new one.
-2. Fetch and check it out into a worktree, **without `-b`**: `git fetch origin "$BR" && git worktree add <WORKTREE_ROOT>/inherited-<N> "origin/$BR"`. Using `-b cicd/anything-else` creates a NEW branch from main and your fix won't include the PR's existing files (e.g. test files added on the PR branch will be missing).
-3. Inside that worktree: edit, `git add`, `git commit`, then `git push origin "HEAD:$BR"` to update the existing PR branch.
+2. Fetch and check it out into a worktree as a local tracking branch — use `-B "$BR" "origin/$BR"`, NOT `-b cicd/anything-else`: `git fetch origin "$BR" && git worktree add <WORKTREE_ROOT>/inherited-<N> -B "$BR" "origin/$BR"`. The `-B` form creates (or resets) a local branch named exactly `$BR` tracking the remote — so the worktree is on a real branch, not detached HEAD, and `git push` works without `HEAD:<branch>` syntax. Using `-b cicd/anything-else` instead would create a NEW branch from main and your fix won't include the PR's existing files.
+3. Inside that worktree: edit, `git add`, `git commit`, then `git push origin "$BR"` (NOT `HEAD:<literal-branch-name>` — typing the branch literally invites typos when issue/PR numbers differ; let the variable carry the name).
 4. Do NOT run `gh pr create` — the PR already exists; the push above updates it. (`gh pr create --head <existing-branch>` will fail with "PR already exists at #<N>", which means you correctly noticed but should treat as expected — do not retry on a different head.)
 5. Re-request review with `gh pr ready <N>` only if reviewer asked for merge.
 
