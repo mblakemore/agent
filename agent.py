@@ -2202,6 +2202,14 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             result_str = f"Error executing tool: {str(e)}"
 
                         # Conversational tool recovery: on error, try to fix params
+                        # Record error signature and check for loops before attempting recovery
+                        error_signature = f"{tool_name}({tool_args}) -> {result_str[:100]}"
+                        if self.record_error_signature(error_signature):
+                            self.logger.warning(f"Loop detected for tool {tool_name}. Triggering Forced Reflection.")
+                            self.prompt_buffer.append(f"Observation: The tool {tool_name} has failed repeatedly with the same error. Please rethink your approach and try a different strategy.")
+                        else:
+                            self.logger.info(f"First occurrence of error signature: {error_signature}")
+
                         if result_str.startswith("Error"):
                             try:
                                 from tool_recovery import attempt_recovery
