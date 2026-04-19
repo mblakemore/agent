@@ -2011,11 +2011,16 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             if full_content:
                 try:
                     from tools.file import _accessed_files
-                    _read_claims = re.findall(
+                    for match in re.finditer(
                         r'(?:read|found|contents? of|file (?:has|contains|shows))\s+[`"\']?(\S+\.(?:py|json|md|txt|yaml|yml|toml|jsonl|sh|cfg))',
                         full_content, re.IGNORECASE
-                    )
-                    for claimed_file in _read_claims:
+                    ):
+                        claimed_file = match.group(1)
+                        start = match.start()
+                        preceding = full_content[max(0, start-20):start].lower()
+                        if any(word in preceding for word in ['will', 'to ', 'should', 'must', 'need to']):
+                            continue
+
                         _resolved = str((Path.cwd() / claimed_file).resolve())
                         if _resolved not in _accessed_files:
                             _hallucinated_read = True
