@@ -2343,12 +2343,13 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     # Track commits and pushes through exec_command
                     if func_name == "exec_command":
                         _cmd = func_args.get("command", "")
+                        _cmd_normalized = re.sub(r"\\\n", " ", _cmd)  # Cycle 36: collapse shell line-continuations before all checks
                         if "git commit" in _cmd:
                             _has_committed = True
                             _has_edited = True  # commit implies edit happened
                             log.info("Commit detected — completion signals now allowed")
                             _cicd_phase_state["implement"] = True
-                        if re.search(r"(?:^|&&\s*|;\s*|\|\|\s*)git\s+push\b", _cmd) and "exit=0" in result_str:  # Cycle 35: regex prevents heredoc false-positives
+                        if re.search(r"(?:^|&&\s*|;\s*|\|\|\s*)git\s+push\b", _cmd_normalized) and "exit=0" in result_str:  # Cycle 35+36: regex on normalized cmd
                             if not _cycle_persisted:
                                 log.info("Cycle persist detected (git push exit=0) — auto-nudge disabled")
                             _cycle_persisted = True
@@ -2362,7 +2363,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 or "cat " in _cmd or "grep " in _cmd):
                             if _cicd_phase_state["perceive"]:
                                 _cicd_phase_state["probe"] = True
-                        if "gh issue create" in _cmd and "exit=0" in result_str:
+                        if re.search(r"(?:^|&&\s*|;\s*|\|\|\s*)gh\s+issue\s+create\b", _cmd_normalized) and "exit=0" in result_str:  # Cycle 36: regex prevents heredoc false-positives
                             if not _cicd_think_used:
                                 log.warning("CICD: gh issue create without think — injecting reminder")
                                 conversation_history.append({
