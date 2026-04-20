@@ -2551,6 +2551,21 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                     "Per MANDATORY THINK before VERDICT, you must call think() to verify "
                                     "tests passed, metric was measured, and issue reference is valid.]",
                                 })
+                            # Cycle 34: detect || echo / || true which mask merge errors.
+                            if re.search(r"gh\s+pr\s+merge\b.*\|\|\s*(echo|true|exit\s+0)", _cmd):
+                                log.warning("CICD: gh pr merge with || suppressor — injecting reminder")
+                                conversation_history.append({
+                                    "role": "user",
+                                    "content": (
+                                        "[SYSTEM: You used `|| echo` (or `|| true`) with `gh pr merge`. "
+                                        "This masks real errors — if the merge genuinely failed (draft, "
+                                        "conflict), exit=0 would be reported falsely. NEVER chain "
+                                        "`gh pr merge` with `||`. If the only error was local branch "
+                                        "deletion (worktree lock), that is benign — the PR is already "
+                                        "merged server-side. Verify with `gh pr view <N> --json state` "
+                                        "and clean up locally with `git branch -D <branch>` if needed.]"
+                                    ),
+                                })
                             if "exit=0" in result_str:
                                 _cicd_phase_state["track"] = True
                         # Detect plan file writes via exec_command (cat/heredoc)
