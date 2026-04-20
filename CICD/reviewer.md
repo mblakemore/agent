@@ -57,7 +57,7 @@ One PR per cycle. Priority:
 3. **Skip** stale drafts (>7 days, no activity) → log DEFER
 4. **Prefer** CICD PRs (title starts `CICD `) — they carry verifiable plans
 5. **Prefer** oldest `createdAt` — FIFO keeps the queue moving
-6. No survivors → record "no reviewable PRs" in `reviews.md`, stop
+6. No survivors → output **exactly**: `No more open pull requests. Cycle complete.` — then stop immediately. Do NOT write further analysis or summaries. (If this is the very first SELECT with no work done at all: record "no reviewable PRs" in reviews.md first, then output the line above.)
 
 Claim the PR: `gh pr comment <N> --body "Picked up by CICD reviewer R-NNN. Verification starting."`
 
