@@ -181,6 +181,7 @@ gh pr create --draft --base main --head cicd/NNN-slug \
   --body "Summary, Metric (before→after), Tests, Closes #ISSUE"
 ```
 4. Comment on issue with results, remove `in-progress` label. **Never `gh issue close` directly** — `Closes #N` trailer handles it on merge.
+5. **Output completion signal** (required — agent runtime watches for this to stop cleanly): output exactly: `Cycle complete. PR #NNN is open and ready for review.` replacing NNN with the actual PR number.
 
 **Null-result path**: remove worktree + branch, write null-result row, comment on issue explaining attempt, add `cicd-null-result` label.
 
