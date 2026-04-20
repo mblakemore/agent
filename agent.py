@@ -2492,7 +2492,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                     "content": "[SYSTEM: You cannot approve your own PR (same-account setup). "
                                     "SKIP the approval step entirely. Go directly to: "
                                     "`gh pr ready <N>` (separate command), then "
-                                    "`gh pr merge <N> --squash --delete-branch` (separate command).]",
+                                    "`gh pr merge <N> --squash` (separate command).]",
                                 })
                         if "gh pr ready" in _cmd and "exit=0" in result_str:
                             _cicd_pr_ready_called = True
@@ -2556,13 +2556,13 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                     "PR and file a null-result instead. Run the gh issue view now, then re-attempt "
                                     "the merge.]",
                                 })
-                            # Guard: must use --squash --delete-branch
+                            # Guard: must use --squash (NOT --delete-branch — builder worktree holds branch)
                             if "--squash" not in _cmd:
                                 log.warning("CICD: gh pr merge without --squash — injecting reminder")
                                 conversation_history.append({
                                     "role": "user",
-                                    "content": "[SYSTEM: You MUST use `gh pr merge --squash --delete-branch`. "
-                                    "Never use --merge or --rebase. Retry with --squash --delete-branch.]",
+                                    "content": "[SYSTEM: You MUST use `gh pr merge --squash`. "
+                                    "Never use --merge or --rebase. Never use --delete-branch. Retry with --squash only.]",
                                 })
                             # Guard: must call `gh pr ready` first (draft PRs)
                             if not _cicd_pr_ready_called and "exit=0" not in result_str:
@@ -2571,8 +2571,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                     conversation_history.append({
                                         "role": "user",
                                         "content": "[SYSTEM: The PR is still a draft. You must run "
-                                        "`gh pr ready <N>` FIRST, then run `gh pr merge <N> --squash "
-                                        "--delete-branch` as a SEPARATE command. Do NOT chain them.]",
+                                        "`gh pr ready <N>` FIRST, then run `gh pr merge <N> --squash` "
+                                        "as a SEPARATE command. Do NOT chain them. Do NOT add --delete-branch.]",
                                     })
                             if not _cicd_think_used and "exit=0" not in result_str:
                                 log.warning("CICD: gh pr merge without think — injecting reminder")
