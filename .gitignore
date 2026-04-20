@@ -24,6 +24,13 @@ dist/
 .eggs/
 *.egg
 
+# Test artifacts (pytest, coverage, mocking)
+MagicMock/
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+
 # Virtual environments
 .venv/
 venv/
