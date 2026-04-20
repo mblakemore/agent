@@ -2348,7 +2348,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             _has_edited = True  # commit implies edit happened
                             log.info("Commit detected — completion signals now allowed")
                             _cicd_phase_state["implement"] = True
-                        if "git push" in _cmd and "exit=0" in result_str:
+                        if re.search(r"(?:^|&&\s*|;\s*|\|\|\s*)git\s+push\b", _cmd) and "exit=0" in result_str:  # Cycle 35: regex prevents heredoc false-positives
                             if not _cycle_persisted:
                                 log.info("Cycle persist detected (git push exit=0) — auto-nudge disabled")
                             _cycle_persisted = True
@@ -2383,7 +2383,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                         "(and/or `--label cicd`). The reviewer's PRE-MERGE CHECK rejects PRs "
                                         "whose linked issue lacks these labels. Fix now: "
                                         f"`gh issue edit {_issue_num} --add-label in-progress --add-label cicd "
-                                        "--add-label cicd-cycle-NNN` (replace NNN with the current cycle number). "
+                                        f"--add-label cicd-cycle-{_issue_num}`. "
                                         "Do this before opening the PR.]"
                                     ),
                                 })
