@@ -260,3 +260,45 @@ def test_handle_cicd_file_edit_logic():
     )
     assert has_edited is True
     assert persisted is True
+
+@pytest.mark.parametrize("issue_json, description", [
+    # Case 1: Issue is CLOSED
+    (json.dumps({"state": "CLOSED", "labels": [{"name": "cicd"}, {"name": "in-progress"}]}), 
+     "CLOSED issue"),
+    # Case 2: Issue is OPEN but has no labels
+    (json.dumps({"state": "OPEN", "labels": []}), 
+     "missing labels"),
+    # Case 3: Issue is OPEN but has wrong labels
+    (json.dumps({"state": "OPEN", "labels": [{"name": "bug"}]}), 
+     "wrong labels"),
+])
+def test_pre_merge_check_invalid_criteria(monkeypatch, issue_json, description):
+    """Test that merging with invalid issue criteria triggers a warning."""
+    mock_exec = MagicMock()
+    monkeypatch.setitem(MAP_FN, "exec_command", mock_exec)
+    
+    with patch('agent._llm_request') as mock_llm:
+        mock_llm.side_effect = [
+            mock_llm_response({"command": "gh issue view 1 --json state,labels"}),
+            mock_llm_response({"command": "gh pr merge 2 --squash --delete-branch"}),
+            mock_text_response("Done")
+        ]
+        
+        # First call returns the invalid issue JSON, second returns "Merged"
+        mock_exec.side_effect = [f"exit=0\n{issue_json}", "exit=0\nMerged"]
+        
+        history = [{"role": "user", "content": f"Merge with {description}"}]
+        mock_log = MagicMock()
+        with patch('agent._check_api_health', return_value=(True, "ok")), \
+             patch('agent._setup_logger'), \
+             patch('agent._detect_ctx_size', return_value=None):
+            
+            run_agent_single(
+                conversation_history=history,
+                summary_state={"text": "", "up_to": 0},
+                initial_files=[],
+                log=mock_log
+            )
+        
+        history_str = "".join([str(m) for m in history])
+        assert "PRE-MERGE CHECK FAILED" in history_str, f"Failed to detect {description}"
