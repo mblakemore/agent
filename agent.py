@@ -2412,7 +2412,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         if "gh issue view" in _cmd and "exit=0" in result_str:
                             _cicd_issue_view_called = True
                             log.info("CICD: gh issue view called (PRE-MERGE CHECK satisfied)")
-                        if "gh pr merge" in _cmd:
+                        # Match `gh pr merge` as an actual top-level invocation — not inside
+                        # heredoc/cat content where the string may appear as documentation.
+                        # Matches at line start or after a shell separator (&&, ;, |, ||).
+                        if re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*)gh\s+pr\s+merge\b", _cmd):
                             # Guard: PRE-MERGE CHECK — must view linked issue first (reviewer.md §4)
                             if not _cicd_issue_view_called:
                                 log.warning("CICD: gh pr merge without PRE-MERGE CHECK — injecting reminder")
