@@ -149,6 +149,21 @@ EOVERRIDE
 AGENT_MD="$(sed 's/@\([a-zA-Z./]\)/\1/g' "${CICD_HOME}/agent.md")"
 REVIEWER_MD="$(sed 's/@\([a-zA-Z./]\)/\1/g' "${CICD_HOME}/reviewer.md")"
 
+# ── Pre-create cicd-cycle labels ─────────────────────────────────────
+# The builder includes --label "cicd-cycle-NNN" on gh issue create where NNN
+# is the new issue number. This label doesn't pre-exist, so the first create
+# fails with "not found" requiring a 2-turn recovery (gh label create + retry).
+# Pre-creating labels for the next 3 likely issue numbers eliminates this cost.
+echo "==> Pre-creating cicd-cycle labels"
+_NEXT_ISSUE="$(gh issue list --state all --repo "${REPO_URL}" --limit 1 --json number --jq '.[0].number + 1' 2>/dev/null || echo "1")"
+for _i in 0 1 2; do
+    _N=$((_NEXT_ISSUE + _i))
+    gh label create "cicd-cycle-${_N}" --color "0e8a16" \
+        --description "CICD cycle ${_N}" \
+        --repo "${REPO_URL}" 2>/dev/null || true
+done
+unset _NEXT_ISSUE _i _N
+
 # ── Pre-seed builder task list ────────────────────────────────────────
 # Saves ~5 turns the builder would otherwise spend adding standard tasks
 # one per turn (LLM output pattern). Template instructs the builder to
