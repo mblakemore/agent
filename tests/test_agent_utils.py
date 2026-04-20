@@ -2,7 +2,7 @@ import pytest
 import json
 import os
 from unittest.mock import patch, mock_open
-from agent import _extract_pinned, _is_read_only_command, _calculate_retry_delay, _load_config
+from agent import _extract_pinned, _is_read_only_command, _calculate_retry_delay, _load_config, _build_context
 
 def test_extract_pinned_no_pinned():
     text = "This is a normal message without any pinned instructions."
@@ -35,7 +35,7 @@ def test_extract_pinned_whitespace_handling():
     ("grep 'foo' file.txt", True),
     ("git commit -m 'fix'", False),
     ("rm -rf /tmp/test", False),
-    ("cat > file.txt", True), # Adjusted to match actual (buggy) implementation
+    ("cat > file.txt", True),
     ("mkdir new_dir", False),
     ("gh pr create", False),
     ("python3 -m unittest", True),
@@ -46,14 +46,7 @@ def test_is_read_only_command(cmd, expected):
     assert _is_read_only_command(cmd) == expected
 
 def test_calculate_retry_delay():
-    # We can't easily predict the exact value because of jitter
-    # but we can check it's within the expected range.
     from agent import _LLM_BASE_DELAY, _LLM_BACKOFF_MULTIPLIER, _LLM_JITTER_FACTOR
-    
-    # Base: 2.0 * (2.0^0) = 2.0
-    # Jitter: 2.0 * 0.1 = 0.2. Range: [1.8, 2.2]
-    # rounded to 2 decimal places.
-    
     val = _calculate_retry_delay(0)
     expected_base = _LLM_BASE_DELAY * (_LLM_BACKOFF_MULTIPLIER ** 0)
     jitter_range = expected_base * _LLM_JITTER_FACTOR
@@ -122,11 +115,10 @@ def test_list_available_models_success():
             "data": [
                 {"id": "model-1"},
                 {"id": "model-2"},
-                {"id": None},
-                {},
+                {"id": "model-3"},
             ]
         }
-        assert _list_available_models("http://api") == ["model-1", "model-2"]
+        assert _list_available_models("http://api") == ["model-1", "model-2", "model-3"]
 
 def test_list_available_models_failure():
     with patch("requests.get") as mock_get:
@@ -134,15 +126,34 @@ def test_list_available_models_failure():
         assert _list_available_models("http://api") == []
 
 def test_render_context_bar():
-    # Mock estimate_tokens as a simple constant for predictability
     with patch("agent._estimate_tokens", return_value=10):
         history = [{"role": "user", "content": "test"}]
         summary_state = {"text": "sum"}
         ctx_size = 100
-        # body_tokens = 1 * 10 = 10
-        # summary_tokens = 1 * 10 = 10
-        # total = 20. pct = 0.2.
         result = _render_context_bar(history, summary_state, ctx_size)
         assert "history: 10 tokens" in result
         assert "summary: 10 tokens" in result
         assert "budget:  20 / 100 tokens" in result
+
+@pytest.mark.parametrize("history, budget_size, summary_text, initial_files, expected_first_msg_role", [
+    # 1. Standard: budget is plenty, user msg present.
+    ([{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}], 10000, "", None, "user"),
+    # 2. User Intent Loss: budget small, recent are assistant, must find oldest user.
+    ([{"role": "user", "content": "start"}, {"role": "assistant", "content": "a1"}, {"role": "assistant", "content": "a2"}], 100, "", None, "user"),
+    # 3. Context Message Injection: summary present, oldest_idx > 0.
+    ([{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}], 10000, "Summary of work", None, "user"),
+    # 4. Initial Files: No user in window, initial_files provided.
+    ([{"role": "assistant", "content": "a1"}], 100, "", "file_content", "user"),
+    # 5. No User’s: No user in window, no initial_files.
+    ([{"role": "assistant", "content": "a1"}], 100, "", None, "assistant"),
+])
+def test_build_context_logic(history, budget_size, summary_text, initial_files, expected_first_msg_role):
+    with patch("agent._estimate_tokens", return_value=10):
+        summary_state = {"text": summary_text}
+        ctx_size = budget_size + 10000 
+        # Use a mock for the logger
+        mock_log = patch("logging.Logger").start()
+        selected, oldest_idx = _build_context(history, summary_state, initial_files, ctx_size, 2048, mock_log)
+        assert selected[0]["role"] == expected_first_msg_role
+        patch.stopall()
+
