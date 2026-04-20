@@ -87,3 +87,24 @@ def test_llm_request_connection_error_retry():
             
         assert response.status_code == 200
         assert mock_post.call_count == 2
+
+def test_llm_request_502_retry_and_success():
+    with patch("requests.post") as mock_post:
+        mock_fail = MagicMock()
+        mock_fail.status_code = 502
+        
+        mock_success = MagicMock()
+        mock_success.status_code = 200
+        
+        mock_post.side_effect = [mock_fail, mock_success]
+        
+        from agent import _llm_request
+        import logging
+        log = logging.getLogger("test")
+        kwargs = {"json": {}}
+        
+        with patch("time.sleep"):
+            response = _llm_request(log, **kwargs)
+            
+        assert response == mock_success
+        assert mock_post.call_count == 2
