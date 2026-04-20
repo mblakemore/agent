@@ -2355,6 +2355,20 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             _cycle_persisted = True
                             _cycle_persisted_turn = _cycle_persisted_turn or turn
                             _cicd_phase_state["verify"] = True
+                            # Cycle 37: block direct push to main — builder must use feature branches
+                            if re.search(r"git\s+push\b.*\borigin\s+main\b", _cmd_normalized):
+                                log.warning("CICD: git push origin main — builder pushed directly to main")
+                                conversation_history.append({
+                                    "role": "user",
+                                    "content": (
+                                        "[SYSTEM: CRITICAL: You just pushed directly to origin/main. "
+                                        "This is PROHIBITED — all CICD work must go through a feature branch "
+                                        "(cicd/NNN-slug) and PR. Immediately revert: "
+                                        "`git revert HEAD --no-edit && git push origin main`. "
+                                        "Then create a proper worktree and branch for your changes. "
+                                        "Do NOT commit test artifacts or state files to main.]"
+                                    ),
+                                })
 
                         # ── CICD phase detection ──
                         if "gh issue list" in _cmd or "gh issue search" in _cmd:
