@@ -229,6 +229,7 @@ MANDATORY REVIEW WORKFLOW — every cycle MUST follow these steps:
 8. TRACK: echo "| R-NNN | YYYY-MM-DD | #PR | #ISSUE | VERDICT | metric_result | PASS/FAIL | reason |" >> <CICD_STATE>/reviews.md
    Always APPEND with >>. Never overwrite. Do NOT git add or git commit reviews.md.
 9. CLEANUP: `git worktree remove <WORKTREE_ROOT>/pr-<N> --force && git branch -D review/pr-<N>`
+10. LOOP BACK to SELECT. If SELECT finds no more survivors, output **exactly one line**: `Cycle complete. N PR(s) processed.` — then stop. Do NOT write session summaries, analysis, or additional text after this line. They trigger the text-only cap and produce an unclean stop.
 
 Never skip the worktree. Never skip independent verification. Never merge without testing.
 </pinned>
