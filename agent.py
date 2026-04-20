@@ -2020,10 +2020,21 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             _has_persisted_work = (_has_committed
                                    or _cicd_phase_state.get("track", False)
                                    or _has_reviewer_persisted)
-            if _has_persisted_work and full_content and any(s in full_content.lower() for s in _completion_signals):
+            # Cycle 39: regex patterns for natural paraphrases ("cycle 249 is complete")
+            _completion_signal_patterns = (
+                r"cycle\s+\S+\s+is\s+(now\s+)?complete",  # "cycle 249 is complete", "cycle N is now complete"
+                r"cycle\s+is\s+now\s+complete",             # "cycle is now complete"
+                r"improvement\s+cycle\s+\S*\s*is\s+complete",  # "improvement cycle is complete"
+            )
+            _fc_lower = full_content.lower() if full_content else ""
+            _completion_matched = (
+                (full_content and any(s in _fc_lower for s in _completion_signals))
+                or (full_content and any(re.search(p, _fc_lower) for p in _completion_signal_patterns))
+            )
+            if _has_persisted_work and _completion_matched:
                 log.info("Stopping: model signalled cycle completion (work persisted)")
                 return "done"
-            if not _has_persisted_work and full_content and any(s in full_content.lower() for s in _completion_signals):
+            if not _has_persisted_work and _completion_matched:
                 log.info("Ignoring completion signal — no persisted work yet, nudging to continue")
 
             # If the cycle already persisted (git push happened), allow a few
