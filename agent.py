@@ -69,6 +69,46 @@ def _check_worktree_guard(file_path, worktree_path):
         pass
     return False, None
 
+def _handle_cicd_file_edit(func_args, conversation_history, cicd_worktree_path, cicd_phase_state, cicd_edited_files, has_edited, has_reviewer_persisted, turn, log):
+    """
+    Tracks file edits for CICD state management and enforces worktree guards.
+    Returns (updated_has_edited, updated_has_reviewer_persisted)
+    """
+    if not has_edited:
+        log.info("First file edit detected at turn %d", turn)
+    
+    has_edited = True
+    _file_path = func_args.get("path", "")
+    if _file_path:
+        cicd_edited_files.add(_file_path)
+
+    # Worktree guard
+    is_violation, correct = _check_worktree_guard(_file_path, cicd_worktree_path)
+    if is_violation:
+        log.warning("CICD: file write targets repo clone (%s), not worktree (%s)", _file_path, correct)
+        conversation_history.append({
+            "role": "user",
+            "content": (
+                f"[SYSTEM: WRONG PATH! You wrote to {_file_path} which is "
+                f"inside the repo clone. Your worktree is at "
+                f"'{cicd_worktree_path}'. You MUST write to "
+                f"'{correct}' instead. Re-do this edit targeting "
+                f"the worktree path now.]"
+            ),
+        })
+
+    if "improvements/" in _file_path and _file_path.endswith(".md"):
+        cicd_phase_state["plan"] = True
+        log.info("CICD phase: plan written to %s", _file_path)
+
+    if _file_path.endswith("reviews.md"):
+        if not has_reviewer_persisted:
+            has_reviewer_persisted = True
+            log.info("CICD phase: review persisted to %s", _file_path)
+        log.info("Reviewer persistence detected (reviews.md write) — completion signals now allowed")
+    
+    return has_edited, has_reviewer_persisted
+
 
 # Module-level UI callback handle. run_agent_interactive replaces this with a
 # TerminalCallbacks() by default, or a user-provided subclass (e.g. TuiCallbacks
@@ -2294,47 +2334,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     })
 
                     # Track file edits (file tool with action=write/create)
+                    # Track file edits (file tool with action=write/create)
                     if func_name == "file" and func_args.get("action") in ("write", "create"):
-                        if not _has_edited:
-                            log.info("First file edit detected at turn %d", turn)
-                        _has_edited = True
-                        # Track edited file paths for CICD context injection
-                        _file_path = func_args.get("path", "")
-                        if _file_path:
-                            _cicd_edited_files.add(_file_path)
-                        
-                        # Worktree guard: if a worktree exists and the file
-                        # write targets the repo clone instead, inject a
-                        # correction so the model redirects immediately.
-                        is_violation, _correct = _check_worktree_guard(_file_path, _cicd_worktree_path)
-                        if is_violation:
-                            log.warning("CICD: file write targets repo clone (%s), not worktree (%s)",
-                                        _file_path, _correct)
-                            conversation_history.append({
-                                "role": "user",
-                                "content": (
-                                    f"[SYSTEM: WRONG PATH! You wrote to {_file_path} which is "
-                                    f"inside the repo clone. Your worktree is at "
-                                    f"'{_cicd_worktree_path}'. You MUST write to "
-                                    f"'{_correct}' instead. Re-do this edit targeting "
-                                    f"the worktree path now.]"
-                                ),
-                            })
-                        if "improvements/" in _file_path and _file_path.endswith(".md"):
-                            _cicd_phase_state["plan"] = True
-                            log.info("CICD phase: plan written to %s", _file_path)
-                        if _file_path.endswith("reviews.md"):
-                            if not _has_reviewer_persisted:
-                                _has_reviewer_persisted = True
-                                log.info("CICD phase: review persisted to %s", _file_path)
-                        if "improvements/" in _file_path and _file_path.endswith(".md"):
-                            _cicd_phase_state["plan"] = True
-                            log.info("CICD phase: plan written to %s", _file_path)
-                        if _file_path.endswith("reviews.md"):
-                            if not _has_reviewer_persisted:
-                                log.info("Reviewer persistence detected (reviews.md write) — completion signals now allowed")
-                            _has_reviewer_persisted = True
-
+                        _has_edited, _has_reviewer_persisted = _handle_cicd_file_edit(
+                            func_args, conversation_history, _cicd_worktree_path, _cicd_phase_state, 
+                            _cicd_edited_files, _has_edited, _has_reviewer_persisted, turn, log
+                        )
                     # Track commits and pushes through exec_command
                     if func_name == "exec_command":
                         _cmd = func_args.get("command", "")
