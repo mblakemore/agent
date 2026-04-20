@@ -2367,6 +2367,22 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                     "Per MANDATORY THINK before DECIDE, you must call think() to evaluate "
                                     "your candidate before filing. Use think now to validate this was the right choice.]",
                                 })
+                            # Cycle 33: require --label in-progress on gh issue create.
+                            if "in-progress" not in _cmd:
+                                log.warning("CICD: gh issue create without --label in-progress — injecting reminder")
+                                _issue_num_m = re.search(r'issues/(\d+)|#(\d+)|Issue\s+#(\d+)', result_str)
+                                _issue_num = next((g for g in _issue_num_m.groups() if g), "?") if _issue_num_m else "?"
+                                conversation_history.append({
+                                    "role": "user",
+                                    "content": (
+                                        f"[SYSTEM: Issue #{_issue_num} was filed without `--label in-progress` "
+                                        "(and/or `--label cicd`). The reviewer's PRE-MERGE CHECK rejects PRs "
+                                        "whose linked issue lacks these labels. Fix now: "
+                                        f"`gh issue edit {_issue_num} --add-label in-progress --add-label cicd "
+                                        "--add-label cicd-cycle-NNN` (replace NNN with the current cycle number). "
+                                        "Do this before opening the PR.]"
+                                    ),
+                                })
                             _cicd_phase_state["decide"] = True
                             _cicd_think_used = False  # reset for next gate (verdict)
                             # Extract issue number from gh output
