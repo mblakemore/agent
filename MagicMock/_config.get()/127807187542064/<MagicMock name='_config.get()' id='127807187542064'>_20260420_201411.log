@@ -1,0 +1,10 @@
+20:14:11 INFO Session started | ctx_size=32768 max_turns=100 temperature=0.7 max_tokens=4096
+20:14:11 INFO Tools registered: ['exec_command', 'file', 'read_pdf', 'search_files', 'sleep', 'task_tracker', 'think', 'web_fetch']
+20:14:11 DEBUG Async summarizer enabled → http://summary-api:8000
+20:14:11 DEBUG USER: Test
+20:14:11 DEBUG Context budget: 1/17524 tokens, 1 messages, oldest_idx=0, has_context_msg=False
+20:14:11 INFO --- Turn 1/100 | sending 1 messages (history has 1 total)
+20:14:11 INFO Response status: 1
+20:14:11 DEBUG ASSISTANT: OK
+20:14:11 INFO Stopping: text-only response (no tool calls)
+20:14:11 INFO Session ended (auto mode) | 2 messages in history
