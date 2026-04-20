@@ -2289,12 +2289,13 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             + f"\n\n... [{len(result_str) - _MAX_TOOL_RESULT_CHARS} chars truncated] ...\n\n"
                             + result_str[-half:]
                         )
-                        conversation_history.append({
-                            "role": "tool",
-                            "tool_call_id": tool_id,
-                            "name": func_name,
-                            "content": result_str,
-                        })
+
+                    conversation_history.append({
+                        "role": "tool",
+                        "tool_call_id": tool_id,
+                        "name": func_name,
+                        "content": result_str,
+                    })
 
                     # Track file edits (file tool with action=write/create)
                     if func_name == "file" and func_args.get("action") in ("write", "create"):
