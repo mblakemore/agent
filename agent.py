@@ -48,6 +48,27 @@ from types import SimpleNamespace
 RESET = theme.RESET
 BOLD = theme.BOLD
 DIM = theme.DIM
+def _check_worktree_guard(file_path, worktree_path):
+    """
+    Checks if a file write target is inside the repo clone instead of the worktree.
+    Returns (is_violation, correction_path)
+    """
+    if not worktree_path or not file_path:
+        return False, None
+
+    try:
+        _abs_file = str(Path(file_path).resolve())
+        _abs_wt = str(Path(worktree_path).resolve())
+        _abs_cwd = str(Path.cwd().resolve())
+        
+        if (_abs_file.startswith(_abs_cwd) and not _abs_file.startswith(_abs_wt)):
+            _rel = os.path.relpath(_abs_file, _abs_cwd)
+            _correct = os.path.join(worktree_path, _rel)
+            return True, _correct
+    except Exception:
+        pass
+    return False, None
+
 
 # Module-level UI callback handle. run_agent_interactive replaces this with a
 # TerminalCallbacks() by default, or a user-provided subclass (e.g. TuiCallbacks
@@ -2268,13 +2289,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             + f"\n\n... [{len(result_str) - _MAX_TOOL_RESULT_CHARS} chars truncated] ...\n\n"
                             + result_str[-half:]
                         )
-
-                    conversation_history.append({
-                        "role": "tool",
-                        "tool_call_id": tool_id,
-                        "name": func_name,
-                        "content": result_str,
-                    })
+                        conversation_history.append({
+                            "role": "tool",
+                            "tool_call_id": tool_id,
+                            "name": func_name,
+                            "content": result_str,
+                        })
 
                     # Track file edits (file tool with action=write/create)
                     if func_name == "file" and func_args.get("action") in ("write", "create"):
@@ -2285,30 +2305,31 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         _file_path = func_args.get("path", "")
                         if _file_path:
                             _cicd_edited_files.add(_file_path)
-
+                        
                         # Worktree guard: if a worktree exists and the file
                         # write targets the repo clone instead, inject a
                         # correction so the model redirects immediately.
-                        if _cicd_worktree_path and _file_path:
-                            _abs_file = str(Path(_file_path).resolve())
-                            _abs_wt = str(Path(_cicd_worktree_path).resolve())
-                            _abs_cwd = str(Path.cwd().resolve())
-                            if (_abs_file.startswith(_abs_cwd)
-                                    and not _abs_file.startswith(_abs_wt)):
-                                _rel = os.path.relpath(_abs_file, _abs_cwd)
-                                _correct = os.path.join(_cicd_worktree_path, _rel)
-                                log.warning("CICD: file write targets repo clone (%s), not worktree (%s)",
-                                            _file_path, _correct)
-                                conversation_history.append({
-                                    "role": "user",
-                                    "content": (
-                                        f"[SYSTEM: WRONG PATH! You wrote to '{_file_path}' which is "
-                                        f"inside the repo clone. Your worktree is at "
-                                        f"'{_cicd_worktree_path}'. You MUST write to "
-                                        f"'{_correct}' instead. Re-do this edit targeting "
-                                        f"the worktree path now.]"
-                                    ),
-                                })
+                        is_violation, _correct = _check_worktree_guard(_file_path, _cicd_worktree_path)
+                        if is_violation:
+                            log.warning("CICD: file write targets repo clone (%s), not worktree (%s)",
+                                        _file_path, _correct)
+                            conversation_history.append({
+                                "role": "user",
+                                "content": (
+                                    f"[SYSTEM: WRONG PATH! You wrote to {_file_path} which is "
+                                    f"inside the repo clone. Your worktree is at "
+                                    f"'{_cicd_worktree_path}'. You MUST write to "
+                                    f"'{_correct}' instead. Re-do this edit targeting "
+                                    f"the worktree path now.]"
+                                ),
+                            })
+                        if "improvements/" in _file_path and _file_path.endswith(".md"):
+                            _cicd_phase_state["plan"] = True
+                            log.info("CICD phase: plan written to %s", _file_path)
+                        if _file_path.endswith("reviews.md"):
+                            if not _has_reviewer_persisted:
+                                _has_reviewer_persisted = True
+                                log.info("CICD phase: review persisted to %s", _file_path)
                         if "improvements/" in _file_path and _file_path.endswith(".md"):
                             _cicd_phase_state["plan"] = True
                             log.info("CICD phase: plan written to %s", _file_path)
