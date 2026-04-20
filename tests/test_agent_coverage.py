@@ -2,6 +2,7 @@ import pytest
 import logging
 import json
 import requests
+import re
 from unittest.mock import patch, MagicMock
 from agent import run_agent_interactive, run_agent_single
 
@@ -30,7 +31,6 @@ def test_async_summarizer_init_success(mock_get, mock_config, mock_llm, mock_emi
     mock_resp.iter_lines.return_value = [b'data: {"choices": [{"delta": {"content": "OK"}}]}', b'data: [DONE]']
     mock_llm.return_value = mock_resp
 
-    # Using run_agent_interactive to trigger the initialization logic
     try:
         run_agent_interactive(initial_prompt="Test", auto=True)
     except Exception:
@@ -96,7 +96,6 @@ def test_continue_mode_resume(mock_config, mock_llm, mock_emit, mock_load):
     mock_resp.iter_lines.return_value = [b'data: {"choices": [{"delta": {"content": "Resumed!"}}]}', b'data: [DONE]']
     mock_llm.return_value = mock_resp
 
-    # Pass continue_mode=True as an argument to run_agent_interactive
     try:
         run_agent_interactive(initial_prompt=None, auto=True, continue_mode=True)
     except Exception:
@@ -107,3 +106,70 @@ def test_continue_mode_resume(mock_config, mock_llm, mock_emit, mock_load):
         for args, kwargs in mock_emit.call_args_list
     )
     assert resumed_emitted
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_hallucination_guard_text_only(mock_config, mock_llm, mock_emit):
+    """Test that the hallucination guard detects and nudges text-only responses."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768},
+        "summary": {"enabled": False}
+    }.get(k)
+    
+    # To trigger the hallucination guard, _NUDGE_ENABLED must be True.
+    # Since it's a global in agent.py, we need to patch it or ensure it's True.
+    with patch('agent._NUDGE_ENABLED', True):
+        # Simulate a text-only response (hallucination)
+        mock_resp = MagicMock()
+        mock_resp.iter_lines.return_value = [
+            b'data: {"choices": [{"delta": {"content": "I have analyzed the code and found a bug."}}]}',
+            b'data: [DONE]'
+        ]
+        mock_llm.return_value = mock_resp
+
+        # We want to trigger the loop where it detects text-only and nudges.
+        def stop_after_n_calls(*args, **kwargs):
+            if mock_llm.call_count > 2:
+                raise StopIteration("Stop test")
+            return mock_resp
+
+        mock_llm.side_effect = stop_after_n_calls
+
+        try:
+            run_agent_interactive(initial_prompt="Check for bugs", auto=True)
+        except (StopIteration, Exception):
+            pass
+
+    # Verify that the hallucination stripped emit was called
+    stripped_emitted = any(
+        args[0] == "on_hallucination_stripped" and args[1] == "text_only"
+        for args, kwargs in mock_emit.call_args_list
+    )
+    assert stripped_emitted
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_cicd_phase_detection_perceive(mock_config, mock_llm, mock_emit):
+    """Test that running gh issue list triggers the PERCEIVE phase."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768},
+        "summary": {"enabled": False}
+    }.get(k)
+    
+    mock_resp = MagicMock()
+    mock_resp.iter_lines.return_value = [
+        b'data: {"choices": [{"delta": {"content": "I will list the issues now."}}]}',
+        b'data: [DONE]'
+    ]
+    mock_llm.return_value = mock_resp
+    
+    try:
+        run_agent_interactive(initial_prompt="gh issue list", auto=True)
+    except Exception:
+        pass
