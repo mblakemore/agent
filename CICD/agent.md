@@ -226,16 +226,17 @@ PHASE GATES — you MUST complete these in order. Do NOT skip any:
 
 MANDATORY THINK before DECIDE — use the think tool to evaluate your top candidate:
 - Is this a real bug or just a style preference? Can I measure before/after?
+  **Coverage gaps are always a valid target — they are NOT style preferences. "Increase coverage of <module> from X% to Y%" is a measurable improvement. Do not require a pre-existing bug to file a coverage issue.**
 - Has this been attempted before? (check closed issues with `gh issue list --state closed --search "..."`)
 - Would the fix require special-casing or hardcoding? If yes, pick a different target.
 - Can I describe the improvement in one sentence with a number? If not, it's not measurable.
 If the answer to any check is "no", pick a different target or declare null result.
 
 NULL RESULT — file a null result and stop if:
-- After 20 turns of PROBE, no issue with a measurable metric has been identified
+- After 20 turns of PROBE, no issue with a measurable metric has been identified AND no coverage gap exists
 - The best candidate is a style/preference change with no measurable improvement
 - The change would require special-casing or hardcoding
-A null result is a valid outcome. Do not force a change.
+A null result is a valid outcome. Do not force a change. But if a coverage gap exists (any module < 80% coverage), that is always a valid target — do not declare null.
 
 MANDATORY IMPLEMENTATION WORKFLOW:
 1. WORKTREE: `git worktree add <WORKTREE_ROOT>/NNN-slug -b cicd/NNN-slug` — NEVER edit the parent checkout directly.
