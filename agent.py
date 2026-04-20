@@ -1961,25 +1961,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             if not _NUDGE_ENABLED:
                 log.info("Stopping: text-only response (no tool calls)")
                 return "done"
-            # If the cycle already persisted (git push happened), allow a few
-            # grace turns for TRACK work, then stop on text-only response.
-            if _cycle_persisted:
-                grace_used = turn - (_cycle_persisted_turn or turn)
-                if grace_used >= _CYCLE_GRACE_TURNS:
-                    log.info("Stopping: cycle persisted %d turns ago, grace period exhausted", grace_used)
-                    return "done"
-                log.info("Cycle persisted but grace period active (%d/%d turns) — nudging for TRACK work",
-                         grace_used, _CYCLE_GRACE_TURNS)
-            # Past turn limit + no tool use = end cycle immediately
-            if turn > _MAX_TURNS:
-                log.warning("Overtime + text-only response — ending cycle")
-                _emit("on_overtime", "text_only")
-                return "done"
 
-            # Detect completion-intent responses.  If the model explicitly
-            # signals "cycle complete / no improvements / concluding" it has
-            # genuinely finished — let it stop instead of nudging endlessly.
-            # Check BEFORE hallucination guard so it fires on the first attempt.
+            # Detect completion-intent responses FIRST — a clean stop phrase
+            # must take priority over the mechanical grace-period cap.
             _completion_signals = (
                 "cycle is complete", "cycle complete", "concluding this cycle",
                 "closing this cycle", "no further actionable", "no remaining",
@@ -1997,13 +1981,26 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             _has_persisted_work = (_has_committed
                                    or _cicd_phase_state.get("track", False)
                                    or _has_reviewer_persisted)
-            # During post-persist grace period, also suppress (TRACK work pending).
-            _in_grace = _cycle_persisted and (turn - (_cycle_persisted_turn or turn)) < _CYCLE_GRACE_TURNS
-            if _has_persisted_work and not _in_grace and full_content and any(s in full_content.lower() for s in _completion_signals):
+            if _has_persisted_work and full_content and any(s in full_content.lower() for s in _completion_signals):
                 log.info("Stopping: model signalled cycle completion (work persisted)")
                 return "done"
             if not _has_persisted_work and full_content and any(s in full_content.lower() for s in _completion_signals):
                 log.info("Ignoring completion signal — no persisted work yet, nudging to continue")
+
+            # If the cycle already persisted (git push happened), allow a few
+            # grace turns for TRACK work, then stop on text-only response.
+            if _cycle_persisted:
+                grace_used = turn - (_cycle_persisted_turn or turn)
+                if grace_used >= _CYCLE_GRACE_TURNS:
+                    log.info("Stopping: cycle persisted %d turns ago, grace period exhausted", grace_used)
+                    return "done"
+                log.info("Cycle persisted but grace period active (%d/%d turns) — nudging for TRACK work",
+                         grace_used, _CYCLE_GRACE_TURNS)
+            # Past turn limit + no tool use = end cycle immediately
+            if turn > _MAX_TURNS:
+                log.warning("Overtime + text-only response — ending cycle")
+                _emit("on_overtime", "text_only")
+                return "done"
 
             _consecutive_text_only += 1
 
