@@ -1673,6 +1673,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _cicd_edited_files = set()  # reset each cycle
     _cicd_worktree_path = None  # reset each cycle
     _cicd_pr_ready_called = False  # tracks whether `gh pr ready` was called before merge
+    _cicd_issue_view_called = False  # tracks whether `gh issue view` was called before merge (PRE-MERGE CHECK)
 
     _async_summarizer = async_summarizer
 
@@ -2408,7 +2409,22 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         if "gh pr ready" in _cmd and "exit=0" in result_str:
                             _cicd_pr_ready_called = True
                             log.info("CICD: gh pr ready called")
+                        if "gh issue view" in _cmd and "exit=0" in result_str:
+                            _cicd_issue_view_called = True
+                            log.info("CICD: gh issue view called (PRE-MERGE CHECK satisfied)")
                         if "gh pr merge" in _cmd:
+                            # Guard: PRE-MERGE CHECK — must view linked issue first (reviewer.md §4)
+                            if not _cicd_issue_view_called:
+                                log.warning("CICD: gh pr merge without PRE-MERGE CHECK — injecting reminder")
+                                conversation_history.append({
+                                    "role": "user",
+                                    "content": "[SYSTEM: PRE-MERGE CHECK SKIPPED. Before merging, you MUST run "
+                                    "`gh issue view <N> --json state,labels,title,createdAt` on the linked issue "
+                                    "and verify: state is OPEN, labels include `cicd` + `in-progress`, the title "
+                                    "matches the PR's stated scope. If any check fails, do NOT merge — close the "
+                                    "PR and file a null-result instead. Run the gh issue view now, then re-attempt "
+                                    "the merge.]",
+                                })
                             # Guard: must use --squash --delete-branch
                             if "--squash" not in _cmd:
                                 log.warning("CICD: gh pr merge without --squash — injecting reminder")
