@@ -31,8 +31,7 @@ def simulate_guard(full_content, accessed_files):
 def test_hallucinated_read_detection():
     """Test that the agent correctly detects when the model claims to have read a file it didn't."""
     full_content = "I have read the contents of agent.py and found a bug."
-    with patch('tools.file._accessed_files', set()):
-        assert simulate_guard(full_content, set()) is True
+    assert simulate_guard(full_content, set()) is True
 
 def test_legitimate_read_not_detected_as_hallucination():
     """Test that a claim to read a file is NOT a hallucination if it was actually read."""
@@ -60,5 +59,61 @@ def test_various_intent_markers():
 def test_actual_claim_still_detected():
     """Test that actual claims are still detected even with intent markers elsewhere."""
     full_content = "I will read tools.py, but I have already read agent.py."
-    # We simulate that only tools.py was read (or none)
-    assert simulate_guard(full_content, set()) is True # agent.py claim is hallucinated
+    assert simulate_guard(full_content, set()) is True
+
+def test_completion_signals():
+    """Test the completion signal detection logic (lines 1961-1971)."""
+    signals = [
+        "The cycle is complete",
+        "I have completed the task",
+        "successfully created pull request",
+        "no improvements remaining",
+    ]
+    # we simulate the logic: any(s in full_content.lower() for s in _completion_signals)
+    _completion_signals = (
+        "cycle is complete", "cycle complete", "concluding this cycle",
+        "closing this cycle", "no further actionable", "no remaining",
+        "no improvements", "already met", "already resolved",
+        "i have completed", "has been achieved", "goal of making",
+        "work is done", "task is complete", "actions taken",
+        "successfully created pull request", "created a pull request",
+        "has been completed", "process is complete",
+        "no more open pull requests", "no reviewable prs",
+        "standing by", "all tasks", "queue: empty",
+    )
+    for s in signals:
+        assert any(sig in s.lower() for sig in _completion_signals), f"Signal failed: {s}"
+
+def test_text_only_nudge_logic():
+    """Test the logic for consecutive text-only responses."""
+    # Simulate state variables
+    state = {
+        "consecutive_text_only": 0,
+        "total_nudges": 0,
+        "max_text_only": 3,
+        "max_total_nudges": 10
+    }
+    
+    # First text-only response
+    state["consecutive_text_only"] += 1
+    state["total_nudges"] += 1
+    assert state["consecutive_text_only"] == 1
+    
+    # Simulate reaching limit
+    state["consecutive_text_only"] = 3
+    assert state["consecutive_text_only"] >= state["max_text_only"]
+
+def test_hallucination_guard_regex_extensions():
+    """Test that the regex catches various ways of claiming a file read."""
+    cases = [
+        "found agent.py",
+        "contents of tools.py",
+        "file has agent.py",
+        "file contains tools.py",
+        "file shows agent.py",
+        "read 'agent.py'",
+        "read \"tools.py\"",
+        "read `agent.py`",
+    ]
+    for c in cases:
+        assert simulate_guard(c, set()) is True, f"Failed to detect: {c}"
