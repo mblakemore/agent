@@ -66,17 +66,30 @@ SYSTEM_PYTHON3="$(command -v python3)"
 # Attempt to install project dependencies so the agent has a working
 # test environment.  Failures are non-fatal — the agent can still run.
 echo "==> Bootstrapping dependencies"
+
+# Optimization: Use a shared venv cache based on the repo URL to avoid 
+# redundant installs across sessions.
+VENV_CACHE_DIR="${WORKSPACE}/.venv_cache/$(echo ${REPO_URL} | md5sum | cut -d' ' -f1)"
+mkdir -p "$(dirname "${VENV_CACHE_DIR}")"
+
 if [[ -f "requirements.txt" || -f "setup.py" || -f "pyproject.toml" || -f "setup.cfg" ]]; then
-    python3 -m venv "${SESSION_DIR}/.venv" 2>/dev/null && {
-        # shellcheck disable=SC1091
-        . "${SESSION_DIR}/.venv/bin/activate"
-        pip install --quiet --upgrade pip 2>/dev/null || true
-        [[ -f "requirements-dev.txt" ]] && pip install --quiet -r requirements-dev.txt 2>/dev/null || true
-        [[ -f "requirements.txt" ]]     && pip install --quiet -r requirements.txt 2>/dev/null || true
-        pip install --quiet -e ".[dev]" 2>/dev/null || pip install --quiet -e . 2>/dev/null || true
-        pip install --quiet pytest 2>/dev/null || true
-        echo "    Python venv: ${SESSION_DIR}/.venv"
-    } || echo "    (venv creation failed — skipping Python deps)"
+    if [[ -d "${VENV_CACHE_DIR}" ]]; then
+        echo "    Using cached venv: ${VENV_CACHE_DIR}"
+        cp -rp "${VENV_CACHE_DIR}" "${SESSION_DIR}/.venv"
+    else
+        python3 -m venv "${SESSION_DIR}/.venv" 2>/dev/null && {
+            # shellcheck disable=SC1091
+            . "${SESSION_DIR}/.venv/bin/activate"
+            pip install --quiet --upgrade pip 2>/dev/null || true
+            [[ -f "requirements-dev.txt" ]] && pip install --quiet -r requirements-dev.txt 2>/dev/null || true
+            [[ -f "requirements.txt" ]]     && pip install --quiet -r requirements.txt 2>/dev/null || true
+            pip install --quiet -e ".[dev]" 2>/dev/null || pip install --quiet -e . 2>/dev/null || true
+            pip install --quiet pytest 2>/dev/null || true
+            echo "    Python venv: ${SESSION_DIR}/.venv"
+            # Cache the result
+            cp -rp "${SESSION_DIR}/.venv" "${VENV_CACHE_DIR}"
+        } || echo "    (venv creation failed — skipping Python deps)"
+    fi
 elif [[ -f "package.json" ]]; then
     npm install --quiet 2>/dev/null || echo "    (npm install failed)"
 elif [[ -f "go.mod" ]]; then
@@ -85,19 +98,26 @@ elif [[ -f "Cargo.toml" ]]; then
     cargo fetch 2>/dev/null || echo "    (cargo fetch failed)"
 elif ls *.py tests/*.py 2>/dev/null | head -1 | grep -q .; then
     # Python repo without a manifest — create a venv with pytest + common deps
-    python3 -m venv "${SESSION_DIR}/.venv" 2>/dev/null && {
-        # shellcheck disable=SC1091
-        . "${SESSION_DIR}/.venv/bin/activate"
-        pip install --quiet --upgrade pip 2>/dev/null || true
-        pip install --quiet pytest requests markdownify 2>/dev/null || true
-        # Install any importable packages found in the repo's imports
-        grep -rh "^import \|^from " *.py tools/*.py 2>/dev/null \
-            | sed 's/^import //;s/^from //;s/ .*//' | sort -u \
-            | while read -r mod; do
-                python3 -c "import $mod" 2>/dev/null || pip install --quiet "$mod" 2>/dev/null || true
-            done
-        echo "    Python venv (auto-deps): ${SESSION_DIR}/.venv"
-    } || echo "    (venv creation failed — skipping Python deps)"
+    if [[ -d "${VENV_CACHE_DIR}" ]]; then
+        echo "    Using cached venv: ${VENV_CACHE_DIR}"
+        cp -rp "${VENV_CACHE_DIR}" "${SESSION_DIR}/.venv"
+    else
+        python3 -m venv "${SESSION_DIR}/.venv" 2>/dev/null && {
+            # shellcheck disable=SC1091
+            . "${SESSION_DIR}/.venv/bin/activate"
+            pip install --quiet --upgrade pip 2>/dev/null || true
+            pip install --quiet pytest requests markdownify 2>/dev/null || true
+            # Install any importable packages found in the repo's imports
+            grep -rh "^import \|^from " *.py tools/*.py 2>/dev/null \
+                | sed 's/^import //;s/^from //;s/ .*//' | sort -u \
+                | while read -r mod; do
+                    python3 -c "import $mod" 2>/dev/null || pip install --quiet "$mod" 2>/dev/null || true
+                done
+            echo "    Python venv (auto-deps): ${SESSION_DIR}/.venv"
+            # Cache the result
+            cp -rp "${SESSION_DIR}/.venv" "${VENV_CACHE_DIR}"
+        } || echo "    (venv creation failed — skipping Python deps)"
+    fi
 else
     echo "    (no recognized dependency file — skipping)"
 fi
@@ -115,8 +135,7 @@ NOTE — Session paths (use these instead of any template placeholders):
   Target repo:   ${CLONE_DIR}
   Worktree root: ${WORKTREE_ROOT}
   CICD state:    ${WORKSPACE}/CICD
-  Example worktree: git worktree add ${WORKTREE_ROOT}/NNN-slug -b cicd/NNN-slug
-  Example review:   git worktree add ${WORKTREE_ROOT}/pr-N review/pr-N
+  Instructions: Create worktrees in the Worktree root directory using standard git commands.
   Sandbox boundary: ${SESSION_DIR} — all paths must be under here or under ${WORKSPACE}/CICD.
   Repo name: ${REPO_NAME}
   Repo URL:  ${REPO_URL}
@@ -141,7 +160,8 @@ cat > "${CLONE_DIR}/.agent/state/tasks.json" <<'EOT'
   {"id": 2, "description": "DECIDE: pick issue, state metric and done-when", "status": "open", "created": "pre-seeded"},
   {"id": 3, "description": "IMPLEMENT: code the fix in worktree", "status": "open", "created": "pre-seeded"},
   {"id": 4, "description": "VERIFY: tests green + metric improved", "status": "open", "created": "pre-seeded"},
-  {"id": 5, "description": "TRACK: results file, progress row, PR, issue comment", "status": "open", "created": "pre-seeded"}
+  {"id": 5, "description": "TRACK: results file, progress row, PR, issue comment", "status": "open", "created": "pre-seeded"},
+  {"id": 6, "description": "CLEANUP: remove worktree", "status": "open", "created": "pre-seeded"}
 ]
 EOT
 
