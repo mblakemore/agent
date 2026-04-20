@@ -105,7 +105,7 @@ Explore the codebase for issues. Run the test suite, check for warnings, look fo
 ```bash
 gh issue list --state all --search "<key words>" --limit 10
 ```
-Then `gh issue create --label bug --label cicd --body "..."` with: Symptom, Reproduction, Expected vs actual, Impact.
+Then `gh issue create --label bug --label cicd --label in-progress --label "cicd-cycle-NNN" --body "..."` with: Symptom, Reproduction, Expected vs actual, Impact. The `in-progress` + `cicd-cycle-NNN` labels are mandatory — reviewer's PRE-MERGE check rejects PRs whose linked issue lacks them.
 
 ## Phase 3 — REFLECT
 
@@ -124,12 +124,20 @@ File a new issue for the best candidate and proceed to DECIDE. Do not conclude t
 
 State in one paragraph: **Issue** (number), **What** (change), **Why** (motivation), **Metric** (specific number to move), **Done-when** (threshold).
 
-No cycle proceeds without an issue number. If the finding is new, file it now.
+No cycle proceeds without an issue number. If the finding is new, file it now with the labels included on the create command — do NOT rely on a follow-up `gh issue edit`, that step is skip-prone:
 
 ```bash
+# New issue for this cycle (preferred — one command, labels locked in):
+gh issue create --title "..." --body "..." --label cicd --label in-progress --label "cicd-cycle-NNN"
+
+# Only if claiming a pre-existing/inherited issue without these labels:
 gh issue edit <ISSUE> --add-label in-progress --add-label "cicd-cycle-NNN"
+
+# Always: comment with the metric for this cycle.
 gh issue comment <ISSUE> --body "Picked up by CICD cycle NNN. Metric: <metric> (baseline <N>, target <M>)."
 ```
+
+**Hard rule**: the issue `Closes #N` references must carry `in-progress` OR `cicd-cycle-*` label by the time the PR is opened. Reviewer's PRE-MERGE CHECK (reviewer.md §4) CLOSEs the PR if the label is absent — treating a missing label as evidence that DECIDE was skipped.
 
 ## Phase 5 — PLAN
 
