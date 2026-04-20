@@ -2325,9 +2325,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             _has_edited = True  # commit implies edit happened
                             log.info("Commit detected — completion signals now allowed")
                             _cicd_phase_state["implement"] = True
-                        if "git push" in _cmd:
+                        if "git push" in _cmd and "exit=0" in result_str:
                             if not _cycle_persisted:
-                                log.info("Cycle persist detected (git push) — auto-nudge disabled")
+                                log.info("Cycle persist detected (git push exit=0) — auto-nudge disabled")
                             _cycle_persisted = True
                             _cycle_persisted_turn = _cycle_persisted_turn or turn
                             _cicd_phase_state["verify"] = True
