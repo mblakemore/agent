@@ -47,7 +47,12 @@ def count_tokens(text: str) -> int:
 
 
 def count_tokens_from_message(msg: dict) -> int:
-    """Count tokens for a message dict (content + tool_calls if present)."""
+    """Count tokens for a message dict (content + tool_calls if present).
+    Caches the result in the message dictionary to avoid redundant tokenizer calls.
+    """
+    if "_tokens" in msg:
+        return msg["_tokens"]
+
     total = 0
     content = msg.get("content", "") or ""
     total += count_tokens(content)
@@ -56,8 +61,9 @@ def count_tokens_from_message(msg: dict) -> int:
         import json
         total += count_tokens(json.dumps(msg["tool_calls"]))
 
-    return max(1, total)
-
+    res = max(1, total)
+    msg["_tokens"] = res
+    return res
 
 def count_tools_tokens(tools: list) -> int:
     """Count token overhead of tool schemas."""
