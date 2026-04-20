@@ -2433,8 +2433,48 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             _cicd_pr_ready_called = True
                             log.info("CICD: gh pr ready called")
                         if "gh issue view" in _cmd and "exit=0" in result_str:
-                            _cicd_issue_view_called = True
-                            log.info("CICD: gh issue view called (PRE-MERGE CHECK satisfied)")
+                            # Cycle 25: validate state + labels in the gh issue view result.
+                            # Calling gh issue view is necessary but not sufficient — the
+                            # issue must be OPEN and carry cicd + in-progress (or cicd-cycle-*)
+                            # labels. If not, leave _cicd_issue_view_called=False so the
+                            # pre-execute block (cycle 24) continues to block gh pr merge.
+                            _premerge_ok = False
+                            try:
+                                import json as _json_mod
+                                _json_body = result_str.split("exit=0", 1)[-1].strip()
+                                _json_start = _json_body.find("{")
+                                if _json_start >= 0:
+                                    _issue_data = _json_mod.loads(_json_body[_json_start:])
+                                    _lnames = [l.get("name", "") for l in _issue_data.get("labels", [])]
+                                    _istate = _issue_data.get("state", "")
+                                    _has_valid_labels = any(
+                                        l in ("cicd", "in-progress") or l.startswith("cicd-cycle-")
+                                        for l in _lnames
+                                    )
+                                    if _istate == "OPEN" and _has_valid_labels:
+                                        _premerge_ok = True
+                                    else:
+                                        log.warning(
+                                            "CICD: PRE-MERGE CHECK FAILED — state=%s labels=%s "
+                                            "(need OPEN + cicd/in-progress label)",
+                                            _istate, _lnames,
+                                        )
+                                        conversation_history.append({
+                                            "role": "user",
+                                            "content": (
+                                                "[SYSTEM: PRE-MERGE CHECK FAILED. gh issue view returned "
+                                                f"state={_istate!r}, labels={_lnames}. "
+                                                "The issue must be OPEN with labels `cicd` + `in-progress` "
+                                                "(or `cicd-cycle-NNN`). Add missing labels with "
+                                                "`gh issue edit <N> --add-label in-progress --add-label cicd` "
+                                                "then re-run gh issue view before retrying the merge.]"
+                                            ),
+                                        })
+                            except Exception:
+                                _premerge_ok = True  # parse error: don't block on format change
+                            if _premerge_ok:
+                                _cicd_issue_view_called = True
+                                log.info("CICD: gh issue view called (PRE-MERGE CHECK satisfied)")
                         # Match `gh pr merge` as an actual top-level invocation — not inside
                         # heredoc/cat content where the string may appear as documentation.
                         # Matches at line start or after a shell separator (&&, ;, |, ||).
