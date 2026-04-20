@@ -2398,7 +2398,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                     "your candidate before filing. Use think now to validate this was the right choice.]",
                                 })
                             # Cycle 33: require --label in-progress on gh issue create.
-                            if "in-progress" not in _cmd:
+                            # Cycle 41: use flag-specific regex (body text can contain "in-progress").
+                            if not re.search(r"--label[= ]in-progress", _cmd):
                                 log.warning("CICD: gh issue create without --label in-progress — injecting reminder")
                                 _issue_num_m = re.search(r'issues/(\d+)|#(\d+)|Issue\s+#(\d+)', result_str)
                                 _issue_num = next((g for g in _issue_num_m.groups() if g), "?") if _issue_num_m else "?"
