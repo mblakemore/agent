@@ -1,4 +1,0 @@
-20:14:11 INFO Auto-detected main model n_ctx=262144, using ctx_size=85000 (85% / cap 85k)
-20:14:11 INFO Session started | ctx_size=85000 max_turns=100 temperature=0.7 max_tokens=4096
-20:14:11 INFO Tools registered: ['exec_command', 'file', 'read_pdf', 'search_files', 'sleep', 'task_tracker', 'think', 'web_fetch']
-20:14:11 INFO CONTINUE: resuming from checkpoint (turn 1, 1 messages)
