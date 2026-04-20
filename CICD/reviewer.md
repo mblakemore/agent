@@ -223,7 +223,9 @@ MANDATORY REVIEW WORKFLOW — every cycle MUST follow these steps:
 6. VERDICT: Apply decision matrix — exactly one of MERGE/REQUEST_CHANGES/CLOSE/DEFER
 7. ACT (merge): `gh pr ready <N>` then `gh pr merge <N> --squash --delete-branch`
    NEVER use --merge or --rebase. ALWAYS --squash --delete-branch.
+   NEVER use `--merge-method squash` — that flag does not exist. The correct flag is plain `--squash`.
    NEVER chain with `|| true` — it swallows errors and causes merge to fail on still-draft PRs.
+   **NEVER merge locally.** Do not `git checkout main`, do not `git merge <pr-branch>`, do not `git push origin main`. Local merge-and-push bypasses the PRE-MERGE CHECK at step 4 (the issue state/label/topicality verification), produces a non-squash merge commit on main, and leaves the PR marked merged-on-GitHub via auto-detection without any enforcement. The ONLY merge path is `gh pr merge <N> --squash --delete-branch`. If `gh pr merge` fails, investigate the failure (branch protection, draft status, conflicts) — do not route around it with `git merge`.
 8. TRACK: echo "| R-NNN | YYYY-MM-DD | #PR | #ISSUE | VERDICT | metric_result | PASS/FAIL | reason |" >> <CICD_STATE>/reviews.md
    Always APPEND with >>. Never overwrite. Do NOT git add or git commit reviews.md.
 9. CLEANUP: `git worktree remove <WORKTREE_ROOT>/pr-<N> --force && git branch -D review/pr-<N>`
