@@ -74,13 +74,11 @@ def fn(
         dirs[:] = [d for d in dirs if not d.startswith(".") and d != ".agent"]
         
         # Further exclude common large/unnecessary directories
-        if "__pycache__" in root or "node_modules" in root:
+        root_str = str(root)
+        if "__pycache__" in root_str or "node_modules" in root_str:
             continue
             
         for file_name in files:
-            # Basic glob filter. For simplicity and consistency with the previous 
-            # rglob implementation, we'll support basic globbing via fnmatch.
-            # If the user provided a specific glob like '*.py', we filter here.
             import fnmatch
             if not fnmatch.fnmatch(file_name, glob):
                 continue
@@ -103,8 +101,8 @@ def fn(
                     if count_only:
                         file_hits = 0
                         for line in f:
-                              if regex.search(line):
-                                                                    file_hits += 1
+                            if regex.search(line):
+                                file_hits += 1
                         if file_hits > 0:
                             files_matched += 1
                             total_matches += file_hits
@@ -162,8 +160,6 @@ def fn(
                             truncated = True
 
             except Exception:
-                # Individual file open errors are still skipped silently as before, 
-                # but we don't count them as 'PermissionError' for the directory-level skip.
                 continue
 
     display_count = total_matches
@@ -231,40 +227,41 @@ definition = {
                     "type": "string",
                     "description": (
                         "Directory to search in. The default '.' is the "
-                        "process working directory, which in automation "
+                        "process "
+                        "working directory, which in automation "
                         "mode is usually an empty "
                         "temp dir — pass the "
                         "absolute path to the directory you actually want "
                         "to search whenever you know it."
                         ),
-                                  "default": ".",
-                              },
-                      "glob": {
-                          "type": "string",
-                          "description": "File glob to filter, e.g. '*.py', '*.json', '*.md' (default: all files).",
-                      },
-                      "ignore_case": {
-                        "type": "boolean",
-                        "description": "Case-insensitive search (default: true).",
-                        "default": True,
-                      },
-                      "context": {
-                          "type": "integer",
-                          "description": (
-                              "Lines of context to show before and after each match, like grep -C. "
-                              "Capped at 20. Default 3 — pass 0 only if you want the legacy "
-                              "bare-match shape."
-                              ),
-                          "default": 3,
-                          "minimum": 0,
-                      },
-                      "count_only": {
-                          "type": "boolean",
-                          "description": "If True, return only the match count summary (files searched, files matched, total matches) without the match lines. Use this when you only need to know how many matches exist, not where they are. Default: false.",
-                          "default": False,
-                      },
-                  },
-                  "required": ["pattern"],
-              },
-          },
-      }
+                        "default": ".",
+                    },
+                "glob": {
+                    "type": "string",
+                    "description": "File glob to filter, e.g. '*.py', '*.json', '*.md' (default: all files).",
+                },
+                "ignore_case": {
+                    "type": "boolean",
+                    "description": "Case-insensitive search (default: true).",
+                    "default": True,
+                },
+                "context": {
+                    "type": "integer",
+                    "description": (
+                        "Lines of context to show before and after each match, like grep -C. "
+                        "Capped at 20. Default 3 — pass 0 only if you want the legacy "
+                        "bare-match shape."
+                        ),
+                        "default": 3,
+                        "minimum": 0,
+                    },
+                "count_only": {
+                    "type": "boolean",
+                    "description": "If True, return only the match count summary (files searched, files matched, total matches) without the match lines. Use this when you only need to know how many matches exist, not where they are. Default: false.",
+                        "default": False,
+                    },
+                },
+                "required": ["pattern"],
+            },
+        },
+    }

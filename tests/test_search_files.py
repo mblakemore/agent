@@ -218,3 +218,48 @@ class TestSearchFilesDefinition(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class TestSearchFilesEdgeCases(unittest.TestCase):
+
+    def test_empty_pattern(self):
+        result = search_files.fn("", path=".")
+        self.assertIn("Error: Search pattern cannot be empty.", result)
+        result = search_files.fn("   ", path=".")
+        self.assertIn("Error: Search pattern cannot be empty.", result)
+
+    def test_invalid_regex(self):
+        result = search_files.fn("[", path=".")
+        self.assertIn("Error: invalid regex pattern", result)
+
+    def test_nonexistent_path(self):
+        import uuid
+        path = f"/tmp/nonexistent_{uuid.uuid4()}"
+        result = search_files.fn("HIT", path=path)
+        self.assertIn(f"Error: path '{path}' does not exist", result)
+
+    def test_permission_error_handling(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("HIT\n")
+            # Mock os.walk to simulate a PermissionError in one of the directories
+            with patch("os.walk") as mock_walk:
+                # Return one valid dir, then simulate error via the onerror callback
+                def side_effect(top, topdown=True, onerror=None):
+                    if onerror:
+                        onerror(PermissionError("Permission denied"))
+                    yield (top, [], ["a.txt"])
+                
+                mock_walk.side_effect = side_effect
+                result = search_files.fn("HIT", path=d)
+                self.assertIn("Warning: 1 directories skipped due to permissions", result)
+
+    def test_truncation_at_max_results(self):
+        with tempfile.TemporaryDirectory() as d:
+            # Create 110 files, each with a match. _MAX_RESULTS is 100.
+            for i in range(110):
+                Path(d, f"file_{i}.txt").write_text("HIT\n")
+            result = search_files.fn("HIT", path=d, context=0)
+            self.assertIn("(truncated)", result)
+            # Verify we only got 100 results in the body
+            body = _body(result)
+            self.assertEqual(len(body.split("\n")), 100)
