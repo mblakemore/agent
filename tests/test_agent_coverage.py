@@ -88,7 +88,8 @@ def test_continue_mode_resume(mock_config, mock_llm, mock_emit, mock_load):
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768}
+        "context": {"max_tokens": 4096, "ctx_size": 32768},
+        "summary": {"enabled": False, "base_url": "http://localhost:8000"}
     }.get(k)
 
     mock_resp = MagicMock()
