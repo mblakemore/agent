@@ -1,3 +1,4 @@
+import os
 import pytest
 from unittest.mock import MagicMock, patch
 import json
@@ -185,3 +186,77 @@ def test_pre_merge_check_failure(monkeypatch):
         
         history_str = "".join([str(m) for m in history])
         assert "PRE-MERGE CHECK SKIPPED" in history_str
+
+from agent import _handle_cicd_file_edit, _check_worktree_guard
+
+def test_check_worktree_guard():
+    """Test that _check_worktree_guard correctly identifies violations."""
+    # Mock paths
+    cwd = "/mnt/droid/repos/agent/temp/20260420_192045/repo"
+    wt = "/mnt/droid/repos/agent/temp/20260420_192045/worktrees/245-cicd-guards"
+    
+    with patch('os.getcwd', return_value=cwd):
+        # Case 1: Correct path (inside worktree)
+        path_ok = os.path.join(wt, "tests/test_cicd_guards.py")
+        is_violation, correction = _check_worktree_guard(path_ok, wt)
+        assert is_violation is False
+        assert correction is None
+        
+        # Case 2: Violation path (inside repo clone, not in worktree)
+        path_bad = os.path.join(cwd, "README.md")
+        is_violation, correction = _check_worktree_guard(path_bad, wt)
+        assert is_violation is True
+        assert correction == os.path.join(wt, "README.md")
+        
+        # Case 3: Outside both (should be fine)
+        path_outside = "/tmp/some_file.txt"
+        is_violation, correction = _check_worktree_guard(path_outside, wt)
+        assert is_violation is False
+        assert correction is None
+
+def test_handle_cicd_file_edit_logic():
+    """Test all branches of _handle_cicd_file_edit."""
+    mock_log = MagicMock()
+    history = []
+    wt_path = "/mnt/droid/repos/agent/temp/20260420_192045/worktrees/245-cicd-guards"
+    phase_state = {"plan": False}
+    edited_files = set()
+    
+    # Case 1: First edit
+    args = {"path": "file.txt"}
+    has_edited, persisted = _handle_cicd_file_edit(
+        args, history, wt_path, phase_state, edited_files, False, False, 1, mock_log
+    )
+    assert has_edited is True
+    assert "file.txt" in edited_files
+    
+    # Case 2: Worktree violation
+    # We must mock _check_worktree_guard to return a violation
+    with patch('agent._check_worktree_guard', return_value=(True, "/correct/path")):
+        args = {"path": "/bad/path"}
+        _handle_cicd_file_edit(
+            args, history, wt_path, phase_state, edited_files, True, False, 2, mock_log
+        )
+        assert any("WRONG PATH!" in m["content"] for m in history if m["role"] == "user")
+    
+    # Case 3: Plan file edit
+    args = {"path": "improvements/245-slug.md"}
+    _handle_cicd_file_edit(
+        args, history, wt_path, phase_state, edited_files, True, False, 3, mock_log
+    )
+    assert phase_state["plan"] is True
+    
+    # Case 4: reviews.md edit
+    args = {"path": "reviews.md"}
+    has_edited, persisted = _handle_cicd_file_edit(
+        args, history, wt_path, phase_state, edited_files, True, False, 4, mock_log
+    )
+    assert persisted is True
+    
+    # Case 5: Normal file (no state change)
+    args = {"path": "src/main.py"}
+    has_edited, persisted = _handle_cicd_file_edit(
+        args, history, wt_path, phase_state, edited_files, True, True, 5, mock_log
+    )
+    assert has_edited is True
+    assert persisted is True
