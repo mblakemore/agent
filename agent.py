@@ -2204,7 +2204,30 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         tool_status = StreamStatus(emit=_emit)
                         tool_status.start(f"  -> {func_name} ")
 
-                    if func_name not in MAP_FN:
+                    # Cycle 24: pre-execute PRE-MERGE CHECK short-circuit.
+                    # When reviewer attempts `gh pr merge` without prior
+                    # `gh issue view`, block execution (the merge is irreversible
+                    # once it runs; post-hoc reminders are too late). Return a
+                    # synthetic error; next turn the reviewer runs `gh issue view`,
+                    # tracker flips, merge re-attempt proceeds.
+                    _cicd_blocked = False
+                    if func_name == "exec_command":
+                        _precmd = func_args.get("command", "") if isinstance(func_args, dict) else ""
+                        if (re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*)gh\s+pr\s+merge\b", _precmd)
+                                and not _cicd_issue_view_called):
+                            log.warning("CICD: gh pr merge BLOCKED — PRE-MERGE CHECK required (cycle 24)")
+                            result_str = (
+                                "Error: CICD PRE-MERGE CHECK required. Before `gh pr merge`, you "
+                                "MUST run `gh issue view <N> --json state,labels,title,createdAt` "
+                                "on the linked issue and verify: state is OPEN, labels include "
+                                "`cicd` + `in-progress`, the title matches the PR's stated scope. "
+                                "Run the gh issue view now as a SEPARATE command, then re-attempt "
+                                "the merge. The merge was NOT executed."
+                            )
+                            _cicd_blocked = True
+                    if _cicd_blocked:
+                        pass  # result_str already set above; skip tool execution
+                    elif func_name not in MAP_FN:
                         result_str = f"Error: Unknown tool '{func_name}'"
                     else:
                         try:
