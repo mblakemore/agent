@@ -1180,10 +1180,9 @@ def _auto_increment_cycle(log):
     bumped it — touching it again would cause a double-increment/skip.
     """
     state_path = _state_path("current-state.json")
-    if not os.path.exists(state_path):
-        return
-
     try:
+        if not os.path.exists(state_path):
+            return
         with open(state_path, encoding="utf-8", errors="replace") as f:
             state = json.load(f)
         cycle = int(state.get("cycle", 0))
@@ -1233,7 +1232,7 @@ def _auto_increment_cycle(log):
                     pass
 
             log.info("AUTO-INCREMENT: cycle %d already committed, bumped state to %d",
-                     cycle, new_cycle)
+                    cycle, new_cycle)
             _emit("on_cycle_bumped", cycle, new_cycle)
     except Exception as e:
         log.warning("Auto-increment check failed: %s", e)
