@@ -2284,8 +2284,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     _cicd_blocked = False
                     if func_name == "exec_command":
                         _precmd = func_args.get("command", "") if isinstance(func_args, dict) else ""
-                        if (re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|gh\s+pr\s+merge\b", _precmd)
-                                and not _cicd_issue_view_called):
+                        if (re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|gh\s+pr\s+merge\b)", _precmd)
+                            and not _cicd_issue_view_called):
                             log.warning("CICD: gh pr merge BLOCKED — PRE-MERGE CHECK required (cycle 24)")
                             result_str = (
                                 "Error: CICD PRE-MERGE CHECK required. Before `gh pr merge`, you "
@@ -2296,7 +2296,14 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 "the merge. The merge was NOT executed."
                                 )
                             _cicd_blocked = True
-
+                        
+                        if (not _cicd_blocked and 
+                            re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|gh\s+pr\s+create\b)", _precmd)
+                            and not re.search(r'Closes\s+#\d+', _precmd, re.IGNORECASE)):
+                            log.warning("CICD: gh pr create BLOCKED — missing Closes #N")
+                            result_str = "Error: CICD gh pr create blocked — the --body must contain Closes #<N>"
+                            _cicd_blocked = True
+                    
                     # Pre-execution validation for 'file' tool
                     if (not _cicd_blocked
                             and func_name == "file"
@@ -2324,11 +2331,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         _cmd = func_args.get("command", "")
                         if (re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+create\b", _cmd)
                             and not re.search(r'Closes\s+#\d+', _cmd, re.IGNORECASE)):
-                            pr_match = re.search(r"PR #(\d+)", result_str)
+                            pr_match = re.search(r"(?:PR #|pull/)(\d+)", result_str)
                             if pr_match:
                                 warning = f"PR #{pr_match.group(1)} was created without a `Closes #<issue>`"
                                 result_str += f"\n\n{warning}"
-                        if result_str.startswith("Error"):
+                        if result_str.startswith("Error") and not _cicd_blocked:
                             try:
                                 from tool_recovery import attempt_recovery
                                 _emit("on_tool_recovery", func_name, 1)
