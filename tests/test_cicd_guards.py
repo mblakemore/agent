@@ -57,7 +57,7 @@ def mock_text_response(content):
      "Issue creation without think"),
     ('gh pr create --title "Fix" --body "Fixed bug"', 
      "exit=0\nhttps://github.com/mblakemore/agent/pull/456", 
-     "PR #456 was created without a `Closes #<issue>` trailer", 
+     "Error: CICD gh pr create blocked — the --body must contain `Closes #<N>`", 
      "PR creation without Closes trailer"),
     ('gh pr review 456 --approve', 
      "exit=0\nApproved", 
