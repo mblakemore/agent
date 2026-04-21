@@ -24,13 +24,14 @@ fi
 REPO_URL="$1"
 REPO_NAME="$(basename "${REPO_URL}" .git)"
 WORKSPACE="$(readlink -f .)"  # resolve symlinks for sandbox compatibility
+export BOT_ID="${BOT_ID:-1}"  # multi-bot namespace: BOT_ID=2 cicd <repo-url>
 
 # ── Workspace structure ───────────────────────────────────────────────
 #   $WORKSPACE/
 #   ├── CICD/
-#   │   ├── improvements/    — plan + results files per cycle
-#   │   ├── progress.md      — builder progress log
-#   │   └── reviews.md       — reviewer log
+#   │   ├── improvements/           — plan + results files per cycle
+#   │   ├── progress-${BOT_ID}.md  — builder progress log (per-bot)
+#   │   └── reviews-${BOT_ID}.md   — reviewer log (per-bot)
 #   └── temp/
 #       └── <stamp>/
 #           ├── repo/        — fresh clone
@@ -139,6 +140,7 @@ NOTE — Session paths (use these instead of any template placeholders):
   Sandbox boundary: ${SESSION_DIR} — all paths must be under here or under ${WORKSPACE}/CICD.
   Repo name: ${REPO_NAME}
   Repo URL:  ${REPO_URL}
+  Bot ID: ${BOT_ID} — use this value for namespaced state files and labels (see templates)
 ${VENV_NOTE}
 EOVERRIDE
 )"
@@ -146,15 +148,17 @@ EOVERRIDE
 # ── Load and inject templates ─────────────────────────────────────────
 # Strip @ before path-like refs so agent.py's _expand_file_refs
 # doesn't try to re-expand documentation references in the body text.
-AGENT_MD="$(sed 's/@\([a-zA-Z./]\)/\1/g' "${CICD_HOME}/agent.md")"
-REVIEWER_MD="$(sed 's/@\([a-zA-Z./]\)/\1/g' "${CICD_HOME}/reviewer.md")"
+# envsubst expands ${BOT_ID} placeholders in the templates so each bot
+# gets its own namespaced state files (progress-N.md, reviews-N.md) and
+# its own in-progress-bot-N label — enabling concurrent independent runs.
+AGENT_MD="$(sed 's/@\([a-zA-Z./]\)/\1/g' "${CICD_HOME}/agent.md" | envsubst '$BOT_ID')"
+REVIEWER_MD="$(sed 's/@\([a-zA-Z./]\)/\1/g' "${CICD_HOME}/reviewer.md" | envsubst '$BOT_ID')"
 
-# ── Pre-create cicd-cycle labels ─────────────────────────────────────
-# The builder includes --label "cicd-cycle-NNN" on gh issue create where NNN
-# is the new issue number. This label doesn't pre-exist, so the first create
-# fails with "not found" requiring a 2-turn recovery (gh label create + retry).
-# Pre-creating labels for the next 3 likely issue numbers eliminates this cost.
-echo "==> Pre-creating cicd-cycle labels"
+# ── Pre-create cicd-cycle and bot-claim labels ────────────────────────
+# cicd-cycle-NNN: builder includes this on gh issue create; pre-creating
+# eliminates the 2-turn recovery (label create + retry) on the first cycle.
+# in-progress-bot-N: claim lock per bot — each bot only grabs unclaimed issues.
+echo "==> Pre-creating cicd-cycle and bot-claim labels"
 _NEXT_ISSUE="$(gh issue list --state all --repo "${REPO_URL}" --limit 1 --json number --jq '.[0].number + 1' 2>/dev/null || echo "1")"
 for _i in 0 1 2; do
     _N=$((_NEXT_ISSUE + _i))
@@ -162,6 +166,9 @@ for _i in 0 1 2; do
         --description "CICD cycle ${_N}" \
         --repo "${REPO_URL}" 2>/dev/null || true
 done
+gh label create "in-progress-bot-${BOT_ID}" --color "0e8a16" \
+    --description "Claimed by CICD bot ${BOT_ID}" \
+    --repo "${REPO_URL}" 2>/dev/null || true
 unset _NEXT_ISSUE _i _N
 
 # ── Pre-seed builder task list ────────────────────────────────────────

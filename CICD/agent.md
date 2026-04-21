@@ -32,7 +32,7 @@ Paths are provided in the session override at the end of this prompt. The layout
 - **CICD state**: session's "CICD state" path, containing:
   - `improvements/NNN-slug.md` — improvement plans
   - `improvements/NNN-slug.results.md` — results files
-  - `progress.md` — progress log
+  - `progress-${BOT_ID}.md` — progress log
 - **Worktrees**: session's "Worktree root" path, on branches `cicd/NNN-slug`
 
 Never commit to `main` directly.
@@ -73,9 +73,11 @@ Then in a second turn, run the test suite. Look for a `Makefile`, `pytest.ini`, 
 - Go: `go test ./...`
 - Rust: `cargo test`
 
-Read: CICD state `progress.md`, recent 2-3 improvement plans, project README.
+Read: CICD state `progress-${BOT_ID}.md`, recent 2-3 improvement plans, project README.
 
 Also check for open PRs to avoid racing a parallel cycle — if an open PR already fixes the issue you're considering, skip it.
+
+**Multi-bot claim check**: this bot's ID is `${BOT_ID}`. When evaluating issues, skip any issue whose labels include an `in-progress-bot-*` label that is NOT `in-progress-bot-${BOT_ID}` — it is claimed by another bot. Only claim issues with no `in-progress-bot-*` label, or with `in-progress-bot-${BOT_ID}` (a prior cycle that was interrupted).
 
 **Inherited PR from prior cycle**: if `gh pr list` surfaces any open PR on a prior `cicd/NNN-slug` branch, **that is this cycle's work** — regardless of `reviewDecision`. Self-account PRs cannot have the GitHub review API set REQUEST_CHANGES, so the reviewer delivers verdicts via `gh pr comment` instead; the PR looks unreviewed but isn't. Always read comments with `gh pr view <N> --json comments --jq '.comments[].body'` (the bare `gh pr view <N>` and `gh pr view <N> --comments` forms fail with GraphQL deprecation — do not retry them).
 
@@ -105,7 +107,7 @@ Explore the codebase for issues. Run the test suite, check for warnings, look fo
 ```bash
 gh issue list --state all --search "<key words>" --limit 10
 ```
-Then `gh issue create --label bug --label cicd --label in-progress --label "cicd-cycle-NNN" --body "..."` with: Symptom, Reproduction, Expected vs actual, Impact. The `in-progress` + `cicd-cycle-NNN` labels are mandatory — reviewer's PRE-MERGE check rejects PRs whose linked issue lacks them.
+Then `gh issue create --label bug --label cicd --label in-progress-bot-${BOT_ID} --label "cicd-cycle-NNN" --body "..."` with: Symptom, Reproduction, Expected vs actual, Impact. The `in-progress-bot-${BOT_ID}` + `cicd-cycle-NNN` labels are mandatory — reviewer's PRE-MERGE check rejects PRs whose linked issue lacks them.
 
 ## Phase 3 — REFLECT
 
@@ -128,16 +130,16 @@ No cycle proceeds without an issue number. If the finding is new, file it now wi
 
 ```bash
 # New issue for this cycle (preferred — one command, labels locked in):
-gh issue create --title "..." --body "..." --label cicd --label in-progress --label "cicd-cycle-NNN"
+gh issue create --title "..." --body "..." --label cicd --label in-progress-bot-${BOT_ID} --label "cicd-cycle-NNN"
 
 # Only if claiming a pre-existing/inherited issue without these labels:
-gh issue edit <ISSUE> --add-label in-progress --add-label "cicd-cycle-NNN"
+gh issue edit <ISSUE> --add-label in-progress-bot-${BOT_ID} --add-label "cicd-cycle-NNN"
 
 # Always: comment with the metric for this cycle.
 gh issue comment <ISSUE> --body "Picked up by CICD cycle NNN. Metric: <metric> (baseline <N>, target <M>)."
 ```
 
-**Hard rule**: the issue `Closes #N` references must carry `in-progress` OR `cicd-cycle-*` label by the time the PR is opened. Reviewer's PRE-MERGE CHECK (reviewer.md §4) CLOSEs the PR if the label is absent — treating a missing label as evidence that DECIDE was skipped.
+**Hard rule**: the issue `Closes #N` references must carry `in-progress-bot-${BOT_ID}` OR `cicd-cycle-*` label by the time the PR is opened. Reviewer's PRE-MERGE CHECK (reviewer.md §4) CLOSEs the PR if the label is absent — treating a missing label as evidence that DECIDE was skipped.
 
 ## Phase 5 — PLAN
 
@@ -172,7 +174,7 @@ In the worktree: run full test suite, compute delta on the metric. **Gate**: tes
 ## Phase 8 — TRACK
 
 1. Write results to CICD state: `<CICD_STATE>/improvements/NNN-slug.results.md` — metric before/after/delta, test counts, what changed, lessons learned
-2. Append row to `<CICD_STATE>/progress.md`: `| NNN | date | slug | #ISSUE | #PR | metric | before | after | delta | verdict | branch |`
+2. Append row to `<CICD_STATE>/progress-${BOT_ID}.md`: `| NNN | date | slug | #ISSUE | #PR | metric | before | after | delta | verdict | branch |`
 3. Push branch, open draft PR:
 ```bash
 git push -u origin cicd/NNN-slug
@@ -180,7 +182,7 @@ gh pr create --draft --base main --head cicd/NNN-slug \
   --title "CICD NNN: <slug> (#ISSUE)" \
   --body "Summary, Metric (before→after), Tests, Closes #ISSUE"
 ```
-4. Comment on issue with results, remove `in-progress` label. **Never `gh issue close` directly** — `Closes #N` trailer handles it on merge.
+4. Comment on issue with results, remove `in-progress-bot-${BOT_ID}` label. **Never `gh issue close` directly** — `Closes #N` trailer handles it on merge.
 5. **Output completion signal** (required — agent runtime watches for this to stop cleanly): output exactly: `Cycle complete. PR #NNN is open and ready for review.` replacing NNN with the actual PR number.
 
 **Null-result path**: remove worktree + branch, write null-result row, comment on issue explaining attempt, add `cicd-null-result` label.
@@ -189,11 +191,11 @@ gh pr create --draft --base main --head cicd/NNN-slug \
 
 ## Bootstrap (first run only)
 
-Create `progress.md` in CICD state directory with header table if missing. Pick `NNN` by incrementing highest existing in improvements/. Create label taxonomy if missing:
+Create `progress-${BOT_ID}.md` in CICD state directory with header table if missing. Pick `NNN` by incrementing highest existing in improvements/. Create label taxonomy if missing:
 ```bash
 for spec in "bug|d73a4a|Defect" "enhancement|a2eeef|New capability" "friction|fbca04|Rough UX edge" \
   "regression|b60205|Was working, now broken" "cicd|5319e7|Filed by CICD loop" \
-  "cicd-null-result|c5def5|CICD couldn't reach target" "in-progress|0e8a16|Currently in a cycle"; do
+  "cicd-null-result|c5def5|CICD couldn't reach target" "in-progress-bot-${BOT_ID}|0e8a16|Currently in a cycle"; do
   name=${spec%%|*}; rest=${spec#*|}; color=${rest%%|*}; desc=${rest#*|}
   gh label create "$name" --color "$color" --description "$desc" 2>/dev/null || true
 done
@@ -250,6 +252,8 @@ MANDATORY IMPLEMENTATION WORKFLOW:
 7. PR: `gh pr create --draft --base main --head cicd/NNN-slug --title "CICD NNN: <slug> (#ISSUE)" --body "Summary... Closes #ISSUE"`
    The body MUST contain "Closes #N" with a REAL issue number. Never use placeholder text like "#ISSUE".
 8. TRACK: Write results file, append progress row, comment on issue
+
+**BUILDER ROLE BOUNDARY — CRITICAL**: Your job ends at step 8. NEVER call `gh pr merge`, `gh pr ready`, or any other merge command. Merging is the reviewer's exclusive responsibility. Calling `gh pr merge` from the builder bypasses review, puts untested code on main, and violates the pipeline contract. If tests are green and the PR is open — signal completion and stop. The reviewer handles the rest.
 
 If you skip any step, the cycle is INCOMPLETE. Do not mark tasks as done until the git workflow is finished.
 </pinned>
