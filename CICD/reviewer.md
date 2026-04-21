@@ -143,6 +143,7 @@ Post-merge: `git pull --ff-only origin main` then run test suite. If red → fil
 2. **Attempt a small, targeted fix** (≤20 lines changed, **max 2 attempts**) in the review worktree:
    - Only fix the specific issue you identified (e.g. a missing import, a broken test assertion, a typo).
    - Do NOT rewrite large sections of the PR's code. If the fix requires rewriting >20 lines, leave REQUEST_CHANGES standing and let the builder fix it.
+   - After any `.py` file write: **immediately** run `python3 -m py_compile <file>` (or `python3 -c "import py_compile; py_compile.compile('<file>', doraise=True)"`). Fix any IndentationError before proceeding — do NOT skip to pytest first.
    - Run tests to confirm the fix works.
    - Commit with message: `CICD review R-NNN (#ISSUE): fix <what>`.
    - Push to the PR branch: `git push origin HEAD:<pr-branch-name>`.
