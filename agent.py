@@ -2281,7 +2281,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     _cicd_blocked = False
                     if func_name == "exec_command":
                         _precmd = func_args.get("command", "") if isinstance(func_args, dict) else ""
-                        if (re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*)gh\s+pr\s+merge\b", _precmd)
+                        if (re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+merge\b", _precmd)
                                 and not _cicd_issue_view_called):
                             log.warning("CICD: gh pr merge BLOCKED — PRE-MERGE CHECK required (cycle 24)")
                             result_str = (
@@ -2543,8 +2543,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 log.info("CICD: gh issue view called (PRE-MERGE CHECK satisfied)")
                         # Match `gh pr merge` as an actual top-level invocation — not inside
                         # heredoc/cat content where the string may appear as documentation.
-                        # Matches at line start or after a shell separator (&&, ;, |, ||).
-                        if re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*)gh\s+pr\s+merge\b", _cmd):
+                        # Matches at line start or after a shell separator (&&, ;, |, ||, \n).
+                        if re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+merge\b", _cmd):
                             # Guard: PRE-MERGE CHECK — must view linked issue first (reviewer.md §4)
                             if not _cicd_issue_view_called:
                                 log.warning("CICD: gh pr merge without PRE-MERGE CHECK — injecting reminder")
