@@ -166,3 +166,70 @@ def test_streaming_unexpected_exception(mock_config, mock_llm, mock_emit):
     # Verify on_error was emitted
     error_emitted = any(args[0] == "on_error" for args, kwargs in mock_emit.call_args_list)
     assert error_emitted
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_tool_call_json_decode_error(mock_config, mock_llm, mock_emit):
+    """Test that malformed JSON arguments in tool calls are handled gracefully."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768}
+    }.get(k)
+
+    # One valid tool call, one garbled tool call to avoid the "All garbled" retry wipe
+    tool_calls = [
+        {"index": 0, "id": "call_valid", "function": {"name": "search_files", "arguments": '{"pattern": "test"}'}},
+        {"index": 1, "id": "call_garbled", "function": {"name": "search_files", "arguments": '{"pattern": "test"'}}, # Missing brace in the JSON string
+    ]
+    mock_resp = create_mock_response(tool_calls=tool_calls)
+    
+    mock_llm.side_effect = [mock_resp, create_mock_response(content="Fixed it!")]
+
+    conversation_history = [{"role": "user", "content": "Search for 'test'"}]
+    summary_state = {"text": "", "up_to": 0}
+
+    with patch.dict('agent.MAP_FN', {"search_files": lambda **kwargs: "No results found."}):
+        run_agent_single(conversation_history, summary_state, [], log)
+
+    # Verify that the garbled tool call resulted in an error message in the conversation history
+    assert any("malformed arguments" in msg.get("content", "") 
+               for msg in conversation_history if msg.get("role") == "tool")
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_tool_call_generic_exception(mock_config, mock_llm, mock_emit):
+    """Test that unexpected exceptions during tool call argument parsing are handled gracefully."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768}
+    }.get(k)
+
+    # Arguments that are not a string (will cause json.loads to fail or other issues)
+    tool_call = {
+        "index": 0, 
+        "id": "call_2", 
+        "function": {"name": "search_files", "arguments": None} # None will trigger a TypeError in json.loads or other similar
+    }
+    mock_resp = create_mock_response(tool_calls=[tool_call])
+    
+    # We provide a valid second call to avoid the "All garbled" retry wipe
+    mock_llm.side_effect = [
+        mock_resp, 
+        create_mock_response(tool_calls=[{"index": 0, "id": "call_3", "function": {"name": "search_files", "arguments": '{"pattern": "test"}'}}]),
+        create_mock_response(content="Fixed it!")
+    ]
+
+    conversation_history = [{"role": "user", "content": "Search for 'test'"}]
+    summary_state = {"text": "", "up_to": 0}
+
+    with patch.dict('agent.MAP_FN', {"search_files": lambda **kwargs: "No results found."}):
+        run_agent_single(conversation_history, summary_state, [], log)
+
+    # The generic exception block (lines 2230-2233) only logs and continues.
+    # It DOES NOT append to conversation_history.
+    # We verify the agent didn't crash and the loop proceeded to the second LLM call.
+    assert mock_llm.call_count >= 2
