@@ -120,7 +120,7 @@ def test_hallucination_guard_regex_extensions():
 
 def test_hallucination_guard_integration():
     """Integration test for the actual hallucination guard in agent.py."""
-        pass
+    pass
 
 def test_hallucination_guard_exception_handling():
     """Test that the hallucination guard does not crash on weird input."""
