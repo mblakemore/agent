@@ -1673,7 +1673,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # progress row, issue comments) before stopping on text-only response.
     _cycle_persisted = False
     _cycle_persisted_turn = None
-    _CYCLE_GRACE_TURNS = 3
+    _CYCLE_GRACE_TURNS = 7
     # Hard cap: even with ongoing tool calls, end the cycle this many turns
     # after persist.  Prevents post-TRACK drift into a second PERCEIVE.
     _CYCLE_HARD_STOP_TURNS = 15
