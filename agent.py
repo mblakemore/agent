@@ -2271,64 +2271,70 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         and not theme._no_color()
                     )
 
-                    if use_spinner:
-                        tool_status = StreamStatus(emit=_emit)
-                        tool_status.start(f"  -> {func_name} ")
+                      if use_spinner:
+                          tool_status = StreamStatus(emit=_emit)
+                          tool_status.start(f"  -> {func_name} ")
+                      
+                      # Cycle 24: pre-execute PRE-MERGE CHECK short-circuit.
+                      # When reviewer attempts `gh pr merge` without prior
+                      # `gh issue view`, block execution ( the merge is irreversible
+                      # once it runs; post-hoc reminders are too late). Return a
+                      # synthetic error; next turn the reviewer runs `gh issue view`,
+                      # tracker flips, merge re-attempt proceeds.
+                      _cicd_blocked = False
+                      if func_name == "exec_command":
+                          _precmd = func_args.get("command", "") if isinstance(func_args, dict) else ""
+                          if (re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|gh\s+pr\s+merge\b", _precmd)
+                                  and not _cicd_issue_view_called):
+                              log.warning("CICD: gh pr merge BLOCKED — PRE-MERGE CHECK required (cycle 24)")
+                              result_str = (
+                                  "Error: CICD PRE-MERGE CHECK required. Before `gh pr merge`, you "
+                                  "MUST run `gh issue view <N> --json state,labels,title,createdAt` "
+                                  "on the linked issue and verify: state is OPEN, labels include "
+                                  "`cicd` + `in-progress`, the title matches the PR's stated scope. "
+                                  "Run the gh issue view now as a SEPARATE command, then re-attempt "
+                                  "the merge. The merge was NOT executed."
+                                  )
+                              _cicd_blocked = True
+                      
+                      # Pre-execution validation for 'file' tool
+                      if (not _cicd_blocked
+                              and func_name == "file"
+                              and isinstance(func_args, dict)
+                              and "path" not in func_args):
+                          log.warning("CICD: file tool missing 'path' — blocking call")
+                          result_str = "Error: your tool call was garbled — 'path' is missing"
+                          _cicd_blocked = True
 
-                    # Cycle 24: pre-execute PRE-MERGE CHECK short-circuit.
-                    # When reviewer attempts `gh pr merge` without prior
-                    # `gh issue view`, block execution (the merge is irreversible
-                    # once it runs; post-hoc reminders are too late). Return a
-                    # synthetic error; next turn the reviewer runs `gh issue view`,
-                    # tracker flips, merge re-attempt proceeds.
-                    _cicd_blocked = False
-                    if func_name == "exec_command":
-                        _precmd = func_args.get("command", "") if isinstance(func_args, dict) else ""
-                        if (re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+merge\b", _precmd)
-                                and not _cicd_issue_view_called):
-                            log.warning("CICD: gh pr merge BLOCKED — PRE-MERGE CHECK required (cycle 24)")
-                            result_str = (
-                                "Error: CICD PRE-MERGE CHECK required. Before `gh pr merge`, you "
-                                "MUST run `gh issue view <N> --json state,labels,title,createdAt` "
-                                "on the linked issue and verify: state is OPEN, labels include "
-                                "`cicd` + `in-progress`, the title matches the PR's stated scope. "
-                                "Run the gh issue view now as a SEPARATE command, then re-attempt "
-                                "the merge. The merge was NOT executed."
-                            )
-                            _cicd_blocked = True
-                        # Cycle 44: block gh pr create when --body lacks Closes #<digits>.
-                        # Post-hoc fix via gh pr edit fails (GraphQL deprecation → exit=1).
-                        # Block before creation so the builder files the issue first.
-                        # Cycle 45: anchor gh pr create match to shell top-level invocation;
-                        # plain search matched "gh pr create" inside --body text (false positive).
-                        if (not _cicd_blocked
-                                and re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+create\b", _precmd)
-                                and not re.search(r'Closes\s+#\d+', _precmd, re.IGNORECASE)):
-                            log.warning("CICD: gh pr create blocked — body missing valid Closes #N (cycle 44)")
-                            result_str = (
-                                "Error: CICD gh pr create blocked — the --body must contain "
-                                "`Closes #<N>` where N is a numeric issue number (e.g. `Closes #123`). "
-                                "Non-numeric references like `Closes #slug` or missing Closes trailer "
-                                "cause the reviewer to CLOSE this PR. "
-                                "File the issue first with `gh issue create --label in-progress --label cicd ...`, "
-                                "note the issue number, then include `Closes #<number>` in the PR body. "
-                                "The PR was NOT created."
-                            )
-                            _cicd_blocked = True
-                    if _cicd_blocked:
-                        pass  # result_str already set above; skip tool execution
-                    elif func_name not in MAP_FN:
-                        result_str = f"Error: Unknown tool '{func_name}'"
-                    else:
-                        try:
-                            result_str = str(MAP_FN[func_name](**func_args))
-                        except CircuitBreakerError as e:
-                            # Tool temporarily unavailable - return graceful degradation
-                            result_str = f"Tool '{func_name}' temporarily unavailable: {e}"
-                        except Exception as e:
-                            result_str = f"Error executing tool: {str(e)}"
-
-                        # Conversational tool recovery: on error, try to fix params
+                      if _cicd_blocked:
+                          pass  # result_str already set above; skip tool execution
+                      elif func_name not in MAP_FN:
+                          result_str = f"Error: Unknown tool '{func_name}'"
+                      else:
+                          try:
+                              result_str = str(MAP_FN[func_name](**func_args))
+                          except CircuitBreakerError as e:
+                              # Tool temporarily unavailable - return graceful degradation
+                              result_str = f"Tool '{func_name}' temporarily unavailable: {e}"
+                          except Exception as e:
+                              result_str = f"Error executing tool: {str(e)}"
+                              
+                              # Post-execution check for gh pr create missing Closes #N
+                              if func_name == "exec_command" and isinstance(func_args, dict):
+                                  _cmd = func_args.get("command", "")
+                                  if (re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+create\b", _cmd)
+                                      and not re.search(r'Closes\s+#\d+', _cmd, re.IGNORECASE)):
+                                      pr_match = re.search(r"PR #(\d+)", result_str)
+                                      if pr_match:
+                                          warning = f"PR #{pr_match.group(1)} was created without a `Closes #<issue>`"
+                                          result_str += f"\n\n{warning}"
+                                      and not re.search(r'Closes\s+#\d+', _cmd, re.IGNORECASE)):
+                                      pr_match = re.search(r"PR #(\d+)", result_str)
+                                      if pr_match:
+                                          warning = f"PR #{pr_match.group(1)} was created without a `Closes #<issue>`"
+                                          result_str += f"\n\n{warning}"
+                                          warning = f"PR #{pr_match.group(1)} was created without a `Closes #<issue>`"
+                                          result_str += f"\n\n{warning}"
                         if result_str.startswith("Error"):
                             try:
                                 from tool_recovery import attempt_recovery
