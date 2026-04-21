@@ -2100,7 +2100,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
             # Detect hallucinated file reads: model claims to have read a file
             # but _accessed_files doesn't show it.  Give a targeted correction.
-            _hallucinated_read, _reason = _detect_hallucinated_read(full_content)
+            _hallucinated_read = _detect_hallucinated_read(full_content)[0]
             if _hallucinated_read:
                 # Strip the hallucinated message and give a pointed correction
                 conversation_history.pop()
