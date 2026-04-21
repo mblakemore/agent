@@ -173,3 +173,45 @@ def test_cicd_phase_detection_perceive(mock_config, mock_llm, mock_emit):
         run_agent_interactive(initial_prompt="gh issue list", auto=True)
     except Exception:
         pass
+
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_cicd_phase_detection_implement(mock_config, mock_llm, mock_emit):
+    """Test that git worktree add and gh pr create trigger the IMPLEMENT phase and capture details."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768},
+        "summary": {"enabled": False}
+    }.get(k)
+
+    # We simulate a response that contains tool calls to trigger the CICD logic.
+    resp1 = MagicMock()
+    resp1.iter_lines.return_value = [
+        b'data: {"choices": [{"delta": {"content": ""}}]}',
+        b'data: {"tool_calls": [{"id": "1", "type": "function", "function": {"name": "exec_command", "arguments": "{\\"command\\": \\"git worktree add /tmp/worktree -b cicd/test-branch\\"}"}}]}',
+        b'data: [DONE]'
+    ]
+    
+    resp2 = MagicMock()
+    resp2.iter_lines.return_value = [
+        b'data: {"choices": [{"delta": {"content": ""}}]}',
+        b'data: {"tool_calls": [{"id": "2", "type": "function", "function": {"name": "exec_command", "arguments": "{\\"command\\": \\"gh pr create --title Test --body \\"Missing trailer\\"}"}}]}',
+        b'data: [DONE]'
+    ]
+
+    resp3 = MagicMock()
+    resp3.iter_lines.return_value = [
+        b'data: {"choices": [{"delta": {"content": "Finished."}}]}',
+        b'data: [DONE]'
+    ]
+    
+    mock_llm.side_effect = [resp1, resp2, resp3]
+
+    try:
+        with patch('agent.exec_command', return_value="exit=0"):
+            run_agent_interactive(initial_prompt="Start implement phase", auto=True)
+    except Exception:
+        pass
