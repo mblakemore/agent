@@ -69,6 +69,30 @@ def _check_worktree_guard(file_path, worktree_path):
         pass
     return False, None
 
+def _detect_hallucinated_read(full_content: str) -> tuple[bool, str | None]:
+    """
+    Checks if the agent claims to have read a file that was not actually accessed.
+    Returns (is_hallucinated, reason).
+    """
+    if not full_content:
+        return False, None
+
+    try:
+        from tools.file import _accessed_files
+        pattern = r'(?:read|found|contents? of|file (?:has|contains|shows))\s+[`"\']?(\S+\.(?:py|json|md|txt|yaml|yml|toml|jsonl|sh|cfg))'
+        for match in re.finditer(pattern, full_content, re.IGNORECASE):
+            claimed_file = match.group(1)
+            start = match.start()
+            preceding = full_content[max(0, start-20):start].lower()
+            if any(word in preceding for word in ['will', 'to ', 'should', 'must', 'need to']):
+                continue
+            _resolved = str((Path.cwd() / claimed_file).resolve())
+            if _resolved not in _accessed_files:
+                return True, f"Agent claimed to read {claimed_file}, but it was not accessed."
+    except Exception:
+        pass
+    return False, None
+
 def _handle_cicd_file_edit(func_args, conversation_history, cicd_worktree_path, cicd_phase_state, cicd_edited_files, has_edited, has_reviewer_persisted, turn, log):
     """
     Tracks file edits for CICD state management and enforces worktree guards.
@@ -2076,27 +2100,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
             # Detect hallucinated file reads: model claims to have read a file
             # but _accessed_files doesn't show it.  Give a targeted correction.
-            _hallucinated_read = False
-            if full_content:
-                try:
-                    from tools.file import _accessed_files
-                    for match in re.finditer(
-                        r'(?:read|found|contents? of|file (?:has|contains|shows))\s+[`"\']?(\S+\.(?:py|json|md|txt|yaml|yml|toml|jsonl|sh|cfg))',
-                        full_content, re.IGNORECASE
-                    ):
-                        claimed_file = match.group(1)
-                        start = match.start()
-                        preceding = full_content[max(0, start-20):start].lower()
-                        if any(word in preceding for word in ['will', 'to ', 'should', 'must', 'need to']):
-                            continue
-
-                        _resolved = str((Path.cwd() / claimed_file).resolve())
-                        if _resolved not in _accessed_files:
-                            _hallucinated_read = True
-                            break
-                except Exception:
-                    pass
-
+            _hallucinated_read, _reason = _detect_hallucinated_read(full_content)
             if _hallucinated_read:
                 # Strip the hallucinated message and give a pointed correction
                 conversation_history.pop()
@@ -2115,10 +2119,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     "with a tool before trying to fix it. "
                     "Do not repeat your analysis, just act."
                 )
-
             conversation_history.append({"role": "user", "content": nudge})
             log.info("Auto-nudge (%d/%d, total %d/%d): text-only response, prompting to continue",
-                     _consecutive_text_only, _MAX_TEXT_ONLY, _total_nudges, _MAX_TOTAL_NUDGES)
+                    _consecutive_text_only, _MAX_TEXT_ONLY, _total_nudges, _MAX_TOTAL_NUDGES)
             _emit("on_auto_nudge", _consecutive_text_only, _MAX_TEXT_ONLY)
             continue
 
