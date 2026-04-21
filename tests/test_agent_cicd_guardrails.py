@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock
 import agent
+import json
 
 class TestAgentCICDGuardrails(unittest.TestCase):
     def setUp(self):
@@ -10,50 +11,56 @@ class TestAgentCICDGuardrails(unittest.TestCase):
 
     @patch("agent._llm_request")
     @patch("agent.MAP_FN")
-    def test_pr_creation_missing_trailer_warning(self, mock_map_fn, mock_llm_request):
+    def test_pr_creation_missing_trailer_blocking(self, mock_map_fn, mock_llm_request):
         """
         Test that when 'gh pr create' is called without a 'Closes #N' trailer,
-        the agent injects a system warning into the conversation history.
+        the agent blocks execution and returns an error message.
         """
         # 1. Setup the LLM to trigger a tool call to exec_command
         mock_response_tool = MagicMock()
         mock_response_tool.status_code = 200
-        
-        chunk_tool = MagicMock()
-        chunk_tool.choices = [MagicMock(delta={
-            "content": "", 
-            "tool_calls": [{
-                "id": "call_123",
-                "type": "function",
-                "function": {
-                    "name": "exec_command",
-                    "arguments": '{"command": "gh pr create --title \'Fix bug\' --body \'Fixed it\'"}'
+
+        # Simulate the SSE stream: "data: {...}"
+        payload_tool = {
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "exec_command",
+                            "arguments": '{"command": "gh pr create --title \'Fix bug\' --body \'Fixed it\'"}'
+                        }
+                    }]
                 }
             }]
-        })]
-        mock_response_tool.__iter__.return_value = [chunk_tool]
-        
-        # 2. Setup the LLM to terminate after the tool is called
+        }
+        line_tool = b"data: " + json.dumps(payload_tool).encode("utf-8")
+        mock_response_tool.iter_lines.return_value = [line_tool]
+
+        # 2. Setup the LLM to provide a response that triggers a completion signal
         mock_response_final = MagicMock()
         mock_response_final.status_code = 200
-        chunk_final = MagicMock()
-        chunk_final.choices = [MagicMock(delta={"content": "I have created the PR."})]
-        mock_response_final.__iter__.return_value = [chunk_final]
+        
+        payload_final = {
+            "choices": [{
+                "delta": {
+                    "content": "I have fixed the PR body. Cycle complete."
+                }
+            }]
+        }
+        line_final = b"data: " + json.dumps(payload_final).encode("utf-8")
+        mock_response_final.iter_lines.return_value = [line_final]
 
-        mock_llm_request.side_effect = [mock_response_tool, mock_response_final]
+        # Provide enough responses to handle any internal retries/nudges
+        mock_llm_request.side_effect = [mock_response_tool, mock_response_final, mock_response_final]
 
-        # 3. Mock the command output to trigger the guardrail:
-        # - Must contain 'exit=0'
-        # - Must contain a PR number (e.g., #456)
+        # 3. Mock the command output (should NOT be called)
         mock_exec_command = MagicMock(return_value="Created pull request #456\nexit=0")
         mock_map_fn.__getitem__.side_effect = lambda key: mock_exec_command if key == "exec_command" else None
 
         history = []
-        # We call run_agent_single. The loop will:
-        # - Request LLM -> get tool call
-        # - Execute tool -> get "Created pull request #456\nexit=0"
-        # - Process result -> trigger guardrail at lines 2460-2485
-        # - Request LLM -> get final response -> loop ends (or we mock it to end)
         agent.run_agent_single(
             history,
             self.summary_state,
@@ -61,12 +68,15 @@ class TestAgentCICDGuardrails(unittest.TestCase):
             self.log,
         )
 
-        # 4. Verify the warning is in the history
-        warning_found = any(
-            "was created without a `Closes #<issue>` trailer" in str(msg.get("content", ""))
-            for msg in history if isinstance(msg, dict)
+        # 4. Verify the blocking error is in the tool response
+        blocking_found = any(
+            "Error: CICD gh pr create blocked" in str(msg.get("content", ""))
+            for msg in history if isinstance(msg, dict) and msg.get("role") == "tool"
         )
-        self.assertTrue(warning_found, "The guardrail warning for missing 'Closes #N' trailer was not found in history")
+        self.assertTrue(blocking_found, "The blocking error for missing 'Closes #N' trailer was not found in tool responses")
+        
+        # 5. Verify the actual tool was never executed
+        mock_exec_command.assert_not_called()
 
     @patch("agent._llm_request")
     @patch("agent.MAP_FN")
@@ -77,27 +87,39 @@ class TestAgentCICDGuardrails(unittest.TestCase):
         """
         mock_response_tool = MagicMock()
         mock_response_tool.status_code = 200
-        chunk_tool = MagicMock()
-        chunk_tool.choices = [MagicMock(delta={
-            "content": "", 
-            "tool_calls": [{
-                "id": "call_123",
-                "type": "function",
-                "function": {
-                    "name": "exec_command",
-                    "arguments": '{"command": "gh pr create --title \'Fix bug\' --body \'Fixed it. Closes #123\'"}'
+
+        payload_tool = {
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {
+                            "name": "exec_command",
+                            "arguments": '{"command": "gh pr create --title \'Fix bug\' --body \'Fixed it. Closes #123\'"}'
+                        }
+                    }]
                 }
             }]
-        })]
-        mock_response_tool.__iter__.return_value = [chunk_tool]
+        }
+        line_tool = b"data: " + json.dumps(payload_tool).encode("utf-8")
+        mock_response_tool.iter_lines.return_value = [line_tool]
         
         mock_response_final = MagicMock()
         mock_response_final.status_code = 200
-        chunk_final = MagicMock()
-        chunk_final.choices = [MagicMock(delta={"content": "Done."})]
-        mock_response_final.__iter__.return_value = [chunk_final]
+        
+        payload_final = {
+            "choices": [{
+                "delta": {
+                    "content": "Done. Cycle complete."
+                }
+            }]
+        }
+        line_final = b"data: " + json.dumps(payload_final).encode("utf-8")
+        mock_response_final.iter_lines.return_value = [line_final]
 
-        mock_llm_request.side_effect = [mock_response_tool, mock_response_final]
+        mock_llm_request.side_effect = [mock_response_tool, mock_response_final, mock_response_final]
 
         mock_exec_command = MagicMock(return_value="Created pull request #456\nexit=0")
         mock_map_fn.__getitem__.side_effect = lambda key: mock_exec_command if key == "exec_command" else None
