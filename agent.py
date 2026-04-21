@@ -2296,9 +2296,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         # Cycle 44: block gh pr create when --body lacks Closes #<digits>.
                         # Post-hoc fix via gh pr edit fails (GraphQL deprecation → exit=1).
                         # Block before creation so the builder files the issue first.
+                        # Cycle 45: anchor gh pr create match to shell top-level invocation;
+                        # plain search matched "gh pr create" inside --body text (false positive).
                         if (not _cicd_blocked
-                                and re.search(r"gh\s+pr\s+create\b", _precmd)
-                                and "--body" in _precmd
+                                and re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+create\b", _precmd)
                                 and not re.search(r'Closes\s+#\d+', _precmd, re.IGNORECASE)):
                             log.warning("CICD: gh pr create blocked — body missing valid Closes #N (cycle 44)")
                             result_str = (
