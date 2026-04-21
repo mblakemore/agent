@@ -2293,6 +2293,24 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 "the merge. The merge was NOT executed."
                             )
                             _cicd_blocked = True
+                        # Cycle 44: block gh pr create when --body lacks Closes #<digits>.
+                        # Post-hoc fix via gh pr edit fails (GraphQL deprecation → exit=1).
+                        # Block before creation so the builder files the issue first.
+                        if (not _cicd_blocked
+                                and re.search(r"gh\s+pr\s+create\b", _precmd)
+                                and "--body" in _precmd
+                                and not re.search(r'Closes\s+#\d+', _precmd, re.IGNORECASE)):
+                            log.warning("CICD: gh pr create blocked — body missing valid Closes #N (cycle 44)")
+                            result_str = (
+                                "Error: CICD gh pr create blocked — the --body must contain "
+                                "`Closes #<N>` where N is a numeric issue number (e.g. `Closes #123`). "
+                                "Non-numeric references like `Closes #slug` or missing Closes trailer "
+                                "cause the reviewer to CLOSE this PR. "
+                                "File the issue first with `gh issue create --label in-progress --label cicd ...`, "
+                                "note the issue number, then include `Closes #<number>` in the PR body. "
+                                "The PR was NOT created."
+                            )
+                            _cicd_blocked = True
                     if _cicd_blocked:
                         pass  # result_str already set above; skip tool execution
                     elif func_name not in MAP_FN:
