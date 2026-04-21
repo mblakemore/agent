@@ -2333,6 +2333,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                       if pr_match:
                                           warning = f"PR #{pr_match.group(1)} was created without a `Closes #<issue>`"
                                           result_str += f"\n\n{warning}"
+                                      and not re.search(r'Closes\s+#\d+', _cmd, re.IGNORECASE)):
+                                      pr_match = re.search(r"PR #(\d+)", result_str)
+                                      if pr_match:
+                                          warning = f"PR #{pr_match.group(1)} was created without a `Closes #<issue>`"
+                                          result_str += f"\n\n{warning}"
                                           warning = f"PR #{pr_match.group(1)} was created without a `Closes #<issue>`"
                                           result_str += f"\n\n{warning}"
                         if result_str.startswith("Error"):
