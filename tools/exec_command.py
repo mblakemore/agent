@@ -180,12 +180,20 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     if wt_match:
         wt_root = os.environ.get("WORKTREE_ROOT")
         if wt_root:
-            wt_path = wt_match.group(1)
-            if not wt_path.startswith(wt_root):
-                return (
-                    f"ERROR: Worktree must be created under {wt_root}, not {wt_path}. "
-                    f"Use: git worktree add {wt_root}/<branch-slug> -b <branch-name>"
-                )
+            # Skip guard if match is inside heredoc content (after << marker)
+            heredoc_start = re.search(r'<<\s*[\'"]?\w', command)
+            _in_heredoc = heredoc_start and wt_match.start() > heredoc_start.start()
+            # Skip guard if match is inside a double-quoted string (e.g. printf arg)
+            _before = command[:wt_match.start()]
+            _dq_count = _before.count('"') - _before.count('\\"')
+            _in_dquote = _dq_count % 2 == 1
+            if not _in_heredoc and not _in_dquote:
+                wt_path = wt_match.group(1)
+                if not wt_path.startswith(wt_root):
+                    return (
+                        f"ERROR: Worktree must be created under {wt_root}, not {wt_path}. "
+                        f"Use: git worktree add {wt_root}/<branch-slug> -b <branch-name>"
+                    )
 
     # Pre-merge validation: ensure PR has a valid linked issue (CICD mode)
     if os.environ.get("CICD_MODE"):
