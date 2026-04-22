@@ -2536,15 +2536,15 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                     _lnames = [l.get("name", "") for l in _issue_data.get("labels", [])]
                                     _istate = _issue_data.get("state", "")
                                     _has_valid_labels = any(
-                                        l in ("cicd", "in-progress") or l.startswith("cicd-cycle-")
+                                        l == "cicd" or l.startswith("in-progress") or l.startswith("cicd-cycle-")
                                         for l in _lnames
                                     )
-                                    if _istate == "OPEN" and _has_valid_labels:
+                                    if _istate.upper() == "OPEN" and _has_valid_labels:
                                         _premerge_ok = True
                                     else:
                                         log.warning(
                                             "CICD: PRE-MERGE CHECK FAILED — state=%s labels=%s "
-                                            "(need OPEN + cicd/in-progress label)",
+                                            "(need OPEN + cicd/in-progress[-bot-N] label)",
                                             _istate, _lnames,
                                         )
                                         conversation_history.append({
@@ -2553,7 +2553,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                                 "[SYSTEM: PRE-MERGE CHECK FAILED. gh issue view returned "
                                                 f"state={_istate!r}, labels={_lnames}. "
                                                 "The issue must be OPEN with labels `cicd` + `in-progress` "
-                                                "(or `cicd-cycle-NNN`). Add missing labels with "
+                                                "or `in-progress-bot-N` (or `cicd-cycle-NNN`). Add missing labels with "
                                                 "`gh issue edit <N> --add-label in-progress --add-label cicd` "
                                                 "then re-run gh issue view before retrying the merge.]"
                                             ),
