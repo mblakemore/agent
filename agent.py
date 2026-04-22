@@ -287,6 +287,14 @@ _config = _load_config()
 
 # Apply configuration
 BASE_URL = _config["llm"]["base_url"]
+
+# Backend instances (plan task 1.4). Phase 1 only wires LlamacppBackend;
+# Phase 2 adds BedrockBackend behind the same factory. Tests may monkeypatch
+# these module globals to swap backends without touching the factory.
+from llm_backend import build_backend as _build_backend
+
+_main_backend = _build_backend(_config["backends"]["main"])
+_summary_backend = _build_backend(_config["backends"]["summary"])
 _MAX_FULL_LINES = _config["context"]["max_full_lines"]
 _PREVIEW_LINES = _config["context"]["preview_lines"]
 _SUMMARY_THRESHOLD = _config["context"]["summary_threshold"]
@@ -404,18 +412,24 @@ def _calculate_retry_delay(attempt):
     return round(delay, 2)
 
 
-class ContextOverflowError(Exception):
-    """Raised when the server returns persistent 500s likely due to context overflow."""
-    pass
+# ``ContextOverflowError`` lives in ``llm_backend`` post-refactor. The alias
+# here keeps ``from agent import ContextOverflowError`` working unchanged for
+# existing tests and callers.
+from llm_backend import ContextOverflowError
 
 
 _LLM_REQUEST_TIMEOUT = 300  # 5 minutes per request
 
-def _llm_request(log, **kwargs):
+
+def _llm_request_raw(log, **kwargs):
     """POST to the LLM with retries and exponential backoff.
 
     Raises ContextOverflowError after 3 consecutive 500s (likely context overflow).
     Other transient errors (503, connection, timeout) retry up to _LLM_MAX_RETRIES.
+
+    This is the original pre-refactor body, preserved as the internal transport
+    used by ``LlamacppBackend.stream_chat`` (plan task 1.4). Behavior is
+    byte-identical to the pre-refactor ``_llm_request``.
     """
     kwargs.setdefault("timeout", _LLM_REQUEST_TIMEOUT)
     consecutive_500s = 0
@@ -450,6 +464,16 @@ def _llm_request(log, **kwargs):
                         attempt + 1, _LLM_MAX_RETRIES + 1, e, delay)
             _emit("on_api_retry", str(e), attempt + 1, _LLM_MAX_RETRIES, delay)
             time.sleep(delay)
+
+
+def _llm_request(log, **kwargs):
+    """Main-path streaming request. Thin wrapper that routes through the
+    module-level ``_main_backend`` (see plan task 1.4).
+
+    Signature matches the pre-refactor ``_llm_request`` exactly so existing
+    tests that ``patch('agent._llm_request')`` still work unmodified.
+    """
+    return _main_backend.stream_chat(log, **kwargs)
 
 
 # ── Text utilities ─────────────────────────────────────────────────────
@@ -782,33 +806,32 @@ def _format_for_summary(messages):
 
 
 def _summary_request(prompt, base_url=None, model=None):
-    """POST a summary prompt to the given endpoint. Returns summary text.
+    """POST a summary prompt to the summary backend. Returns summary text.
 
-    Args:
-        base_url: Override endpoint (e.g. CPU model on port 8082).
-                  Defaults to the summary config, then the main model.
-        model:    Override model name. Defaults to summary config, then main.
+    Plan task 1.4: routes through ``_summary_backend.complete(prompt=prompt)``.
+    The ``base_url`` / ``model`` parameters are preserved for signature
+    compatibility (see ``tests/test_summary_request_signature.py``). They are
+    only honored when ``_summary_backend.kind == "llamacpp"``; for non-llamacpp
+    backends a DEBUG log line is emitted and the backend's own config wins.
     """
-    summary_cfg = _config["summary"]
-    url = base_url or summary_cfg["base_url"] or BASE_URL
-    mdl = model or summary_cfg["model"] or _config["llm"]["model"]
-
-    request_body = {
-        "model": mdl,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.3,
-        "top_p": 0.9,
-        "top_k": 20,
-        "presence_penalty": 0.0,
-        "max_tokens": 1024,
-        "chat_template_kwargs": {"enable_thinking": False},
-        "stream": False,
-    }
-
-    response = requests.post(f"{url}/v1/chat/completions",
-                             json=request_body, timeout=120)
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"].strip()
+    backend = _summary_backend
+    if backend.kind == "llamacpp" and (base_url or model):
+        # Build a transient backend with the overrides — preserves the old
+        # fallback-to-main semantics where callers pass BASE_URL explicitly.
+        override_cfg = dict(backend._cfg)
+        if base_url:
+            override_cfg["base_url"] = base_url
+        if model:
+            override_cfg["model"] = model
+        transient = _build_backend({**override_cfg, "kind": "llamacpp"})
+        return transient.complete(prompt=prompt)
+    if backend.kind != "llamacpp" and (base_url or model):
+        logging.getLogger("agent").debug(
+            "_summary_request ignoring base_url/model override — "
+            "summary backend kind=%s",
+            backend.kind,
+        )
+    return backend.complete(prompt=prompt)
 
 
 def _condense_summary(text, log=None):
@@ -914,7 +937,8 @@ def _generate_summary(old_summary, new_messages, log):
     summary_cfg = _config["summary"]
     summary_url = summary_cfg["base_url"]
     try:
-        # Try dedicated summary endpoint first
+        # Try dedicated summary endpoint first — via _summary_request, which
+        # now routes through _summary_backend.complete (plan task 1.4).
         if summary_cfg["enabled"] and summary_url:
             summary = _summary_request(prompt)
         else:
@@ -973,7 +997,9 @@ class AsyncSummarizer:
         def _worker():
             try:
                 prompt = _build_summary_prompt(old_summary_text, msgs)
-                # Try dedicated endpoint, fall back to main model
+                # Try dedicated endpoint, fall back to main model.
+                # Routes through _summary_request which delegates to the
+                # summary backend under the hood (plan task 1.4).
                 try:
                     result = _summary_request(prompt)
                 except (requests.ConnectionError, requests.Timeout) as e:

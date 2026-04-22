@@ -185,16 +185,17 @@ class LlamacppBackend:
         self,
         log: logging.Logger,
         *,
-        json: dict,
+        json: dict | None = None,
         stream: bool = True,
         timeout: tuple[int, int] | int = (30, 300),
+        **extra_kwargs,
     ) -> "requests.Response":
         """POST to ``/v1/chat/completions`` with retries and exponential backoff.
 
         Returns the ``requests.Response`` object so the caller can
         ``iter_lines()`` over it. Mirrors the pre-refactor ``_llm_request``
         signature exactly so existing test patches against ``agent._llm_request``
-        continue to work.
+        continue to work. Any extra kwargs are forwarded to ``requests.post``.
 
         Raises ``ContextOverflowError`` after 3 consecutive 500s.
         """
@@ -213,6 +214,7 @@ class LlamacppBackend:
                         json=json,
                         stream=stream,
                         timeout=timeout,
+                        **extra_kwargs,
                     )
                     if response.status_code >= 500:
                         if response.status_code == 500:
