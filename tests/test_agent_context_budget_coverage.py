@@ -95,3 +95,65 @@ def test_build_context_no_fallback_coverage():
         # No user message to fallback to, selected should just contain the assistant msg
         assert len(selected) == 1
         assert selected[0]["role"] == "assistant"
+
+def test_validate_tool_call_reads_pr_body_file(tmp_path):
+    # Targets lines 329-330
+    # We need to create the file in /tmp/ because agent.py looks there specifically
+    issue_num = "324"
+    filename = f"/tmp/pr-body-{issue_num}.md"
+    content = "Summary\nCloses #324\n"
+    with open(filename, "w") as f:
+        f.write(content)
+    try:
+        log = logging.getLogger("test")
+        blocked, msg = agent._validate_tool_call(
+            "exec_command",
+            {"command": f'gh pr create --body "$(cat {filename})"'},
+            False, log
+        )
+        # Should not be blocked because the file exists and contains Closes #324
+        assert blocked is False
+    finally:
+        import os
+        if os.path.exists(filename):
+            os.remove(filename)
+
+def test_salvage_tool_args_exec_command():
+    # Targets lines 620-621
+    log = logging.getLogger("test")
+    # Provide a string that is not valid JSON but contains a key:value pair
+    result = agent._salvage_tool_args("exec_command", 'command: "ls -la"', log)
+    assert result == {"command": "ls -la"}
+
+def test_build_summary_prompt_cicd_facts():
+    # Targets lines 834, 838, 840
+    old_wt = agent._cicd_worktree_path
+    old_issue = agent._cicd_issue_number
+    old_pr = agent._cicd_pr_number
+    
+    agent._cicd_worktree_path = "/some/worktree"
+    agent._cicd_issue_number = 42
+    agent._cicd_pr_number = 100
+    
+    try:
+        result = agent._build_summary_prompt("old summary", [])
+        assert "Worktree path: /some/worktree" in result
+        assert "Issue: #42" in result
+        assert "PR: #100" in result
+    finally:
+        agent._cicd_worktree_path = old_wt
+        agent._cicd_issue_number = old_issue
+        agent._cicd_pr_number = old_pr
+
+def test_setup_logger_log_dir_override(tmp_path):
+    # Targets line 1166
+    old_log_dir = agent._config.get("log_dir")
+    agent._config["log_dir"] = str(tmp_path / "logs")
+    try:
+        log = agent._setup_logger()
+        assert log is not None
+    finally:
+        if old_log_dir is None:
+            agent._config.pop("log_dir", None)
+        else:
+            agent._config["log_dir"] = old_log_dir
