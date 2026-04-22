@@ -157,3 +157,51 @@ def test_setup_logger_log_dir_override(tmp_path):
             agent._config.pop("log_dir", None)
         else:
             agent._config["log_dir"] = old_log_dir
+
+def test_build_context_fallback_no_user_msg_coverage():
+    # Targets lines 1120-1123 (approx) in original agent.py
+    # The loop for i in range(oldest_idx - 1, -1, -1) should complete without finding a user msg.
+    conversation_history = [
+        {"role": "assistant", "content": "Response 1"},
+        {"role": "assistant", "content": "Response 2"}
+    ]
+    summary_state = {"text": ""}
+    initial_files = None
+    ctx_size = 8192
+    max_tokens = 4096
+    
+    agent._TOOLS_TOKENS = None
+    with patch('agent._estimate_tools_tokens', return_value=100), \
+         patch('agent._estimate_tokens', return_value=10):
+        
+        selected, oldest_idx = agent._build_context(
+            conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
+            max_messages_override=1
+        )
+        # Selected should be [Response 2] (idx 1). oldest_idx = 1.
+        # Loop range(0, -1, -1) checks history[0] which is 'assistant'.
+        # No user msg found. Result should just be [Response 2].
+        assert len(selected) == 1
+        assert selected[0]["role"] == "assistant"
+
+def test_build_context_with_summary_and_no_initial_files():
+    # Targets the path where summary is used but initial_files is None
+    conversation_history = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi"}
+    ]
+    summary_state = {"text": "Previous context summary..."}
+    initial_files = None
+    ctx_size = 8192
+    max_tokens = 4096
+    
+    agent._TOOLS_TOKENS = None
+    with patch('agent._estimate_tools_tokens', return_value=100), \
+         patch('agent._estimate_tokens', return_value=10):
+        
+        selected, oldest_idx = agent._build_context(
+            conversation_history, summary_state, initial_files, ctx_size, max_tokens, log
+        )
+        assert len(selected) > 0
+        # The summary is typically prepended.
+        assert any("Previous context summary" in msg.get("content", "") for msg in selected)
