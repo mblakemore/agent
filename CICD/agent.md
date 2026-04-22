@@ -237,6 +237,15 @@ def test_cancelled_during_tool_execution():
 
 No `patch.dict(MAP_FN)` needed — `check_cancelled()` raises before MAP_FN dispatch.
 
+**Alternative for issue #309: fix the production bug first (run 119+ guidance — cycle 63).** The `except Exception as e:` at line ~2342 inside the MAP_FN dispatch try block is a production bug — it silently swallows `CancelledError`. Fixing it makes `mock_tool.side_effect = CancelledError` work and is the recommended approach for issue #309:
+
+1. Find the MAP_FN dispatch block (search for `MAP_FN[func_name](**func_args)`). Inside that `try:` block, add `except CancelledError: raise` BEFORE `except Exception as e:`. Exact indentation: 24 spaces for `except CancelledError:`, 28 spaces for `raise`. Verify with `python3 -m py_compile agent.py`.
+2. With this fix, `patch.dict('agent.MAP_FN', {'mock_tool': mock_fn})` with `mock_fn.side_effect = CancelledError` DOES reach lines 2792-2799.
+3. `harvest()` is still called TWICE: once at line ~1806 (pre-flight, turn start) and once at line ~2799 (CancelledError handler). Use `assert_called_with(summary_state)` NOT `assert_called_once_with`. `drain()` is called once (handler only) so `assert_called_once()` is correct.
+4. Always verify `emit("on_cancelled", "tool_execution")` fires — use `mock_emit.assert_any_call("on_cancelled", "tool_execution")`.
+
+**PR body trap (run 118 NULL cause):** The PRE-MERGE CHECK reads the PR body to extract `Closes #N` and verifies that issue N is OPEN. If you accidentally put `Closes #308` (a closed issue) instead of `Closes #309`, the merge is blocked. After creating the PR, immediately verify: `gh pr view <N> --json body | python3 -c "import json,sys; print(json.load(sys.stdin)['body'])"` — confirm the issue number is your current open issue.
+
 ## Phase 7 — VERIFY
 
 In the worktree: run full test suite, compute delta on the metric. **Gate**: tests 100% green AND metric improved. If not, debug and retry (max 3 iterations). If still failing → null-result path.
