@@ -289,12 +289,60 @@ _READ_ONLY_COMMANDS = ("grep ", "find ", "ls ", "cat ", "head ", "tail ",
                        "gh pr checks", "python3 -m unittest",
                        "python3 -m pytest")
 
+
 def _is_read_only_command(cmd):
     """A command is read-only if it matches a known read pattern or has no write keywords."""
     cmd_stripped = cmd.lstrip("# \t\n")
     if any(cmd_stripped.startswith(rc) for rc in _READ_ONLY_COMMANDS):
         return True
     return not any(kw in cmd for kw in _WRITE_KEYWORDS)
+
+def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log):
+    """
+    Returns (is_blocked, error_message).
+    If is_blocked is True, the tool should not be executed.
+    """
+    if func_name != "exec_command":
+        return False, None
+    
+    _precmd = func_args.get("command", "") if isinstance(func_args, dict) else ""
+    
+    # PRE-MERGE CHECK
+    if (re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+merge\b", _precmd)
+            and not cicd_issue_view_called):
+        log.warning("CICD: gh pr merge BLOCKED — PRE-MERGE CHECK required (cycle 24)")
+        return True, (
+            "Error: CICD PRE-MERGE CHECK required. Before `gh pr merge`, you "
+            "MUST run `gh issue view <N> --json state,labels,title,createdAt` "
+            "on the linked issue and verify: state is OPEN, labels include "
+            "`cicd` + `in-progress`, the title matches the PR's stated scope. "
+            "Run the gh issue view now as a SEPARATE command, then re-attempt "
+            "the merge. The merge was NOT executed."
+        )
+    
+    # PR CREATE CHECK
+    _precmd_body_check = _precmd
+    if "$(cat /tmp/pr-body.md)" in _precmd:
+        try:
+            with open("/tmp/pr-body.md") as _pf:
+                _precmd_body_check = _precmd_body_check + " " + _pf.read()
+        except OSError:
+            pass
+            
+    if (re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+create\b", _precmd)
+            and not re.search(r'Closes\s+#\d+', _precmd_body_check, re.IGNORECASE)):
+        log.warning("CICD: gh pr create blocked — body missing valid Closes #N (cycle 44)")
+        return True, (
+            "Error: CICD gh pr create blocked — the --body must contain "
+            "`Closes #<N>` where N is a numeric issue number (e.g. `Closes #123`). "
+            "Non-numeric references like `Closes #slug` or missing Closes trailer "
+            "cause the reviewer to CLOSE this PR. "
+            "File the issue first with `gh issue create --label in-progress --label cicd ...`, "
+            "note the issue number, then include `Closes #<number>` in the PR body. "
+            "The PR was NOT created."
+        )
+        
+    return False, None
 
 # Load agent-specific tools from CWD/.agent/tools/ if it exists.
 # Note: CWD/tools/ is the builtin package already loaded by tools/__init__.py —
@@ -2286,51 +2334,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     # `gh issue view`, block execution (the merge is irreversible
                     # once it runs; post-hoc reminders are too late). Return a
                     # synthetic error; next turn the reviewer runs `gh issue view`,
-                    # tracker flips, merge re-attempt proceeds.
-                    _cicd_blocked = False
-                    if func_name == "exec_command":
-                        _precmd = func_args.get("command", "") if isinstance(func_args, dict) else ""
-                        if (re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+merge\b", _precmd)
-                                and not _cicd_issue_view_called):
-                            log.warning("CICD: gh pr merge BLOCKED — PRE-MERGE CHECK required (cycle 24)")
-                            result_str = (
-                                "Error: CICD PRE-MERGE CHECK required. Before `gh pr merge`, you "
-                                "MUST run `gh issue view <N> --json state,labels,title,createdAt` "
-                                "on the linked issue and verify: state is OPEN, labels include "
-                                "`cicd` + `in-progress`, the title matches the PR's stated scope. "
-                                "Run the gh issue view now as a SEPARATE command, then re-attempt "
-                                "the merge. The merge was NOT executed."
-                            )
-                            _cicd_blocked = True
-                        # Cycle 44: block gh pr create when --body lacks Closes #<digits>.
-                        # Post-hoc fix via gh pr edit fails (GraphQL deprecation → exit=1).
-                        # Block before creation so the builder files the issue first.
-                        # Cycle 45: anchor gh pr create match to shell top-level invocation;
-                        # plain search matched "gh pr create" inside --body text (false positive).
-                        # Cycle 60: if body comes from $(cat /tmp/pr-body.md), read the file too
-                        _precmd_body_check = _precmd
-                        if "$(cat /tmp/pr-body.md)" in _precmd:
-                            try:
-                                with open("/tmp/pr-body.md") as _pf:
-                                    _precmd_body_check = _precmd_body_check + " " + _pf.read()
-                            except OSError:
-                                pass
-                        if (not _cicd_blocked
-                                and re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+create\b", _precmd)
-                                and not re.search(r'Closes\s+#\d+', _precmd_body_check, re.IGNORECASE)):
-                            log.warning("CICD: gh pr create blocked — body missing valid Closes #N (cycle 44)")
-                            result_str = (
-                                "Error: CICD gh pr create blocked — the --body must contain "
-                                "`Closes #<N>` where N is a numeric issue number (e.g. `Closes #123`). "
-                                "Non-numeric references like `Closes #slug` or missing Closes trailer "
-                                "cause the reviewer to CLOSE this PR. "
-                                "File the issue first with `gh issue create --label in-progress --label cicd ...`, "
-                                "note the issue number, then include `Closes #<number>` in the PR body. "
-                                "The PR was NOT created."
-                            )
-                            _cicd_blocked = True
+                    _cicd_blocked, cicd_error = _validate_tool_call(func_name, func_args, _cicd_issue_view_called, log)
                     if _cicd_blocked:
-                        pass  # result_str already set above; skip tool execution
+                        result_str = cicd_error
                     elif func_name not in MAP_FN:
                         result_str = f"Error: Unknown tool '{func_name}'"
                     else:
