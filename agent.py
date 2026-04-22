@@ -2520,7 +2520,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         if "gh pr ready" in _cmd and "exit=0" in result_str:
                             _cicd_pr_ready_called = True
                             log.info("CICD: gh pr ready called")
-                        if "gh issue view" in _cmd and "exit=0" in result_str:
+                        if "gh issue view" in _cmd and ("exit=0" in result_str or "--json" in _cmd):
                             # Cycle 25: validate state + labels in the gh issue view result.
                             # Calling gh issue view is necessary but not sufficient — the
                             # issue must be OPEN and carry cicd + in-progress (or cicd-cycle-*)
