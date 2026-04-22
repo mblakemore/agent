@@ -252,6 +252,8 @@ No `patch.dict(MAP_FN)` needed — `check_cancelled()` raises before MAP_FN disp
 
 **PR body trap (run 118 NULL cause):** The PRE-MERGE CHECK reads the PR body to extract `Closes #N` and verifies that issue N is OPEN. If you accidentally put `Closes #308` (a closed issue) instead of `Closes #309`, the merge is blocked. After creating the PR, immediately verify: `gh pr view <N> --json body | python3 -c "import json,sys; print(json.load(sys.stdin)['body'])"` — confirm the issue number is your current open issue.
 
+**CRITICAL (cycle 70 — run 123 cause):** `Closes #N` in the PR body MUST use the issue number YOU FILED THIS CYCLE. Do NOT copy-paste from prior runs or templates — stale numbers slip in silently. Before writing `/tmp/pr-body.md`, confirm the number: `echo "This cycle: issue #${ISSUE_NUMBER}"`. Run 123: builder filed issue #316 but PRs #317+#318 had `Closes #295` (stale template from run 116) — only PR #319 had the correct `Closes #316`.
+
 ## Phase 7 — VERIFY
 
 In the worktree: run full test suite, compute delta on the metric. **Gate**: tests 100% green AND metric improved. If not, debug and retry (max 3 iterations). If still failing → null-result path.
