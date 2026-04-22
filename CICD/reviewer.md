@@ -45,9 +45,13 @@ Read: CICD state `reviews-${BOT_ID}.md`, `progress-${BOT_ID}.md`, recent improve
 
 Confirm main is green by running the project's test suite:
 ```bash
-git checkout main && git pull --ff-only origin main
+git fetch origin && git checkout main && git reset --hard origin/main
 ```
+**CRITICAL (cycle 68):** Use `git reset --hard origin/main` — NOT `git pull --ff-only`. The builder's session may leave unpushed commits on the local `main` branch (ahead of origin). `git pull --ff-only` with local ahead reports "Already up to date" but leaves the builder's unpushed (possibly failing) test on main. Always reset to `origin/main` to get the true remote state.
+
 Determine the correct test command (see builder agent.md for patterns). If red, stop — file a `bug`+`regression`+`cicd` issue and defer all reviews.
+
+**CRITICAL (cycle 68 continued):** If a test fails that exists ONLY in the PR diff (i.e., `git show origin/main:tests/<filename>` returns error), it is a **PR bug → REQUEST_CHANGES**, NOT a main regression. Never file a regression issue for a test that only exists on the PR branch.
 
 ## Phase 2 — SELECT
 
