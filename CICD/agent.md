@@ -192,6 +192,10 @@ with patch.dict(agent.MAP_FN, {'exec_command': lambda command, **kw: 'exit=0\nre
 ```
 Verify the pattern works before writing a full test: `python3 -c "from tools import MAP_FN; print(MAP_FN['exec_command'])"` — MAP_FN holds a direct reference set at import time.
 
+**subprocess.run() does NOT improve agent.py coverage (run 128 failure).** Tests that spawn a child Python process via `subprocess.run([sys.executable, "-c", script])` or `subprocess.Popen(...)` will NOT be tracked by pytest-cov. Two reasons: (1) `.coveragerc` has `omit = */tmp/*` — any file in a `/tmp/` path is excluded from coverage collection; (2) coverage does not track child processes unless `concurrency = subprocess` is set in `.coveragerc`. Using subprocess-based tests produces passing tests with zero coverage gain. **Always use direct function calls with `unittest.mock` patches** to cover `agent.py` lines.
+
+**Module-level globals must be reset before mocking (run 128 failure).** Some `agent.py` functions use module-level globals as one-time caches (e.g., `_TOOLS_TOKENS` set by `_build_context`). If a prior test in the suite has already set the global to a large real value, your mock of the underlying function (e.g. `_estimate_tools_tokens`) will never fire because the `if _TOOLS_TOKENS is None:` guard is already False. Always reset the global before entering the `with patch(...)` block: `agent._TOOLS_TOKENS = None`.
+
 **Testing CancelledError (lines 2792-2799) — critical gotcha.** `CancelledError` in `cancel.py` is `class CancelledError(Exception)`. This means `except Exception as e:` at line ~2342 (inside the tool dispatch try block) catches it BEFORE it can reach line 2792. Using `mock_tool.side_effect = CancelledError` will NOT reach lines 2792-2799 — the exception is swallowed and `result_str` becomes `"Error executing tool: "`.
 
 The correct trigger is `check_cancelled()` at line ~2211, which is called for each tool call OUTSIDE the inner try block. Use `patch('agent.check_cancelled')` with a `side_effect` list:
