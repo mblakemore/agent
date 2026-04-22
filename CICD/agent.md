@@ -143,6 +143,14 @@ gh issue comment <ISSUE> --body "Picked up by CICD cycle NNN. Metric: <metric> (
 
 **CRITICAL (cycle 69 — run 122 NULL cause):** Do NOT use existing issues without `cicd` label as your CICD target. If `gh issue list` shows an open issue with only `documentation` or other non-CICD labels, SKIP IT — file a new issue via `gh issue create --label cicd ...`. Before using any existing issue as target: verify `"cicd" in labels`.
 
+**CRITICAL (cycle 73 — run 135 failure mode):** If any open CICD-labeled issue exists unclaimed by another bot, **you MUST work on it** — regardless of whether you believe a different target (coverage, refactor, new tests) would be higher impact. REFLECT scoring does not apply when a queued CICD issue is present. Filing a sibling issue to pivot scope (e.g. "README update is lower impact than coverage, so I'll file #329 for coverage instead") is **prohibited** — it bypasses the user's prioritization and wastes a cycle building on a rejected premise. Concretely:
+
+1. After PERCEIVE's `gh issue list --state open --label cicd`, if ≥1 unclaimed CICD issue exists, REFLECT selects from that list ONLY. Do not file a new issue.
+2. "Unclaimed" means: no `in-progress-bot-N` label for a DIFFERENT bot. Issues with no bot label, or with `in-progress-bot-${BOT_ID}` (your prior interrupted cycle), ARE available to you.
+3. Ties among unclaimed CICD issues: pick oldest by `createdAt`. Do NOT skip an issue because its task type (docs, config, refactor) is outside your usual pattern — the task type does not grant exemption.
+4. Only exception: if a candidate issue is demonstrably already resolved on HEAD (tests green, feature present, docs already match), comment "Cannot reproduce on HEAD" and move to the next-oldest. Do NOT use scope-pivot language ("lower impact than …") as a reason to skip.
+5. The `think` tool is not a license to re-rank. If your THINK ANSWER concludes "I'll file a new issue because target X would be better," STOP — that is the exact failure mode cycle 73 blocks.
+
 ## Phase 5 — PLAN
 
 Write the improvement plan to the CICD state directory: `<CICD_STATE>/improvements/NNN-slug.md` with: Goal, Motivation (with issue link), Success metric (baseline/target/measurement command), Scope (in/out), Implementation steps, Test plan, Risks, Rollback, `Closes #N`.
