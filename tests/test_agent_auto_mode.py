@@ -23,7 +23,7 @@ def test_run_agent_auto_mode_cleanup():
         # To trigger this, we need to call the main function with auto=True 
         # and continue_mode=True, and have a checkpoint found.
         
-        with patch('agent._get_checkpoint', return_value=("history", "summary", "files", 0)),              patch('agent._auto_increment_cycle'),              patch('agent._emit'):
+    with patch('agent._load_checkpoint', return_value=("history", "summary", "files", 0)),              patch('agent._auto_increment_cycle'),              patch('agent._emit'):
             
             # We need to bypass the while True loop and the interactive parts
             # By setting auto=True, the code should hit the return statement at 1499
