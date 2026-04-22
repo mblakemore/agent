@@ -279,6 +279,8 @@ Tests: <test names and count>
 
 Closes #ISSUE
 PREOF
+# ↑ MANDATORY — reviewer will REQUEST_CHANGES if Before/After coverage is missing (cycle 66, run 120 failure).
+# Measure with: python3 -m pytest --cov=agent --cov-report=term-missing tests/ -q 2>&1 | tail -5
 gh pr create --draft --base main --head cicd/NNN-slug \
   --title "CICD NNN: <slug> (#ISSUE)" \
   --body "$(cat /tmp/pr-body.md)"
