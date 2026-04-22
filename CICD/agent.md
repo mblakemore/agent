@@ -159,6 +159,8 @@ Work in the worktree. Small reviewable commits: `CICD NNN (#ISSUE): <step>`.
 
 **No-op edit detection — hard rule.** If `git commit` returns `nothing to commit, working tree clean` or `git diff` shows no changes after an edit, the target is already implemented on HEAD. Do NOT retry the same edit, do NOT re-plan the same target, do NOT rewrite the file from scratch. Within **3 turns** of the first no-op signal: close the issue (`gh issue close <N> -c "Already implemented on HEAD. <specific evidence>"`), remove the worktree + branch, return to REFLECT, pick a different target. One 60-turn spin on a no-op edit costs an entire cycle.
 
+**Silent file-write failure — hard rule.** If `git commit` returns `no changes added to commit` AND `git status` shows ONLY `.coverage` as modified (no source or test files listed as modified), your file write silently failed — the target file was NOT changed. Do NOT retry the same write command. Do NOT try to commit again. Instead: (a) verify the file content changed with `git diff tests/`, (b) switch to the `file()` tool with `action="write"` or `action="append"` which writes directly without shell expansion, (c) if using heredoc (`cat >> file << 'EOF'`), ensure the heredoc does not contain `git worktree add` strings — the worktree guard fires on the full command string including heredoc content and will return an error instead of writing the file.
+
 **Sanity check after each edit — MANDATORY, immediately.** The moment any `.py` file is written, before the next tool call that might import it (pytest, a repro script, anything), run:
 ```bash
 python3 -c "import py_compile; py_compile.compile('<file>', doraise=True)"
@@ -166,6 +168,27 @@ python3 -c "import py_compile; py_compile.compile('<file>', doraise=True)"
 A SyntaxError in an edited file will surface via unrelated import chains (e.g. `tools/__init__.py` auto-discovery) and burn turns chasing a ghost. Compile-check first, then run. For other languages, use the appropriate syntax check. If it fails, fix before doing anything else.
 
 **Extend existing test files; don't create siblings.** If the code you're changing has a sibling test file (e.g., `tools/search_files.py` → `tests/test_search_files.py`), add cases there. Do NOT create `tests/test_<module>_bug.py` or `tests/test_<module>_new.py` — new sibling files re-derive imports and often hit venv-shadowing traps where a pip-installed package of the same name beats the local directory. If a new test file is genuinely required (testing a new module), `head -10` the nearest existing test file and copy its import prelude verbatim (many repos rely on a manual `sys.path.insert(0, os.path.dirname(...))` line before `from tools import ...`).
+
+**agent.py tool dispatch — critical for coverage tests.** Tools in `agent.py` are dispatched via `MAP_FN[func_name](**func_args)` at line ~2324, NOT via direct function calls. `patch('agent.exec_command')` has no effect on the dispatch path and will NOT cover tool-execution code. To cover CICD phase detection (lines 2100–2800) or any post-tool-call logic, mock the dispatch dict:
+```python
+import agent
+from unittest.mock import patch, MagicMock
+import json
+
+def _resp_tool(tool_name, arguments_dict, tool_id="t1"):
+    resp = MagicMock()
+    tc = {"index": 0, "id": tool_id, "type": "function",
+          "function": {"name": tool_name, "arguments": json.dumps(arguments_dict)}}
+    body = {"choices": [{"delta": {"tool_calls": [tc]}}]}
+    resp.iter_lines.return_value = [f"data: {json.dumps(body)}".encode(), b"data: [DONE]"]
+    return resp
+
+with patch.dict(agent.MAP_FN, {'exec_command': lambda command, **kw: 'exit=0\nresult'}):
+    with patch('agent._llm_request') as mock_llm, patch('agent._emit'), patch('agent._NUDGE_ENABLED', False):
+        mock_llm.return_value = _resp_tool("exec_command", {"command": "git worktree add ..."})
+        agent.run_agent_single([], {"text": "", "up_to": 0}, None, mock_log)
+```
+Verify the pattern works before writing a full test: `python3 -c "from tools import MAP_FN; print(MAP_FN['exec_command'])"` — MAP_FN holds a direct reference set at import time.
 
 ## Phase 7 — VERIFY
 
