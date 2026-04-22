@@ -190,6 +190,53 @@ with patch.dict(agent.MAP_FN, {'exec_command': lambda command, **kw: 'exit=0\nre
 ```
 Verify the pattern works before writing a full test: `python3 -c "from tools import MAP_FN; print(MAP_FN['exec_command'])"` — MAP_FN holds a direct reference set at import time.
 
+**Testing CancelledError (lines 2792-2799) — critical gotcha.** `CancelledError` in `cancel.py` is `class CancelledError(Exception)`. This means `except Exception as e:` at line ~2342 (inside the tool dispatch try block) catches it BEFORE it can reach line 2792. Using `mock_tool.side_effect = CancelledError` will NOT reach lines 2792-2799 — the exception is swallowed and `result_str` becomes `"Error executing tool: "`.
+
+The correct trigger is `check_cancelled()` at line ~2211, which is called for each tool call OUTSIDE the inner try block. Use `patch('agent.check_cancelled')` with a `side_effect` list:
+
+```python
+import json
+from unittest.mock import MagicMock, patch
+from cancel import CancelledError
+from agent import run_agent_single
+
+def test_cancelled_during_tool_execution():
+    history = [{"role": "user", "content": "test"}]
+    summary_state = {"text": "", "up_to": 0}
+
+    # SSE stream with one tool call (use a real tool name like exec_command)
+    tc = {"index": 0, "id": "t1", "type": "function",
+          "function": {"name": "exec_command", "arguments": '{"command": "echo test"}'}}
+    body = {"choices": [{"delta": {"tool_calls": [tc]}}]}
+    resp = MagicMock()
+    # Use a LIST not a generator — generators exhaust after first iteration
+    resp.iter_lines.return_value = [
+        b"data: " + json.dumps(body).encode(),
+        b"data: [DONE]",
+    ]
+
+    async_summarizer = MagicMock()
+
+    # check_cancelled() is called once per SSE line during streaming (2 lines = 2 calls),
+    # then called again at line ~2211 for each tool call (3rd call).
+    # Raise CancelledError on the 3rd call to trigger the tool_execution cancel path.
+    with patch("agent._llm_request", return_value=resp), \
+         patch("agent._emit"), \
+         patch("agent._save_checkpoint"), \
+         patch("agent.check_cancelled", side_effect=[None, None, CancelledError()]):
+        result = run_agent_single(
+            history, summary_state, [], MagicMock(),
+            async_summarizer=async_summarizer,
+        )
+
+    assert result == "cancelled"
+    # harvest is called at turn start (line ~1806) AND in handler (line ~2797) — use assert_any_call
+    async_summarizer.harvest.assert_any_call(summary_state)
+    async_summarizer.drain.assert_called_once()
+```
+
+No `patch.dict(MAP_FN)` needed — `check_cancelled()` raises before MAP_FN dispatch.
+
 ## Phase 7 — VERIFY
 
 In the worktree: run full test suite, compute delta on the metric. **Gate**: tests 100% green AND metric improved. If not, debug and retry (max 3 iterations). If still failing → null-result path.
