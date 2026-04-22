@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TEST_FILE = Path(__file__).resolve()
 
-_SKIP_DIR_PARTS = {"__pycache__", ".git", ".venv", "venv", "env", "node_modules"}
+_SKIP_DIR_PARTS = {"__pycache__", ".git", ".venv", "venv", "env", "node_modules", "temp"}
 
 
 def _python_sources():
