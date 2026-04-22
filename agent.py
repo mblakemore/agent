@@ -1901,6 +1901,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         status.start("\nAssistant: ")
         renderer = _ReasoningRenderer(lambda t: _emit("on_stream_chunk", t))
 
+        # TESTING NOTES: mock _llm_request to return a response with this iter_lines shape:
+        #   tc = {"index": 0, "id": "t1", "type": "function",
+        #         "function": {"name": tool_name, "arguments": json.dumps(args_dict)}}
+        #   body = {"choices": [{"delta": {"tool_calls": [tc]}}]}
+        #   resp.iter_lines.return_value = [f"data: {json.dumps(body)}".encode(), b"data: [DONE]"]
+        #   summary_state must be initialized as {"text": "", "up_to": 0}
         try:
             with cancellable():
                 for raw_line in response.iter_lines(decode_unicode=False):
@@ -2410,7 +2416,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 or "cat " in _cmd or "grep " in _cmd):
                             if _cicd_phase_state["perceive"]:
                                 _cicd_phase_state["probe"] = True
-                        if re.search(r"(?:^|&&\s*|;\s*|\|\|\s*)gh\s+issue\s+create\b", _cmd_normalized) and "exit=0" in result_str:  # Cycle 36: regex prevents heredoc false-positives
+                        if re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+issue\s+create\b", _cmd_normalized) and "exit=0" in result_str:  # Cycles 36/55: anchored + newline-bypass closed
                             if not _cicd_think_used:
                                 log.warning("CICD: gh issue create without think — injecting reminder")
                                 conversation_history.append({
