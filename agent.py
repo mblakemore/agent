@@ -2338,10 +2338,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             result_str = str(MAP_FN[func_name](**func_args))
                         except CircuitBreakerError as e:
                             # Tool temporarily unavailable - return graceful degradation
-                            result_str = f"Tool '{func_name}' temporarily unavailable: {e}"
+                            result_str = f"Tool {func_name} temporarily unavailable: {e}"
+                        except CancelledError:
+                            raise
                         except Exception as e:
                             result_str = f"Error executing tool: {str(e)}"
-
                         # Conversational tool recovery: on error, try to fix params
                         if result_str.startswith("Error"):
                             try:
