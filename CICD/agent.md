@@ -141,6 +141,8 @@ gh issue comment <ISSUE> --body "Picked up by CICD cycle NNN. Metric: <metric> (
 
 **Hard rule**: the issue `Closes #N` references must carry `in-progress-bot-${BOT_ID}` OR `cicd-cycle-*` label by the time the PR is opened. Reviewer's PRE-MERGE CHECK (reviewer.md §4) CLOSEs the PR if the label is absent — treating a missing label as evidence that DECIDE was skipped.
 
+**CRITICAL (cycle 69 — run 122 NULL cause):** Do NOT use existing issues without `cicd` label as your CICD target. If `gh issue list` shows an open issue with only `documentation` or other non-CICD labels, SKIP IT — file a new issue via `gh issue create --label cicd ...`. Run 122 NULL: builder used issue #295 (README/documentation label), wrote broken test. Before using any existing issue as target: verify `"cicd" in labels`.
+
 ## Phase 5 — PLAN
 
 Write the improvement plan to the CICD state directory: `<CICD_STATE>/improvements/NNN-slug.md` with: Goal, Motivation (with issue link), Success metric (baseline/target/measurement command), Scope (in/out), Implementation steps, Test plan, Risks, Rollback, `Closes #N`.
