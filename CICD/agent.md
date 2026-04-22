@@ -141,7 +141,7 @@ gh issue comment <ISSUE> --body "Picked up by CICD cycle NNN. Metric: <metric> (
 
 **Hard rule**: the issue `Closes #N` references must carry `in-progress-bot-${BOT_ID}` OR `cicd-cycle-*` label by the time the PR is opened. Reviewer's PRE-MERGE CHECK (reviewer.md §4) CLOSEs the PR if the label is absent — treating a missing label as evidence that DECIDE was skipped.
 
-**CRITICAL (cycle 69 — run 122 NULL cause):** Do NOT use existing issues without `cicd` label as your CICD target. If `gh issue list` shows an open issue with only `documentation` or other non-CICD labels, SKIP IT — file a new issue via `gh issue create --label cicd ...`. Run 122 NULL: builder used issue #295 (README/documentation label), wrote broken test. Before using any existing issue as target: verify `"cicd" in labels`.
+**CRITICAL (cycle 69 — run 122 NULL cause):** Do NOT use existing issues without `cicd` label as your CICD target. If `gh issue list` shows an open issue with only `documentation` or other non-CICD labels, SKIP IT — file a new issue via `gh issue create --label cicd ...`. Before using any existing issue as target: verify `"cicd" in labels`.
 
 ## Phase 5 — PLAN
 
@@ -250,9 +250,9 @@ No `patch.dict(MAP_FN)` needed — `check_cancelled()` raises before MAP_FN disp
 
 **INDENTATION CASCADE RECOVERY — py_compile fails after editing try-except (cycle 65, run 120 failure).** If `python3 -m py_compile agent.py` fails with IndentationError after editing the MAP_FN dispatch try-except block, **do NOT iterate on the same block** — each attempt shifts the error to a different line without fixing the root mismatch. **DO:** `git checkout HEAD -- agent.py` to restore the original, verify py_compile passes, then apply the fix fresh. The correct procedure for the cycle 63 fix: (1) run `grep -n "MAP_FN\[func_name\]\(\*\*func_args\)" agent.py` to find the exact `try:` line; (2) the `try:` is at 24 spaces in the original — `except CancelledError:` must also be at 24 spaces, `raise` at 28 spaces; (3) use a single `file(action='insert')` inserting exactly `"                        except CancelledError:\n                            raise\n"` (24 spaces + 28 spaces) immediately before the `except Exception as e:` line; (4) verify py_compile immediately.
 
-**PR body trap (run 118 NULL cause):** The PRE-MERGE CHECK reads the PR body to extract `Closes #N` and verifies that issue N is OPEN. If you accidentally put `Closes #308` (a closed issue) instead of `Closes #309`, the merge is blocked. After creating the PR, immediately verify: `gh pr view <N> --json body | python3 -c "import json,sys; print(json.load(sys.stdin)['body'])"` — confirm the issue number is your current open issue.
+**PR body trap (run 118 NULL cause):** The PRE-MERGE CHECK reads the PR body to extract `Closes #N` and verifies that issue N is OPEN. If the issue number in `Closes #N` doesn't match your current cycle's open issue, the merge is blocked. After creating the PR, immediately verify: `gh pr view <N> --json body | python3 -c "import json,sys; print(json.load(sys.stdin)['body'])"` — confirm the issue number is your current open issue.
 
-**CRITICAL (cycle 70 — run 123 cause):** `Closes #N` in the PR body MUST use the issue number YOU FILED THIS CYCLE. Do NOT copy-paste from prior runs or templates — stale numbers slip in silently. Before writing `/tmp/pr-body.md`, confirm the number: `echo "This cycle: issue #${ISSUE_NUMBER}"`. Run 123: builder filed issue #316 but PRs #317+#318 had `Closes #295` (stale template from run 116) — only PR #319 had the correct `Closes #316`.
+**CRITICAL (cycle 70 — run 123+124 cause):** `Closes #N` in the PR body MUST use the issue number YOU FILED THIS CYCLE — not any number that appears in this document or any prior PR. Stale issue numbers from prior runs slip in silently. Before writing `/tmp/pr-body.md`, run `gh issue list --label cicd --state open --limit 1 --json number --jq '.[0].number'` to get your current issue number, then substitute it explicitly. Do NOT copy examples from this file.
 
 ## Phase 7 — VERIFY
 
