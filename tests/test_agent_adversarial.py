@@ -55,7 +55,7 @@ def test_text_loop_detection(mock_config, mock_llm, mock_emit):
 
     with patch('agent._NUDGE_ENABLED', True):
         result = run_agent_single(conversation_history, summary_state, [], log)
-    
+
     assert result == "done"
     text_loop_emitted = any(args[0] == "on_text_loop_detected" for args, kwargs in mock_emit.call_args_list)
     assert text_loop_emitted
@@ -86,8 +86,6 @@ def test_hallucinated_file_read_detection(mock_config, mock_llm, mock_emit):
             # We only need to run it for a few turns to see if the hallucination is detected
             # Since run_agent_single is a while True loop, we might need to mock its termination
             # or just let it run until it hits a limit.
-            # Actually, if hallucination is detected, it nudges and continues.
-            # To make the test finish, we can patch _MAX_TURNS.
             with patch('agent._MAX_TURNS', 5):
                 run_agent_single(conversation_history, summary_state, [], log)
 
@@ -117,5 +115,80 @@ def test_text_only_stop(mock_config, mock_llm, mock_emit):
 
     with patch('agent._NUDGE_ENABLED', False):
         result = run_agent_single(conversation_history, summary_state, [], log)
-    
+
     assert result == "done"
+
+@patch('agent._emit')
+@patch('agent.requests.post')
+@patch('agent._config')
+def test_llm_connection_error_handling(mock_config, mock_post, mock_emit):
+    """Test that agent handles ConnectionError during LLM request and retries.
+    
+    This tests the retry logic inside _llm_request.
+    """
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"base_url": "http://test", "model": "test-model"},
+        "retry": {"max_retries": 3, "base_delay_seconds": 0, "max_delay_seconds": 0, "backoff_multiplier": 1.0, "jitter_factor": 0.0},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768},
+        "cycle": {"max_turns": 20}
+    }.get(k)
+
+    success_resp = MagicMock()
+    success_resp.status_code = 200
+    success_resp.iter_lines.return_value = [
+        f"data: {json.dumps({'choices': [{'delta': {'content': 'Done!'}}]})}".encode(),
+        b'data: [DONE]'
+    ]
+    
+    def side_effect_func(*args, **kwargs):
+        side_effect_func.call_count += 1
+        if side_effect_func.call_count <= 2:
+            raise requests.exceptions.ConnectionError("Connection failed")
+        return success_resp
+    
+    side_effect_func.call_count = 0
+    mock_post.side_effect = side_effect_func
+    
+    conversation_history = [{"role": "user", "content": "Test connection retry"}]
+    summary_state = {"text": "", "up_to": 0}
+    
+    with patch('agent._LLM_MAX_RETRIES', 3), patch('agent._NUDGE_ENABLED', True):
+        result = run_agent_single(conversation_history, summary_state, [], log)
+        
+    assert result == "done"
+    assert mock_post.call_count >= 3
+    
+    retry_emitted = any(args[0] == "on_api_retry" for args, kwargs in mock_emit.call_args_list)
+    assert retry_emitted
+
+@patch('agent._emit')
+@patch('agent.requests.post')
+@patch('agent._config')
+def test_llm_connection_exhausted_retries(mock_config, mock_post, mock_emit):
+    """Test that agent returns 'error' when all retries are exhausted."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"base_url": "http://test", "model": "test-model"},
+        "retry": {"max_retries": 2, "base_delay_seconds": 0, "max_delay_seconds": 0, "backoff_multiplier": 1.0, "jitter_factor": 0.0},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768},
+        "cycle": {"max_turns": 20}
+    }.get(k)
+
+    def side_effect_func(*args, **kwargs):
+        side_effect_func.call_count += 1
+        if side_effect_func.call_count <= 10: # Always fail
+            raise requests.exceptions.ConnectionError("Connection failed")
+        return MagicMock()
+    
+    side_effect_func.call_count = 0
+    mock_post.side_effect = side_effect_func
+    
+    conversation_history = [{"role": "user", "content": "Test retry exhaustion"}]
+    summary_state = {"text": "", "up_to": 0}
+    
+    with patch('agent._LLM_MAX_RETRIES', 2), patch('agent._NUDGE_ENABLED', True):
+        result = run_agent_single(conversation_history, summary_state, [], log)
+        
+    assert result == "error"
+    assert mock_post.call_count == 3 # 1 initial + 2 retries
