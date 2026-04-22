@@ -195,13 +195,27 @@ def test_build_context_with_summary_and_no_initial_files():
     ctx_size = 8192
     max_tokens = 4096
     
+def test_build_context_with_summary_and_no_initial_files():
+    # Targets the path where summary is used but initial_files is None
+    conversation_history = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi"}
+    ]
+    summary_state = {"text": "Previous context summary..."}
+    initial_files = None
+    ctx_size = 8192
+    max_tokens = 4096
+    
     agent._TOOLS_TOKENS = None
     with patch('agent._estimate_tools_tokens', return_value=100), \
          patch('agent._estimate_tokens', return_value=10):
-        
         selected, oldest_idx = agent._build_context(
             conversation_history, summary_state, initial_files, ctx_size, max_tokens, log
         )
         assert len(selected) > 0
-        # The summary is typically prepended.
-        assert any("Previous context summary" in msg.get("content", "") for msg in selected)
+        # The summary is prepended if oldest_idx > 0 and context_msg is generated.
+        # In our case, summary_state["text"] is not empty, so a context_msg is created.
+        # If it's the first message, context_msg is prepended.
+        # Let's check if any message contains the summary text.
+        found_summary = any("Previous context summary" in msg.get("content", "") for msg in selected)
+        assert found_summary, f"Summary not found in selected messages: {selected}"
