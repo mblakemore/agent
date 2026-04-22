@@ -178,7 +178,8 @@ In the worktree: run full test suite, compute delta on the metric. **Gate**: tes
 3. Push branch, open draft PR:
 ```bash
 git push -u origin cicd/NNN-slug
-# ALWAYS write body to a file — backticks in --body "..." are shell-expanded (command substitution), leaving empty placeholders in the PR
+# ALWAYS write body to a file first — backticks in --body "..." are shell-expanded (command substitution), leaving empty placeholders in the PR
+# Then read it back with $(cat ...) so Closes #N is visible to the CICD guard while still avoiding inline backtick expansion
 cat > /tmp/pr-body.md << 'PREOF'
 Summary: <describe what was changed>
 
@@ -191,7 +192,7 @@ Closes #ISSUE
 PREOF
 gh pr create --draft --base main --head cicd/NNN-slug \
   --title "CICD NNN: <slug> (#ISSUE)" \
-  --body-file /tmp/pr-body.md
+  --body "$(cat /tmp/pr-body.md)"
 ```
 4. Comment on issue with results, remove `in-progress-bot-${BOT_ID}` label. **Never `gh issue close` directly** — `Closes #N` trailer handles it on merge.
 5. **Output completion signal** (required — agent runtime watches for this to stop cleanly): output exactly: `Cycle complete. PR #NNN is open and ready for review.` replacing NNN with the actual PR number.
@@ -260,8 +261,9 @@ MANDATORY IMPLEMENTATION WORKFLOW:
 4. COMMIT: `git commit -m "CICD NNN (#ISSUE): <what>"` inside the worktree
 5. TEST: Run full test suite inside the worktree — all must pass
 6. PUSH: `git push -u origin cicd/NNN-slug`
-7. PR: Write body to `/tmp/pr-body.md` using a heredoc (see "Push branch, open draft PR" section), then `gh pr create --draft --base main --head cicd/NNN-slug --title "CICD NNN: <slug> (#ISSUE)" --body-file /tmp/pr-body.md`
-   The body MUST contain "Closes #N" with a REAL issue number. NEVER use `--body "..."` with backticks — shell expands them as commands, leaving empty placeholders. Use `--body-file` always.
+7. PR: Write body to `/tmp/pr-body.md` using a heredoc (see "Push branch, open draft PR" section), then use `--body "$(cat /tmp/pr-body.md)"` (NOT `--body-file`) so the CICD guard can see "Closes #N":
+   `gh pr create --draft --base main --head cicd/NNN-slug --title "CICD NNN: <slug> (#ISSUE)" --body "$(cat /tmp/pr-body.md)"`
+   The body MUST contain "Closes #N" with a REAL issue number. NEVER inline backticks in `--body "..."` — write to a file first and read back with `$(cat ...)`. Using `--body-file` bypasses the CICD guard.
 8. TRACK: Write results file, append progress row, comment on issue
 
 **BUILDER ROLE BOUNDARY — CRITICAL**: Your job ends at step 8. NEVER call `gh pr merge`, `gh pr ready`, or any other merge command. Merging is the reviewer's exclusive responsibility. Calling `gh pr merge` from the builder bypasses review, puts untested code on main, and violates the pipeline contract. If tests are green and the PR is open — signal completion and stop. The reviewer handles the rest.
