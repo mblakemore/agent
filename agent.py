@@ -322,9 +322,12 @@ def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log):
     
     # PR CREATE CHECK
     _precmd_body_check = _precmd
-    if "$(cat /tmp/pr-body.md)" in _precmd:
+    # cycle 60: read pr-body file so Closes #N is visible even with $(cat ...) expansion
+    # cycle 71: also handle per-issue filenames like /tmp/pr-body-324.md
+    _pb_match = re.search(r'\$\(cat (/tmp/pr-body(?:-\d+)?\.md)\)', _precmd)
+    if _pb_match:
         try:
-            with open("/tmp/pr-body.md") as _pf:
+            with open(_pb_match.group(1)) as _pf:
                 _precmd_body_check = _precmd_body_check + " " + _pf.read()
         except OSError:
             pass
