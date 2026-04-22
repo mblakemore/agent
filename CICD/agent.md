@@ -194,6 +194,12 @@ Verify the pattern works before writing a full test: `python3 -c "from tools imp
 
 In the worktree: run full test suite, compute delta on the metric. **Gate**: tests 100% green AND metric improved. If not, debug and retry (max 3 iterations). If still failing → null-result path.
 
+**After EVERY pytest run (pass or fail): append current status to the improvement plan.** This prevents the async summarizer from replaying a stale error on the next turn. Immediately after each `python3 -m pytest` completes, run:
+```bash
+echo "## Test Status ($(date +%H:%M)): X passed / Y failed — [error type, e.g. AssertionError not SyntaxError]. Coverage: Z%." >> <CICD_STATE>/improvements/NNN-slug.md
+```
+If the error type changed since the last run (e.g. SyntaxError resolved → now AssertionError), explicitly note this: "SyntaxError is RESOLVED. Current error: AssertionError at line N."
+
 ## Phase 8 — TRACK
 
 1. Write results to CICD state: `<CICD_STATE>/improvements/NNN-slug.results.md` — metric before/after/delta, test counts, what changed, lessons learned
