@@ -244,6 +244,8 @@ No `patch.dict(MAP_FN)` needed — `check_cancelled()` raises before MAP_FN disp
 3. `harvest()` is still called TWICE: once at line ~1806 (pre-flight, turn start) and once at line ~2799 (CancelledError handler). Use `assert_called_with(summary_state)` NOT `assert_called_once_with`. `drain()` is called once (handler only) so `assert_called_once()` is correct.
 4. Always verify `emit("on_cancelled", "tool_execution")` fires — use `mock_emit.assert_any_call("on_cancelled", "tool_execution")`.
 
+**CRITICAL DIAGNOSTIC — test HANGS = production bug not yet fixed (cycle 64, run 119 failure).** If `python3 -m pytest tests/test_agent_cancellation.py` runs for >10 seconds after "collected 1 item" with no result, the test is in an **infinite loop**. Root cause: the cycle 63 step-1 fix was NOT applied — `except Exception as e:` at line ~2342 swallows `CancelledError`, the agent loop continues, calls `_llm_request` again (same mock response), triggers `mock_tool` again → loops forever. **Do NOT** use `background=True`, poll, sleep-and-poll, or re-run. **DO: apply step 1 fix first** (add `except CancelledError: raise` at 24-space indent before `except Exception as e:`), then rerun — test completes in < 1 second.
+
 **PR body trap (run 118 NULL cause):** The PRE-MERGE CHECK reads the PR body to extract `Closes #N` and verifies that issue N is OPEN. If you accidentally put `Closes #308` (a closed issue) instead of `Closes #309`, the merge is blocked. After creating the PR, immediately verify: `gh pr view <N> --json body | python3 -c "import json,sys; print(json.load(sys.stdin)['body'])"` — confirm the issue number is your current open issue.
 
 ## Phase 7 — VERIFY
