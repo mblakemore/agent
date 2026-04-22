@@ -223,29 +223,64 @@ _DEFAULT_CONFIG = {
 }
 
 
+def _synthesize_backends_registry(config):
+    """Build a ``backends`` registry dict from the legacy ``llm`` / ``summary``
+    top-level blocks, or pass through an explicit ``backends`` block.
+
+    See plan/bedrock-integration.md § 6 "Migration strategy". Preserves every
+    field from the legacy block so unknown keys survive the shim intact.
+    """
+    if "backends" in config and isinstance(config["backends"], dict):
+        return config["backends"]
+
+    main = {"kind": "llamacpp"}
+    main.update(config.get("llm", {}))
+
+    summary = {"kind": "llamacpp"}
+    summary.update(config.get("summary", {}))
+
+    return {"main": main, "summary": summary}
+
+
 def _load_config():
-    """Load configuration from CWD/config.json, deep-merged with defaults."""
+    """Load configuration from CWD/config.json, deep-merged with defaults.
+
+    Also synthesizes a ``backends`` registry (plan § 6 / D3) from the legacy
+    ``llm`` / ``summary`` blocks for back-compat. Existing call sites that
+    read ``_config["llm"]`` / ``_config["summary"]`` continue to work.
+    """
     config = json.loads(json.dumps(_DEFAULT_CONFIG))  # deep copy
 
     config_path = Path(os.getcwd()) / "config.json"
-    if not config_path.exists():
-        return config
+    user_config = None
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8", errors="replace") as f:
+                user_config = json.load(f)
+            for section in config:
+                if section in user_config and isinstance(user_config[section], dict):
+                    config[section].update(user_config[section])
+            # Copy top-level scalar overrides (e.g. log_dir, log_prefix) that aren't
+            # _DEFAULT_CONFIG sections — the loop above only handles dict-valued sections.
+            for key, val in user_config.items():
+                if key not in config and not isinstance(val, dict):
+                    config[key] = val
+        except (json.JSONDecodeError, IOError) as e:
+            _emit("on_notice", "warn", f"Warning: Could not load config.json, using defaults: {e}")
+            user_config = None
 
-    try:
-        with open(config_path, "r", encoding="utf-8", errors="replace") as f:
-            user_config = json.load(f)
-        for section in config:
-            if section in user_config and isinstance(user_config[section], dict):
-                config[section].update(user_config[section])
-        # Copy top-level scalar overrides (e.g. log_dir, log_prefix) that aren't
-        # _DEFAULT_CONFIG sections — the loop above only handles dict-valued sections.
-        for key, val in user_config.items():
-            if key not in config and not isinstance(val, dict):
-                config[key] = val
-        return config
-    except (json.JSONDecodeError, IOError) as e:
-        _emit("on_notice", "warn", f"Warning: Could not load config.json, using defaults: {e}")
-        return config
+    # Back-compat shim: if user provided an explicit `backends` block, use it
+    # as-is; otherwise synthesize from legacy `llm` / `summary` blocks.
+    merge_src = {}
+    if user_config and isinstance(user_config.get("backends"), dict):
+        merge_src["backends"] = user_config["backends"]
+    # Merge the synthesized registry back on top of the deep-copied default
+    # `llm` / `summary` blocks so each backend entry carries kind + defaults.
+    merge_src.setdefault("llm", config["llm"])
+    merge_src.setdefault("summary", config["summary"])
+    config["backends"] = _synthesize_backends_registry(merge_src)
+
+    return config
 
 
 _config = _load_config()
