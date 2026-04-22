@@ -196,6 +196,18 @@ Verify the pattern works before writing a full test: `python3 -c "from tools imp
 
 **Module-level globals must be reset before mocking (run 128 failure).** Some `agent.py` functions use module-level globals as one-time caches (e.g., `_TOOLS_TOKENS` set by `_build_context`). If a prior test in the suite has already set the global to a large real value, your mock of the underlying function (e.g. `_estimate_tools_tokens`) will never fire because the `if _TOOLS_TOKENS is None:` guard is already False. Always reset the global before entering the `with patch(...)` block: `agent._TOOLS_TOKENS = None`.
 
+**Coverage test branch protocol — read before you write (cycle 72, runs 131-132 pattern).** The most common coverage failure is writing a test that covers the ADJACENT branch instead of the target lines — e.g., writing a success-path test when the target lines are the `except` block, or hitting the `if` branch when the target is `else`. Before writing any test for specific line numbers:
+
+1. **Read the target lines in context first**: `sed -n '$((N-5)),$((M+5))p' agent.py` where N-M are the missing lines.
+2. **State the triggering condition as a comment in your test**: `# Lines N-M execute when [CONDITION — e.g. "file does NOT exist", "arg is None", "log_dir not in _config"]`
+3. **Write the test to trigger THAT condition exactly**, not the adjacent passing case.
+4. **Verify per-file before committing**: `python3 -m pytest tests/test_YOUR_FILE.py --cov=agent --cov-report=term-missing -q 2>&1 | grep "agent.py\|TOTAL"` — confirm N-M are absent from the Missing column.
+
+Common branch pairs that trap builders:
+- `try:` body (lines NNN) vs `except XError: pass` (lines NNN+3) — the `except` path requires the exception to be raised, not a successful call
+- `if condition:` branch vs `else:` branch — if both are missing, write two separate tests, one per branch
+- Early-return guard vs post-guard code — the guard fires when the condition is **True**; the post-guard code runs when it is **False**
+
 **Testing CancelledError (lines 2792-2799) — critical gotcha.** `CancelledError` in `cancel.py` is `class CancelledError(Exception)`. This means `except Exception as e:` at line ~2342 (inside the tool dispatch try block) catches it BEFORE it can reach line 2792. Using `mock_tool.side_effect = CancelledError` will NOT reach lines 2792-2799 — the exception is swallowed and `result_str` becomes `"Error executing tool: "`.
 
 The correct trigger is `check_cancelled()` at line ~2211, which is called for each tool call OUTSIDE the inner try block. Use `patch('agent.check_cancelled')` with a `side_effect` list:
