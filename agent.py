@@ -2307,9 +2307,17 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         # Block before creation so the builder files the issue first.
                         # Cycle 45: anchor gh pr create match to shell top-level invocation;
                         # plain search matched "gh pr create" inside --body text (false positive).
+                        # Cycle 60: if body comes from $(cat /tmp/pr-body.md), read the file too
+                        _precmd_body_check = _precmd
+                        if "$(cat /tmp/pr-body.md)" in _precmd:
+                            try:
+                                with open("/tmp/pr-body.md") as _pf:
+                                    _precmd_body_check = _precmd_body_check + " " + _pf.read()
+                            except OSError:
+                                pass
                         if (not _cicd_blocked
                                 and re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+create\b", _precmd)
-                                and not re.search(r'Closes\s+#\d+', _precmd, re.IGNORECASE)):
+                                and not re.search(r'Closes\s+#\d+', _precmd_body_check, re.IGNORECASE)):
                             log.warning("CICD: gh pr create blocked — body missing valid Closes #N (cycle 44)")
                             result_str = (
                                 "Error: CICD gh pr create blocked — the --body must contain "
@@ -2388,6 +2396,19 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             _has_edited = True  # commit implies edit happened
                             log.info("Commit detected — completion signals now allowed")
                             _cicd_phase_state["implement"] = True
+                            # Cycle 61: if commit fails with nothing staged, builder never wrote test code
+                            if "no changes added to commit" in result_str:
+                                conversation_history.append({
+                                    "role": "user",
+                                    "content": (
+                                        "[SYSTEM: git commit failed — no test files were staged. "
+                                        "Only .coverage is modified, which means you ran pytest but "
+                                        "never wrote any new test code. You must use "
+                                        "file({'action': 'write', 'path': 'tests/test_<name>.py', "
+                                        "'content': '...'}) to write new test functions, then "
+                                        "git add tests/test_<name>.py && git commit -m '<message>'.]"
+                                    ),
+                                })
                         if re.search(r"(?:^|&&\s*|;\s*|\|\|\s*)git\s+push\b", _cmd_normalized) and "exit=0" in result_str:  # Cycle 35+36: regex on normalized cmd
                             if not _cycle_persisted:
                                 log.info("Cycle persist detected (git push exit=0) — auto-nudge disabled")
