@@ -1,10 +1,29 @@
+import copy
 import unittest
 from unittest.mock import patch
 import sys
 
 import pytest
 
+import agent as _agent_mod
 from agent import main
+
+
+@pytest.fixture
+def restore_agent_state():
+    """Snapshot ``_config``, ``_main_backend``, ``_summary_backend`` before
+    the test runs and restore them after — the CLI flag tests mutate these
+    module globals and later tests (test_agent_coverage.py) rely on the
+    default llamacpp backend state.
+    """
+    saved_config = copy.deepcopy(_agent_mod._config)
+    saved_main = _agent_mod._main_backend
+    saved_summary = _agent_mod._summary_backend
+    yield
+    _agent_mod._config.clear()
+    _agent_mod._config.update(saved_config)
+    _agent_mod._main_backend = saved_main
+    _agent_mod._summary_backend = saved_summary
 
 
 class TestAgentCLI(unittest.TestCase):
@@ -51,32 +70,30 @@ class TestAgentCLI(unittest.TestCase):
 
 @patch("agent.run_agent_interactive")
 @patch("agent._emit")
-def test_backend_main_flag_overrides_config(mock_emit, mock_run, monkeypatch):
+def test_backend_main_flag_overrides_config(mock_emit, mock_run, monkeypatch, restore_agent_state):
     """``--backend-main bedrock`` sets _config['backends']['main']['kind']."""
     monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
     monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
-    import agent as _agent
 
     argv = ["agent.py", "--backend-main", "bedrock", "--auto"]
     with patch.object(sys, "argv", argv):
         main()
-    assert _agent._config["backends"]["main"]["kind"] == "bedrock"
-    assert _agent._main_backend.kind == "bedrock"
+    assert _agent_mod._config["backends"]["main"]["kind"] == "bedrock"
+    assert _agent_mod._main_backend.kind == "bedrock"
 
 
 @patch("agent.run_agent_interactive")
 @patch("agent._emit")
-def test_backend_summary_flag_overrides_config(mock_emit, mock_run, monkeypatch):
+def test_backend_summary_flag_overrides_config(mock_emit, mock_run, monkeypatch, restore_agent_state):
     """``--backend-summary bedrock`` sets the summary backend kind."""
     monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
     monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
-    import agent as _agent
 
     argv = ["agent.py", "--backend-summary", "bedrock", "--auto"]
     with patch.object(sys, "argv", argv):
         main()
-    assert _agent._config["backends"]["summary"]["kind"] == "bedrock"
-    assert _agent._summary_backend.kind == "bedrock"
+    assert _agent_mod._config["backends"]["summary"]["kind"] == "bedrock"
+    assert _agent_mod._summary_backend.kind == "bedrock"
 
 
 def test_backend_flag_invalid_value_argparse_error(capsys):
@@ -89,20 +106,19 @@ def test_backend_flag_invalid_value_argparse_error(capsys):
 
 @patch("agent.run_agent_interactive")
 @patch("agent._emit")
-def test_backend_main_bedrock_default_model(mock_emit, mock_run, monkeypatch):
+def test_backend_main_bedrock_default_model(mock_emit, mock_run, monkeypatch, restore_agent_state):
     """If --backend-main bedrock is set with no model in the config block,
     a sensible default is supplied (claude-v4.5-sonnet for main)."""
     monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
     monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
-    import agent as _agent
 
     # Clear any model that may be set on the main backend entry.
-    _agent._config["backends"]["main"].pop("model", None)
+    _agent_mod._config["backends"]["main"].pop("model", None)
 
     argv = ["agent.py", "--backend-main", "bedrock", "--auto"]
     with patch.object(sys, "argv", argv):
         main()
-    assert _agent._config["backends"]["main"]["model"] == "claude-v4.5-sonnet"
+    assert _agent_mod._config["backends"]["main"]["model"] == "claude-v4.5-sonnet"
 
 
 if __name__ == '__main__':
