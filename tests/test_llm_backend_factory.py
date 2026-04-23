@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 from llm_backend import (
     Backend,
+    BedrockBackend,
+    ConfigError,
     LlamacppBackend,
     build_backend,
     ContextOverflowError,
@@ -27,10 +29,14 @@ def test_build_backend_llamacpp():
     assert b.model == "gemma-4"
 
 
-def test_build_backend_bedrock_not_implemented():
-    with pytest.raises(NotImplementedError) as exc:
+def test_build_backend_bedrock_requires_env(monkeypatch):
+    # Phase 2: bedrock backend raises ConfigError when env vars are missing
+    # (no config override either).
+    monkeypatch.delenv("BEDROCK_API_URL", raising=False)
+    monkeypatch.delenv("BEDROCK_API_KEY", raising=False)
+    with pytest.raises(ConfigError) as exc:
         build_backend({"kind": "bedrock"})
-    assert "Phase 2" in str(exc.value)
+    assert "BEDROCK_API_URL" in str(exc.value)
 
 
 def test_build_backend_unknown_kind():
