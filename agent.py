@@ -308,6 +308,45 @@ def _cfg_with_role(backends: dict, role: str) -> dict:
 
 _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
 _summary_backend = _build_backend(_cfg_with_role(_config["backends"], "summary"))
+
+
+def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) -> None:
+    """Apply ``--backend-main`` / ``--backend-summary`` CLI overrides.
+
+    Per plan task 2.5: when either flag is set, override
+    ``_config["backends"][role]["kind"]`` and rebuild the corresponding
+    backend module-level global. If a flag selects ``bedrock`` without an
+    explicit model already in the config block, a sensible default is
+    supplied (``claude-v4.5-sonnet`` for main, ``claude-v4.5-haiku`` for
+    summary) and an INFO log line is emitted.
+    """
+    global _main_backend, _summary_backend
+
+    defaults = {"main": "claude-v4.5-sonnet", "summary": "claude-v4.5-haiku"}
+
+    def _override(role: str, kind: str | None):
+        if not kind:
+            return
+        entry = _config["backends"].setdefault(role, {})
+        entry["kind"] = kind
+        if kind == "bedrock" and not entry.get("model"):
+            entry["model"] = defaults[role]
+            logging.getLogger("agent").info(
+                "backend-override role=%s kind=bedrock model=%s "
+                "(default — no model in config)",
+                role,
+                entry["model"],
+            )
+
+    _override("main", main_kind)
+    _override("summary", summary_kind)
+
+    if main_kind:
+        _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
+    if summary_kind:
+        _summary_backend = _build_backend(
+            _cfg_with_role(_config["backends"], "summary")
+        )
 _MAX_FULL_LINES = _config["context"]["max_full_lines"]
 _PREVIEW_LINES = _config["context"]["preview_lines"]
 _SUMMARY_THRESHOLD = _config["context"]["summary_threshold"]
@@ -2931,8 +2970,17 @@ def main():
                              "(use a plain input() prompt). The TUI is on by default when "
                              "running interactively and falls back to plain input() automatically "
                              "if `prompt_toolkit` isn't installed.")
+    parser.add_argument("--backend-main", dest="backend_main",
+                        choices=["llamacpp", "bedrock"], default=None,
+                        help="Override the main backend kind (see plan/bedrock-integration.md).")
+    parser.add_argument("--backend-summary", dest="backend_summary",
+                        choices=["llamacpp", "bedrock"], default=None,
+                        help="Override the summary backend kind.")
     parser.add_argument("prompt", nargs="*", help="Initial prompt")
     args = parser.parse_args()
+
+    # Apply backend-kind overrides before any backend-dependent startup logic.
+    _apply_backend_overrides(args.backend_main, args.backend_summary)
 
     global _NUDGE_ENABLED
     _NUDGE_ENABLED = args.nudge
