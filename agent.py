@@ -532,7 +532,7 @@ def _calculate_retry_delay(attempt):
 # ``ContextOverflowError`` lives in ``llm_backend`` post-refactor. The alias
 # here keeps ``from agent import ContextOverflowError`` working unchanged for
 # existing tests and callers.
-from llm_backend import ContextOverflowError
+from llm_backend import BedrockBudgetExceeded, ContextOverflowError
 
 
 _LLM_REQUEST_TIMEOUT = 300  # 5 minutes per request
@@ -1096,6 +1096,30 @@ def _generate_summary(old_summary, new_messages, log):
 
     summary_cfg = _config["summary"]
     summary_url = summary_cfg["base_url"]
+
+    def _fallback_to_main(reason_exc):
+        """Route the summary through the main backend after a summary failure.
+
+        The legacy path called ``_summary_request(prompt, base_url=BASE_URL, …)``
+        which only re-homes to a llamacpp override and is a no-op when the
+        summary backend is non-llamacpp (Bedrock). Go directly to the
+        ``_main_backend.complete()`` so the fallback actually runs through a
+        different backend kind when the primary is Bedrock and e.g. the
+        daily cost cap tripped. See plan § 15 rollback / § 6.5 guardrail.
+        """
+        log.warning(
+            "Summary failed on %s backend (%s); falling back to main model",
+            getattr(_summary_backend, "kind", "?"),
+            reason_exc,
+        )
+        try:
+            summary = _main_backend.complete(prompt=prompt)
+            log.info("SUMMARY (fallback): %s", summary)
+            return summary
+        except Exception as e2:
+            log.error("Summary fallback also failed: %s", e2)
+            return old_summary or ""
+
     try:
         # Try dedicated summary endpoint first — via _summary_request, which
         # now routes through _summary_backend.complete (plan task 1.4).
@@ -1108,18 +1132,20 @@ def _generate_summary(old_summary, new_messages, log):
         return summary
     except (requests.ConnectionError, requests.Timeout) as e:
         if summary_url and summary_url != BASE_URL:
-            log.warning("Summary endpoint unavailable (%s), falling back to main model", e)
-            try:
-                summary = _summary_request(prompt, base_url=BASE_URL,
-                                           model=_config["llm"]["model"])
-                log.info("SUMMARY (fallback): %s", summary)
-                return summary
-            except Exception as e2:
-                log.error("Summary fallback also failed: %s", e2)
-                return old_summary or ""
+            return _fallback_to_main(e)
         log.error("Summary generation failed: %s", e)
         return old_summary or ""
+    except BedrockBudgetExceeded as e:
+        # Budget cap tripped — fall back to local main for the rest of the
+        # session. Avoids cascading context overflow from missing summaries.
+        return _fallback_to_main(e)
     except Exception as e:
+        # For any other summary-backend error, if the summary backend is
+        # different from the main one, try the main backend before giving up.
+        if getattr(_summary_backend, "kind", None) != getattr(
+            _main_backend, "kind", None
+        ):
+            return _fallback_to_main(e)
         log.error("Summary generation failed: %s", e)
         return old_summary or ""
 
@@ -1652,6 +1678,38 @@ def _pick_model_interactive(current_model, base_url):
     return None
 
 
+def _log_bedrock_session_spend(log):
+    """Emit an INFO line summarizing today's Bedrock spend per role.
+
+    Fires at session end so operators grep-ing the session log see an
+    at-a-glance spend snapshot even when ``bedrock.cost.tick`` is at
+    DEBUG (plan § 15.75 telemetry default). Silent when no Bedrock
+    backend is in use.
+    """
+    try:
+        from llm_backend import (
+            _load_today_spend as _load,
+            _resolve_daily_cap as _cap,
+        )
+    except Exception:
+        return
+    for role, backend in (("main", _main_backend), ("summary", _summary_backend)):
+        if getattr(backend, "kind", None) != "bedrock":
+            continue
+        try:
+            spent = _load(role)
+            cap = _cap(getattr(backend, "_cfg", {}), role)
+        except Exception:
+            continue
+        log.info(
+            "bedrock.session_spend role=%s model=%s today_usd=%.4f cap_usd=%.2f",
+            role,
+            getattr(backend, "model", "?"),
+            spent,
+            cap,
+        )
+
+
 def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, *, cb=None, tui=False, verbose=False):
     """Interactive agent that maintains conversation history.
 
@@ -1772,6 +1830,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 cleanup_temp_sessions()
                 _delete_checkpoint()
                 log.info("Session ended (continue mode) | %d messages", len(conversation_history))
+                _log_bedrock_session_spend(log)
                 return
             # Fall through to interactive loop if not auto
         else:
@@ -1842,6 +1901,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                     guidance = input("\nOperator: ").strip()
                 except (EOFError, KeyboardInterrupt):
                     log.info("Session ended (operator cancelled) | %d messages", len(conversation_history))
+                    _log_bedrock_session_spend(log)
                     _emit("on_notice", "info", "")
                     return
                 if guidance:
@@ -1865,6 +1925,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             cleanup_temp_sessions()
             _delete_checkpoint()
             log.info("Session ended (auto mode) | %d messages in history", len(conversation_history))
+            _log_bedrock_session_spend(log)
             return
 
     while True:
@@ -1930,6 +1991,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     cleanup_temp_sessions()
     _delete_checkpoint()
     log.info("Session ended | %d messages in history", len(conversation_history))
+    _log_bedrock_session_spend(log)
 
 
 def run_agent_single(conversation_history: list, summary_state: dict, initial_files,

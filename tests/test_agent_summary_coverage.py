@@ -48,35 +48,45 @@ class TestAgentSummaryCoverage(unittest.TestCase):
     @patch('agent._summary_request')
     @patch('agent._build_summary_prompt')
     def test_generate_summary_exception_fallback_success(self, mock_build_prompt, mock_summary_request):
-        """Covers lines 756-759: Primary fails with network error, fallback succeeds."""
+        """Primary fails with network error, fallback via _main_backend succeeds.
+
+        Phase 2 followup: the fallback now routes through
+        ``_main_backend.complete()`` directly (not through
+        ``_summary_request`` overrides, which were a no-op for non-llamacpp
+        summary backends). Test patches both entry points to reflect this.
+        """
         agent._config["summary"]["enabled"] = True
         agent._config["summary"]["base_url"] = "http://summary-api"
         mock_build_prompt.return_value = "Mocked Prompt"
-        
-        # First call: raise ConnectionError to trigger the outer except block (line 752)
-        # Second call: return value for the fallback (line 756)
-        mock_summary_request.side_effect = [requests.ConnectionError("Conn Error"), "Fallback Result"]
-        
-        result = agent._generate_summary("old_summary", [], agent.log)
-        
+
+        mock_summary_request.side_effect = requests.ConnectionError("Conn Error")
+
+        with patch.object(agent._main_backend, "complete", return_value="Fallback Result") as mock_main:
+            result = agent._generate_summary("old_summary", [], agent.log)
+
         self.assertEqual(result, "Fallback Result")
-        self.assertEqual(mock_summary_request.call_count, 2)
+        self.assertEqual(mock_summary_request.call_count, 1)
+        mock_main.assert_called_once()
 
     @patch('agent._summary_request')
     @patch('agent._build_summary_prompt')
     def test_generate_summary_total_failure(self, mock_build_prompt, mock_summary_request):
-        """Covers lines 760-762: Both calls fail with network errors."""
+        """Primary fails, _main_backend fallback also fails → old_summary returned."""
         agent._config["summary"]["enabled"] = True
         agent._config["summary"]["base_url"] = "http://summary-api"
         mock_build_prompt.return_value = "Mocked Prompt"
-        
-        # Both calls fail with network errors
-        mock_summary_request.side_effect = [requests.ConnectionError("Primary Fail"), requests.ConnectionError("Fallback Fail")]
-        
-        result = agent._generate_summary("old_summary", [], agent.log)
-        
+
+        mock_summary_request.side_effect = requests.ConnectionError("Primary Fail")
+
+        with patch.object(
+            agent._main_backend,
+            "complete",
+            side_effect=requests.ConnectionError("Fallback Fail"),
+        ):
+            result = agent._generate_summary("old_summary", [], agent.log)
+
         self.assertEqual(result, "old_summary")
-        self.assertEqual(mock_summary_request.call_count, 2)
+        self.assertEqual(mock_summary_request.call_count, 1)
 
     @patch('agent._summary_request')
     @patch('agent._build_summary_prompt')
