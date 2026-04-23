@@ -122,20 +122,34 @@ Agent-specific tools can also live in `./tools/` alongside your working director
 
 Drop a `config.json` in the working directory to override any of the built-in defaults. The top-level sections are:
 
-- **`llm`** — `base_url`, `model`. The OpenAI-compatible endpoint and model name.
+- **`backends`** — registry with `main` and `summary` entries; each carries a `kind` (currently `"llamacpp"`; a `"bedrock"` kind is planned, see `plan/bedrock-integration.md`) plus kind-specific keys (`base_url`, `model`, …). Preferred shape going forward.
+- **`llm`**, **`summary`** — legacy flat blocks (`base_url`, `model`, …). Still supported for back-compat: at load time they are synthesized into `backends.main` / `backends.summary` with `kind: "llamacpp"`. New configs should use `backends`; old configs need no change.
 - **`generation`** — `temperature`, `top_p`, `top_k`, `presence_penalty`.
 - **`context`** — `ctx_size`, `max_tokens`, `max_full_lines`, `preview_lines`, `summary_threshold`, `summary_max_chars`, `max_context_messages`. Controls how history is sized and when it gets summarized.
 - **`cycle`** — `max_turns`, `wind_down_turns`, `max_text_only`. Per-cycle turn budget and text-only nudge cap.
 - **`retry`** — `max_retries`, `base_delay_seconds`, `max_delay_seconds`, `backoff_multiplier`, `jitter_factor`. Exponential backoff for transient LLM errors.
-- **`summary`** — `enabled`, `base_url`, `model`, `max_wait_on_save`. Optional separate summarization endpoint (default port 8082).
 
-Example minimal override:
+Example using the registry shape:
 
 ```json
 {
-  "llm": { "base_url": "http://127.0.0.1:8080", "model": "gemma-4-31B" },
+  "backends": {
+    "main":    { "kind": "llamacpp", "base_url": "http://127.0.0.1:8080", "model": "gemma-4-31B" },
+    "summary": { "kind": "llamacpp", "base_url": "http://127.0.0.1:8082", "model": "gemma-4-E4B", "enabled": true, "max_wait_on_save": 10 }
+  },
   "context": { "ctx_size": 32768 },
-  "cycle": { "max_turns": 50 }
+  "cycle":   { "max_turns": 50 }
+}
+```
+
+Equivalent legacy shape (still works, synthesized into the registry at load time):
+
+```json
+{
+  "llm":     { "base_url": "http://127.0.0.1:8080", "model": "gemma-4-31B" },
+  "summary": { "base_url": "http://127.0.0.1:8082", "model": "gemma-4-E4B", "enabled": true, "max_wait_on_save": 10 },
+  "context": { "ctx_size": 32768 },
+  "cycle":   { "max_turns": 50 }
 }
 ```
 

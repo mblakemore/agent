@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Git shim for baseline-capture sandbox.
+#
+# Runs during `scripts/capture_baseline.sh` to prevent an agent-under-capture
+# from mutating the repo state (the `nudge` scenario once produced 12 rogue
+# "sorting benchmarks" commits on the feature branch — see
+# plan/bedrock-integration.md § 16 Phase 1 friction).
+#
+# Block any subcommand that can write git state; delegate everything else to
+# the real /usr/bin/git. Walks args to the first non-flag to find the verb
+# (handles `git -c k=v commit`, `git --no-pager log`, etc.).
+
+REAL_GIT=/usr/bin/git
+
+# Find the first non-flag arg — that's the subcommand verb.
+verb=""
+for a in "$@"; do
+    case "$a" in
+        -*) continue ;;   # flag, keep looking
+        *)  verb="$a"; break ;;
+    esac
+done
+
+case "$verb" in
+    commit|push|reset|checkout|restore|cherry-pick|merge|rebase|am|apply|revert|tag|branch|fetch|pull|clone|stash|worktree|remote|notes|submodule|gc|prune|repack|reflog|update-ref|update-index|write-tree|commit-tree|hash-object|replace)
+        echo "[capture-sandbox] BLOCKED: git $*" >&2
+        echo "[capture-sandbox] this git process is a sandbox shim — destructive subcommands are refused during baseline capture." >&2
+        exit 1
+        ;;
+    add)
+        # `git add` is on the write side but is only dangerous paired with
+        # `git commit` (which we block). Letting it through means the agent's
+        # staging action is visible in the session log without actually
+        # changing history. Allow.
+        exec "$REAL_GIT" "$@"
+        ;;
+    "")
+        # Bare `git` with only flags — let it through; it'll print help.
+        exec "$REAL_GIT" "$@"
+        ;;
+    *)
+        # Read-only ops: status, log, diff, show, rev-parse, ls-files, blame,
+        # grep, config --get, describe, etc. Pass through.
+        exec "$REAL_GIT" "$@"
+        ;;
+esac
