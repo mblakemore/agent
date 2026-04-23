@@ -187,9 +187,25 @@ cat > "${CLONE_DIR}/.agent/state/tasks.json" <<'EOT'
 ]
 EOT
 
+# ── Backend overrides (plan § 15.5 G1/G2 rollout) ─────────────────────
+# Optional env vars pick the backend per role. Unset → legacy llamacpp.
+#   CICD_BACKEND_SUMMARY=bedrock  # G1 canary — summary path on Bedrock
+#   CICD_BACKEND_MAIN=bedrock     # G2 opt-in — main path on Bedrock
+# See plan/bedrock-integration.md § 15.5 for the gate criteria.
+BACKEND_ARGS=()
+if [ -n "${CICD_BACKEND_MAIN:-}" ]; then
+    BACKEND_ARGS+=(--backend-main "${CICD_BACKEND_MAIN}")
+fi
+if [ -n "${CICD_BACKEND_SUMMARY:-}" ]; then
+    BACKEND_ARGS+=(--backend-summary "${CICD_BACKEND_SUMMARY}")
+fi
+if [ ${#BACKEND_ARGS[@]} -gt 0 ]; then
+    echo "==> Backend overrides: ${BACKEND_ARGS[*]}"
+fi
+
 # ── Run builder ───────────────────────────────────────────────────────
 echo "==> Running CICD builder agent"
-"${SYSTEM_PYTHON3}" "${AGENT_PY}" -a --verbose --nudge "${AGENT_MD}
+"${SYSTEM_PYTHON3}" "${AGENT_PY}" -a --verbose --nudge "${BACKEND_ARGS[@]}" "${AGENT_MD}
 
 ${OVERRIDE}
 
@@ -197,7 +213,7 @@ Follow the instructions and continue!"
 
 # ── Run reviewer ──────────────────────────────────────────────────────
 echo "==> Running CICD reviewer agent"
-"${SYSTEM_PYTHON3}" "${AGENT_PY}" -a --verbose --nudge "${REVIEWER_MD}
+"${SYSTEM_PYTHON3}" "${AGENT_PY}" -a --verbose --nudge "${BACKEND_ARGS[@]}" "${REVIEWER_MD}
 
 ${OVERRIDE}
 
