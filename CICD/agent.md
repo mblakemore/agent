@@ -84,9 +84,17 @@ Also check for open PRs to avoid racing a parallel cycle — if an open PR alrea
 To address feedback on an inherited PR, follow these steps EXACTLY (do NOT use the fresh-cycle WORKTREE/PUSH/PR steps):
 1. Capture the PR's branch name: `BR=$(gh pr view <N> --json headRefName --jq '.headRefName')` — this is the existing `cicd/NNN-slug` branch, NOT a new one.
 2. Fetch and check it out into a worktree as a local tracking branch — use `-B "$BR" "origin/$BR"`, NOT `-b cicd/anything-else`: `git fetch origin "$BR" && git worktree add <WORKTREE_ROOT>/inherited-<N> -B "$BR" "origin/$BR"`. The `-B` form creates (or resets) a local branch named exactly `$BR` tracking the remote — so the worktree is on a real branch, not detached HEAD, and `git push` works without `HEAD:<branch>` syntax. Using `-b cicd/anything-else` instead would create a NEW branch from main and your fix won't include the PR's existing files.
-3. Inside that worktree: edit, `git add`, `git commit`, then `git push origin "$BR"` (NOT `HEAD:<literal-branch-name>` — typing the branch literally invites typos when issue/PR numbers differ; let the variable carry the name).
-4. Do NOT run `gh pr create` — the PR already exists; the push above updates it. (`gh pr create --head <existing-branch>` will fail with "PR already exists at #<N>", which means you correctly noticed but should treat as expected — do not retry on a different head.)
-5. Re-request review with `gh pr ready <N>` only if reviewer asked for merge.
+3. **(cycle 74 — sync-main-first) MANDATORY before running tests or writing new test/source code:** merge current main into the PR branch so the tests see the same code as is on HEAD. If the PR was created in a prior cycle and main has advanced (new module-level symbols, new helper functions), tests that reference those new symbols will `AttributeError` with a confusing diagnostic. Run 140 spent ~50 builder turns debugging a phantom bug that was only a stale base. Do this as the FIRST action after step 2:
+   ```bash
+   cd <WORKTREE_ROOT>/inherited-<N>
+   git fetch origin main
+   git merge origin/main --no-edit -m "Merge main into $BR before resuming inherited PR work"
+   # Resolve conflicts if any (rare for test-only PRs). If the merge is non-trivial or fails, comment on the PR with 'stale base — needs manual rebase' and switch to a different target.
+   # Then re-run the test baseline BEFORE any edits — if tests fail here, the break pre-exists on main (NOT your bug) and the right action is REQUEST_CHANGES with evidence or DEFER.
+   ```
+4. Inside that worktree: edit, `git add`, `git commit`, then `git push origin "$BR"` (NOT `HEAD:<literal-branch-name>` — typing the branch literally invites typos when issue/PR numbers differ; let the variable carry the name).
+5. Do NOT run `gh pr create` — the PR already exists; the push above updates it. (`gh pr create --head <existing-branch>` will fail with "PR already exists at #<N>", which means you correctly noticed but should treat as expected — do not retry on a different head.)
+6. Re-request review with `gh pr ready <N>` only if reviewer asked for merge.
 
 Do NOT file a new issue until the inherited PR is resolved (merged, closed, or abandoned with a clear reason). Only one exception: if the reviewer's concern is fundamental (wrong approach), close the PR with a comment, reopen the issue, and pivot to a different target.
 
