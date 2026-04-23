@@ -11,6 +11,7 @@ request_cancel() on its own keybinding.
 
 import atexit
 import io
+import os
 import select
 import sys
 import termios
@@ -29,6 +30,31 @@ _cancel_event = threading.Event()
 _monitor_active = threading.Event()
 _original_termios = None
 _tui_mode = False
+
+# Self-pipe for waking the escape-monitor thread out of a pending select() when
+# monitoring is disabled (end of a cancellable region, or a TUI host taking
+# over the keyboard). Without this, the monitor can sit in a select() with up
+# to 100ms of timeout remaining AFTER _monitor_active is cleared — and if the
+# user starts typing into the reappearing TUI prompt in that window, the
+# monitor's select wins the race and silently swallows the first character
+# (line-166 "consume it" path). Writing a byte to _wake_w makes the select
+# return immediately; the reader drains the pipe and returns None without
+# consuming stdin.
+try:
+    _wake_r, _wake_w = os.pipe()
+except OSError:
+    # Non-POSIX or restricted environment — fall back to race-prone behaviour.
+    _wake_r, _wake_w = None, None
+
+
+def _wake_monitor():
+    """Unblock a pending _read_byte() select. Safe to call any time."""
+    if _wake_w is None:
+        return
+    try:
+        os.write(_wake_w, b"!")
+    except OSError:
+        pass
 
 
 def is_cancelled():
@@ -63,6 +89,7 @@ def set_tui_mode(enabled):
     _tui_mode = bool(enabled)
     if _tui_mode:
         _monitor_active.clear()
+        _wake_monitor()
 
 
 def tui_mode():
@@ -98,15 +125,30 @@ class cbreak_mode:
 
 
 def _read_byte(timeout):
-    """Read a single byte from stdin with timeout. Returns byte or None."""
+    """Read a single byte from stdin with timeout. Returns byte or None.
+
+    Watches a wake pipe alongside stdin. If the pipe fires or _monitor_active
+    was cleared while we were in select, returns None without consuming any
+    stdin byte — lets the real keyboard owner (prompt_toolkit, etc.) pick up
+    the next keypress.
+    """
     try:
-        if hasattr(sys.stdin, 'fileno'):
-            ready, _, _ = select.select([sys.stdin], [], [], timeout)
-            if ready:
-                return sys.stdin.read(1)
+        if not hasattr(sys.stdin, 'fileno'):
+            return None
+        watch_fds = [sys.stdin]
+        if _wake_r is not None:
+            watch_fds.append(_wake_r)
+        ready, _, _ = select.select(watch_fds, [], [], timeout)
+        if sys.stdin in ready and _monitor_active.is_set():
+            return sys.stdin.read(1)
+        if _wake_r is not None and _wake_r in ready:
+            try:
+                os.read(_wake_r, 4096)
+            except OSError:
+                pass
+        return None
     except (io.UnsupportedOperation, ValueError, select.error):
         return None
-    return None
 
 
 def _consume_ansi_sequence():
@@ -194,6 +236,7 @@ class cancellable:
 
     def __exit__(self, *exc):
         _monitor_active.clear()
+        _wake_monitor()
         if self._cbreak is not None:
             self._cbreak.__exit__(*exc)
             self._cbreak = None
