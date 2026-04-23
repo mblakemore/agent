@@ -32,6 +32,8 @@ python agent.py [OPTIONS] [PROMPT...]
 | `--nudge` | When the model returns a text-only response (no tool calls), auto-nudge it to keep going instead of stopping. Off by default. |
 | `--no-tui` | Disable the `prompt_toolkit` TUI and use a plain `input()` prompt. The TUI is on by default in any interactive mode and falls back to plain input automatically if `prompt_toolkit` isn't installed. |
 | `--verbose` | Start the session with full (uncompacted) tool output. Toggle in-session with `/verbose`. |
+| `--backend-main` | Override the main backend kind (`llamacpp` or `bedrock`). |
+| `--backend-summary` | Override the summary backend kind (`llamacpp` or `bedrock`). |
 | `PROMPT...` | Initial prompt. Optional; in interactive mode you'll be prompted if omitted. |
 
 Press **Escape twice** within 400ms to cancel a streaming response. In the TUI this works while the model is streaming; the prompt itself uses `prompt_toolkit`'s native key handling.
@@ -83,7 +85,6 @@ The loop has a few guardrails worth knowing about:
 - **Hallucination guards.** When the model claims to have read a file it never actually read, the fabricated message is stripped and a correction injected. Malformed tool-call JSON is also salvaged heuristically.
 - **Tool recovery.** When a tool fails with a recognizable error (e.g. bad line numbers), `tool_recovery.py` tries to re-run it with corrected parameters via a lightweight LLM call.
 - **Context overflow handling.** Three consecutive HTTP 500s from the LLM endpoint are treated as context overflow — the agent trims history and retries.
-
 ## Project layout
 
 ```
@@ -96,6 +97,9 @@ spinner.py          # Aurora-pulsed waiting/streaming/done visual feedback
 theme.py            # Aurora color palette + single source of ANSI escapes
 token_utils.py      # Tokenizer (Gemma) with char-based fallback
 tool_recovery.py    # Auto-recovery from recoverable tool errors
+llm_backend.py       # Core abstraction layer for LLM interactions and backend switching
+bedrock_api.py      # Implementation of the AWS Bedrock Chat API integration
+dev_mode_prompt.py   # Prompt templates and configurations for Bedrock's dev-mode
 tools/              # Built-in tools (see below)
   file.py           # read / write / insert / append / delete / list
   exec_command.py   # Shell execution with background-session support
