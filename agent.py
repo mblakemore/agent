@@ -242,6 +242,57 @@ def _synthesize_backends_registry(config):
     return {"main": main, "summary": summary}
 
 
+def _redact_api_keys(cfg):
+    """Return a copy of ``cfg`` with every nested ``api_key`` value redacted.
+
+    Plan § 18.75 security checklist: any ``log.debug("config: %s", _config)``
+    line must not surface the literal key. Walks ``backends``
+    specifically (the only surface that carries an ``api_key``) plus any
+    top-level ``api_key`` field for defensive-depth reasons.
+    """
+    if not isinstance(cfg, dict):
+        return cfg
+    result = {}
+    for k, v in cfg.items():
+        if k == "api_key" and v:
+            result[k] = "***REDACTED***"
+        elif isinstance(v, dict):
+            result[k] = _redact_api_keys(v)
+        else:
+            result[k] = v
+    return result
+
+
+def _warn_if_world_readable_with_key(config_path, user_config):
+    """Emit a WARN log line if ``config.json`` is world-readable AND
+    contains a non-empty ``api_key`` under any ``backends`` entry.
+
+    Plan § 18.75 security checklist. Don't enforce; just warn.
+    """
+    if not isinstance(user_config, dict):
+        return
+    # Walk backends → {main,summary} → api_key to check for a non-empty key.
+    has_key = False
+    backends = user_config.get("backends", {})
+    if isinstance(backends, dict):
+        for entry in backends.values():
+            if isinstance(entry, dict) and entry.get("api_key"):
+                has_key = True
+                break
+    if not has_key:
+        return
+    try:
+        mode = os.stat(str(config_path)).st_mode & 0o777
+    except OSError:
+        return
+    if mode & 0o077:  # any permission bits for group or other
+        logging.getLogger("agent").warning(
+            "config.json is world-readable (mode 0o%o); chmod 600 %s",
+            mode,
+            config_path,
+        )
+
+
 def _load_config():
     """Load configuration from CWD/config.json, deep-merged with defaults.
 
@@ -265,6 +316,7 @@ def _load_config():
             for key, val in user_config.items():
                 if key not in config and not isinstance(val, dict):
                     config[key] = val
+            _warn_if_world_readable_with_key(config_path, user_config)
         except (json.JSONDecodeError, IOError) as e:
             _emit("on_notice", "warn", f"Warning: Could not load config.json, using defaults: {e}")
             user_config = None
