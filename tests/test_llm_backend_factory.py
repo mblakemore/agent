@@ -134,3 +134,43 @@ def test_llamacpp_complete(caplog):
     assert any(
         "backend.complete.latency_ms" in rec.getMessage() for rec in caplog.records
     )
+
+
+# ── Task 1.6 telemetry shape ──
+
+
+def test_telemetry_log_line_shape_complete(caplog):
+    """backend.complete.latency_ms carries backend=, model=, latency_ms=, ok= keys."""
+    with patch("llm_backend.requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        mock_post.return_value.json.return_value = {
+            "choices": [{"message": {"content": "hi"}}]
+        }
+        b = LlamacppBackend({"base_url": "http://x", "model": "gemma-4"})
+        with caplog.at_level(logging.INFO, logger="llm_backend"):
+            b.complete(prompt="x")
+    matched = [r for r in caplog.records if "backend.complete.latency_ms" in r.getMessage()]
+    assert matched, "backend.complete.latency_ms not logged"
+    msg = matched[0].getMessage()
+    assert "backend=llamacpp" in msg
+    assert "model=gemma-4" in msg
+    assert "latency_ms=" in msg
+    assert "ok=True" in msg
+
+
+def test_telemetry_log_line_shape_stream_chat(caplog):
+    """backend.stream_chat.latency_ms carries backend=, model=, latency_ms=, deltas=, ok= keys."""
+    with patch("llm_backend.requests.post") as mock_post:
+        mock_post.return_value.status_code = 200
+        b = LlamacppBackend({"base_url": "http://x", "model": "gemma-4"})
+        log = logging.getLogger("test_telemetry_stream")
+        with caplog.at_level(logging.INFO, logger="test_telemetry_stream"):
+            b.stream_chat(log, json={"messages": []})
+    matched = [r for r in caplog.records if "backend.stream_chat.latency_ms" in r.getMessage()]
+    assert matched, "backend.stream_chat.latency_ms not logged"
+    msg = matched[0].getMessage()
+    assert "backend=llamacpp" in msg
+    assert "model=gemma-4" in msg
+    assert "latency_ms=" in msg
+    assert "deltas=" in msg
+    assert "ok=True" in msg
