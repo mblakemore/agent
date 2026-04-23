@@ -293,8 +293,21 @@ BASE_URL = _config["llm"]["base_url"]
 # these module globals to swap backends without touching the factory.
 from llm_backend import build_backend as _build_backend
 
-_main_backend = _build_backend(_config["backends"]["main"])
-_summary_backend = _build_backend(_config["backends"]["summary"])
+
+def _cfg_with_role(backends: dict, role: str) -> dict:
+    """Return the role's backend config dict with ``role`` injected.
+
+    Plan task 2.4: ``BedrockBackend`` uses ``role`` to pick the daily cost
+    cap and label telemetry lines. LlamacppBackend ignores ``role`` so the
+    injection is safe for both kinds.
+    """
+    entry = dict(backends.get(role, {}))
+    entry.setdefault("role", role)
+    return entry
+
+
+_main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
+_summary_backend = _build_backend(_cfg_with_role(_config["backends"], "summary"))
 _MAX_FULL_LINES = _config["context"]["max_full_lines"]
 _PREVIEW_LINES = _config["context"]["preview_lines"]
 _SUMMARY_THRESHOLD = _config["context"]["summary_threshold"]
