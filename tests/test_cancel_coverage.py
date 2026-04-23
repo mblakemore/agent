@@ -39,7 +39,15 @@ class CancelCoverageTests(unittest.TestCase):
         # Mock CSI sequence: ESC [ A
         mock_select.return_value = ([mock_stdin], [], [])
         mock_stdin.read.side_effect = ['[', 'A']
-        cancel._consume_ansi_sequence()
+        # _consume_ansi_sequence is only called from the monitor loop right
+        # after a real ESC read, so the monitor is active. _read_byte's
+        # gate refuses stdin consumption when monitoring is off — exercise
+        # this test under the same invariant.
+        cancel._monitor_active.set()
+        try:
+            cancel._consume_ansi_sequence()
+        finally:
+            cancel._monitor_active.clear()
         self.assertEqual(mock_stdin.read.call_count, 2)
 
     @patch('sys.stdin')
@@ -48,7 +56,11 @@ class CancelCoverageTests(unittest.TestCase):
         # Mock SS3 sequence: ESC O 0
         mock_select.return_value = ([mock_stdin], [], [])
         mock_stdin.read.side_effect = ['O', '0']
-        cancel._consume_ansi_sequence()
+        cancel._monitor_active.set()
+        try:
+            cancel._consume_ansi_sequence()
+        finally:
+            cancel._monitor_active.clear()
         self.assertEqual(mock_stdin.read.call_count, 2)
 
     @patch('sys.stdin')
