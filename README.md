@@ -122,7 +122,7 @@ Agent-specific tools can also live in `./tools/` alongside your working director
 
 Drop a `config.json` in the working directory to override any of the built-in defaults. The top-level sections are:
 
-- **`backends`** — registry with `main` and `summary` entries; each carries a `kind` (currently `"llamacpp"`; a `"bedrock"` kind is planned, see `plan/bedrock-integration.md`) plus kind-specific keys (`base_url`, `model`, …). Preferred shape going forward.
+- **`backends`** — registry with `main` and `summary` entries; each carries a `kind` (`"llamacpp"` or `"bedrock"`) plus kind-specific keys (`base_url`, `model`, … for llamacpp; `api_url`, `api_key`, `model`, `origin`, `poll_*` for bedrock). Preferred shape going forward. See [Bedrock backend](#bedrock-backend) below.
 - **`llm`**, **`summary`** — legacy flat blocks (`base_url`, `model`, …). Still supported for back-compat: at load time they are synthesized into `backends.main` / `backends.summary` with `kind: "llamacpp"`. New configs should use `backends`; old configs need no change.
 - **`generation`** — `temperature`, `top_p`, `top_k`, `presence_penalty`.
 - **`context`** — `ctx_size`, `max_tokens`, `max_full_lines`, `preview_lines`, `summary_threshold`, `summary_max_chars`, `max_context_messages`. Controls how history is sized and when it gets summarized.
@@ -152,6 +152,72 @@ Equivalent legacy shape (still works, synthesized into the registry at load time
   "cycle":   { "max_turns": 50 }
 }
 ```
+
+## Bedrock backend
+
+The agent can talk to an AWS Bedrock Chat gateway (aws-samples/bedrock-chat) for either the main model, the summary model, or both. Main-on-bedrock uses prompt stuffing to deliver tool calls (see `plan/bedrock-integration.md` § 8); summary-on-bedrock is a straight one-shot call.
+
+### Env vars
+
+```bash
+export BEDROCK_API_URL="https://<your-gateway-id>.execute-api.us-east-1.amazonaws.com/prod"
+export BEDROCK_API_KEY="<your-api-gateway-key>"
+```
+
+Both must be set before the agent starts when any backend has `kind: "bedrock"`. Missing env + empty `api_url`/`api_key` in config fails fast at startup.
+
+Optional override: `BEDROCK_DAILY_CAP_USD` caps the combined spend for the day across roles (useful for CI runs). Default caps are `$10/day` for main and `$1/day` for summary — set either via `backends.<role>.daily_cost_cap_usd` in `config.json`, or override both via the env var.
+
+### Config — all four combinations
+
+1. **llamacpp main + llamacpp summary** (today's default — no change):
+   ```json
+   { "backends": {
+       "main":    { "kind": "llamacpp", "base_url": "http://127.0.0.1:8080", "model": "gemma-4-31B" },
+       "summary": { "kind": "llamacpp", "base_url": "http://127.0.0.1:8082", "model": "gemma-4-E4B" }
+   }}
+   ```
+
+2. **llamacpp main + bedrock summary** (canary — cheapest way to try Bedrock):
+   ```json
+   { "backends": {
+       "main":    { "kind": "llamacpp", "base_url": "http://127.0.0.1:8080", "model": "gemma-4-31B" },
+       "summary": { "kind": "bedrock",  "model": "claude-v4.5-haiku",
+                    "enabled": true, "max_wait_on_save": 30 }
+   }}
+   ```
+
+3. **bedrock main + llamacpp summary**:
+   ```json
+   { "backends": {
+       "main":    { "kind": "bedrock",  "model": "claude-v4.5-sonnet" },
+       "summary": { "kind": "llamacpp", "base_url": "http://127.0.0.1:8082", "model": "gemma-4-E4B" }
+   }}
+   ```
+
+4. **bedrock everywhere**:
+   ```json
+   { "backends": {
+       "main":    { "kind": "bedrock", "model": "claude-v4.5-sonnet" },
+       "summary": { "kind": "bedrock", "model": "claude-v4.5-haiku" }
+   }}
+   ```
+
+Per-run override: pass `--backend-main bedrock` / `--backend-summary bedrock` on the CLI to flip the kind for a single invocation without editing `config.json`.
+
+### Security
+
+- `config.json` should be `chmod 600` when it contains a non-empty `api_key`. At startup the agent logs a WARN if the file is world-readable.
+- The daily spend counter at `CICD/bedrock_spend.json` is written with mode `0o600` (no secrets, usage data only — but the mode is locked regardless).
+- `BEDROCK_API_KEY` is redacted at every `_config` log site (no sentinel-value leak — covered by `tests/test_bedrock_security.py`).
+
+### Known limitations
+
+- **Dev-mode prompt overhead.** Bedrock has no native tool-calling in the gateway; tools are serialized into the prompt text (~1.5-2k tokens per turn with the agent's ~10-tool set). Accepted trade-off for Phase 2; see `plan/bedrock-integration.md` § 8.4 / K12.
+- **Gemma tokenizer approximation.** Token counts for non-llamacpp backends use the same Gemma-3 tokenizer and systematically overshoot Claude text by ~10-20% (safe direction — errs toward reserving more context).
+- **No progressive streaming.** The gateway doesn't expose in-progress message text, so Bedrock turns deliver a single content delta at the end rather than incremental tokens. See § 7.3 Option A.
+
+See `plan/bedrock-integration.md` § 8 for the dev-mode prompt-stuffing details and § 18.5 for the operator runbook (5xx bursts, truncation exhaustion, key rotation, cost spikes, rollback).
 
 ## Dependencies
 

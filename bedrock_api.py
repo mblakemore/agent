@@ -1,0 +1,195 @@
+"""Bedrock Chat Published API client.
+
+Replaces the local llama-server OpenAI-compatible API with the
+AWS Bedrock Chat gateway (aws-samples/bedrock-chat).
+
+Ported from /droid/repos/llmbox-cli/bedrock_api.py @ SHA 1653b71
+Last verified: 2026-04-23
+See /droid/repos/agent/plan/bedrock-integration.md § 19 for drift protocol.
+
+D11 patch (see plan § 4 / § 24): the upstream module reads
+``BEDROCK_API_URL`` / ``BEDROCK_API_KEY`` from ``os.environ`` at import
+time via ``_DEFAULT_CONFIG``. That import-time side effect is surprising
+for the agent; the agent's backend factory (``llm_backend.BedrockBackend``)
+reads env vars explicitly and passes them in through ``config``. The
+defaults here are therefore empty strings. Behavior is otherwise
+byte-identical to the upstream port.
+"""
+
+import json
+import logging
+import time
+
+import requests
+
+_DEFAULT_CONFIG = {
+    "api_url": "",
+    "api_key": "",
+    "origin": "http://localhost:8000",
+    "model": "claude-v4.5-sonnet",
+    "poll_interval": 0.3,
+    "poll_backoff": 1.5,
+    "poll_max_interval": 5.0,
+    "poll_timeout": 180,
+}
+
+
+class BedrockChatAPI:
+    """Client for the Bedrock Chat Published API."""
+
+    def __init__(self, config: dict | None = None):
+        cfg = {**_DEFAULT_CONFIG, **(config or {})}
+        self.api_url = cfg["api_url"]
+        self.model = cfg["model"]
+        self.poll_initial = cfg["poll_interval"]
+        self.poll_backoff = cfg.get("poll_backoff", 1.5)
+        self.poll_max_interval = cfg.get("poll_max_interval", 5.0)
+        self.poll_timeout = cfg["poll_timeout"]
+        self.session = requests.Session()
+        self.session.headers.update({
+            "x-api-key": cfg["api_key"],
+            "Content-Type": "application/json",
+            "Origin": cfg["origin"],
+        })
+        self.log = logging.getLogger("agent")
+
+    def health(self) -> bool:
+        try:
+            resp = self.session.get(f"{self.api_url}/health", timeout=10)
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    def send(self, prompt: str, enable_reasoning: bool = False,
+             conversation_id: str | None = None) -> tuple[str, str]:
+        """Send a message. Returns (conversation_id, message_id).
+
+        If conversation_id is provided, continues that conversation on the server.
+        """
+        payload = {
+            "message": {
+                "content": [{"contentType": "text", "body": prompt}],
+                "model": self.model,
+            },
+        }
+        if conversation_id:
+            payload["conversationId"] = conversation_id
+        if enable_reasoning:
+            payload["enableReasoning"] = True
+
+        resp = self.session.post(f"{self.api_url}/conversation", json=payload, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["conversationId"], data["messageId"]
+
+    def poll(self, conversation_id: str, cancel_check=None) -> dict:
+        """Poll until assistant response is ready. Uses adaptive exponential backoff."""
+        deadline = time.time() + self.poll_timeout
+        interval = self.poll_initial
+        while time.time() < deadline:
+            time.sleep(interval)
+            if cancel_check:
+                cancel_check()
+            resp = self.session.get(
+                f"{self.api_url}/conversation/{conversation_id}", timeout=30)
+            if resp.status_code == 429:
+                interval = self.poll_max_interval
+                continue
+            resp.raise_for_status()
+            conv = resp.json()
+            last_id = conv.get("lastMessageId")
+            if last_id:
+                last_msg = conv.get("messageMap", {}).get(last_id, {})
+                if last_msg.get("role") == "assistant":
+                    return last_msg
+            interval = min(interval * self.poll_backoff, self.poll_max_interval)
+        raise TimeoutError(f"No response after {self.poll_timeout}s")
+
+    def poll_message(self, conversation_id: str, message_id: str,
+                     cancel_check=None) -> dict:
+        """Poll a specific message until the assistant response is ready.
+
+        Uses GET /conversation/{conv_id}/{msg_id} with adaptive exponential backoff.
+        Returns 404 while processing.
+        """
+        deadline = time.time() + self.poll_timeout
+        interval = self.poll_initial
+        while time.time() < deadline:
+            time.sleep(interval)
+            if cancel_check:
+                cancel_check()
+            resp = self.session.get(
+                f"{self.api_url}/conversation/{conversation_id}/{message_id}",
+                timeout=30)
+            if resp.status_code == 404:
+                interval = min(interval * self.poll_backoff, self.poll_max_interval)
+                continue  # not ready yet
+            if resp.status_code == 429:
+                interval = self.poll_max_interval
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            msg = data.get("message", {})
+            if msg.get("role") == "assistant":
+                return msg
+            interval = min(interval * self.poll_backoff, self.poll_max_interval)
+        raise TimeoutError(f"No response after {self.poll_timeout}s")
+
+    def get_conversation(self, conversation_id: str) -> dict:
+        """Fetch the full conversation tree from the server.
+
+        Returns the raw conversation dict with messageMap.
+        """
+        resp = self.session.get(
+            f"{self.api_url}/conversation/{conversation_id}", timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+
+    def send_and_wait(self, prompt: str, enable_reasoning: bool = False,
+                      cancel_check=None) -> dict:
+        """Send a message and wait for the response. Returns the full assistant message."""
+        conv_id, _ = self.send(prompt, enable_reasoning)
+        return self.poll(conv_id, cancel_check=cancel_check)
+
+    def send_and_wait_conv(self, prompt: str, conversation_id: str | None = None,
+                           cancel_check=None) -> tuple[dict, str]:
+        """Send a message and wait for the response, returning the conversation_id.
+
+        Returns (assistant_message, conversation_id). For continuing conversations,
+        uses message-specific polling for reliable response retrieval.
+        """
+        conv_id, msg_id = self.send(prompt, conversation_id=conversation_id)
+        if conversation_id:
+            msg = self.poll_message(conv_id, msg_id, cancel_check=cancel_check)
+        else:
+            msg = self.poll(conv_id, cancel_check=cancel_check)
+        return msg, conv_id
+
+    def extract_text(self, msg: dict) -> str:
+        """Extract text content from an assistant message."""
+        parts = []
+        for content in msg.get("content", []):
+            if content.get("contentType") == "text":
+                parts.append(content.get("body", ""))
+        return "\n".join(parts)
+
+    def extract_reasoning(self, msg: dict) -> str | None:
+        """Extract reasoning/thinking content if present."""
+        for content in msg.get("content", []):
+            if content.get("contentType") == "reasoning":
+                return content.get("text", "")
+        log = msg.get("thinkingLog")
+        if log:
+            return str(log)
+        return None
+
+    def list_models(self) -> list[str]:
+        """Fetch available models from the OpenAPI spec."""
+        try:
+            resp = self.session.get(f"{self.api_url}/openapi.json", timeout=10)
+            resp.raise_for_status()
+            spec = resp.json()
+            return spec["components"]["schemas"]["MessageInputWithoutMessageId"]["properties"]["model"]["enum"]
+        except Exception as e:
+            self.log.warning("Failed to fetch model list: %s", e)
+            return []
