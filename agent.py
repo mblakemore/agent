@@ -242,6 +242,57 @@ def _synthesize_backends_registry(config):
     return {"main": main, "summary": summary}
 
 
+def _redact_api_keys(cfg):
+    """Return a copy of ``cfg`` with every nested ``api_key`` value redacted.
+
+    Plan § 18.75 security checklist: any ``log.debug("config: %s", _config)``
+    line must not surface the literal key. Walks ``backends``
+    specifically (the only surface that carries an ``api_key``) plus any
+    top-level ``api_key`` field for defensive-depth reasons.
+    """
+    if not isinstance(cfg, dict):
+        return cfg
+    result = {}
+    for k, v in cfg.items():
+        if k == "api_key" and v:
+            result[k] = "***REDACTED***"
+        elif isinstance(v, dict):
+            result[k] = _redact_api_keys(v)
+        else:
+            result[k] = v
+    return result
+
+
+def _warn_if_world_readable_with_key(config_path, user_config):
+    """Emit a WARN log line if ``config.json`` is world-readable AND
+    contains a non-empty ``api_key`` under any ``backends`` entry.
+
+    Plan § 18.75 security checklist. Don't enforce; just warn.
+    """
+    if not isinstance(user_config, dict):
+        return
+    # Walk backends → {main,summary} → api_key to check for a non-empty key.
+    has_key = False
+    backends = user_config.get("backends", {})
+    if isinstance(backends, dict):
+        for entry in backends.values():
+            if isinstance(entry, dict) and entry.get("api_key"):
+                has_key = True
+                break
+    if not has_key:
+        return
+    try:
+        mode = os.stat(str(config_path)).st_mode & 0o777
+    except OSError:
+        return
+    if mode & 0o077:  # any permission bits for group or other
+        logging.getLogger("agent").warning(
+            "config.json is world-readable (mode 0o%o); chmod 600 %s",
+            mode,
+            config_path,
+        )
+
+
 def _load_config():
     """Load configuration from CWD/config.json, deep-merged with defaults.
 
@@ -265,6 +316,7 @@ def _load_config():
             for key, val in user_config.items():
                 if key not in config and not isinstance(val, dict):
                     config[key] = val
+            _warn_if_world_readable_with_key(config_path, user_config)
         except (json.JSONDecodeError, IOError) as e:
             _emit("on_notice", "warn", f"Warning: Could not load config.json, using defaults: {e}")
             user_config = None
@@ -293,8 +345,73 @@ BASE_URL = _config["llm"]["base_url"]
 # these module globals to swap backends without touching the factory.
 from llm_backend import build_backend as _build_backend
 
-_main_backend = _build_backend(_config["backends"]["main"])
-_summary_backend = _build_backend(_config["backends"]["summary"])
+
+def _cfg_with_role(backends: dict, role: str) -> dict:
+    """Return the role's backend config dict with ``role`` injected.
+
+    Plan task 2.4: ``BedrockBackend`` uses ``role`` to pick the daily cost
+    cap and label telemetry lines. LlamacppBackend ignores ``role`` so the
+    injection is safe for both kinds.
+    """
+    entry = dict(backends.get(role, {}))
+    entry.setdefault("role", role)
+    return entry
+
+
+_main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
+_summary_backend = _build_backend(_cfg_with_role(_config["backends"], "summary"))
+
+
+def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) -> None:
+    """Apply ``--backend-main`` / ``--backend-summary`` CLI overrides.
+
+    Per plan task 2.5: when either flag is set, override
+    ``_config["backends"][role]["kind"]`` and rebuild the corresponding
+    backend module-level global. If a flag selects ``bedrock`` without an
+    explicit model already in the config block, a sensible default is
+    supplied (``claude-v4.5-sonnet`` for main, ``claude-v4.5-haiku`` for
+    summary) and an INFO log line is emitted.
+    """
+    global _main_backend, _summary_backend
+
+    defaults = {"main": "claude-v4.5-sonnet", "summary": "claude-v4.5-haiku"}
+
+    # Model IDs the Bedrock gateway accepts. An existing model that doesn't
+    # match one of these prefixes was set for the OTHER backend kind (likely
+    # a llamacpp default like ``gemma-4-31B`` carried over from
+    # _synthesize_backends_registry), so the CLI override must replace it
+    # with a Bedrock-compatible default — otherwise the gateway returns 422.
+    _bedrock_prefixes = (
+        "claude-", "mistral-", "mixtral-", "amazon-nova-",
+        "deepseek-", "llama-", "llama3-", "qwen",
+    )
+
+    def _override(role: str, kind: str | None):
+        if not kind:
+            return
+        entry = _config["backends"].setdefault(role, {})
+        entry["kind"] = kind
+        if kind == "bedrock":
+            existing = entry.get("model", "")
+            if not existing or not existing.startswith(_bedrock_prefixes):
+                entry["model"] = defaults[role]
+                logging.getLogger("agent").info(
+                    "backend-override role=%s kind=bedrock model=%s "
+                    "(default — replaced incompatible %r)",
+                    role,
+                    entry["model"],
+                    existing or "<unset>",
+                )
+
+    _override("main", main_kind)
+    _override("summary", summary_kind)
+
+    if main_kind:
+        _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
+    if summary_kind:
+        _summary_backend = _build_backend(
+            _cfg_with_role(_config["backends"], "summary")
+        )
 _MAX_FULL_LINES = _config["context"]["max_full_lines"]
 _PREVIEW_LINES = _config["context"]["preview_lines"]
 _SUMMARY_THRESHOLD = _config["context"]["summary_threshold"]
@@ -474,6 +591,49 @@ def _llm_request(log, **kwargs):
     tests that ``patch('agent._llm_request')`` still work unmodified.
     """
     return _main_backend.stream_chat(log, **kwargs)
+
+
+def _iter_stream_chunks(response):
+    """Yield OpenAI-shape delta dicts from either backend shape.
+
+    Accepts two inputs:
+      (a) A ``requests.Response`` (or mock thereof) exposing ``iter_lines()`` —
+          the legacy llamacpp shape. SSE frames like ``data: {...}\\n`` are
+          parsed here; ``data: [DONE]`` stops iteration.
+      (b) Any iterable already yielding delta dicts — the Bedrock shape (and
+          simpler for tests). Passed through verbatim.
+
+    Keeping both shapes callable from the main loop means Phase 1's existing
+    tests that mock ``_llm_request`` with ``iter_lines.return_value = [...]``
+    continue to work without modification, while ``BedrockBackend.stream_chat``
+    (a plain generator of dicts) now flows through ``run_agent_single``
+    end-to-end. See plan § 7.1 open question on StreamDelta Protocol.
+    """
+    if hasattr(response, "iter_lines"):
+        for raw_line in response.iter_lines(decode_unicode=False):
+            line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+            if not line or not line.startswith("data: "):
+                continue
+            payload = line[len("data: "):]
+            if payload == "[DONE]":
+                return
+            try:
+                yield json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+    else:
+        for chunk in response:
+            yield chunk
+
+
+def _safe_close(response):
+    """Close a streaming response regardless of shape (Response or generator)."""
+    closer = getattr(response, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:
+            pass
 
 
 # ── Text utilities ─────────────────────────────────────────────────────
@@ -1543,7 +1703,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     _emit("on_session_start", {
         "api_ok": ok,
         "api_detail": detail,
-        "base_url": BASE_URL,
+        "base_url": getattr(_main_backend, "base_url", None) or BASE_URL,
         "model": model_name,
         "ctx_size": ctx_size,
         "max_turns": _MAX_TURNS,
@@ -1972,7 +2132,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
             try:
                 response = _llm_request(log, json=request_body, stream=True, timeout=(30, 300))
-                log.info("Response status: %d", response.status_code)
+                # Only the legacy Response shape exposes ``status_code``;
+                # a generator (Bedrock backend) doesn't. Skip the log line in
+                # that case — the backend emits its own latency/ok telemetry.
+                if hasattr(response, "status_code"):
+                    log.info("Response status: %d", response.status_code)
                 break  # success — exit the reduction loop
             except ContextOverflowError:
                 if _ctx_attempt >= _CTX_REDUCE_MAX:
@@ -2013,35 +2177,30 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         tool_calls_by_index = {}
         printed_header = False
         receiving_tools = False
-        _stream_deadline = time.monotonic() + 600  # 10 minute wall-clock cap
+        _stream_t0 = time.monotonic()
+        _stream_deadline = _stream_t0 + 600  # 10 minute wall-clock cap
         status = StreamStatus(emit=_emit)
         status.start("\nAssistant: ")
         renderer = _ReasoningRenderer(lambda t: _emit("on_stream_chunk", t))
 
-        # TESTING NOTES: mock _llm_request to return a response with this iter_lines shape:
+        # TESTING NOTES: mock _llm_request to return one of:
+        #   (a) Response-style (legacy): `resp.iter_lines.return_value = [f"data: {json.dumps(body)}".encode(), b"data: [DONE]"]`
+        #   (b) Iterator-of-dicts (new): any iterable yielding OpenAI delta dicts directly
+        # `_iter_stream_chunks` below accepts either shape. LlamacppBackend returns
+        # shape (a) — a live requests.Response. BedrockBackend yields (b) — a generator
+        # of pre-parsed delta dicts. Mocks can use either form.
         #   tc = {"index": 0, "id": "t1", "type": "function",
         #         "function": {"name": tool_name, "arguments": json.dumps(args_dict)}}
         #   body = {"choices": [{"delta": {"tool_calls": [tc]}}]}
-        #   resp.iter_lines.return_value = [f"data: {json.dumps(body)}".encode(), b"data: [DONE]"]
         #   summary_state must be initialized as {"text": "", "up_to": 0}
         try:
             with cancellable():
-                for raw_line in response.iter_lines(decode_unicode=False):
-                    line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+                for chunk in _iter_stream_chunks(response):
                     check_cancelled()
                     if time.monotonic() > _stream_deadline:
                         log.warning("Streaming wall-clock deadline exceeded (600s) — aborting response")
-                        response.close()
+                        _safe_close(response)
                         break
-                    if not line or not line.startswith("data: "):
-                        continue
-                    payload = line[len("data: "):]
-                    if payload == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
 
                     choices = chunk.get("choices")
                     if not choices:
@@ -2081,25 +2240,27 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         except CancelledError:
             renderer.flush()
             status.finish()
-            response.close()
+            _safe_close(response)
             _emit("on_cancelled", "streaming")
+            log.info(
+                "cancel.latency_ms latency_ms=%d site=backend.stream_chat backend=%s",
+                int((time.monotonic() - _stream_t0) * 1000),
+                _main_backend.kind,
+            )
             log.info("CANCELLED during streaming")
             # Keep partial history so caller can inject user guidance
             return "cancelled"
         except requests.exceptions.RequestException as e:
             renderer.flush()
             status.finish()
-            response.close()
+            _safe_close(response)
             log.error("Streaming connection lost: %s", e)
             _emit("on_error", f"Streaming error: {e}")
             # Treat as empty response — the text-only handler will nudge or stop
         except Exception as e:
             renderer.flush()
             status.finish()
-            try:
-                response.close()
-            except Exception:
-                pass
+            _safe_close(response)
             log.error("Unexpected error during streaming: %s", e, exc_info=True)
             _emit("on_error", f"Streaming error: {e}")
 
@@ -2322,6 +2483,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         log.debug("Executing %d tool calls", len(tool_calls))
         _emit("on_tool_batch_start", len(tool_calls))
         _garbled_count = 0  # track garbled tool calls for retry
+        _tool_exec_t0 = time.monotonic()
         try:
             with cancellable():
                 for tool_call in tool_calls:
@@ -2867,6 +3029,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                           result_str.startswith("Error"))
         except CancelledError:
             _emit("on_cancelled", "tool_execution")
+            log.info(
+                "cancel.latency_ms latency_ms=%d site=tool_execution backend=%s",
+                int((time.monotonic() - _tool_exec_t0) * 1000),
+                _main_backend.kind,
+            )
             log.info("CANCELLED during tool execution")
             if _async_summarizer:
                 _async_summarizer.drain()
@@ -2918,8 +3085,17 @@ def main():
                              "(use a plain input() prompt). The TUI is on by default when "
                              "running interactively and falls back to plain input() automatically "
                              "if `prompt_toolkit` isn't installed.")
+    parser.add_argument("--backend-main", dest="backend_main",
+                        choices=["llamacpp", "bedrock"], default=None,
+                        help="Override the main backend kind (see plan/bedrock-integration.md).")
+    parser.add_argument("--backend-summary", dest="backend_summary",
+                        choices=["llamacpp", "bedrock"], default=None,
+                        help="Override the summary backend kind.")
     parser.add_argument("prompt", nargs="*", help="Initial prompt")
     args = parser.parse_args()
+
+    # Apply backend-kind overrides before any backend-dependent startup logic.
+    _apply_backend_overrides(args.backend_main, args.backend_summary)
 
     global _NUDGE_ENABLED
     _NUDGE_ENABLED = args.nudge
