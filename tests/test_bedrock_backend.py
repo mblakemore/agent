@@ -85,12 +85,36 @@ def test_bedrock_health_503(monkeypatch):
     assert "failed" in detail
 
 
-def test_bedrock_detect_ctx_size_known_model(monkeypatch):
+def test_bedrock_detect_ctx_size_known_model_summary_role(monkeypatch):
+    """Summary role returns the raw per-model char budget.
+
+    Main role subtracts ``_DEV_MODE_PREAMBLE_RESERVE_CHARS`` (plan § 10
+    headroom reservation) — see ``test_bedrock_detect_ctx_size_main_reserves_preamble``.
+    """
     monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
     monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
-    b = BedrockBackend({"kind": "bedrock", "model": "claude-v4.5-haiku"})
+    b = BedrockBackend(
+        {"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "summary"}
+    )
     # _MODEL_CONTEXT_CHARS returns char budget, not ctx tokens.
     assert b.detect_ctx_size() == 700000
+
+
+def test_bedrock_detect_ctx_size_main_reserves_preamble(monkeypatch):
+    """Main role subtracts preamble headroom (plan § 10).
+
+    Dev-mode prepends ~1.5-2k tokens of tool manual + one-shot example to
+    every main turn; without reserving that budget, the context packer
+    would over-fill and hit "Input too long" at the gateway.
+    """
+    from llm_backend import _DEV_MODE_PREAMBLE_RESERVE_CHARS
+
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    b = BedrockBackend(
+        {"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "main"}
+    )
+    assert b.detect_ctx_size() == 700000 - _DEV_MODE_PREAMBLE_RESERVE_CHARS
 
 
 def test_bedrock_detect_ctx_size_unknown_model(monkeypatch):
