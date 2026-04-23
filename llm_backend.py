@@ -344,6 +344,14 @@ class LlamacppBackend:
 # Port of ``llmbox_lib.py:169-179`` — per-model context defaults (in chars,
 # not tokens; the gateway doesn't expose a real ctx size). Used for the
 # banner and context budgeter when ``detect_ctx_size()`` is called.
+# Reserve this many chars of the context budget for the dev-mode preamble
+# (tool manual + RULES + one-shot example) when main=bedrock. 8000 chars is
+# ~2k tokens at Claude's BPE, matching the K12/§ 8.4 estimate. Subtracted
+# from the per-model context cap in ``BedrockBackend.detect_ctx_size`` for
+# role=main only — summary path doesn't use dev-mode.
+_DEV_MODE_PREAMBLE_RESERVE_CHARS = 8000
+
+
 _MODEL_CONTEXT_CHARS = {
     "claude-v4.5-opus": 700000,
     "claude-v4.5-sonnet": 700000,
@@ -556,10 +564,23 @@ class BedrockBackend:
     def detect_ctx_size(self) -> int | None:
         """Gateway doesn't expose ctx_size; return per-model default char
         budget or None if the model is unknown. Plan § 10 / D9.
+
+        For ``role=main``, subtract ``_DEV_MODE_PREAMBLE_RESERVE_CHARS`` to
+        reserve headroom for the dev-mode tool manual + one-shot example
+        that ``build_dev_prompt`` prepends to every main turn (plan § 10
+        and § 8.4 — the preamble adds ~1.5-2k tokens, so ~8k chars at
+        Claude's BPE). This prevents the context-budgeter from over-packing
+        messages and hitting an "Input too long" error at the gateway.
+        Summary path renders its prompt verbatim, so no reserve is needed.
         """
         if not self.model:
             return None
-        return _MODEL_CONTEXT_CHARS.get(self.model)
+        ctx = _MODEL_CONTEXT_CHARS.get(self.model)
+        if ctx is None:
+            return None
+        if self.role == "main":
+            ctx = max(ctx - _DEV_MODE_PREAMBLE_RESERVE_CHARS, 4096)
+        return ctx
 
     def list_models(self) -> list[str]:
         """Try the gateway's OpenAPI spec first; fall back to the
@@ -605,6 +626,56 @@ class BedrockBackend:
                 f"Bedrock daily spend cap exceeded (${new_total:.2f} of ${cap:.2f})"
             )
 
+    # ── Retry helper ──
+
+    def _call_with_retry(self, fn, *args, _log=None, _cancel_check=None, **kwargs):
+        """Wrap a bedrock_api call with bounded retry on 5xx / timeouts.
+
+        Emits ``backend.retry.attempted`` per plan § 15.75. Respects
+        ``_cancel_check`` between attempts — a user double-escape cuts the
+        retry loop cleanly instead of waiting out the backoff.
+        """
+        import requests as _requests
+
+        log = _log or logging.getLogger("llm_backend")
+        max_retries = int(self._cfg.get("max_retries", 3))
+        base_delay = float(self._cfg.get("retry_base_delay_seconds", 1.0))
+        backoff = float(self._cfg.get("retry_backoff", 2.0))
+
+        last_exc: Exception | None = None
+        for attempt in range(max_retries + 1):
+            if _cancel_check:
+                _cancel_check()
+            try:
+                return fn(*args, **kwargs)
+            except _requests.exceptions.HTTPError as e:
+                status = getattr(e.response, "status_code", 0)
+                if status < 500 or attempt >= max_retries:
+                    raise
+                last_exc = e
+            except (
+                _requests.exceptions.Timeout,
+                _requests.exceptions.ConnectionError,
+            ) as e:
+                if attempt >= max_retries:
+                    raise
+                last_exc = e
+
+            delay = base_delay * (backoff ** attempt)
+            log.warning(
+                "backend.retry.attempted backend=bedrock attempt=%d/%d "
+                "error=%s delay=%.1fs",
+                attempt + 1,
+                max_retries,
+                last_exc,
+                delay,
+            )
+            if _cancel_check:
+                _cancel_check()
+            time.sleep(delay)
+        assert last_exc is not None  # pragma: no cover
+        raise last_exc
+
     # ── Summary-path: single-shot completion ──
 
     def complete(
@@ -620,12 +691,20 @@ class BedrockBackend:
         ``gen_params`` is accepted for signature parity with
         ``LlamacppBackend.complete`` but Bedrock gateway doesn't expose
         per-call gen params; they're stored on the server-side model.
+        The ``timeout`` argument is also accepted for signature parity;
+        the gateway poll uses its own ``poll_timeout`` from config.
         """
         log = logging.getLogger("llm_backend")
         t0 = time.monotonic()
         ok = False
         try:
-            msg = self._api.send_and_wait(prompt, cancel_check=cancel_check)
+            msg = self._call_with_retry(
+                self._api.send_and_wait,
+                prompt,
+                _log=log,
+                _cancel_check=cancel_check,
+                cancel_check=cancel_check,
+            )
             text = self._api.extract_text(msg)
             ok = True
             # Record cost only on a successful call — keeps failed calls
@@ -710,10 +789,13 @@ class BedrockBackend:
 
             if attempt == 0:
                 send_text = prompt
-                msg, conv_id = self._api.send_and_wait_conv(
+                msg, conv_id = self._call_with_retry(
+                    self._api.send_and_wait_conv,
                     send_text,
                     conversation_id=None,
                     cancel_check=cancel_check,
+                    _log=log,
+                    _cancel_check=cancel_check,
                 )
             else:
                 tail = full_text[-200:]
@@ -721,10 +803,13 @@ class BedrockBackend:
                     "Your response was truncated. Continue from exactly "
                     f"where you left off. Last part ended with:\n...{tail}"
                 )
-                msg, conv_id = self._api.send_and_wait_conv(
+                msg, conv_id = self._call_with_retry(
+                    self._api.send_and_wait_conv,
                     send_text,
                     conversation_id=conv_id,
                     cancel_check=cancel_check,
+                    _log=log,
+                    _cancel_check=cancel_check,
                 )
 
             piece = self._api.extract_text(msg)
