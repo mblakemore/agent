@@ -203,9 +203,26 @@ if [ ${#BACKEND_ARGS[@]} -gt 0 ]; then
     echo "==> Backend overrides: ${BACKEND_ARGS[*]}"
 fi
 
+# ── Memory isolation (cgroup scope) ──────────────────────────────────
+# Launches each agent run in its own systemd scope with a memory cap. When
+# the cap is breached the kernel kills only the agent — not the user's
+# tmux/claude session. Without this, a global OOM would tear down the whole
+# systemd tmux-spawn scope (what killed runs 135 + 139 before this change).
+# Override via env:
+#   CICD_MEM_MAX=20G            # raise cap per-run
+#   CICD_NO_SCOPE=1             # skip scope wrapping (for debug / no-systemd)
+CICD_MEM_MAX="${CICD_MEM_MAX:-12G}"
+SCOPE_WRAP=()
+if [ -z "${CICD_NO_SCOPE:-}" ] && command -v systemd-run &>/dev/null; then
+    SCOPE_WRAP=(systemd-run --user --scope --quiet --same-dir
+                --property=MemoryMax="${CICD_MEM_MAX}"
+                --property=MemorySwapMax=0)
+    echo "==> Memory scope: ${CICD_MEM_MAX} max (systemd-run --user --scope)"
+fi
+
 # ── Run builder ───────────────────────────────────────────────────────
 echo "==> Running CICD builder agent"
-"${SYSTEM_PYTHON3}" "${AGENT_PY}" -a --verbose --nudge "${BACKEND_ARGS[@]}" "${AGENT_MD}
+"${SCOPE_WRAP[@]}" "${SYSTEM_PYTHON3}" "${AGENT_PY}" -a --verbose --nudge "${BACKEND_ARGS[@]}" "${AGENT_MD}
 
 ${OVERRIDE}
 
@@ -213,7 +230,7 @@ Follow the instructions and continue!"
 
 # ── Run reviewer ──────────────────────────────────────────────────────
 echo "==> Running CICD reviewer agent"
-"${SYSTEM_PYTHON3}" "${AGENT_PY}" -a --verbose --nudge "${BACKEND_ARGS[@]}" "${REVIEWER_MD}
+"${SCOPE_WRAP[@]}" "${SYSTEM_PYTHON3}" "${AGENT_PY}" -a --verbose --nudge "${BACKEND_ARGS[@]}" "${REVIEWER_MD}
 
 ${OVERRIDE}
 
