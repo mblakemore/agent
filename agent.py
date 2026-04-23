@@ -223,35 +223,78 @@ _DEFAULT_CONFIG = {
 }
 
 
+def _synthesize_backends_registry(config):
+    """Build a ``backends`` registry dict from the legacy ``llm`` / ``summary``
+    top-level blocks, or pass through an explicit ``backends`` block.
+
+    See plan/bedrock-integration.md § 6 "Migration strategy". Preserves every
+    field from the legacy block so unknown keys survive the shim intact.
+    """
+    if "backends" in config and isinstance(config["backends"], dict):
+        return config["backends"]
+
+    main = {"kind": "llamacpp"}
+    main.update(config.get("llm", {}))
+
+    summary = {"kind": "llamacpp"}
+    summary.update(config.get("summary", {}))
+
+    return {"main": main, "summary": summary}
+
+
 def _load_config():
-    """Load configuration from CWD/config.json, deep-merged with defaults."""
+    """Load configuration from CWD/config.json, deep-merged with defaults.
+
+    Also synthesizes a ``backends`` registry (plan § 6 / D3) from the legacy
+    ``llm`` / ``summary`` blocks for back-compat. Existing call sites that
+    read ``_config["llm"]`` / ``_config["summary"]`` continue to work.
+    """
     config = json.loads(json.dumps(_DEFAULT_CONFIG))  # deep copy
 
     config_path = Path(os.getcwd()) / "config.json"
-    if not config_path.exists():
-        return config
+    user_config = None
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8", errors="replace") as f:
+                user_config = json.load(f)
+            for section in config:
+                if section in user_config and isinstance(user_config[section], dict):
+                    config[section].update(user_config[section])
+            # Copy top-level scalar overrides (e.g. log_dir, log_prefix) that aren't
+            # _DEFAULT_CONFIG sections — the loop above only handles dict-valued sections.
+            for key, val in user_config.items():
+                if key not in config and not isinstance(val, dict):
+                    config[key] = val
+        except (json.JSONDecodeError, IOError) as e:
+            _emit("on_notice", "warn", f"Warning: Could not load config.json, using defaults: {e}")
+            user_config = None
 
-    try:
-        with open(config_path, "r", encoding="utf-8", errors="replace") as f:
-            user_config = json.load(f)
-        for section in config:
-            if section in user_config and isinstance(user_config[section], dict):
-                config[section].update(user_config[section])
-        # Copy top-level scalar overrides (e.g. log_dir, log_prefix) that aren't
-        # _DEFAULT_CONFIG sections — the loop above only handles dict-valued sections.
-        for key, val in user_config.items():
-            if key not in config and not isinstance(val, dict):
-                config[key] = val
-        return config
-    except (json.JSONDecodeError, IOError) as e:
-        _emit("on_notice", "warn", f"Warning: Could not load config.json, using defaults: {e}")
-        return config
+    # Back-compat shim: if user provided an explicit `backends` block, use it
+    # as-is; otherwise synthesize from legacy `llm` / `summary` blocks.
+    merge_src = {}
+    if user_config and isinstance(user_config.get("backends"), dict):
+        merge_src["backends"] = user_config["backends"]
+    # Merge the synthesized registry back on top of the deep-copied default
+    # `llm` / `summary` blocks so each backend entry carries kind + defaults.
+    merge_src.setdefault("llm", config["llm"])
+    merge_src.setdefault("summary", config["summary"])
+    config["backends"] = _synthesize_backends_registry(merge_src)
+
+    return config
 
 
 _config = _load_config()
 
 # Apply configuration
 BASE_URL = _config["llm"]["base_url"]
+
+# Backend instances (plan task 1.4). Phase 1 only wires LlamacppBackend;
+# Phase 2 adds BedrockBackend behind the same factory. Tests may monkeypatch
+# these module globals to swap backends without touching the factory.
+from llm_backend import build_backend as _build_backend
+
+_main_backend = _build_backend(_config["backends"]["main"])
+_summary_backend = _build_backend(_config["backends"]["summary"])
 _MAX_FULL_LINES = _config["context"]["max_full_lines"]
 _PREVIEW_LINES = _config["context"]["preview_lines"]
 _SUMMARY_THRESHOLD = _config["context"]["summary_threshold"]
@@ -369,18 +412,24 @@ def _calculate_retry_delay(attempt):
     return round(delay, 2)
 
 
-class ContextOverflowError(Exception):
-    """Raised when the server returns persistent 500s likely due to context overflow."""
-    pass
+# ``ContextOverflowError`` lives in ``llm_backend`` post-refactor. The alias
+# here keeps ``from agent import ContextOverflowError`` working unchanged for
+# existing tests and callers.
+from llm_backend import ContextOverflowError
 
 
 _LLM_REQUEST_TIMEOUT = 300  # 5 minutes per request
 
-def _llm_request(log, **kwargs):
+
+def _llm_request_raw(log, **kwargs):
     """POST to the LLM with retries and exponential backoff.
 
     Raises ContextOverflowError after 3 consecutive 500s (likely context overflow).
     Other transient errors (503, connection, timeout) retry up to _LLM_MAX_RETRIES.
+
+    This is the original pre-refactor body, preserved as the internal transport
+    used by ``LlamacppBackend.stream_chat`` (plan task 1.4). Behavior is
+    byte-identical to the pre-refactor ``_llm_request``.
     """
     kwargs.setdefault("timeout", _LLM_REQUEST_TIMEOUT)
     consecutive_500s = 0
@@ -415,6 +464,16 @@ def _llm_request(log, **kwargs):
                         attempt + 1, _LLM_MAX_RETRIES + 1, e, delay)
             _emit("on_api_retry", str(e), attempt + 1, _LLM_MAX_RETRIES, delay)
             time.sleep(delay)
+
+
+def _llm_request(log, **kwargs):
+    """Main-path streaming request. Thin wrapper that routes through the
+    module-level ``_main_backend`` (see plan task 1.4).
+
+    Signature matches the pre-refactor ``_llm_request`` exactly so existing
+    tests that ``patch('agent._llm_request')`` still work unmodified.
+    """
+    return _main_backend.stream_chat(log, **kwargs)
 
 
 # ── Text utilities ─────────────────────────────────────────────────────
@@ -747,33 +806,32 @@ def _format_for_summary(messages):
 
 
 def _summary_request(prompt, base_url=None, model=None):
-    """POST a summary prompt to the given endpoint. Returns summary text.
+    """POST a summary prompt to the summary backend. Returns summary text.
 
-    Args:
-        base_url: Override endpoint (e.g. CPU model on port 8082).
-                  Defaults to the summary config, then the main model.
-        model:    Override model name. Defaults to summary config, then main.
+    Plan task 1.4: routes through ``_summary_backend.complete(prompt=prompt)``.
+    The ``base_url`` / ``model`` parameters are preserved for signature
+    compatibility (see ``tests/test_summary_request_signature.py``). They are
+    only honored when ``_summary_backend.kind == "llamacpp"``; for non-llamacpp
+    backends a DEBUG log line is emitted and the backend's own config wins.
     """
-    summary_cfg = _config["summary"]
-    url = base_url or summary_cfg["base_url"] or BASE_URL
-    mdl = model or summary_cfg["model"] or _config["llm"]["model"]
-
-    request_body = {
-        "model": mdl,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.3,
-        "top_p": 0.9,
-        "top_k": 20,
-        "presence_penalty": 0.0,
-        "max_tokens": 1024,
-        "chat_template_kwargs": {"enable_thinking": False},
-        "stream": False,
-    }
-
-    response = requests.post(f"{url}/v1/chat/completions",
-                             json=request_body, timeout=120)
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"].strip()
+    backend = _summary_backend
+    if backend.kind == "llamacpp" and (base_url or model):
+        # Build a transient backend with the overrides — preserves the old
+        # fallback-to-main semantics where callers pass BASE_URL explicitly.
+        override_cfg = dict(backend._cfg)
+        if base_url:
+            override_cfg["base_url"] = base_url
+        if model:
+            override_cfg["model"] = model
+        transient = _build_backend({**override_cfg, "kind": "llamacpp"})
+        return transient.complete(prompt=prompt)
+    if backend.kind != "llamacpp" and (base_url or model):
+        logging.getLogger("agent").debug(
+            "_summary_request ignoring base_url/model override — "
+            "summary backend kind=%s",
+            backend.kind,
+        )
+    return backend.complete(prompt=prompt)
 
 
 def _condense_summary(text, log=None):
@@ -879,7 +937,8 @@ def _generate_summary(old_summary, new_messages, log):
     summary_cfg = _config["summary"]
     summary_url = summary_cfg["base_url"]
     try:
-        # Try dedicated summary endpoint first
+        # Try dedicated summary endpoint first — via _summary_request, which
+        # now routes through _summary_backend.complete (plan task 1.4).
         if summary_cfg["enabled"] and summary_url:
             summary = _summary_request(prompt)
         else:
@@ -938,7 +997,9 @@ class AsyncSummarizer:
         def _worker():
             try:
                 prompt = _build_summary_prompt(old_summary_text, msgs)
-                # Try dedicated endpoint, fall back to main model
+                # Try dedicated endpoint, fall back to main model.
+                # Routes through _summary_request which delegates to the
+                # summary backend under the hood (plan task 1.4).
                 try:
                     result = _summary_request(prompt)
                 except (requests.ConnectionError, requests.Timeout) as e:
@@ -1355,45 +1416,36 @@ def _auto_increment_cycle(log):
 
 # ── Main agent loop ───────────────────────────────────────────────────
 
+def _backend_for_url(base_url):
+    """Return the configured backend whose ``base_url`` matches, or a
+    transient llamacpp backend if none matches.
+
+    Plan task 1.5: health/ctx/list-models delegate to the matching backend
+    so future kinds (bedrock) participate automatically. For base_urls that
+    don't correspond to a configured backend, fall back to a throwaway
+    llamacpp probe — matches the pre-refactor behavior (any llama-server
+    URL can be probed).
+    """
+    if _main_backend.base_url == base_url:
+        return _main_backend
+    if _summary_backend.base_url == base_url:
+        return _summary_backend
+    return _build_backend({"kind": "llamacpp", "base_url": base_url, "model": ""})
+
+
 def _check_api_health(base_url, timeout=3):
     """Probe the LLM endpoint. Return (ok: bool, detail: str)."""
-    try:
-        resp = requests.get(f"{base_url}/health", timeout=timeout)
-        if resp.status_code == 200:
-            return True, "ok"
-        return False, f"HTTP {resp.status_code}"
-    except requests.Timeout:
-        return False, "timeout"
-    except requests.ConnectionError:
-        return False, "unreachable"
-    except requests.RequestException as e:
-        return False, str(e)[:60]
+    return _backend_for_url(base_url).health(timeout=timeout)
 
 
 def _detect_ctx_size(base_url, timeout=3):
-    """Query llama-server /slots endpoint and return n_ctx for slot 0, or None."""
-    try:
-        resp = requests.get(f"{base_url}/slots", timeout=timeout)
-        if resp.status_code != 200:
-            return None
-        slots = resp.json()
-        if slots and isinstance(slots, list):
-            return slots[0].get("n_ctx")
-    except (requests.RequestException, ValueError, KeyError, IndexError):
-        pass
-    return None
+    """Query the backend for context size. Returns ``n_ctx`` or ``None``."""
+    return _backend_for_url(base_url).detect_ctx_size(timeout=timeout)
 
 
 def _list_available_models(base_url, timeout=3):
-    """Query /v1/models and return a list of model id strings, or []."""
-    try:
-        resp = requests.get(f"{base_url}/v1/models", timeout=timeout)
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
-        return [m.get("id", "") for m in data.get("data", []) if m.get("id")]
-    except (requests.RequestException, ValueError, KeyError):
-        return []
+    """Query the backend for available model ids, or ``[]``."""
+    return _backend_for_url(base_url).list_models(timeout=timeout)
 
 
 def _render_context_bar(history, summary_state, ctx_size, width=30):
@@ -1468,13 +1520,20 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     import tools.think as _think_mod
     _think_mod._output = lambda text: _emit("on_stream_chunk", text)
 
-    model_name = _config["llm"]["model"]
-    ok, detail = _check_api_health(BASE_URL)
+    model_name = _main_backend.model or _config["llm"]["model"]
+    ok, detail = _main_backend.health()
 
-    # Auto-detect context size from llama-server /slots endpoint.
-    # Apply 85% buffer, then hard-cap at 85K to avoid llama_decode crashes.
+    # Backend banner (plan task 1.5) — one-line log noting which kinds are active.
+    log.info(
+        "backends: main=%s(%s@%s) summary=%s(%s@%s)",
+        _main_backend.kind, _main_backend.model, _main_backend.base_url,
+        _summary_backend.kind, _summary_backend.model, _summary_backend.base_url,
+    )
+
+    # Auto-detect context size from the main backend. Apply 85% buffer,
+    # then hard-cap at 85K to avoid llama_decode crashes.
     _CTX_HARD_CAP = 85_000
-    detected = _detect_ctx_size(BASE_URL)
+    detected = _main_backend.detect_ctx_size()
     if detected:
         ctx_size = min(int(detected * 0.85), _CTX_HARD_CAP)
         _config["context"]["ctx_size"] = ctx_size
@@ -1496,31 +1555,37 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
              ctx_size, _MAX_TURNS, gen["temperature"], max_tokens)
     log.info("Tools registered: %s", [t["function"]["name"] for t in tools])
 
-    # Create async summarizer if enabled and the CPU endpoint is reachable
+    # Create async summarizer if enabled and the summary backend is reachable.
+    # Plan task 1.5: delegate health probe to the summary backend.
     _async_summarizer = None
     summary_cfg = _config["summary"]
     if summary_cfg["enabled"]:
-        summary_url = summary_cfg["base_url"]
+        summary_url = _summary_backend.base_url
         try:
-            health = requests.get(f"{summary_url}/health", timeout=3)
-            if health.status_code == 200:
-                # Auto-detect summary model context size
-                summary_ctx = _detect_ctx_size(summary_url)
-                if summary_ctx:
-                    _config["summary"]["ctx_size"] = int(summary_ctx * 0.85)
-                    log.info("Auto-detected summary model n_ctx=%d, using %d (85%%)",
-                             summary_ctx, _config["summary"]["ctx_size"])
-                _async_summarizer = AsyncSummarizer(_config, log)
-                log.debug("Async summarizer enabled → %s", summary_url)
-                _emit("on_summarizer_status", "online", summary_url)
-            else:
-                log.warning("Summary endpoint returned %d, using main model for summaries",
-                            health.status_code)
-                _emit("on_summarizer_status", "unhealthy", str(health.status_code))
+            summary_ok, summary_detail = _summary_backend.health()
         except (requests.ConnectionError, requests.Timeout):
+            # Defensive: health() shouldn't raise these (it catches internally)
+            # but preserve the pre-refactor "offline" emit path just in case.
+            summary_ok, summary_detail = False, "unreachable"
+        if summary_ok:
+            # Auto-detect summary model context size
+            summary_ctx = _summary_backend.detect_ctx_size()
+            if summary_ctx:
+                _config["summary"]["ctx_size"] = int(summary_ctx * 0.85)
+                log.info("Auto-detected summary model n_ctx=%d, using %d (85%%)",
+                         summary_ctx, _config["summary"]["ctx_size"])
+            _async_summarizer = AsyncSummarizer(_config, log)
+            log.debug("Async summarizer enabled → %s", summary_url)
+            _emit("on_summarizer_status", "online", summary_url)
+        elif summary_detail in ("unreachable", "timeout"):
+            # Connection-level failure → "offline" (matches pre-refactor).
             log.warning("Summary endpoint unreachable at %s, using main model for summaries",
                         summary_url)
             _emit("on_summarizer_status", "offline", summary_url)
+        else:
+            log.warning("Summary endpoint unhealthy (%s), using main model for summaries",
+                        summary_detail)
+            _emit("on_summarizer_status", "unhealthy", summary_detail)
 
     # ── Continue mode: resume from checkpoint ──
     start_turn = 0
@@ -1888,9 +1953,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             log.info("--- Turn %d/%d | sending %d messages (history has %d total)",
                      turn, _MAX_TURNS, len(messages_to_send), len(conversation_history))
 
-            # Call the model (streaming)
+            # Call the model (streaming).
+            # Plan task 1.5: model comes from the main backend.
             request_body = {
-                "model": _config["llm"]["model"],
+                "model": _main_backend.model or _config["llm"]["model"],
                 "messages": messages_to_send,
                 "temperature": temperature,
                 "top_p": top_p,

@@ -1,13 +1,17 @@
-HH:MM:SS INFO Session started | ctx_size=114688 max_turns=20 temperature=0.0 max_tokens=16384
+HH:MM:SS INFO backends: main=llamacpp(gemma-4-31B@http://127.0.0.1:8080) summary=llamacpp(gemma-4-E4B@http://127.0.0.1:8082)
+HH:MM:SS INFO Auto-detected main model n_ctx=262144, using ctx_size=85000 (85% / cap 85k)
+HH:MM:SS INFO Session started | ctx_size=85000 max_turns=20 temperature=0.0 max_tokens=16384
 HH:MM:SS INFO Tools registered: ['exec_command', 'file', 'read_pdf', 'search_files', 'sleep', 'task_tracker', 'think', 'web_fetch']
-HH:MM:SS INFO Async summarizer enabled → http://127.0.0.1:8082
-HH:MM:SS INFO USER: read README.md and summarize in 2 sentences
+HH:MM:SS INFO Auto-detected summary model n_ctx=131072, using 111411 (85%)
+HH:MM:SS DEBUG Async summarizer enabled → http://127.0.0.1:8082
+HH:MM:SS DEBUG USER: read README.md and summarize in 2 sentences
 HH:MM:SS DEBUG Context budget: 11/N tokens, 1 messages, oldest_idx=0, has_context_msg=False
 HH:MM:SS INFO --- turn N/20 | sending 1 messages (history has 1 total)
+HH:MM:SS INFO backend.stream_chat.latency_ms backend=llamacpp model=gemma-4-31B latency_ms=200 deltas=0 ok=True
 HH:MM:SS INFO Response status: 200
-HH:MM:SS INFO Executing 1 tool call(s)
-HH:MM:SS INFO TOOL CALL: file({"action": "read", "path": "README.md"}) [id=yyUxUFHSFQkpLZJhvbKCLUeWuCan4ASZ]
-HH:MM:SS INFO TOOL RESULT [file]: [README.md: lines 1-145 of 145]
+HH:MM:SS DEBUG Executing 1 tool calls
+HH:MM:SS DEBUG TOOL CALL: file({"action": "read", "path": "README.md"}) [id=2Nw74204WBq9zCM6nWFF1buF7ycJtDwA]
+HH:MM:SS DEBUG TOOL RESULT [file]: [README.md: lines 1-178 of 178]
    1  # Agent
    2  
    3  A local, tool-driven coding assistant that talks to an OpenAI-compatible LLM endpoint (e.g. `llama-server` from `llama.cpp`) and runs an autonomous file/shell tool loop. It is built to survive long sessions: it checkpoints every turn, summarizes older history in the background, recovers from malformed tool calls, and catches common hallucinations before they poison context.
@@ -37,126 +41,160 @@ HH:MM:SS INFO TOOL RESULT [file]: [README.md: lines 1-145 of 145]
   27  | Flag | Description |
   28  | --- | --- |
   29  | `-a`, `--auto` | Automation mode — run the prompt and exit; no interactive loop. |
-  30  | `-c`, `--continue` | Resume from the last checkpoint (picks up a crashed or interrupted cycle). |
+  30  | `-c`, `--continue` | Resume from the last checkpoint and drop into an interactive session. Combine with `-a` for auto-resume-and-exit. |
   31  | `-r N`, `--repeat N` | Run the prompt `N` times with fresh state each run. `0` or omitted means run indefinitely. Implies `-a`. |
   32  | `--nudge` | When the model returns a text-only response (no tool calls), auto-nudge it to keep going instead of stopping. Off by default. |
-  33  | `PROMPT...` | Initial prompt. Optional; in interactive mode you'll be prompted if omitted. |
-  34  
-  35  Press **Escape twice** within 400ms to cancel a streaming response.
+  33  | `--no-tui` | Disable the `prompt_toolkit` TUI and use a plain `input()` prompt. The TUI is on by default in any interactive mode and falls back to plain input automatically if `prompt_toolkit` isn't installed. |
+  34  | `--verbose` | Start the session with full (uncompacted) tool output. Toggle in-session with `/verbose`. |
+  35  | `PROMPT...` | Initial prompt. Optional; in interactive mode you'll be prompted if omitted. |
   36  
-  37  ### Interactive commands
+  37  Press **Escape twice** within 400ms to cancel a streaming response. In the TUI this works while the model is streaming; the prompt itself uses `prompt_toolkit`'s native key handling.
   38  
-  39  In the interactive loop, lines starting with `/` are commands:
+  39  ### Interactive TUI (default)
   40  
-  41  | Command | Description |
-  42  | --- | --- |
-  43  | `/help` | List available commands. |
-  44  | `/clear` | Clear conversation history and start a fresh session log. |
-  45  | `/context` | Show current context usage as an Aurora-gradient bar with token counts. |
-  46  | `/model` | Pick a different model from the server's `/v1/models` endpoint (summarizer keeps its original). |
-  47  | `exit` / `quit` | End the session. |
-  48  
-  49  ### Colors
-  50  
-  51  The terminal UI uses the **Aurora** palette (violet → sky → mint) via `theme.py`. `NO_COLOR=1` or piping to a file disables all colors and cursor escapes automatically.
-  52  
-  53  ## How it works
-  54  
-  55  Each cycle is a turn loop:
-  56  
-  57  1. Build a context window from recent history plus an async summary of older history.
-  58  2. Stream a response from the LLM.
-  59  3. Execute any tool calls.
-  60  4. Feed results back in and repeat until the model stops calling tools, a cycle limit is hit, or the user cancels.
-  61  
-  62  The loop has a few guardrails worth knowing about:
+  41  When running interactively, the agent uses a `prompt_toolkit` front-end with:
+  42  
+  43  - A **bottom toolbar** showing `cwd · model · message count · context ~% · verbose state`.
+  44  - **Completion** for slash commands (`/he<Tab>`) and `@path` file refs (`@src/<Tab>`).
+  45  - **Input history** navigable with ↑ / ↓.
+  46  - **Key bindings**: `Enter` submits, `Ctrl+N` inserts a literal newline.
+  47  
+  48  Pass `--no-tui` to use the plain `input()` prompt instead. The `prompt_toolkit` package is an optional dependency — if it isn't installed, the agent prints a one-line notice and falls back to the plain prompt automatically.
+  49  
+  50  ### Interactive commands
+  51  
+  52  In the interactive loop, lines starting with `/` are commands:
+  53  
+  54  | Command | Description |
+  55  | --- | --- |
+  56  | `/help` | List available commands. |
+  57  | `/clear` | Clear conversation history and start a fresh session log. |
+  58  | `/context` | Show current context usage as an Aurora-gradient bar with token counts. |
+  59  | `/model` | Pick a different model from the server's `/v1/models` endpoint (summarizer keeps its original). |
+  60  | `/verbose` | Toggle compact vs. full tool-result output. Full results are always logged regardless. |
+  61  | `/tools [N\|all]` | Show buffered tool calls with a one-line result preview. Default `/tools` shows every call in the rolling buffer (50 most recent); `/tools N` shows the last `N`; `/tools all` is an explicit synonym for the default. |
+  62  | `exit` / `quit` | End the session. |
   63  
-  64  - **Checkpointing.** Conversation history and summary state are written to `.agent/state/conversation_checkpoint.json` every turn. `--continue` resumes from there.
-  65  - **Async summarization.** If a summary endpoint is configured, a background thread condenses older messages while the main model keeps working. The summary is swapped in when ready.
-  66  - **Cycle limits & wind-down.** After `cycle.max_turns` turns (default 100), the agent is asked to wrap up; after `cycle.wind_down_turns` more turns it is forced to stop.
-  67  - **Text-loop detection.** If the model emits the same text three times in a row, the cycle ends instead of looping forever.
-  68  - **Hallucination guards.** When the model claims to have read a file it never actually read, the fabricated message is stripped and a correction injected. Malformed tool-call JSON is also salvaged heuristically.
-  69  - **Tool recovery.** When a tool fails with a recognizable error (e.g. bad line numbers), `tool_recovery.py` tries to re-run it with corrected parameters via a lightweight LLM call.
-  70  - **Context overflow handling.** Three consecutive HTTP 500s from the LLM endpoint are treated as context overflow — the agent trims history and retries.
+  64  ### Colors
+  65  
+  66  The terminal UI uses the **Aurora** palette (violet → sky → mint) via `theme.py`. `NO_COLOR=1` or piping to a file disables all colors and cursor escapes automatically.
+  67  
+  68  ## How it works
+  69  
+  70  Each cycle is a turn loop:
   71  
-  72  ## Project layout
-  73  
-  74  ```
-  75  agent.py            # Main loop, streaming, context management, checkpointing
-  76  cancel.py           # Double-escape cancel handler
-  77  spinner.py          # Aurora-pulsed waiting/streaming/done visual feedback
-  78  theme.py            # Aurora color palette + single source of ANSI escapes
-  79  token_utils.py      # Tokenizer (Gemma) with char-based fallback
-  80  tool_recovery.py    # Auto-recovery from recoverable tool errors
-  81  tools/              # Built-in tools (see below)
-  82    file.py           # read / write / insert / append / delete / list
-  83    exec_command.py   # Shell execution with background-session support
-  84    search_files.py   # Grep-like search with glob and case controls
-  85    read_pdf.py       # PDF text extraction (PyMuPDF)
-  86    web_fetch.py      # URL → markdown, saved to disk with inline preview
-  87    think.py          # Deep-reasoning tool via a separate thinking call
-  88    task_tracker.py   # Persistent task list in .agent/state/tasks.json
-  89    sleep.py          # Pause execution
-  90  .agent/             # Runtime artifacts (created on first run, gitignored)
-  91    state/
-  92      conversation_checkpoint.json
-  93      tasks.json
-  94      current-state.json
-  95      cycle.txt
-  96      fetched/        # Cached web_fetch output
-  97    history/
-  98      session-*.log   # Per-session verbose logs
-  99  ```
- 100  
- 101  Agent-specific tools can also live in `./tools/` alongside your working directory — they are auto-discovered and registered on startup.
- 102  
- 103  ## Configuration
- 104  
- 105  Drop a `config.json` in the working directory to override any of the built-in defaults. The top-level sections are:
- 106  
- 107  - **`llm`** — `base_url`, `model`. The OpenAI-compatible endpoint and model name.
- 108  - **`generation`** — `temperature`, `top_p`, `top_k`, `presence_penalty`.
- 109  - **`context`** — `ctx_size`, `max_tokens`, `max_full_lines`, `preview_lines`, `summary_threshold`, `summary_max_chars`, `max_context_messages`. Controls how history is sized and when it gets summarized.
- 110  - **`cycle`** — `max_turns`, `wind_down_turns`, `max_text_only`. Per-cycle turn budget and text-only nudge cap.
- 111  - **`retry`** — `max_retries`, `base_delay_seconds`, `max_delay_seconds`, `backoff_multiplier`, `jitter_factor`. Exponential backoff for transient LLM errors.
- 112  - **`summary`** — `enabled`, `base_url`, `model`, `max_wait_on_save`. Optional separate summarization endpoint (default port 8082).
- 113  
- 114  Example minimal override:
- 115  
- 116  ```json
- 117  {
- 118    "llm": { "base_url": "http://127.0.0.1:8080", "model": "gemma-4-31B" },
- 119    "context": { "ctx_size": 32768 },
- 120    "cycle": { "max_turns": 50 }
- 121  }
- 122  ```
- 123  
- 124  ## Dependencies
- 125  
- 126  - Python 3.7+
- 127  - `requests` — HTTP to the LLM endpoint
- 128  - `transformers` + `torch` — Gemma tokenizer (optional; falls back to a character-based estimate if missing)
- 129  - `PyMuPDF` (`fitz`) — PDF extraction, used by `tools/read_pdf.py`
- 130  - `markdownify` — HTML → Markdown conversion, used by `tools/web_fetch.py`
- 131  - A running OpenAI-compatible LLM server (e.g. `llama-server`)
- 132  - Bash, and a TTY for the cancel handler
+  72  1. Build a context window from recent history plus an async summary of older history.
+  73  2. Stream a response from the LLM.
+  74  3. Execute any tool calls.
+  75  4. Feed results back in and repeat until the model stops calling tools, a cycle limit is hit, or the user cancels.
+  76  
+  77  The loop has a few guardrails worth knowing about:
+  78  
+  79  - **Checkpointing.** Conversation history and summary state are written to `.agent/state/conversation_checkpoint.json` every turn. `--continue` resumes from there.
+  80  - **Async summarization.** If a summary endpoint is configured, a background thread condenses older messages while the main model keeps working. The summary is swapped in when ready.
+  81  - **Cycle limits & wind-down.** After `cycle.max_turns` turns (default 100), the agent is asked to wrap up; after `cycle.wind_down_turns` more turns it is forced to stop.
+  82  - **Text-loop detection.** If the model emits the same text three times in a row, the cycle ends instead of looping forever.
+  83  - **Hallucination guards.** When the model claims to have read a file it never actually read, the fabricated message is stripped and a correction injected. Malformed tool-call JSON is also salvaged heuristically.
+  84  - **Tool recovery.** When a tool fails with a recognizable error (e.g. bad line numbers), `tool_recovery.py` tries to re-run it with corrected parameters via a lightweight LLM call.
+  85  - **Context overflow handling.** Three consecutive HTTP 500s from the LLM endpoint are treated as context overflow — the agent trims history and retries.
+  86  
+  87  ## Project layout
+  88  
+  89  ```
+  90  agent.py            # Main loop, streaming, context management, checkpointing
+  91  callbacks.py        # UI callback interface — NullCallbacks, TerminalCallbacks, safe_cb
+  92  commands.py         # Slash-command dispatcher (/help, /clear, /verbose, /tools, …)
+  93  tui.py              # prompt_toolkit front-end (default in interactive mode; --no-tui to disable)
+  94  cancel.py           # Double-escape cancel handler
+  95  spinner.py          # Aurora-pulsed waiting/streaming/done visual feedback
+  96  theme.py            # Aurora color palette + single source of ANSI escapes
+  97  token_utils.py      # Tokenizer (Gemma) with char-based fallback
+  98  tool_recovery.py    # Auto-recovery from recoverable tool errors
+  99  tools/              # Built-in tools (see below)
+ 100    file.py           # read / write / insert / append / delete / list
+ 101    exec_command.py   # Shell execution with background-session support
+ 102    search_files.py   # Grep-like search with glob and case controls
+ 103    read_pdf.py       # PDF text extraction (PyMuPDF)
+ 104    web_fetch.py      # URL → markdown, saved to disk with inline preview
+ 105    think.py          # Deep-reasoning tool via a separate thinking call
+ 106    task_tracker.py   # Persistent task list in .agent/state/tasks.json
+ 107    sleep.py          # Pause execution
+ 108  .agent/             # Runtime artifacts (created on first run, gitignored)
+ 109    state/
+ 110      conversation_checkpoint.json
+ 111      tasks.json
+ 112      current-state.json
+ 113      cycle.txt
+ 114      fetched/        # Cached web_fetch output
+ 115    history/
+ 116      session-*.log   # Per-session verbose logs
+ 117  ```
+ 118  
+ 119  Agent-specific tools can also live in `./tools/` alongside your working directory — they are auto-discovered and registered on startup.
+ 120  
+ 121  ## Configuration
+ 122  
+ 123  Drop a `config.json` in the working directory to override any of the built-in defaults. The top-level sections are:
+ 124  
+ 125  - **`backends`** — registry with `main` and `summary` entries; each carries a `kind` (currently `"llamacpp"`; a `"bedrock"` kind is planned, see `plan/bedrock-integration.md`) plus kind-specific keys (`base_url`, `model`, …). Preferred shape going forward.
+ 126  - **`llm`**, **`summary`** — legacy flat blocks (`base_url`, `model`, …). Still supported for back-compat: at load time they are synthesized into `backends.main` / `backends.summary` with `kind: "llamacpp"`. New configs should use `backends`; old configs need no change.
+ 127  - **`generation`** — `temperature`, `top_p`, `top_k`, `presence_penalty`.
+ 128  - **`context`** — `ctx_size`, `max_tokens`, `max_full_lines`, `preview_lines`, `summary_threshold`, `summary_max_chars`, `max_context_messages`. Controls how history is sized and when it gets summarized.
+ 129  - **`cycle`** — `max_turns`, `wind_down_turns`, `max_text_only`. Per-cycle turn budget and text-only nudge cap.
+ 130  - **`retry`** — `max_retries`, `base_delay_seconds`, `max_delay_seconds`, `backoff_multiplier`, `jitter_factor`. Exponential backoff for transient LLM errors.
+ 131  
+ 132  Example using the registry shape:
  133  
- 134  ## State and logs
- 135  
- 136  Everything runtime lives under `.agent/` in the working directory:
- 137  
- 138  - `.agent/state/conversation_checkpoint.json` — last checkpoint for `--continue`
- 139  - `.agent/state/tasks.json` — persistent task list used by the `task_tracker` tool
- 140  - `.agent/state/current-state.json` — per-cycle scratch state
- 141  - `.agent/state/cycle.txt` — monotonic cycle counter
- 142  - `.agent/state/fetched/` — cached `web_fetch` downloads
- 143  - `.agent/history/session-*.log` — verbose per-session logs
+ 134  ```json
+ 135  {
+ 136    "backends": {
+ 137      "main":    { "kind": "llamacpp", "base_url": "http://127.0.0.1:8080", "model": "gemma-4-31B" },
+ 138      "summary": { "kind": "llamacpp", "base_url": "http://127.0.0.1:8082", "model": "gemma-4-E4B", "enabled": true, "max_wait_on_save": 10 }
+ 139    },
+ 140    "context": { "ctx_size": 32768 },
+ 141    "cycle":   { "max_turns": 50 }
+ 142  }
+ 143  ```
  144  
- 145  Delete the `.agent/` directory to start completely fresh. The whole tree is gitignored.
+ 145  Equivalent legacy shape (still works, synthesized into the registry at load time):
+ 146  
+ 147  ```json
+ 148  {
+ 149    "llm":     { "base_url": "http://127.0.0.1:8080", "model": "gemma-4-31B" },
+ 150    "summary": { "base_url": "http://127.0.0.1:8082", "model": "gemma-4-E4B", "enabled": true, "max_wait_on_save": 10 },
+ 151    "context": { "ctx_size": 32768 },
+ 152    "cycle":   { "max_turns": 50 }
+ 153  }
+ 154  ```
+ 155  
+ 156  ## Dependencies
+ 157  
+ 158  - Python 3.7+
+ 159  - `requests` — HTTP to the LLM endpoint
+ 160  - `transformers` + `torch` — Gemma tokenizer (optional; falls back to a character-based estimate if missing)
+ 161  - `PyMuPDF` (`fitz`) — PDF extraction, used by `tools/read_pdf.py`
+ 162  - `markdownify` — HTML → Markdown conversion, used by `tools/web_fetch.py`
+ 163  - `prompt_toolkit` — powers the default interactive TUI (bottom toolbar, completion, input history). Technically **optional** — if it isn't installed, interactive mode automatically falls back to a plain `input()` prompt and prints a one-line notice. Pass `--no-tui` to force the plain prompt even when `prompt_toolkit` is available. Install with `pip install prompt_toolkit`.
+ 164  - A running OpenAI-compatible LLM server (e.g. `llama-server`)
+ 165  - Bash, and a TTY for the cancel handler
+ 166  
+ 167  ## State and logs
+ 168  
+ 169  Everything runtime lives under `.agent/` in the working directory:
+ 170  
+ 171  - `.agent/state/conversation_checkpoint.json` — last checkpoint for `--continue`
+ 172  - `.agent/state/tasks.json` — persistent task list used by the `task_tracker` tool
+ 173  - `.agent/state/current-state.json` — per-cycle scratch state
+ 174  - `.agent/state/cycle.txt` — monotonic cycle counter
+ 175  - `.agent/state/fetched/` — cached `web_fetch` downloads
+ 176  - `.agent/history/session-*.log` — verbose per-session logs
+ 177  
+ 178  Delete the `.agent/` directory to start completely fresh. The whole tree is gitignored.
 
-HH:MM:SS DEBUG Context budget: 2658/N tokens, 3 messages, oldest_idx=0, has_context_msg=False
+HH:MM:SS DEBUG Context budget: 3692/N tokens, 3 messages, oldest_idx=0, has_context_msg=False
 HH:MM:SS INFO --- turn N/20 | sending 3 messages (history has 3 total)
+HH:MM:SS INFO backend.stream_chat.latency_ms backend=llamacpp model=gemma-4-31B latency_ms=6311 deltas=0 ok=True
 HH:MM:SS INFO Response status: 200
-HH:MM:SS INFO ASSISTANT: Agent is a local, tool-driven coding assistant that connects to an OpenAI-compatible LLM endpoint to perform autonomous file and shell operations. It features robust session management, including checkpointing, background summarization, and hallucination guards to ensure stability during long-running tasks.
+HH:MM:SS DEBUG ASSISTANT: Agent is a local, tool-driven coding assistant that connects to an OpenAI-compatible LLM endpoint to perform autonomous file and shell operations. It features robust session management through checkpointing, background summarization, and built-in guardrails to handle hallucinations and tool errors.
 HH:MM:SS INFO Stopping: text-only response (no tool calls)
 HH:MM:SS INFO Session ended (auto mode) | 4 messages in history

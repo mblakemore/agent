@@ -1,22 +1,29 @@
-HH:MM:SS INFO Session started | ctx_size=114688 max_turns=20 temperature=0.0 max_tokens=16384
+HH:MM:SS INFO backends: main=llamacpp(gemma-4-31B@http://127.0.0.1:8080) summary=llamacpp(gemma-4-E4B@http://127.0.0.1:8082)
+HH:MM:SS INFO Auto-detected main model n_ctx=262144, using ctx_size=85000 (85% / cap 85k)
+HH:MM:SS INFO Session started | ctx_size=85000 max_turns=20 temperature=0.0 max_tokens=16384
 HH:MM:SS INFO Tools registered: ['exec_command', 'file', 'read_pdf', 'search_files', 'sleep', 'task_tracker', 'think', 'web_fetch']
-HH:MM:SS INFO Async summarizer enabled → http://127.0.0.1:8082
-HH:MM:SS INFO USER: create a file named scratch.txt containing 'hi', then delete it
+HH:MM:SS INFO Auto-detected summary model n_ctx=131072, using 111411 (85%)
+HH:MM:SS DEBUG Async summarizer enabled → http://127.0.0.1:8082
+HH:MM:SS DEBUG USER: create a file named scratch.txt containing 'hi', then delete it
 HH:MM:SS DEBUG Context budget: 15/N tokens, 1 messages, oldest_idx=0, has_context_msg=False
 HH:MM:SS INFO --- turn N/20 | sending 1 messages (history has 1 total)
+HH:MM:SS INFO backend.stream_chat.latency_ms backend=llamacpp model=gemma-4-31B latency_ms=216 deltas=0 ok=True
 HH:MM:SS INFO Response status: 200
-HH:MM:SS INFO Executing 1 tool call(s)
-HH:MM:SS INFO TOOL CALL: file({"action": "write", "content": "hi\n", "path": "scratch.txt"}) [id=d8APVZsx9HsAS407gMTaiCJXFo4IbfsP]
-HH:MM:SS INFO TOOL RESULT [file]: Wrote 'scratch.txt' (3 chars)
-HH:MM:SS DEBUG Context budget: 93/N tokens, 3 messages, oldest_idx=0, has_context_msg=False
+HH:MM:SS DEBUG Executing 1 tool calls
+HH:MM:SS DEBUG TOOL CALL: file({"action": "write", "content": "hi", "path": "scratch.txt"}) [id=J6DeCUCt4rYNuNqovQPZk8eGJJhbqowF]
+HH:MM:SS INFO First file edit detected at turn N
+HH:MM:SS DEBUG TOOL RESULT [file]: Wrote 'scratch.txt' (2 chars)
+HH:MM:SS DEBUG Context budget: 94/N tokens, 3 messages, oldest_idx=0, has_context_msg=False
 HH:MM:SS INFO --- turn N/20 | sending 3 messages (history has 3 total)
+HH:MM:SS INFO backend.stream_chat.latency_ms backend=llamacpp model=gemma-4-31B latency_ms=189 deltas=0 ok=True
 HH:MM:SS INFO Response status: 200
-HH:MM:SS INFO Executing 1 tool call(s)
-HH:MM:SS INFO TOOL CALL: file({"action": "delete", "path": "scratch.txt"}) [id=cCIEoBUGzXtvbEuDFOw7AwOyGZrKLIuZ]
-HH:MM:SS INFO TOOL RESULT [file]: Deleted 'scratch.txt'
-HH:MM:SS DEBUG Context budget: 158/N tokens, 5 messages, oldest_idx=0, has_context_msg=False
+HH:MM:SS DEBUG Executing 1 tool calls
+HH:MM:SS DEBUG TOOL CALL: file({"action": "delete", "path": "scratch.txt"}) [id=VuZB183cSMnwOJAqMIl4NVRgrBJGtbSd]
+HH:MM:SS DEBUG TOOL RESULT [file]: Deleted 'scratch.txt'
+HH:MM:SS DEBUG Context budget: 161/N tokens, 5 messages, oldest_idx=0, has_context_msg=False
 HH:MM:SS INFO --- turn N/20 | sending 5 messages (history has 5 total)
+HH:MM:SS INFO backend.stream_chat.latency_ms backend=llamacpp model=gemma-4-31B latency_ms=263 deltas=0 ok=True
 HH:MM:SS INFO Response status: 200
-HH:MM:SS INFO ASSISTANT: The file `scratch.txt` was created with the content 'hi' and then successfully deleted.
+HH:MM:SS DEBUG ASSISTANT: The file `scratch.txt` was created with the content 'hi' and then successfully deleted.
 HH:MM:SS INFO Stopping: text-only response (no tool calls)
 HH:MM:SS INFO Session ended (auto mode) | 6 messages in history
