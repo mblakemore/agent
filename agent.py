@@ -2065,7 +2065,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         tool_calls_by_index = {}
         printed_header = False
         receiving_tools = False
-        _stream_deadline = time.monotonic() + 600  # 10 minute wall-clock cap
+        _stream_t0 = time.monotonic()
+        _stream_deadline = _stream_t0 + 600  # 10 minute wall-clock cap
         status = StreamStatus(emit=_emit)
         status.start("\nAssistant: ")
         renderer = _ReasoningRenderer(lambda t: _emit("on_stream_chunk", t))
@@ -2135,6 +2136,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             status.finish()
             response.close()
             _emit("on_cancelled", "streaming")
+            log.info(
+                "cancel.latency_ms latency_ms=%d site=backend.stream_chat backend=%s",
+                int((time.monotonic() - _stream_t0) * 1000),
+                _main_backend.kind,
+            )
             log.info("CANCELLED during streaming")
             # Keep partial history so caller can inject user guidance
             return "cancelled"
@@ -2374,6 +2380,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         log.debug("Executing %d tool calls", len(tool_calls))
         _emit("on_tool_batch_start", len(tool_calls))
         _garbled_count = 0  # track garbled tool calls for retry
+        _tool_exec_t0 = time.monotonic()
         try:
             with cancellable():
                 for tool_call in tool_calls:
@@ -2919,6 +2926,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                           result_str.startswith("Error"))
         except CancelledError:
             _emit("on_cancelled", "tool_execution")
+            log.info(
+                "cancel.latency_ms latency_ms=%d site=tool_execution backend=%s",
+                int((time.monotonic() - _tool_exec_t0) * 1000),
+                _main_backend.kind,
+            )
             log.info("CANCELLED during tool execution")
             if _async_summarizer:
                 _async_summarizer.drain()
