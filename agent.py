@@ -6,6 +6,8 @@ Entry points: ``run_agent_interactive()`` for interactive use, ``run_agent()``
 for single-prompt runs. See ``README.md`` for CLI flags.
 """
 
+import ctypes
+import gc
 import hashlib
 import json
 import logging
@@ -1288,6 +1290,109 @@ def _build_context_footnote(summary_text, initial_files):
     return {"role": "user", "content": "\n\n".join(parts)}
 
 
+# ── Memory pressure management (tier 2 + tier 3) ────────────────────
+#
+# Python's default allocator (pymalloc) does NOT return freed memory to the
+# OS well — repeated alloc/free of large objects (like per-turn tokenizer
+# encodes) fragments the heap and keeps RSS high even when Python has
+# garbage-collected the objects themselves. Long-running agent sessions hit
+# OOM because of this fragmentation, not because of a live leak.
+#
+# `_release_memory()` runs at a natural seam (end of each turn) to:
+#   1. `gc.collect()` — finalize any Python garbage now
+#   2. `libc.malloc_trim(0)` — ask glibc to return unused arenas to the OS
+# and logs `mem.trim released=N vmrss_mb=M` so we can verify it's working.
+#
+# `_check_memory_watermark()` reads /proc/self/status once per turn:
+#   - VmRSS > _MEM_WARN_MB → log mem.watermark (caller may force summary)
+#   - VmRSS > _MEM_HARD_MB → log mem.hard_limit, exit(2) cleanly (no OOM,
+#                             no tmux death, no systemd scope cleanup)
+
+_MEM_WARN_MB = int(os.environ.get("AGENT_MEM_WARN_MB", 8192))
+_MEM_HARD_MB = int(os.environ.get("AGENT_MEM_HARD_MB", 12288))
+
+try:
+    _libc = ctypes.CDLL("libc.so.6")
+    _MALLOC_TRIM_AVAILABLE = True
+except (OSError, AttributeError):
+    _libc = None
+    _MALLOC_TRIM_AVAILABLE = False
+
+
+def _read_vmrss_mb():
+    """Read VmRSS from /proc/self/status and return MB. 0 on any error."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def _release_memory(log):
+    """Force a GC + malloc_trim and log the result.
+
+    Cheap (~10ms typical) and idempotent. Intended to run at the end of each
+    agent turn. Uses environment override ``AGENT_DISABLE_MEM_TRIM=1`` to
+    skip for benchmarking / A-B testing the effect.
+    """
+    if os.environ.get("AGENT_DISABLE_MEM_TRIM") == "1":
+        return
+    gc.collect()
+    released = 0
+    if _MALLOC_TRIM_AVAILABLE:
+        try:
+            released = int(_libc.malloc_trim(0))
+        except Exception:
+            released = 0
+    rss_mb = _read_vmrss_mb()
+    log.info(
+        "mem.trim released=%d vmrss_mb=%d trim_available=%s",
+        released,
+        rss_mb,
+        _MALLOC_TRIM_AVAILABLE,
+    )
+
+
+def _check_memory_watermark(log):
+    """Check current RSS against configured watermarks.
+
+    Returns:
+        ``"ok"``       — under ``_MEM_WARN_MB``
+        ``"pressure"`` — over ``_MEM_WARN_MB`` (caller may take action)
+        ``"abort"``    — over ``_MEM_HARD_MB`` (process exits before return)
+    """
+    rss_mb = _read_vmrss_mb()
+    if rss_mb <= 0:
+        return "ok"  # couldn't read — don't interfere
+    if rss_mb > _MEM_HARD_MB:
+        log.error(
+            "mem.hard_limit vmrss_mb=%d (limit %d) — exiting session cleanly "
+            "before OOM killer destroys the tmux scope",
+            rss_mb,
+            _MEM_HARD_MB,
+        )
+        # Emit the Bedrock spend summary before exit so operators still see
+        # final spend even when the session is killed by this watermark.
+        try:
+            _log_bedrock_session_spend(log)
+        except NameError:
+            # Defined later in the module at import time this MAY be missing
+            # under a reorder; fail soft rather than block the exit.
+            pass
+        sys.exit(2)
+    if rss_mb > _MEM_WARN_MB:
+        log.warning(
+            "mem.watermark vmrss_mb=%d (warn %d) — memory pressure",
+            rss_mb,
+            _MEM_WARN_MB,
+        )
+        return "pressure"
+    return "ok"
+
+
 def _build_context(conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                     max_messages_override=None):
     """Build the context window dynamically based on token budget.
@@ -2101,6 +2206,17 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
     while True:
         turn += 1
+
+        # ── Memory pressure management (tiers 2 + 3) ──
+        # Tier 2: force gc + glibc malloc_trim so pymalloc arenas freed during
+        # the prior turn actually return to the OS. Fights heap fragmentation.
+        # Tier 3: measure resulting RSS; exit cleanly if over hard limit BEFORE
+        # the OOM killer destroys the whole tmux/systemd scope. The watermark
+        # return value is currently unused (callers only react to the hard
+        # exit path); wired as side-effect-only so the dead-locals guard
+        # (cycle 0013) doesn't complain.
+        _release_memory(log)
+        _check_memory_watermark(log)
 
         # ── Edit deadline nudge ──
         # Reviewers don't edit — suppress the nudge for that role.
