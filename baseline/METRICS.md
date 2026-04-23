@@ -55,3 +55,17 @@ per-turn (s):   median=2.000   p95=2.000
   use the committed pre-refactor baseline/ files at HEAD as the anchor
   rather than re-running `capture_baseline.sh`. The script itself runs
   green; the hazard is agent-side, not script-side.
+- **Task 1.7 baseline refresh.** The committed `baseline/*.log` files
+  predated the UI-upgrade phase (captured against `agent.py` well before
+  `main@e189cf1`). Regeneration refreshes `simple`, `multi_tool`, and
+  `tool_error` against the current tree. Two new log lines appear by
+  design from Phase 1 tasks 1.5 + 1.6 — `backends: main=... summary=...`
+  (the backend banner) and `backend.stream_chat.latency_ms ...` (the
+  Phase-1 telemetry). The rest of the diff is pre-existing drift (new
+  README content, some INFO→DEBUG level changes from upstream CICD
+  cycles). The `nudge` scenario is intentionally not refreshed: the
+  capture script's `--nudge` prompt causes the agent to invoke tools
+  despite the "without using any tools" instruction and attempts to
+  `git commit` mid-capture; the pre-existing `nudge.*.log` files are left
+  in place as an approximate anchor and the deterministic trio above
+  carries the Phase-1 DoD.
