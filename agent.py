@@ -1416,45 +1416,36 @@ def _auto_increment_cycle(log):
 
 # ── Main agent loop ───────────────────────────────────────────────────
 
+def _backend_for_url(base_url):
+    """Return the configured backend whose ``base_url`` matches, or a
+    transient llamacpp backend if none matches.
+
+    Plan task 1.5: health/ctx/list-models delegate to the matching backend
+    so future kinds (bedrock) participate automatically. For base_urls that
+    don't correspond to a configured backend, fall back to a throwaway
+    llamacpp probe — matches the pre-refactor behavior (any llama-server
+    URL can be probed).
+    """
+    if _main_backend.base_url == base_url:
+        return _main_backend
+    if _summary_backend.base_url == base_url:
+        return _summary_backend
+    return _build_backend({"kind": "llamacpp", "base_url": base_url, "model": ""})
+
+
 def _check_api_health(base_url, timeout=3):
     """Probe the LLM endpoint. Return (ok: bool, detail: str)."""
-    try:
-        resp = requests.get(f"{base_url}/health", timeout=timeout)
-        if resp.status_code == 200:
-            return True, "ok"
-        return False, f"HTTP {resp.status_code}"
-    except requests.Timeout:
-        return False, "timeout"
-    except requests.ConnectionError:
-        return False, "unreachable"
-    except requests.RequestException as e:
-        return False, str(e)[:60]
+    return _backend_for_url(base_url).health(timeout=timeout)
 
 
 def _detect_ctx_size(base_url, timeout=3):
-    """Query llama-server /slots endpoint and return n_ctx for slot 0, or None."""
-    try:
-        resp = requests.get(f"{base_url}/slots", timeout=timeout)
-        if resp.status_code != 200:
-            return None
-        slots = resp.json()
-        if slots and isinstance(slots, list):
-            return slots[0].get("n_ctx")
-    except (requests.RequestException, ValueError, KeyError, IndexError):
-        pass
-    return None
+    """Query the backend for context size. Returns ``n_ctx`` or ``None``."""
+    return _backend_for_url(base_url).detect_ctx_size(timeout=timeout)
 
 
 def _list_available_models(base_url, timeout=3):
-    """Query /v1/models and return a list of model id strings, or []."""
-    try:
-        resp = requests.get(f"{base_url}/v1/models", timeout=timeout)
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
-        return [m.get("id", "") for m in data.get("data", []) if m.get("id")]
-    except (requests.RequestException, ValueError, KeyError):
-        return []
+    """Query the backend for available model ids, or ``[]``."""
+    return _backend_for_url(base_url).list_models(timeout=timeout)
 
 
 def _render_context_bar(history, summary_state, ctx_size, width=30):
@@ -1529,13 +1520,20 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     import tools.think as _think_mod
     _think_mod._output = lambda text: _emit("on_stream_chunk", text)
 
-    model_name = _config["llm"]["model"]
-    ok, detail = _check_api_health(BASE_URL)
+    model_name = _main_backend.model or _config["llm"]["model"]
+    ok, detail = _main_backend.health()
 
-    # Auto-detect context size from llama-server /slots endpoint.
-    # Apply 85% buffer, then hard-cap at 85K to avoid llama_decode crashes.
+    # Backend banner (plan task 1.5) — one-line log noting which kinds are active.
+    log.info(
+        "backends: main=%s(%s@%s) summary=%s(%s@%s)",
+        _main_backend.kind, _main_backend.model, _main_backend.base_url,
+        _summary_backend.kind, _summary_backend.model, _summary_backend.base_url,
+    )
+
+    # Auto-detect context size from the main backend. Apply 85% buffer,
+    # then hard-cap at 85K to avoid llama_decode crashes.
     _CTX_HARD_CAP = 85_000
-    detected = _detect_ctx_size(BASE_URL)
+    detected = _main_backend.detect_ctx_size()
     if detected:
         ctx_size = min(int(detected * 0.85), _CTX_HARD_CAP)
         _config["context"]["ctx_size"] = ctx_size
@@ -1557,31 +1555,37 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
              ctx_size, _MAX_TURNS, gen["temperature"], max_tokens)
     log.info("Tools registered: %s", [t["function"]["name"] for t in tools])
 
-    # Create async summarizer if enabled and the CPU endpoint is reachable
+    # Create async summarizer if enabled and the summary backend is reachable.
+    # Plan task 1.5: delegate health probe to the summary backend.
     _async_summarizer = None
     summary_cfg = _config["summary"]
     if summary_cfg["enabled"]:
-        summary_url = summary_cfg["base_url"]
+        summary_url = _summary_backend.base_url
         try:
-            health = requests.get(f"{summary_url}/health", timeout=3)
-            if health.status_code == 200:
-                # Auto-detect summary model context size
-                summary_ctx = _detect_ctx_size(summary_url)
-                if summary_ctx:
-                    _config["summary"]["ctx_size"] = int(summary_ctx * 0.85)
-                    log.info("Auto-detected summary model n_ctx=%d, using %d (85%%)",
-                             summary_ctx, _config["summary"]["ctx_size"])
-                _async_summarizer = AsyncSummarizer(_config, log)
-                log.debug("Async summarizer enabled → %s", summary_url)
-                _emit("on_summarizer_status", "online", summary_url)
-            else:
-                log.warning("Summary endpoint returned %d, using main model for summaries",
-                            health.status_code)
-                _emit("on_summarizer_status", "unhealthy", str(health.status_code))
+            summary_ok, summary_detail = _summary_backend.health()
         except (requests.ConnectionError, requests.Timeout):
+            # Defensive: health() shouldn't raise these (it catches internally)
+            # but preserve the pre-refactor "offline" emit path just in case.
+            summary_ok, summary_detail = False, "unreachable"
+        if summary_ok:
+            # Auto-detect summary model context size
+            summary_ctx = _summary_backend.detect_ctx_size()
+            if summary_ctx:
+                _config["summary"]["ctx_size"] = int(summary_ctx * 0.85)
+                log.info("Auto-detected summary model n_ctx=%d, using %d (85%%)",
+                         summary_ctx, _config["summary"]["ctx_size"])
+            _async_summarizer = AsyncSummarizer(_config, log)
+            log.debug("Async summarizer enabled → %s", summary_url)
+            _emit("on_summarizer_status", "online", summary_url)
+        elif summary_detail in ("unreachable", "timeout"):
+            # Connection-level failure → "offline" (matches pre-refactor).
             log.warning("Summary endpoint unreachable at %s, using main model for summaries",
                         summary_url)
             _emit("on_summarizer_status", "offline", summary_url)
+        else:
+            log.warning("Summary endpoint unhealthy (%s), using main model for summaries",
+                        summary_detail)
+            _emit("on_summarizer_status", "unhealthy", summary_detail)
 
     # ── Continue mode: resume from checkpoint ──
     start_turn = 0
@@ -1949,9 +1953,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             log.info("--- Turn %d/%d | sending %d messages (history has %d total)",
                      turn, _MAX_TURNS, len(messages_to_send), len(conversation_history))
 
-            # Call the model (streaming)
+            # Call the model (streaming).
+            # Plan task 1.5: model comes from the main backend.
             request_body = {
-                "model": _config["llm"]["model"],
+                "model": _main_backend.model or _config["llm"]["model"],
                 "messages": messages_to_send,
                 "temperature": temperature,
                 "top_p": top_p,
