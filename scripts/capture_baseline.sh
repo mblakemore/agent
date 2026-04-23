@@ -99,7 +99,12 @@ run_scenario() {
     echo "  → $name"
     fresh_state
     set +e
-    python3 agent.py "$@" > "$BASELINE/$name.stdout.raw" 2>&1
+    # Sandbox PATH: prepend the git-shim dir so the agent-under-capture
+    # cannot commit/push/reset/… against the real repo. See
+    # scripts/capture_sandbox/git for the blocklist. This is defense against
+    # the nudge-scenario rogue-commit trap (plan § 16 Phase 1 friction).
+    env PATH="$REPO/scripts/capture_sandbox:$PATH" \
+        python3 agent.py "$@" > "$BASELINE/$name.stdout.raw" 2>&1
     local rc=$?
     set -e
     # Collect whichever history path exists.
@@ -121,7 +126,12 @@ echo "Running scenarios..."
 run_scenario simple     -a "read README.md and summarize in 2 sentences"
 run_scenario multi_tool -a "create a file named scratch.txt containing 'hi', then delete it"
 run_scenario tool_error -a "read the file /nonexistent/definitely-not-here.txt"
-run_scenario nudge      -a --nudge "think out loud about sorting algorithms without using any tools"
+# nudge: must be a prompt that has no natural tool affordance — abstract fact
+# recall, not a task. Earlier "think out loud about sorting algorithms without
+# using any tools" backfired; the model ignored the disclaimer and opened an
+# exec_command / file session to build a benchmark. Straight definitional Q&A
+# is harder to tool-ify.
+run_scenario nudge      -a --nudge "explain the difference between TCP and UDP in 3 sentences"
 
 # Scenario 5 (resume via -c) is deferred: -a deletes the checkpoint on clean
 # exit, so capturing a resume path requires either interrupting a run or

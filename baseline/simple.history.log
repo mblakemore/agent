@@ -7,10 +7,10 @@ HH:MM:SS DEBUG Async summarizer enabled → http://127.0.0.1:8082
 HH:MM:SS DEBUG USER: read README.md and summarize in 2 sentences
 HH:MM:SS DEBUG Context budget: 11/N tokens, 1 messages, oldest_idx=0, has_context_msg=False
 HH:MM:SS INFO --- turn N/20 | sending 1 messages (history has 1 total)
-HH:MM:SS INFO backend.stream_chat.latency_ms backend=llamacpp model=gemma-4-31B latency_ms=498 deltas=0 ok=True
+HH:MM:SS INFO backend.stream_chat.latency_ms backend=llamacpp model=gemma-4-31B latency_ms=200 deltas=0 ok=True
 HH:MM:SS INFO Response status: 200
 HH:MM:SS DEBUG Executing 1 tool calls
-HH:MM:SS DEBUG TOOL CALL: file({"action": "read", "path": "README.md"}) [id=RbKfrBC0GzNnK7hyMDJBoJlmrNETc7yE]
+HH:MM:SS DEBUG TOOL CALL: file({"action": "read", "path": "README.md"}) [id=2Nw74204WBq9zCM6nWFF1buF7ycJtDwA]
 HH:MM:SS DEBUG TOOL RESULT [file]: [README.md: lines 1-178 of 178]
    1  # Agent
    2  
@@ -191,9 +191,9 @@ HH:MM:SS DEBUG TOOL RESULT [file]: [README.md: lines 1-178 of 178]
  177  
  178  Delete the `.agent/` directory to start completely fresh. The whole tree is gitignored.
 
-HH:MM:SS DEBUG Context budget: 3691/N tokens, 3 messages, oldest_idx=0, has_context_msg=False
+HH:MM:SS DEBUG Context budget: 3692/N tokens, 3 messages, oldest_idx=0, has_context_msg=False
 HH:MM:SS INFO --- turn N/20 | sending 3 messages (history has 3 total)
-HH:MM:SS INFO backend.stream_chat.latency_ms backend=llamacpp model=gemma-4-31B latency_ms=6329 deltas=0 ok=True
+HH:MM:SS INFO backend.stream_chat.latency_ms backend=llamacpp model=gemma-4-31B latency_ms=6311 deltas=0 ok=True
 HH:MM:SS INFO Response status: 200
 HH:MM:SS DEBUG ASSISTANT: Agent is a local, tool-driven coding assistant that connects to an OpenAI-compatible LLM endpoint to perform autonomous file and shell operations. It features robust session management through checkpointing, background summarization, and built-in guardrails to handle hallucinations and tool errors.
 HH:MM:SS INFO Stopping: text-only response (no tool calls)

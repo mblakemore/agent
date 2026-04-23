@@ -7,14 +7,14 @@ HH:MM:SS DEBUG Async summarizer enabled → http://127.0.0.1:8082
 HH:MM:SS DEBUG USER: read the file /nonexistent/definitely-not-here.txt
 HH:MM:SS DEBUG Context budget: 16/N tokens, 1 messages, oldest_idx=0, has_context_msg=False
 HH:MM:SS INFO --- turn N/20 | sending 1 messages (history has 1 total)
-HH:MM:SS INFO backend.stream_chat.latency_ms backend=llamacpp model=gemma-4-31B latency_ms=185 deltas=0 ok=True
+HH:MM:SS INFO backend.stream_chat.latency_ms backend=llamacpp model=gemma-4-31B latency_ms=186 deltas=0 ok=True
 HH:MM:SS INFO Response status: 200
 HH:MM:SS DEBUG Executing 1 tool calls
-HH:MM:SS DEBUG TOOL CALL: file({"action": "read", "path": "/nonexistent/definitely-not-here.txt"}) [id=NYYEeWbn1zqTDZlXoEcJO87XUbMSSkdv]
+HH:MM:SS DEBUG TOOL CALL: file({"action": "read", "path": "/nonexistent/definitely-not-here.txt"}) [id=wYYNfQakVpP3juJu60IYfoL6G814kmg4]
 HH:MM:SS DEBUG TOOL RESULT [file]: Error: '/nonexistent/definitely-not-here.txt' does not exist
-HH:MM:SS DEBUG Context budget: 104/N tokens, 3 messages, oldest_idx=0, has_context_msg=False
+HH:MM:SS DEBUG Context budget: 108/N tokens, 3 messages, oldest_idx=0, has_context_msg=False
 HH:MM:SS INFO --- turn N/20 | sending 3 messages (history has 3 total)
-HH:MM:SS INFO backend.stream_chat.latency_ms backend=llamacpp model=gemma-4-31B latency_ms=235 deltas=0 ok=True
+HH:MM:SS INFO backend.stream_chat.latency_ms backend=llamacpp model=gemma-4-31B latency_ms=228 deltas=0 ok=True
 HH:MM:SS INFO Response status: 200
 HH:MM:SS DEBUG ASSISTANT: The file `/nonexistent/definitely-not-here.txt` does not exist.
 HH:MM:SS INFO Stopping: text-only response (no tool calls)
