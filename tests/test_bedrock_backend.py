@@ -258,3 +258,119 @@ def test_call_with_retry_recovers_after_TimeoutError(monkeypatch):
     result = b._call_with_retry(_flaky, _log=logging.getLogger("test_recover"))
     assert result == ("ok", "conv-abc")
     assert calls["n"] == 2
+
+
+# ── /token-usage startup logging (issue #355) ──
+
+
+def _make_bedrock_backend(monkeypatch):
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    return BedrockBackend(
+        {"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "main"}
+    )
+
+
+def test_token_usage_logs_info_below_threshold(monkeypatch, caplog):
+    """_log_token_usage emits INFO when monthly usage is under 90%."""
+    # Patch get_token_usage on the API instance — ctor will still call
+    # the real one once during __init__; patch before a second invocation
+    # to observe the log on demand.
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    with patch.object(
+        __import__("bedrock_api").BedrockChatAPI, "get_token_usage",
+        return_value={"input_tokens": 300_000, "output_tokens": 0,
+                      "total_tokens": 300_000, "token_limit": 1_000_000},
+    ):
+        b = BedrockBackend(
+            {"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "main"}
+        )
+        with caplog.at_level(logging.INFO, logger="agent"):
+            b._log_token_usage()
+    records = [r for r in caplog.records
+               if "bedrock.token_usage" in r.message
+               and "probe_failed" not in r.message]
+    assert len(records) >= 1
+    assert any(r.levelno == logging.INFO for r in records)
+    assert any("monthly_total=300000/1000000" in r.message for r in records)
+    assert any("used_pct=30.0" in r.message for r in records)
+
+
+def test_token_usage_logs_warning_at_or_above_threshold(monkeypatch, caplog):
+    """_log_token_usage escalates to WARNING when usage crosses 90%."""
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    with patch.object(
+        __import__("bedrock_api").BedrockChatAPI, "get_token_usage",
+        return_value={"input_tokens": 950_000, "output_tokens": 0,
+                      "total_tokens": 950_000, "token_limit": 1_000_000},
+    ):
+        b = BedrockBackend(
+            {"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "main"}
+        )
+        with caplog.at_level(logging.WARNING, logger="agent"):
+            b._log_token_usage()
+    records = [r for r in caplog.records
+               if "bedrock.token_usage" in r.message
+               and "probe_failed" not in r.message]
+    assert any(r.levelno == logging.WARNING for r in records)
+
+
+def test_token_usage_probe_failure_logs_warning(monkeypatch, caplog):
+    """_log_token_usage emits probe_failed when get_token_usage returns None."""
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    with patch.object(
+        __import__("bedrock_api").BedrockChatAPI, "get_token_usage",
+        return_value=None,
+    ):
+        b = BedrockBackend(
+            {"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "main"}
+        )
+        with caplog.at_level(logging.WARNING, logger="agent"):
+            b._log_token_usage()
+    assert any(
+        "bedrock.token_usage.probe_failed" in r.message
+        and r.levelno == logging.WARNING
+        for r in caplog.records
+    )
+
+
+def test_get_token_usage_returns_dict_on_200(monkeypatch):
+    """BedrockChatAPI.get_token_usage returns the parsed dict on HTTP 200."""
+    from bedrock_api import BedrockChatAPI
+    api = BedrockChatAPI({"api_url": "https://g.example.com/api",
+                          "api_key": "k" * 40, "model": "claude-v4.5-haiku"})
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"input_tokens": 1, "output_tokens": 2,
+                               "total_tokens": 3, "token_limit": 100}
+    with patch.object(api.session, "get", return_value=resp) as g:
+        out = api.get_token_usage()
+    assert out == {"input_tokens": 1, "output_tokens": 2,
+                   "total_tokens": 3, "token_limit": 100}
+    g.assert_called_once_with(
+        "https://g.example.com/api/token-usage", timeout=10)
+
+
+def test_get_token_usage_returns_none_on_non_200(monkeypatch):
+    """BedrockChatAPI.get_token_usage returns None on non-200 response."""
+    from bedrock_api import BedrockChatAPI
+    api = BedrockChatAPI({"api_url": "https://g.example.com/api",
+                          "api_key": "k" * 40, "model": "claude-v4.5-haiku"})
+    resp = MagicMock()
+    resp.status_code = 500
+    with patch.object(api.session, "get", return_value=resp):
+        out = api.get_token_usage()
+    assert out is None
+
+
+def test_get_token_usage_returns_none_on_exception(monkeypatch):
+    """BedrockChatAPI.get_token_usage returns None when the GET raises."""
+    from bedrock_api import BedrockChatAPI
+    api = BedrockChatAPI({"api_url": "https://g.example.com/api",
+                          "api_key": "k" * 40, "model": "claude-v4.5-haiku"})
+    with patch.object(api.session, "get", side_effect=RuntimeError("boom")):
+        out = api.get_token_usage()
+    assert out is None

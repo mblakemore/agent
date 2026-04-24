@@ -549,6 +549,39 @@ class BedrockBackend:
             }
         )
 
+        # Log monthly token usage at startup (issue #355)
+        self._log_token_usage()
+
+    def _log_token_usage(self) -> None:
+        """Fetch and log monthly token usage from the gateway.
+
+        Emits INFO-level log when usage is below 90%, WARNING when at or
+        above 90%. Logs a warning and continues if the probe fails.
+        """
+        log = logging.getLogger("agent")
+        try:
+            usage = self._api.get_token_usage()
+            if usage is None:
+                log.warning(
+                    "bedrock.token_usage.probe_failed role=%s model=%s",
+                    self.role, self.model
+                )
+                return
+            total = usage.get("total_tokens", 0)
+            limit = usage.get("token_limit", 1)
+            pct = (total / limit * 100) if limit else 0
+            level = logging.WARNING if pct >= 90 else logging.INFO
+            log.log(
+                level,
+                "bedrock.token_usage role=%s model=%s monthly_total=%d/%d used_pct=%.1f",
+                self.role, self.model, total, limit, pct
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            log.warning(
+                "bedrock.token_usage.probe_failed role=%s model=%s error=%s",
+                self.role, self.model, str(e)[:60]
+            )
+
     # ── Introspection ──
 
     def health(self) -> tuple[bool, str]:
