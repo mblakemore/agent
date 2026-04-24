@@ -123,6 +123,7 @@ Exactly one verdict from the decision matrix:
 | Metric off >5% wrong direction or command broken | **REQUEST_CHANGES** (cite measurements) |
 | New skips not justified in plan | **REQUEST_CHANGES** |
 | Diff touches files outside plan scope | **REQUEST_CHANGES** |
+| Tests patch or call a production symbol that does not exist on main (verified by `grep -n '<symbol>' agent.py`) | **CLOSE** (cycle 75 — builder error, not reviewer-fixable) |
 | CICD PR with no plan/metric/issue | **CLOSE** (hard-rule violation) |
 | Secrets in diff | **CLOSE** immediately + file issue |
 | Stale draft >7 days | **DEFER** |
@@ -145,14 +146,20 @@ Post-merge: `git pull --ff-only origin main` then run test suite. If red → fil
 **REQUEST_CHANGES** — small fixes only, do NOT rewrite the PR:
 1. `gh pr review <N> --request-changes --body "..."` — cite exact file:line or test name, state what needs to change.
 2. **Attempt a small, targeted fix** (≤20 lines changed, **max 2 attempts**) in the review worktree:
+   - **Scope: `tests/**` only (cycle 75).** Reviewer commits may edit files under `tests/` only. If the fix would require editing `agent.py`, `llm_backend.py`, or any non-test `.py` file, STOP — switch verdict to **CLOSE** (cite rule 13). Production-code gaps are a builder/plan error, not a reviewer fix. Let the builder retry in a fresh cycle with a corrected plan.
    - Only fix the specific issue you identified (e.g. a missing import, a broken test assertion, a typo).
    - Do NOT rewrite large sections of the PR's code. If the fix requires rewriting >20 lines, leave REQUEST_CHANGES standing and let the builder fix it.
    - After any `.py` file write: **immediately** run `python3 -m py_compile <file>` (or `python3 -c "import py_compile; py_compile.compile('<file>', doraise=True)"`). Fix any IndentationError before proceeding — do NOT skip to pytest first.
+   - **Before `git commit` (cycle 75 guard)**: run
+     ```bash
+     git diff --cached --name-only | grep -E '\.py$' | grep -v '^tests/' && { echo 'SCOPE VIOLATION: non-test .py file staged — aborting commit, switching to CLOSE'; exit 1; } || true
+     ```
+     If that line prints any file path, abort the commit and switch verdict to **CLOSE**. Do not `git add`-around it.
    - Run tests to confirm the fix works.
    - Commit with message: `CICD review R-NNN (#ISSUE): fix <what>`.
    - Push to the PR branch: `git push origin HEAD:<pr-branch-name>`.
    - **If tests still fail after 2 fix attempts, STOP.** Leave REQUEST_CHANGES standing, note what you tried in the review comment, and move on to the next PR. Do NOT keep retrying — a fix-retry spiral wastes the entire session.
-3. **Re-verify from scratch** — re-run tests + re-measure metric in the worktree after your fix.
+3. **Re-verify from scratch** — re-run tests + re-measure metric in the worktree after your fix. Paste the literal last 3 lines of pytest output (the `===== N passed/failed =====` summary block) into the review comment before declaring MERGE — do not paraphrase or fabricate the numbers.
 4. If the fix passes verification, change verdict to **MERGE** and proceed with the merge flow.
 5. If the fix fails after 2 attempts or the issue is too complex (e.g., fundamental design problem, unclear requirements), leave the REQUEST_CHANGES review standing and note what you tried in the review comment. Move on immediately.
 
@@ -192,6 +199,8 @@ Create `reviews-${BOT_ID}.md` in CICD state directory with header table if missi
 10. **Secrets → CLOSE immediately** + file issue. No negotiating.
 11. **Post-merge smoke test mandatory.** Fetch main, run tests, confirm green.
 12. **When in doubt, REQUEST_CHANGES** with a precise question.
+13. **Reviewer commits may only modify `tests/**` (cycle 75).** Any diff to non-test `.py` files (`agent.py`, `llm_backend.py`, `cancel.py`, etc.) in a review commit is a scope violation. Even a "one-line fix" to production code is forbidden — production changes go through the builder path with their own plan + issue. If the builder's tests reference APIs that don't exist on main, that is a builder error: switch verdict to **CLOSE**, reopen the issue, do not fix forward. Rationale: run 142's reviewer spliced a new kwarg into `run_agent_single()` to make broken tests pass, then fabricated a pytest summary and merged an `IndentationError`-corrupted `agent.py` to main. No exceptions.
+14. **Pytest summary must be verbatim (cycle 75).** Before declaring MERGE, paste the literal final summary block from the re-run pytest (e.g. `===== 757 passed in 12.34s =====`) into the review comment. Paraphrased or invented numbers = fabrication = scope violation.
 13. **reviews-${BOT_ID}.md is local only** — it lives outside the repo clone. Never `git add` or `git commit` it.
 
 ## Interaction with Builder
