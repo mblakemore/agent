@@ -47,3 +47,6 @@ ENV/
 
 # Local config overrides
 config.local.json
+.env
+.env.*
+*.local.*
