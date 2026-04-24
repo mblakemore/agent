@@ -196,3 +196,65 @@ def test_bedrock_complete_logs_failure(monkeypatch, caplog, tmp_path):
         "backend.complete.latency_ms" in r.message and "ok=False" in r.message
         for r in caplog.records
     )
+
+
+# ── _call_with_retry regression (run 141 fix) ──
+
+def test_call_with_retry_catches_builtin_TimeoutError(monkeypatch, caplog):
+    """bedrock_api.poll() raises the Python built-in ``TimeoutError`` (NOT
+    ``requests.exceptions.Timeout``). Run 141 crashed because the retry
+    wrapper only caught the requests-flavored exception. Regression guard:
+    ensure the wrapper also catches the built-in, retries, and eventually
+    re-raises.
+    """
+    import logging
+
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    b = BedrockBackend(
+        {"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "main",
+         "max_retries": 2, "retry_base_delay_seconds": 0.01,
+         "retry_backoff": 1.0}
+    )
+    call_count = {"n": 0}
+
+    def _always_timeout(*a, **kw):
+        call_count["n"] += 1
+        raise TimeoutError("No response after 180s")
+
+    log = logging.getLogger("test_timeout_retry")
+    with caplog.at_level(logging.WARNING, logger="test_timeout_retry"):
+        with pytest.raises(TimeoutError):
+            b._call_with_retry(_always_timeout, _log=log)
+
+    # 1 initial + 2 retries = 3 attempts
+    assert call_count["n"] == 3
+    # Must have emitted backend.retry.attempted before re-raising
+    assert any(
+        "backend.retry.attempted" in r.message and "backend=bedrock" in r.message
+        for r in caplog.records
+    )
+
+
+def test_call_with_retry_recovers_after_TimeoutError(monkeypatch):
+    """TimeoutError on first attempt, success on second → returns the value."""
+    import logging
+
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    b = BedrockBackend(
+        {"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "main",
+         "max_retries": 3, "retry_base_delay_seconds": 0.01,
+         "retry_backoff": 1.0}
+    )
+    calls = {"n": 0}
+
+    def _flaky(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("transient")
+        return ("ok", "conv-abc")
+
+    result = b._call_with_retry(_flaky, _log=logging.getLogger("test_recover"))
+    assert result == ("ok", "conv-abc")
+    assert calls["n"] == 2
