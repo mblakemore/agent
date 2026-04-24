@@ -529,12 +529,14 @@ def _cicd_verify_gh_mutation(command: str, result: str, log) -> str:
     Scoped to the CICD exec_command path; returns ``result`` unchanged for
     non-gh commands so non-CICD runs see zero overhead.
     """
-    if not re.search(r"\bgh\s+(pr|issue)\s+(create|merge|close|ready)\b", command):
-        return result
-
-    # Expected end-state per action
     action_match = re.search(r"\bgh\s+(pr|issue)\s+(create|merge|close|ready)\b", command)
+    if not action_match:
+        return result
     kind_word, action = action_match.group(1), action_match.group(2)
+    # Forensic probe (cycle 77 step 3): prove the hook fires on gh mutations.
+    # Keep at INFO so it appears in the standard CICD run log.
+    log.info("cicd.gh_verify.enter kind=%s action=%s cmd_preview=%r",
+             kind_word, action, command[:80])
     expected_state = {
         "create": None,    # just needs to exist
         "merge": "MERGED",
