@@ -557,6 +557,10 @@ class BedrockBackend:
 
         # Log monthly token usage at startup (issue #355)
         self._log_token_usage()
+        # CICD 358: Conversation reuse tracking
+        self._active_conv_id: Optional[str] = None
+        self._session_conv_count = 0
+        
 
     def _log_token_usage(self) -> None:
         """Fetch and log monthly token usage from the gateway.
@@ -825,21 +829,25 @@ class BedrockBackend:
         conv_id: str | None = None
         full_text = ""
         MAX_CONTINUATIONS = 3
-
         for attempt in range(1 + MAX_CONTINUATIONS):
             if cancel_check:
                 cancel_check()
 
             if attempt == 0:
                 send_text = prompt
+                # CICD 358: Reuse existing conversation if available
+                if self._active_conv_id is None:
+                    self._session_conv_count += 1
+
                 msg, conv_id = self._call_with_retry(
                     self._api.send_and_wait_conv,
                     send_text,
-                    conversation_id=None,
+                    conversation_id=self._active_conv_id,
                     cancel_check=cancel_check,
                     _log=log,
                     _cancel_check=cancel_check,
                 )
+                self._active_conv_id = conv_id
             else:
                 tail = full_text[-200:]
                 send_text = (
@@ -854,6 +862,7 @@ class BedrockBackend:
                     _log=log,
                     _cancel_check=cancel_check,
                 )
+                self._active_conv_id = conv_id
 
             piece = self._api.extract_text(msg)
             full_text += piece
