@@ -104,9 +104,9 @@ def test_resolve_cap_defaults(monkeypatch):
 
 
 def test_estimate_cost_known_model():
-    # Haiku: $0.25/M in, $1.25/M out.
+    # Haiku (AWS list): $1.00/M in, $5.00/M out.
     cost = _estimate_cost("main", 1_000_000, 1_000_000, "claude-v4.5-haiku")
-    assert cost == pytest.approx(1.50)
+    assert cost == pytest.approx(6.00)
 
 
 def test_estimate_cost_unknown_model_warns_and_returns_zero(caplog):

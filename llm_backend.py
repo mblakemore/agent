@@ -365,14 +365,20 @@ _MODEL_CONTEXT_CHARS = {
 }
 
 
-# Per-model pricing table (USD per 1M tokens), best-effort early-2026
-# numbers. Unknown models get 0.0 and a WARN (see plan § 6.5).
+# Per-model pricing table (USD per 1M tokens). Source: AWS Bedrock price
+# list (Anthropic section) as of 2026-04-24. Earlier values for opus
+# (15/75) and haiku (0.25/1.25) were list-price estimates from an older
+# tier — 3× over for opus and 4× under for haiku against actual Bedrock.
+# Unknown models get 0.0 and a WARN (see plan § 6.5).
 _BEDROCK_PRICING = {
-    "claude-v4.5-opus": {"in": 15.00, "out": 75.00},
+    "claude-v4.7-opus":   {"in": 5.00, "out": 25.00},
+    "claude-v4.6-opus":   {"in": 5.00, "out": 25.00},
+    "claude-v4.6-sonnet": {"in": 3.00, "out": 15.00},
+    "claude-v4.5-opus":   {"in": 5.00, "out": 25.00},
     "claude-v4.5-sonnet": {"in": 3.00, "out": 15.00},
-    "claude-v4.5-haiku": {"in": 0.25, "out": 1.25},
+    "claude-v4.5-haiku":  {"in": 1.00, "out":  5.00},
     "claude-v3.7-sonnet": {"in": 3.00, "out": 15.00},
-    "claude-v3.5-haiku": {"in": 0.25, "out": 1.25},
+    "claude-v3.5-haiku":  {"in": 1.00, "out":  5.00},
 }
 
 
