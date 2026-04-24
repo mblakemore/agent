@@ -3315,4 +3315,9 @@ if __name__ == "__main__":
     else:
         import io
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    import atexit
+    # Always log bedrock session spend at exit — crashes (TimeoutError,
+    # BedrockBudgetExceeded, etc.) would otherwise skip it. Safe no-op
+    # when no bedrock backend is in use.
+    atexit.register(_log_bedrock_session_spend, logging.getLogger("agent"))
     main()
