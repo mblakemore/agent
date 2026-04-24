@@ -108,7 +108,7 @@ def test_backend_flag_invalid_value_argparse_error(capsys):
 @patch("agent._emit")
 def test_backend_main_bedrock_default_model(mock_emit, mock_run, monkeypatch, restore_agent_state):
     """If --backend-main bedrock is set with no model in the config block,
-    a sensible default is supplied (claude-v4.5-sonnet for main)."""
+    a sensible default is supplied (claude-v4.5-opus for main)."""
     monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
     monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
 
@@ -118,7 +118,7 @@ def test_backend_main_bedrock_default_model(mock_emit, mock_run, monkeypatch, re
     argv = ["agent.py", "--backend-main", "bedrock", "--auto"]
     with patch.object(sys, "argv", argv):
         main()
-    assert _agent_mod._config["backends"]["main"]["model"] == "claude-v4.5-sonnet"
+    assert _agent_mod._config["backends"]["main"]["model"] == "claude-v4.5-opus"
 
 
 if __name__ == '__main__':

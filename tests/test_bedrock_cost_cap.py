@@ -96,7 +96,7 @@ def test_resolve_cap_from_config_dict(monkeypatch):
 
 def test_resolve_cap_defaults(monkeypatch):
     monkeypatch.delenv("BEDROCK_DAILY_CAP_USD", raising=False)
-    assert _resolve_daily_cap({}, "main") == 10.00
+    assert _resolve_daily_cap({}, "main") == 30.00
     assert _resolve_daily_cap({}, "summary") == 1.00
 
 
