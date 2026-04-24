@@ -2344,10 +2344,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     _emit("on_context_recovery")
                     # Force a resummarize with the tighter window so dropped messages aren't lost
                     _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True)
+                    # Force a resummarize with the tighter window so dropped messages aren't lost
+                    _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True)
                 continue
-            except CancelledError:
-                raise
-            except requests.exceptions.RequestException as e:
                 log.error("Request failed after retries: %s", e)
                 _emit("on_error", f"Error calling server: {e}")
                 return "error"
