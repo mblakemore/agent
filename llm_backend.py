@@ -814,6 +814,7 @@ class BedrockBackend:
         # sessions.
         from dev_mode_prompt import (
             build_dev_prompt,
+            build_dev_prompt_incremental,
             is_truncated,
             parse_dev_response,
         )
@@ -836,7 +837,36 @@ class BedrockBackend:
             if tools is None:
                 tools = body.get("tools")
 
-        prompt = build_dev_prompt(messages or [], tools)
+        # Multi-turn gate (prototype — set BEDROCK_MULTITURN=1 to enable).
+        # When on AND we already have an active conversation, send only
+        # the incremental messages (user/tool since last assistant) instead
+        # of re-packing the whole history. The gateway has the prior turns
+        # stored server-side under self._active_conv_id, so this cuts per-
+        # POST body size from 10-100K chars to <1K in typical CICD turns.
+        multiturn_on = os.environ.get("BEDROCK_MULTITURN", "0") == "1"
+        use_incremental = multiturn_on and self._active_conv_id is not None
+
+        if use_incremental:
+            # Slice messages after the last assistant turn.
+            msgs_full = messages or []
+            last_ai_idx = -1
+            for i, m in enumerate(msgs_full):
+                if m.get("role") == "assistant":
+                    last_ai_idx = i
+            new_msgs = msgs_full[last_ai_idx + 1:] if last_ai_idx >= 0 else msgs_full
+            prompt = build_dev_prompt_incremental(new_msgs)
+            log.info(
+                "bedrock.multiturn.incremental conv=%s sent_msgs=%d body_chars=%d",
+                (self._active_conv_id or "")[:8], len(new_msgs), len(prompt),
+            )
+        else:
+            prompt = build_dev_prompt(msgs_full := (messages or []), tools)
+            if multiturn_on:
+                # First send of a multiturn session — establish context server-side.
+                log.info(
+                    "bedrock.multiturn.establish msgs=%d body_chars=%d",
+                    len(msgs_full), len(prompt),
+                )
 
         t0 = time.monotonic()
         conv_id: str | None = None
@@ -852,14 +882,39 @@ class BedrockBackend:
                 if self._active_conv_id is None:
                     self._session_conv_count += 1
 
-                msg, conv_id = self._call_with_retry(
-                    self._api.send_and_wait_conv,
-                    send_text,
-                    conversation_id=self._active_conv_id,
-                    cancel_check=cancel_check,
-                    _log=log,
-                    _cancel_check=cancel_check,
-                )
+                try:
+                    msg, conv_id = self._call_with_retry(
+                        self._api.send_and_wait_conv,
+                        send_text,
+                        conversation_id=self._active_conv_id,
+                        cancel_check=cancel_check,
+                        _log=log,
+                        _cancel_check=cancel_check,
+                    )
+                except requests.exceptions.HTTPError as e:
+                    # Multi-turn fallback: if the reused conversation is
+                    # stale (4xx), reset and re-establish with full prompt.
+                    status = getattr(getattr(e, "response", None), "status_code", 0)
+                    if (use_incremental and 400 <= status < 500
+                            and self._active_conv_id is not None):
+                        log.warning(
+                            "bedrock.multiturn.stale_conv status=%d conv=%s "
+                            "— resetting and re-establishing",
+                            status, (self._active_conv_id or "")[:8],
+                        )
+                        self._active_conv_id = None
+                        self._session_conv_count += 1
+                        prompt = build_dev_prompt(messages or [], tools)
+                        msg, conv_id = self._call_with_retry(
+                            self._api.send_and_wait_conv,
+                            prompt,
+                            conversation_id=None,
+                            cancel_check=cancel_check,
+                            _log=log,
+                            _cancel_check=cancel_check,
+                        )
+                    else:
+                        raise
                 self._active_conv_id = conv_id
             else:
                 tail = full_text[-200:]

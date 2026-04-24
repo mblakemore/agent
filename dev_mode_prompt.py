@@ -231,6 +231,51 @@ def build_dev_prompt(messages: list[dict], tools: list[dict] | None) -> str:
     return "\n\n".join(parts) + "\n\nAssistant:"
 
 
+def build_dev_prompt_incremental(new_messages: list[dict]) -> str:
+    """Serialize *new* non-system messages for a server-side multi-turn POST.
+
+    When ``BedrockBackend`` reuses an existing ``conversationId``, the
+    gateway already has the conversation's prior turns (including the
+    ``[System]`` block with the tool manual + one-shot example) stored
+    server-side. On follow-up calls we only need to send the messages
+    *appended since the last assistant response* — typically one or two
+    ``tool`` results plus maybe a ``user`` nudge.
+
+    This mirrors ``build_dev_prompt``'s per-message rendering but skips
+    the system/tool preamble and any pre-existing history. The output
+    ends with ``\\n\\nAssistant:`` to cue the model to respond.
+
+    Callers should slice the full message list at the last assistant
+    index and pass only the tail: ``messages[last_assistant_idx + 1:]``.
+    """
+    parts: list[str] = []
+    for msg in new_messages or []:
+        role = msg.get("role")
+        content = msg.get("content") or ""
+        if role == "user":
+            parts.append(f"User: {content}")
+        elif role == "tool":
+            name = msg.get("name", "?")
+            parts.append(f"[Tool result ({name}): {content}]")
+        elif role == "assistant":
+            # Defensive — callers should have sliced past the last
+            # assistant. If one slipped in, render it faithfully.
+            parts.append(f"Assistant: {content}")
+            for tc in msg.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                name = fn.get("name", "")
+                args = _unpack_tool_call_args(fn.get("arguments"))
+                parts.append(f"[Tool call: {name}({json.dumps(args)})]")
+        # system messages are deliberately dropped — the server already
+        # has them attached to the conversation on turn 1.
+    if not parts:
+        # Extremely rare: a nudge turn with no incremental content. Send
+        # a minimal continuation cue so the server has something to work
+        # with.
+        return "Assistant:"
+    return "\n\n".join(parts) + "\n\nAssistant:"
+
+
 def parse_dev_response(text: str) -> tuple[str, list[dict]]:
     """Parse a dev-mode model response into (narrative, tool_calls).
 

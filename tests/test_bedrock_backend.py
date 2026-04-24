@@ -441,3 +441,72 @@ def test_conv_reuse_second_call_uses_cached_id(monkeypatch, tmp_path):
     assert calls[1] == "conv-STABLE-1"
     # Only one distinct conversation opened server-side.
     assert b._session_conv_count == 1
+
+
+# ── Multi-turn (proto/bedrock-multiturn) ──
+
+
+def test_multiturn_gate_off_sends_full_prompt_every_turn(monkeypatch, tmp_path):
+    """With BEDROCK_MULTITURN unset (default), second call still packs
+    the full message list — existing N2 behavior unchanged."""
+    monkeypatch.setattr("llm_backend._SPEND_FILE", str(tmp_path / "spend.json"))
+    monkeypatch.delenv("BEDROCK_MULTITURN", raising=False)
+    b = _mk_bedrock(monkeypatch)
+    fake_msg = {"role": "assistant",
+                "content": [{"contentType": "text", "body": "ok"}]}
+    bodies = []
+
+    def _capture(prompt_text, conversation_id=None, cancel_check=None):
+        bodies.append(prompt_text)
+        return fake_msg, "conv-1"
+
+    with patch.object(b._api, "send_and_wait_conv", side_effect=_capture):
+        msgs = [{"role": "system", "content": "sys"},
+                {"role": "user", "content": "first user message"}]
+        b.stream_chat(logging.getLogger("test"),
+                      json={"messages": msgs, "tools": None})
+        msgs2 = msgs + [{"role": "assistant", "content": "ok"},
+                        {"role": "user", "content": "second user message"}]
+        b.stream_chat(logging.getLogger("test"),
+                      json={"messages": msgs2, "tools": None})
+    # Turn 2 body still carries turn 1's content (full repack).
+    assert "first user message" in bodies[1]
+    assert "second user message" in bodies[1]
+
+
+def test_multiturn_gate_on_sends_only_incremental_on_second_turn(
+        monkeypatch, tmp_path):
+    """With BEDROCK_MULTITURN=1, the second call sends ONLY the messages
+    appended after the last assistant response — not the whole history."""
+    monkeypatch.setattr("llm_backend._SPEND_FILE", str(tmp_path / "spend.json"))
+    monkeypatch.setenv("BEDROCK_MULTITURN", "1")
+    b = _mk_bedrock(monkeypatch)
+    fake_msg = {"role": "assistant",
+                "content": [{"contentType": "text", "body": "ok"}]}
+    bodies = []
+    conv_ids = []
+
+    def _capture(prompt_text, conversation_id=None, cancel_check=None):
+        bodies.append(prompt_text)
+        conv_ids.append(conversation_id)
+        return fake_msg, "conv-STABLE"
+
+    with patch.object(b._api, "send_and_wait_conv", side_effect=_capture):
+        msgs = [{"role": "system", "content": "sys"},
+                {"role": "user", "content": "first user message"}]
+        b.stream_chat(logging.getLogger("test"),
+                      json={"messages": msgs, "tools": None})
+        msgs2 = msgs + [{"role": "assistant", "content": "ok"},
+                        {"role": "user", "content": "NEW-TURN-PAYLOAD"}]
+        b.stream_chat(logging.getLogger("test"),
+                      json={"messages": msgs2, "tools": None})
+    # Turn 1 body carries the full establishment; turn 2 body should NOT
+    # carry turn 1's user content — only the new user message.
+    assert "first user message" in bodies[0]
+    assert "NEW-TURN-PAYLOAD" in bodies[1]
+    assert "first user message" not in bodies[1]
+    # conversation_id: None on turn 1, cached on turn 2.
+    assert conv_ids[0] is None
+    assert conv_ids[1] == "conv-STABLE"
+    # Still only one conversation opened server-side.
+    assert b._session_conv_count == 1
