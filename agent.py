@@ -509,6 +509,95 @@ def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log):
         
     return False, None
 
+
+def _cicd_verify_gh_mutation(command: str, result: str, log) -> str:
+    """Cycle 77 — verify claimed gh PR/issue mutations against GitHub's actual state.
+
+    Runs 142 + 146 hallucinated exec_command tool results that *looked* like
+    successful `gh pr create` / `gh pr merge` output (URLs, exit=0) but the
+    referenced PR did not actually exist on GitHub. The model then proceeded
+    as if the work was done.
+
+    This helper runs after any `gh pr create|merge|close|ready` or
+    `gh issue create|close` command. It extracts the PR/issue number the
+    model claimed in the tool output, queries GitHub directly for its real
+    state, and appends a SUPERVISION note to the tool result if the state
+    does not match the mutation's expected outcome. The note becomes part
+    of the tool-result the model sees next turn, so fabricated numbers are
+    corrected with real data the model cannot override.
+
+    Scoped to the CICD exec_command path; returns ``result`` unchanged for
+    non-gh commands so non-CICD runs see zero overhead.
+    """
+    if not re.search(r"\bgh\s+(pr|issue)\s+(create|merge|close|ready)\b", command):
+        return result
+
+    # Expected end-state per action
+    action_match = re.search(r"\bgh\s+(pr|issue)\s+(create|merge|close|ready)\b", command)
+    kind_word, action = action_match.group(1), action_match.group(2)
+    expected_state = {
+        "create": None,    # just needs to exist
+        "merge": "MERGED",
+        "close": "CLOSED",
+        "ready": "OPEN",
+    }[action]
+
+    # Parse claimed number from the result: URLs like .../pull/123 or .../issues/456
+    url_match = re.search(
+        r"github\.com/[^\s]+/(pull|issues)/(\d+)", result, re.IGNORECASE)
+    if not url_match:
+        # Also accept bare "#N" patterns in case gh output form differs
+        hash_match = re.search(r"(?:pull request|issue) #(\d+)", result, re.IGNORECASE)
+        if not hash_match:
+            return result
+        path = "pr" if kind_word == "pr" else "issue"
+        num = hash_match.group(1)
+    else:
+        path = "pr" if url_match.group(1).lower() == "pull" else "issue"
+        num = url_match.group(2)
+
+    try:
+        import subprocess
+        proc = subprocess.run(
+            ["gh", path, "view", num, "--json", "state,title"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        log.warning("cicd.gh_verify.probe_failed path=%s num=%s error=%s", path, num, e)
+        return result
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout).strip().splitlines()[-1][:160]
+        log.warning("cicd.gh_verify.missing path=%s num=%s", path, num)
+        return result + (
+            f"\n\n[CICD SUPERVISION (cycle 77): gh {path} view {num} failed — "
+            f"the {path} #{num} referenced in the tool output DOES NOT EXIST on GitHub. "
+            f"Do not proceed as if the {action} succeeded. "
+            f"gh stderr: {err}]"
+        )
+
+    try:
+        import json as _json
+        data = _json.loads(proc.stdout)
+        actual_state = (data.get("state") or "").upper()
+    except (ValueError, KeyError) as e:
+        log.warning("cicd.gh_verify.parse_failed num=%s error=%s", num, e)
+        return result
+
+    if expected_state and actual_state != expected_state:
+        log.warning(
+            "cicd.gh_verify.state_mismatch path=%s num=%s expected=%s actual=%s",
+            path, num, expected_state, actual_state,
+        )
+        return result + (
+            f"\n\n[CICD SUPERVISION (cycle 77): gh {path} view {num} reports state={actual_state}, "
+            f"but `gh {kind_word} {action}` claims {expected_state}. "
+            f"The {action} did NOT take effect as narrated. Investigate before proceeding.]"
+        )
+
+    return result
+
+
 # Load agent-specific tools from CWD/.agent/tools/ if it exists.
 # Note: CWD/tools/ is the builtin package already loaded by tools/__init__.py —
 # pointing the loader at it would re-execute every module under a fake
@@ -2779,6 +2868,14 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         tool_status.first_token()
                         tool_status.finish()
                     _emit("on_tool_start", func_name, func_args)
+
+                    # Cycle 77 — verify gh pr/issue mutations against real state.
+                    # Appends a SUPERVISION note when the tool output references
+                    # a PR/issue that does not exist or is not in the claimed state.
+                    if func_name == "exec_command" and isinstance(func_args, dict):
+                        _cmd_str = func_args.get("command", "")
+                        if _cmd_str:
+                            result_str = _cicd_verify_gh_mutation(_cmd_str, result_str, log)
 
                     # Truncate oversized tool results to cap context pressure.
                     if len(result_str) > _MAX_TOOL_RESULT_CHARS:
