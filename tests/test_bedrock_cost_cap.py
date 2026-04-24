@@ -96,7 +96,7 @@ def test_resolve_cap_from_config_dict(monkeypatch):
 
 def test_resolve_cap_defaults(monkeypatch):
     monkeypatch.delenv("BEDROCK_DAILY_CAP_USD", raising=False)
-    assert _resolve_daily_cap({}, "main") == 30.00
+    assert _resolve_daily_cap({}, "main") == 60.00
     assert _resolve_daily_cap({}, "summary") == 1.00
 
 
@@ -122,10 +122,10 @@ def test_estimate_cost_unknown_model_warns_and_returns_zero(caplog):
 def test_cap_breach_raises_budget_exceeded(monkeypatch, tmp_path):
     spend = tmp_path / "spend.json"
     monkeypatch.setattr("llm_backend._SPEND_FILE", str(spend))
-    # Seed spend close to the $10 main cap.
+    # Seed spend close to the $60 main cap (bumped from $30 in b15c6c5).
     today = date.today().isoformat()
     spend.parent.mkdir(parents=True, exist_ok=True)
-    spend.write_text(json.dumps({today: {"main": 9.99}}))
+    spend.write_text(json.dumps({today: {"main": 59.99}}))
 
     monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
     monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
