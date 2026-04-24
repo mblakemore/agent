@@ -2339,14 +2339,14 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 else:
                     # Reduce: cap messages to current count minus 2 (drop oldest pair)
                     _ctx_max_messages = max(2, current_count - 2)
-                except CancelledError:
-                    raise
                     log.warning("Context overflow (attempt %d/%d): reducing from %d to max %d messages",
                                 _ctx_attempt + 1, _CTX_REDUCE_MAX, current_count, _ctx_max_messages)
                     _emit("on_context_recovery")
                     # Force a resummarize with the tighter window so dropped messages aren't lost
                     _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True)
                 continue
+            except CancelledError:
+                raise
             except requests.exceptions.RequestException as e:
                 log.error("Request failed after retries: %s", e)
                 _emit("on_error", f"Error calling server: {e}")
