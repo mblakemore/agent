@@ -2339,8 +2339,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 else:
                     # Reduce: cap messages to current count minus 2 (drop oldest pair)
                     _ctx_max_messages = max(2, current_count - 2)
-                        except CancelledError:
-                            raise
+                except CancelledError:
+                    raise
                     log.warning("Context overflow (attempt %d/%d): reducing from %d to max %d messages",
                                 _ctx_attempt + 1, _CTX_REDUCE_MAX, current_count, _ctx_max_messages)
                     _emit("on_context_recovery")
