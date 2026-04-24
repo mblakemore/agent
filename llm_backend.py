@@ -644,6 +644,13 @@ class BedrockBackend:
         cost = _estimate_cost(self.role, in_tokens, out_tokens, self.model)
         new_total = _record_spend(self.role, cost)
         cap = _resolve_daily_cap(self._cfg, self.role)
+        # Per-call tokens at INFO so CICD run logs (which run at INFO) carry
+        # them. Keep the DEBUG tick below for cost-cap detail so verbose
+        # runs still get the breakdown without doubling the INFO line.
+        log.info(
+            "bedrock.tokens role=%s model=%s in=%d out=%d cost_usd=%.4f",
+            self.role, self.model, in_tokens, out_tokens, cost,
+        )
         log.debug(
             "bedrock.cost.tick role=%s in_tokens=%d out_tokens=%d "
             "estimated_cost_usd=%.4f daily_total_usd=%.4f cap_usd=%.2f",
