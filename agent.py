@@ -376,7 +376,7 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
     """
     global _main_backend, _summary_backend
 
-    defaults = {"main": "claude-v4.5-sonnet", "summary": "claude-v4.5-haiku"}
+    defaults = {"main": "claude-v4.5-opus", "summary": "claude-v4.5-haiku"}
 
     # Model IDs the Bedrock gateway accepts. An existing model that doesn't
     # match one of these prefixes was set for the OTHER backend kind (likely

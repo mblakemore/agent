@@ -381,7 +381,7 @@ _BEDROCK_PRICING = {
 _SPEND_FILE = "/droid/repos/agent/CICD/bedrock_spend.json"
 
 # Default daily caps (USD). See plan § 24 S5 decision.
-_DEFAULT_DAILY_CAPS = {"main": 10.00, "summary": 1.00}
+_DEFAULT_DAILY_CAPS = {"main": 30.00, "summary": 1.00}
 
 
 def _spend_file_path() -> Path:
