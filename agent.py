@@ -6,6 +6,28 @@ Entry points: ``run_agent_interactive()`` for interactive use, ``run_agent()``
 for single-prompt runs. See ``README.md`` for CLI flags.
 """
 
+__version__ = "0.1.0"
+
+
+def _git_short_sha() -> str:
+    """Short git SHA of the current checkout, or "" if unavailable.
+
+    Used by the session banner to distinguish builds when operators
+    run multiple checkouts of the agent on the same machine.
+    """
+    try:
+        import subprocess as _sp
+        import os as _os
+        here = _os.path.dirname(_os.path.abspath(__file__))
+        out = _sp.check_output(
+            ["git", "-C", here, "rev-parse", "--short", "HEAD"],
+            stderr=_sp.DEVNULL, timeout=1, text=True,
+        )
+        return out.strip()
+    except Exception:
+        return ""
+
+
 import ctypes
 import gc
 import hashlib
@@ -1954,11 +1976,32 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         log.info("Auto-detected main model n_ctx=%d, using ctx_size=%d (85%% / cap %dk)",
                  detected, ctx_size, _CTX_HARD_CAP // 1000)
 
+    # Probe summary health BEFORE on_session_start so the banner can
+    # render main + summary indicators together in a single header.
+    summary_cfg = _config["summary"]
+    summary_ok = False
+    summary_detail = "disabled"
+    summary_url = getattr(_summary_backend, "base_url", "") if _summary_backend else ""
+    if summary_cfg["enabled"]:
+        try:
+            summary_ok, summary_detail = _summary_backend.health()
+        except (requests.ConnectionError, requests.Timeout):
+            summary_ok, summary_detail = False, "unreachable"
+
     _emit("on_session_start", {
+        "version": __version__,
+        "sha": _git_short_sha(),
         "api_ok": ok,
         "api_detail": detail,
         "base_url": getattr(_main_backend, "base_url", None) or BASE_URL,
         "model": model_name,
+        "main_kind": getattr(_main_backend, "kind", ""),
+        "summary_enabled": summary_cfg["enabled"],
+        "summary_ok": summary_ok,
+        "summary_detail": summary_detail,
+        "summary_base_url": summary_url,
+        "summary_model": getattr(_summary_backend, "model", "") if _summary_backend else "",
+        "summary_kind": getattr(_summary_backend, "kind", "") if _summary_backend else "",
         "ctx_size": ctx_size,
         "max_turns": _MAX_TURNS,
         "log_path": log_path,
@@ -1969,18 +2012,9 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
              ctx_size, _MAX_TURNS, gen["temperature"], max_tokens)
     log.info("Tools registered: %s", [t["function"]["name"] for t in tools])
 
-    # Create async summarizer if enabled and the summary backend is reachable.
-    # Plan task 1.5: delegate health probe to the summary backend.
+    # Instantiate the async summarizer from the already-probed state above.
     _async_summarizer = None
-    summary_cfg = _config["summary"]
     if summary_cfg["enabled"]:
-        summary_url = _summary_backend.base_url
-        try:
-            summary_ok, summary_detail = _summary_backend.health()
-        except (requests.ConnectionError, requests.Timeout):
-            # Defensive: health() shouldn't raise these (it catches internally)
-            # but preserve the pre-refactor "offline" emit path just in case.
-            summary_ok, summary_detail = False, "unreachable"
         if summary_ok:
             # Auto-detect summary model context size
             summary_ctx = _summary_backend.detect_ctx_size()
@@ -2060,8 +2094,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 estimate_tokens=_estimate_tokens,
             )
             _cb = _tuimod.TuiCallbacks(tui_session, verbose=getattr(_cb, "verbose", False))
-            _emit("on_notice", "info",
-                  "[TUI mode · Enter submit · Ctrl+N newline · ↑/↓ history · /help for commands]")
+            # Hints are now in the bottom-toolbar right-align; no scrollback line needed.
         else:
             _emit("on_notice", "warn",
                   "prompt_toolkit not installed — using plain prompt. "
