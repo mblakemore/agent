@@ -558,9 +558,15 @@ class BedrockBackend:
         # Log monthly token usage at startup (issue #355)
         self._log_token_usage()
         # CICD 358: Conversation reuse tracking
-        self._active_conv_id: Optional[str] = None
+        # CICD 358 / issue #356 — server-side conversation reuse.
+        # First stream_chat of a session creates a new conversation (id is
+        # None); subsequent calls pass the stored id so the gateway keeps
+        # context server-side. Reduces per-bot conversation accumulation
+        # from ~60-per-run to 1-per-run (see beewatcher finding — bots on
+        # this gateway stop responding after ~50-75 conversations).
+        self._active_conv_id: str | None = None
         self._session_conv_count = 0
-        
+
 
     def _log_token_usage(self) -> None:
         """Fetch and log monthly token usage from the gateway.
