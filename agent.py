@@ -1926,6 +1926,18 @@ def _log_bedrock_session_spend(log):
             spent,
             cap,
         )
+        # CICD 358 / issue #356 — per-session conversation count.
+        # Logs the number of distinct server-side conversations this
+        # session opened. With conversation reuse (this issue) we expect
+        # count=1 for any run; pre-fix values were ~N (one per turn).
+        count = getattr(backend, "_session_conv_count", None)
+        if count is not None:
+            log.info(
+                "bedrock.session_conv_count role=%s model=%s count=%d",
+                role,
+                getattr(backend, "model", "?"),
+                count,
+            )
 
 
 def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, *, cb=None, tui=False, verbose=False):

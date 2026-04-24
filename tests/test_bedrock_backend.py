@@ -374,3 +374,70 @@ def test_get_token_usage_returns_none_on_exception(monkeypatch):
     with patch.object(api.session, "get", side_effect=RuntimeError("boom")):
         out = api.get_token_usage()
     assert out is None
+
+
+# ── Conversation reuse (issue #356 / cycle 358) ──
+
+
+def _mk_bedrock(monkeypatch):
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    return BedrockBackend(
+        {"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "main"}
+    )
+
+
+def test_conv_reuse_initial_state(monkeypatch):
+    """BedrockBackend starts with no active conversation and zero count."""
+    b = _mk_bedrock(monkeypatch)
+    assert b._active_conv_id is None
+    assert b._session_conv_count == 0
+
+
+def test_conv_reuse_first_call_creates_new(monkeypatch, tmp_path):
+    """First stream_chat call passes conversation_id=None (creates a new
+    conversation server-side) and increments session_conv_count."""
+    monkeypatch.setattr("llm_backend._SPEND_FILE", str(tmp_path / "spend.json"))
+    b = _mk_bedrock(monkeypatch)
+    # Mock the API layer so send_and_wait_conv returns a deterministic
+    # (msg, conv_id) tuple without hitting the network.
+    fake_msg = {"role": "assistant",
+                "content": [{"contentType": "text", "body": "hi"}]}
+    sent_kwargs = {}
+
+    def _fake_send(prompt_text, conversation_id=None, cancel_check=None):
+        sent_kwargs["conversation_id"] = conversation_id
+        return fake_msg, "conv-NEW-123"
+
+    with patch.object(b._api, "send_and_wait_conv", side_effect=_fake_send):
+        b.stream_chat(logging.getLogger("test"),
+                      json={"messages": [{"role": "user", "content": "hi"}]})
+    assert sent_kwargs["conversation_id"] is None
+    assert b._active_conv_id == "conv-NEW-123"
+    assert b._session_conv_count == 1
+
+
+def test_conv_reuse_second_call_uses_cached_id(monkeypatch, tmp_path):
+    """Second stream_chat call passes the cached conversation_id — the
+    server keeps context and no new conversation record is created."""
+    monkeypatch.setattr("llm_backend._SPEND_FILE", str(tmp_path / "spend.json"))
+    b = _mk_bedrock(monkeypatch)
+    fake_msg = {"role": "assistant",
+                "content": [{"contentType": "text", "body": "ok"}]}
+    calls = []
+
+    def _fake_send(prompt_text, conversation_id=None, cancel_check=None):
+        calls.append(conversation_id)
+        # Gateway returns a stable conv_id on continuation.
+        return fake_msg, "conv-STABLE-1"
+
+    with patch.object(b._api, "send_and_wait_conv", side_effect=_fake_send):
+        b.stream_chat(logging.getLogger("test"),
+                      json={"messages": [{"role": "user", "content": "first"}]})
+        b.stream_chat(logging.getLogger("test"),
+                      json={"messages": [{"role": "user", "content": "second"}]})
+    # First call: conversation_id=None → create. Second call: reuse.
+    assert calls[0] is None
+    assert calls[1] == "conv-STABLE-1"
+    # Only one distinct conversation opened server-side.
+    assert b._session_conv_count == 1
