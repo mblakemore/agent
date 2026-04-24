@@ -188,29 +188,51 @@ class TerminalCallbacks(NullCallbacks):
 
     def on_session_start(self, info: dict) -> None:
         bar = theme.c(theme.VIOLET, "─" * 60)
-        title = theme.c(theme.SKY, "Agent", bold=True)
+        version = info.get("version", "")
+        sha = info.get("sha", "")
+        ver_suffix = f" v{version}" if version else ""
+        if sha:
+            ver_suffix += theme.dim(f" ({sha})")
+        title = theme.c(theme.SKY, "Agent.py", bold=True) + ver_suffix
         self._print(bar)
         self._print(title)
         self._print(bar)
 
+        # Main indicator
         ok = info.get("api_ok", False)
         detail = info.get("api_detail", "")
         base_url = info.get("base_url", "")
         model = info.get("model", "")
+        kind = info.get("main_kind", "")
+        kind_tag = f" [{kind}]" if kind else ""
         if ok:
-            health = theme.c(theme.MINT, f"● {base_url} ({model})")
+            main_line = theme.c(theme.MINT, f"● main   ") + f"{base_url}{kind_tag}  {model}"
         else:
-            health = theme.c(theme.AMBER, f"⚠ {base_url} ({detail}) — continuing anyway")
-        self._print(f" › API: {health}")
-        self._print(f"   Context: {info.get('ctx_size')} tokens · {info.get('max_turns')} max turns")
-        self._print(theme.dim(f"   {info.get('log_path')}"))
-        self._print(theme.dim(f"   {info.get('error_log_path')}"))
-        self._print(theme.dim("Press Escape twice to cancel. Type /help for commands."))
-        self._print(theme.dim("Type 'exit' or 'quit' to end conversation.\n"))
+            main_line = theme.c(theme.AMBER, f"⚠ main   ") + f"{base_url}{kind_tag}  {detail}"
+        self._print(main_line)
+
+        # Summary indicator (single line; silent when summary is disabled)
+        if info.get("summary_enabled"):
+            s_ok = info.get("summary_ok", False)
+            s_url = info.get("summary_base_url", "")
+            s_model = info.get("summary_model", "")
+            s_kind = info.get("summary_kind", "")
+            s_detail = info.get("summary_detail", "")
+            s_kind_tag = f" [{s_kind}]" if s_kind else ""
+            if s_ok:
+                sum_line = theme.c(theme.MINT, f"● summary") + f" {s_url}{s_kind_tag}  {s_model}"
+            else:
+                sum_line = theme.c(theme.AMBER, f"⚠ summary") + f" {s_url}{s_kind_tag}  {s_detail} — falling back to main"
+            self._print(sum_line)
+        self._print("")
 
     def on_summarizer_status(self, status: str, detail: str) -> None:
+        # Online case is already rendered in on_session_start; only
+        # surface regressions (unhealthy / offline) here so the banner
+        # stays tidy.
+        if status == "online":
+            return
         msg = {
-            "online":    f"[summary model online at {detail}]",
             "unhealthy": "[summary model unhealthy, using main model]",
             "offline":   "[summary model offline, using main model]",
         }.get(status, f"[summary status: {status}]")

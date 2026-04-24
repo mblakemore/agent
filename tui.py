@@ -295,30 +295,45 @@ if _AVAILABLE:
                 + verbose_segment
             )
 
+            # Right-aligned hint: minimal in-bar reminder of the two
+            # keys an operator most often needs.
+            right_hint = "esc·esc cancel  │  /help "
+            right = (
+                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}">{right_hint}</style>'
+            )
+
             # Pad to terminal width so the bar spans the screen.
             try:
                 width = os.get_terminal_size().columns
             except OSError:
                 width = 80
             visible_base = f" {cwd}  │  {model}  │  {msgs} msgs  │  {ctx_label} "
-            visible_len = len(visible_base) + (len("  │   verbose ") if verbose else 0)
-            pad = max(0, width - visible_len)
+            visible_len = (
+                len(visible_base)
+                + (len("  │   verbose ") if verbose else 0)
+                + len(right_hint)
+            )
+            pad = max(1, width - visible_len)
 
-            # Second line: full working directory with $HOME collapsed to ~.
+            # Second line: full working directory on the left, TUI key
+            # hints right-aligned.
             full_cwd = os.getcwd()
             home = os.path.expanduser("~")
             if full_cwd == home or full_cwd.startswith(home + os.sep):
                 full_cwd = "~" + full_cwd[len(home):]
             cwd_text = f" {full_cwd} "
-            cwd_pad = max(0, width - len(cwd_text))
+            right2 = "enter submit  │  ctrl-N newline  │  ↑↓ history "
+            cwd_pad = max(1, width - len(cwd_text) - len(right2))
             second = (
                 f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG2_HEX}">{html.escape(cwd_text)}</style>'
                 f'<style bg="{_BAR_BG2_HEX}">{" " * cwd_pad}</style>'
+                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG2_HEX}">{right2}</style>'
             )
 
             return HTML(
                 left
                 + f'<style bg="{_BAR_BG_HEX}">{" " * pad}</style>'
+                + right
                 + "\n"
                 + second
             )
@@ -349,8 +364,10 @@ if _AVAILABLE:
                 print(text, end=end, flush=True)
 
         def on_session_start(self, info: dict) -> None:
+            # Base banner already renders main+summary. TUI key hints now
+            # live in the bottom-toolbar right-align so they don't take
+            # up a line in the scrollback.
             super().on_session_start(info)
-            self._note("[TUI mode: Enter submit · Ctrl+N newline · ↑/↓ history · Escape-Escape cancel]")
 
 
 else:  # prompt_toolkit not installed — provide stubs that fail clearly
