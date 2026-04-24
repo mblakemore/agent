@@ -2557,16 +2557,15 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             if _consecutive_text_only == 1:
                 conversation_history.pop()  # remove the hallucinated assistant msg
                 log.info("Hallucination guard: stripped text-only response, retrying")
-def run_agent_single(
-    conversation_history: list[dict],
-    summary_state: dict,
-    initial_files: list[str] | None = None,
-    log: logging.Logger | None = None,
-    async_summarizer: AsyncSummarizer | None = None,
-    max_turns: int | None = None,
-    cicd_context: dict | None = None,
-    nudge: bool = False,
-) -> str:
+                _emit("on_hallucination_stripped", "text_only")
+                continue
+
+            # Detect hallucinated file reads: model claims to have read a file
+            # but _accessed_files doesn't show it.  Give a targeted correction.
+            _hallucinated_read = _detect_hallucinated_read(full_content)[0]
+            if _hallucinated_read:
+                # Strip the hallucinated message and give a pointed correction
+                conversation_history.pop()
                 nudge = (
                     "You did NOT actually read that file — you hallucinated its contents. "
                     "You MUST call the file tool with action='read' to see what a file contains. "
@@ -2682,14 +2681,13 @@ def run_agent_single(
                         func_args = _sanitize_tool_args(func_name, func_args, log)
                     except json.JSONDecodeError:
                         # Gemma 4 sometimes garbles arguments (e.g. "write**,content:")
-            # Build nudge/stop/wind-down message
-            nudge_msg = _build_nudge_message(
-                turn_index=turn_index,
-                max_turns=max_turns,
-                is_text_only_response=is_text_only,
-                nudge_count=_global_nudge_count,
-                nudge=nudge
-            )
+                        # Try to salvage by extracting action from the mess
+                        func_args = _salvage_tool_args(func_name, raw_args, log)
+                        if func_args is None:
+                            log.error("Unsalvageable tool args: %s | raw: %s", func_name, raw_args)
+                            _garbled_count += 1
+                            conversation_history.append({
+                                "role": "tool", "tool_call_id": tool_id,
                                 "name": func_name,
                                 "content": f"Error: malformed arguments — could not parse. "
                                            f"Use separate JSON keys: {{\"action\": \"write\", \"path\": \"...\", \"content\": \"...\"}}"
