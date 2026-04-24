@@ -193,7 +193,7 @@ class TerminalCallbacks(NullCallbacks):
         ver_suffix = f" v{version}" if version else ""
         if sha:
             ver_suffix += theme.dim(f" ({sha})")
-        title = theme.c(theme.SKY, "Agent.py", bold=True) + ver_suffix
+        title = theme.c(theme.SKY, "agent.py", bold=True) + ver_suffix
         self._print(bar)
         self._print(title)
         self._print(bar)
