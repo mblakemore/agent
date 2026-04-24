@@ -656,6 +656,10 @@ class BedrockBackend:
             except (
                 _requests.exceptions.Timeout,
                 _requests.exceptions.ConnectionError,
+                TimeoutError,  # run 141: bedrock_api.poll() raises the
+                               # built-in TimeoutError (not requests'). Catch
+                               # both so gateway poll exhaustion triggers the
+                               # retry loop instead of crashing the agent.
             ) as e:
                 if attempt >= max_retries:
                     raise
