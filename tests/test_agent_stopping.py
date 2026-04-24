@@ -113,18 +113,19 @@ def test_stopping_persisted_completion():
         for p in patches: p.stop()
 
 def test_stopping_grace_period_exhausted():
-    """Targets lines 2430-2432: Stopping when cycle persisted and grace period exhausted."""
+    """Targets lines 2529-2534: Stopping when cycle persisted and grace period exhausted."""
     patches = apply_common_patches()
     try:
-        with patch('agent._llm_request') as mock_llm, \
+        with patch('agent._NUDGE_ENABLED', True), \
+             patch('agent._llm_request') as mock_llm, \
              patch('agent.MAP_FN', {'exec_command': lambda command, **kw: "Success"}), \
              patch('agent._is_read_only_command', return_value=False):
             
             # Turn 1: Persist (git push)
-            # Turns 2-9: Text-only responses (exceed _CYCLE_GRACE_TURNS=7)
+            # Turns 2-9: Text-only responses (exceed hard-coded grace period of 7)
             responses = [
                 create_mock_response(tool_calls=[("exec_command", {"command": "git push"})]),
-            ] + [create_mock_response("still working")] * 9
+            ] + [create_mock_response("still working")] * 8
             
             mock_llm.side_effect = responses
             
@@ -133,7 +134,36 @@ def test_stopping_grace_period_exhausted():
                 summary_state={"text": "", "up_to": 0},
                 initial_files=[],
                 log=MagicMock(),
-                async_summarizer=MagicMock()
+                async_summarizer=MagicMock(),
+                nudge=True
+            )
+            assert result == "done"
+    finally:
+        for p in patches: p.stop()
+
+
+def test_stopping_overtime_text_only():
+    """Targets lines 2536-2539: Stopping when overtime + text-only response."""
+    patches = apply_common_patches()
+    try:
+        with patch('agent._NUDGE_ENABLED', True), \
+             patch('agent._MAX_TURNS', 1), \
+             patch('agent._llm_request') as mock_llm:
+            
+            # Turn 1: OK
+            # Turn 2: Overtime + text-only
+            mock_llm.side_effect = [
+                create_mock_response("T1"), 
+                create_mock_response("T2 overtime text-only")
+            ]
+            
+            result = run_agent_single(
+                conversation_history=[{"role": "user", "content": "test"}],
+                summary_state={"text": "", "up_to": 0},
+                initial_files=[],
+                log=MagicMock(),
+                async_summarizer=MagicMock(),
+                nudge=True
             )
             assert result == "done"
     finally:
@@ -168,19 +198,16 @@ def test_stopping_overtime_hard_cap():
         for p in patches: p.stop()
 
 def test_stopping_nudge_budget_exhausted():
-    """Targets Line 2483: Stopping when total nudge budget exhausted."""
+    """Targets lines 2541-2542: Stopping when total nudge budget exhausted."""
     patches = apply_common_patches()
     try:
-        # Patch _MAX_TOTAL_NUDGES to 1 to trigger the budget quickly
-        with patch('agent._MAX_TOTAL_NUDGES', 1), \
+        # Hard-coded budget is 20; need 21 text-only responses to exceed it
+        with patch('agent._NUDGE_ENABLED', True), \
              patch('agent._llm_request') as mock_llm:
             
             # Text-only responses trigger nudges.
-            responses = [
-                create_mock_response("Text 1"), 
-                create_mock_response("Text 2"), 
-                create_mock_response("Text 3"), 
-            ]
+            # Need 21 to exhaust hard-coded budget of 20
+            responses = [create_mock_response(f"Text {i}") for i in range(21)]
             mock_llm.side_effect = responses
             
             result = run_agent_single(
@@ -188,11 +215,13 @@ def test_stopping_nudge_budget_exhausted():
                 summary_state={"text": "", "up_to": 0},
                 initial_files=[],
                 log=MagicMock(),
-                async_summarizer=MagicMock()
+                async_summarizer=MagicMock(),
+                nudge=True
             )
             assert result == "done"
     finally:
         for p in patches: p.stop()
+
 
 def test_debug_paths():
     import agent
