@@ -60,6 +60,20 @@ class BedrockChatAPI:
         except Exception:
             return False
 
+    def get_token_usage(self) -> dict | None:
+        """Fetch monthly token usage from the gateway.
+
+        Returns a dict with keys: input_tokens, output_tokens, total_tokens,
+        token_limit. Returns None on any error (timeout, non-200, parse error).
+        """
+        try:
+            resp = self.session.get(f"{self.api_url}/token-usage", timeout=10)
+            if resp.status_code != 200:
+                return None
+            return resp.json()
+        except Exception:
+            return None
+
     def send(self, prompt: str, enable_reasoning: bool = False,
              conversation_id: str | None = None) -> tuple[str, str]:
         """Send a message. Returns (conversation_id, message_id).
