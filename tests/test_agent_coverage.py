@@ -253,3 +253,85 @@ def test_cicd_phase_detection_implement(mock_config, mock_llm, mock_emit):
             run_agent_interactive(initial_prompt="git worktree add /tmp/worktree -b cicd/test-branch", auto=True)
     except Exception:
         pass
+
+@patch('agent._emit')
+@patch('agent.run_agent_single')
+@patch('agent._config')
+@patch('builtins.input')
+def test_auto_mode_operator_no_guidance(mock_input, mock_config, mock_run_single, mock_emit):
+    """Test that operator pressing Enter (no guidance) in auto mode triggers a resume message (lines 2111-2113)."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768},
+        "summary": {"enabled": False}
+    }.get(k)
+
+    # First call to run_agent_single returns "cancelled" to trigger operator guidance
+    # Second call is the actual resume
+    mock_run_single.side_effect = ["cancelled", "finished"]
+    
+    # Mock input to return empty string (operator just pressed Enter)
+    mock_input.return_value = ""
+
+    try:
+        run_agent_interactive(initial_prompt="Test", auto=True)
+    except Exception:
+        pass
+
+    # Verify run_agent_single was called twice
+    assert mock_run_single.call_count == 2
+
+@patch('agent._emit')
+@patch('agent.run_agent_single')
+@patch('agent._config')
+@patch('builtins.input')
+def test_auto_mode_operator_cancel(mock_input, mock_config, mock_run_single, mock_emit):
+    """Test that operator cancelling via EOFError in auto mode ends the session (lines 2096-2100)."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768},
+        "summary": {"enabled": False}
+    }.get(k)
+
+    # Trigger operator guidance
+    mock_run_single.return_value = "cancelled"
+    
+    # Mock input to raise EOFError
+    mock_input.side_effect = EOFError
+
+    try:
+        run_agent_interactive(initial_prompt="Test", auto=True)
+    except Exception:
+        pass
+
+    # Verify that run_agent_single was only called once (since it should return after EOFError)
+    assert mock_run_single.call_count == 1
+
+@patch('agent._emit')
+@patch('agent.run_agent_single')
+@patch('agent._config')
+@patch('builtins.input')
+def test_auto_mode_operator_interrupt(mock_input, mock_config, mock_run_single, mock_emit):
+    """Test that operator cancelling via KeyboardInterrupt in auto mode ends the session (lines 2096-2100)."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768},
+        "summary": {"enabled": False}
+    }.get(k)
+
+    # Trigger operator guidance
+    mock_run_single.return_value = "cancelled"
+    
+    # Mock input to raise KeyboardInterrupt
+    mock_input.side_effect = KeyboardInterrupt
+
+    try:
+        run_agent_interactive(initial_prompt="Test", auto=True)
+    except Exception:
+        pass
+
+    # Verify that run_agent_single was only called once
+    assert mock_run_single.call_count == 1
