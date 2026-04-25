@@ -124,6 +124,7 @@ Exactly one verdict from the decision matrix:
 | New skips not justified in plan | **REQUEST_CHANGES** |
 | Diff touches files outside plan scope | **REQUEST_CHANGES** |
 | Tests patch or call a production symbol that does not exist on main (verified by `grep -n '<symbol>' agent.py`) | **CLOSE** (cycle 75 — builder error, not reviewer-fixable) |
+| Issue body has a "How to verify" or "Verification" section with executable commands and the reviewer has not run them and pasted the output (cycle 78) | **REQUEST_CHANGES** with the verification command + observed output |
 | CICD PR with no plan/metric/issue | **CLOSE** (hard-rule violation) |
 | Secrets in diff | **CLOSE** immediately + file issue |
 | Stale draft >7 days | **DEFER** |
@@ -201,7 +202,8 @@ Create `reviews-${BOT_ID}.md` in CICD state directory with header table if missi
 12. **When in doubt, REQUEST_CHANGES** with a precise question.
 13. **Reviewer commits may only modify `tests/**` (cycle 75).** Any diff to non-test `.py` files (`agent.py`, `llm_backend.py`, `cancel.py`, etc.) in a review commit is a scope violation. Even a "one-line fix" to production code is forbidden — production changes go through the builder path with their own plan + issue. If the builder's tests reference APIs that don't exist on main, that is a builder error: switch verdict to **CLOSE**, reopen the issue, do not fix forward. Rationale: run 142's reviewer spliced a new kwarg into `run_agent_single()` to make broken tests pass, then fabricated a pytest summary and merged an `IndentationError`-corrupted `agent.py` to main. No exceptions.
 14. **Pytest summary must be verbatim (cycle 75).** Before declaring MERGE, paste the literal final summary block from the re-run pytest (e.g. `===== 757 passed in 12.34s =====`) into the review comment. Paraphrased or invented numbers = fabrication = scope violation.
-13. **reviews-${BOT_ID}.md is local only** — it lives outside the repo clone. Never `git add` or `git commit` it.
+15. **Run the issue's verification command (cycle 78).** When the linked issue body contains a "How to verify" or "Verification" section with an executable command (typically a python `-c` invocation, a curl, or a shell snippet inside a code block), the reviewer **MUST** run that command in the PR's worktree and paste the literal stdout into the review comment **before** issuing MERGE. Tests-pass alone is not enough — issues with explicit verification commands are issues where unit tests have already proved insufficient at catching the failure mode (e.g., a code path that compiles and parses but is unreachable, like the auto-mode result_file write that landed in PR #372 with all tests green). If the verification command fails or is missing from the review comment, the verdict is **REQUEST_CHANGES**, not MERGE. Rationale: PR #372 (subagent tool) merged with all unit tests green but the criterion-2 verification (`subagent(prompt='2+2') → '4'`) returned the literal string `'The sub-agent completed but returned no final answer.'` — beewatcher caught it and shipped the fix as `b99dd0f`. A reviewer running the pasted command would have caught the same thing.
+16. **reviews-${BOT_ID}.md is local only** — it lives outside the repo clone. Never `git add` or `git commit` it.
 
 ## Interaction with Builder
 
