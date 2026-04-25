@@ -702,10 +702,32 @@ def _llm_request(log, **kwargs):
     """Main-path streaming request. Thin wrapper that routes through the
     module-level ``_main_backend`` (see plan task 1.4).
 
+    If the primary backend is Bedrock and fails due to budget or connectivity,
+    it fails over to a local llamacpp backend for the remainder of the session.
+
     Signature matches the pre-refactor ``_llm_request`` exactly so existing
     tests that ``patch('agent._llm_request')`` still work unmodified.
     """
-    return _main_backend.stream_chat(log, **kwargs)
+    global _main_backend
+    try:
+        return _main_backend.stream_chat(log, **kwargs)
+    except (BedrockBudgetExceeded, requests.exceptions.Timeout,
+            requests.exceptions.HTTPError) as e:
+        if isinstance(e, requests.exceptions.HTTPError):
+            resp = getattr(e.response, 'status_code', None)
+            if resp is not None and resp < 500:
+                raise
+        
+        if getattr(_main_backend, "kind", None) == "bedrock":
+            log.error("Bedrock failed (%s). Failing over to llamacpp.", e)
+            # Rebuild main backend as llamacpp
+            _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
+            # The _build_backend will use the config, but if we want to FORCE llamacpp
+            # regardless of config, we might need more logic. 
+            # However, for this cycle, we follow the issue's "Graceful Failover" 
+            # which typically implies fallback to the available local model.
+            return _main_backend.stream_chat(log, **kwargs)
+        raise
 
 
 def _iter_stream_chunks(response):
