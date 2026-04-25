@@ -2167,6 +2167,14 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             _delete_checkpoint()
             log.info("Session ended (auto mode) | %d messages in history", len(conversation_history))
             _log_bedrock_session_spend(log)
+            if result_file:
+                last_assistant_msg = ""
+                for msg in reversed(conversation_history):
+                    if msg.get("role") == "assistant" and msg.get("content"):
+                        last_assistant_msg = msg["content"]
+                        break
+                with open(result_file, "w", encoding="utf-8") as f:
+                    f.write(last_assistant_msg)
             return
 
     while True:
