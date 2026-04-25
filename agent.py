@@ -384,11 +384,11 @@ def _cfg_with_role(backends: dict, role: str) -> dict:
 
 _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
 _summary_backend = _build_backend(_cfg_with_role(_config["backends"], "summary"))
-
-
+_main_fallback = None
+_summary_fallback = None
 def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) -> None:
     """Apply ``--backend-main`` / ``--backend-summary`` CLI overrides.
-
+    
     Per plan task 2.5: when either flag is set, override
     ``_config["backends"][role]["kind"]`` and rebuild the corresponding
     backend module-level global. If a flag selects ``bedrock`` without an
@@ -397,9 +397,9 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
     summary) and an INFO log line is emitted.
     """
     global _main_backend, _summary_backend
-
+    
     defaults = {"main": "claude-v4.5-opus", "summary": "claude-v4.5-haiku"}
-
+    
     # Model IDs the Bedrock gateway accepts. An existing model that doesn't
     # match one of these prefixes was set for the OTHER backend kind (likely
     # a llamacpp default like ``gemma-4-31B`` carried over from
@@ -409,7 +409,7 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
         "claude-", "mistral-", "mixtral-", "amazon-nova-",
         "deepseek-", "llama-", "llama3-", "qwen",
     )
-
+    
     def _override(role: str, kind: str | None):
         if not kind:
             return
@@ -426,16 +426,70 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
                     entry["model"],
                     existing or "<unset>",
                 )
-
+    
     _override("main", main_kind)
     _override("summary", summary_kind)
-
+    
     if main_kind:
         _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
     if summary_kind:
         _summary_backend = _build_backend(
             _cfg_with_role(_config["backends"], "summary")
         )
+
+def _trigger_failover(role: str, error: Exception):
+    """Switch the global backend for the given role to its llamacpp fallback.
+    
+    This is a sticky operation; once activated, the session stays on llamacpp.
+    """
+    global _main_backend, _summary_backend
+    log = logging.getLogger("agent")
+    
+    if role == "main":
+        if _main_backend.kind != "llamacpp":
+            log.warning("bedrock.failover.activated role=main reason=%s", error)
+            # Initialize fallback if not already done
+            global _main_fallback
+            if _main_fallback is None:
+                # Use llamacpp config from registry if available, otherwise default
+                cfg = _config["backends"].get("main", {"kind": "llamacpp"})
+                cfg = dict(cfg)
+                cfg["kind"] = "llamacpp"
+                _main_fallback = _build_backend(_cfg_with_role(cfg, "main"))
+            
+            # Verify health before swapping
+            ok, detail = _main_fallback.health()
+            if ok:
+                _main_backend = _main_fallback
+                log.info("bedrock.failover.success role=main backend=llamacpp")
+            else:
+                log.error("bedrock.failover.failed role=main fallback_unhealthy=%s", detail)
+                raise RuntimeError(f"Bedrock failed and llamacpp fallback is also unhealthy: {detail}") from error
+        else:
+            # Already on llamacpp, just re-raise
+            raise error
+            
+    elif role == "summary":
+        if _summary_backend.kind != "llamacpp":
+            log.warning("bedrock.failover.activated role=summary reason=%s", error)
+            global _summary_fallback
+            if _summary_fallback is None:
+                cfg = _config["backends"].get("summary", {"kind": "llamacpp"})
+                cfg = dict(cfg)
+                cfg["kind"] = "llamacpp"
+                _summary_fallback = _build_backend(_cfg_with_role(cfg, "summary"))
+            
+            ok, detail = _summary_fallback.health()
+            if ok:
+                _summary_backend = _summary_fallback
+                log.info("bedrock.failover.success role=summary backend=llamacpp")
+            else:
+                log.error("bedrock.failover.failed role=summary fallback_unhealthy=%s", detail)
+                raise RuntimeError(f"Bedrock failed and llamacpp fallback is also unhealthy: {detail}") from error
+        else:
+            raise error
+    else:
+        raise ValueError(f"Unknown role for failover: {role}")
 _MAX_FULL_LINES = _config["context"]["max_full_lines"]
 _PREVIEW_LINES = _config["context"]["preview_lines"]
 _SUMMARY_THRESHOLD = _config["context"]["summary_threshold"]
@@ -698,14 +752,20 @@ def _llm_request_raw(log, **kwargs):
             time.sleep(delay)
 
 
-def _llm_request(log, **kwargs):
-    """Main-path streaming request. Thin wrapper that routes through the
-    module-level ``_main_backend`` (see plan task 1.4).
-
-    Signature matches the pre-refactor ``_llm_request`` exactly so existing
-    tests that ``patch('agent._llm_request')`` still work unmodified.
-    """
-    return _main_backend.stream_chat(log, **kwargs)
+    def _llm_request(log, **kwargs):
+        """Main-path streaming request. Thin wrapper that routes through the
+        module-level ``_main_backend`` (see plan task 1.4).
+        
+        Signature matches the pre-refactor ``_llm_request`` exactly so existing
+        tests that ``patch('agent._llm_request')`` still work unmodified.
+        """
+        try:
+            return _main_backend.stream_chat(log, **kwargs)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout,
+                requests.exceptions.HTTPError, BedrockBudgetExceeded) as e:
+            _trigger_failover("main", e)
+            # After failover, retry the call with the now-active llamacpp backend
+            return _main_backend.stream_chat(log, **kwargs)
 
 
 def _iter_stream_chunks(response):
@@ -1197,73 +1257,77 @@ def _build_summary_prompt(old_summary, new_messages):
     )
 
 
-def _generate_summary(old_summary, new_messages, log):
-    """Call the LLM to produce an updated conversation summary.
-
-    The summary prompt explicitly preserves decisions, outcomes, and failed
-    approaches to prevent the agent from repeating mistakes.
-
-    Tries the dedicated summary endpoint first (CPU model on port 8082),
-    falls back to the main model on connection failure.
-    """
-    prompt = _build_summary_prompt(old_summary, new_messages)
-    log.info("Generating conversation summary...")
-
-    summary_cfg = _config["summary"]
-    summary_url = summary_cfg["base_url"]
-
-    def _fallback_to_main(reason_exc):
-        """Route the summary through the main backend after a summary failure.
-
-        The legacy path called ``_summary_request(prompt, base_url=BASE_URL, …)``
-        which only re-homes to a llamacpp override and is a no-op when the
-        summary backend is non-llamacpp (Bedrock). Go directly to the
-        ``_main_backend.complete()`` so the fallback actually runs through a
-        different backend kind when the primary is Bedrock and e.g. the
-        daily cost cap tripped. See plan § 15 rollback / § 6.5 guardrail.
+    def _generate_summary(old_summary, new_messages, log):
+        """Call the LLM to produce an updated conversation summary.
+        
+        The summary prompt explicitly preserves decisions, outcomes, and failed
+        approaches to prevent the agent from repeating mistakes.
+        
+        Tries the dedicated summary endpoint first (CPU model on port 8082),
+        falls back to the main model on connection failure.
         """
-        log.warning(
-            "Summary failed on %s backend (%s); falling back to main model",
-            getattr(_summary_backend, "kind", "?"),
-            reason_exc,
-        )
+        prompt = _build_summary_prompt(old_summary, new_messages)
+        log.info("Generating conversation summary...")
+        
+        summary_cfg = _config["summary"]
+        summary_url = summary_cfg["base_url"]
+        
+        def _fallback_to_main(reason_exc):
+            """Route the summary through the main backend after a summary failure.
+            
+            The legacy path called ``_summary_request(prompt, base_url=BASE_URL, …)``
+            which only re-homes to a llamacpp override and is a no-op when the
+            summary backend is non-llamacpp (Bedrock). Go directly to the
+            ``_main_backend.complete()`` so the fallback actually runs through a
+            different backend kind when the primary is Bedrock and e.g. the
+            daily cost cap tripped. See plan § 15 rollback / § 6.5 guardrail.
+            """
+            log.warning(
+                "Summary failed on %s backend (%s); falling back to main model",
+                getattr(_summary_backend, "kind", "?"),
+                reason_exc,
+            )
+            try:
+                summary = _main_backend.complete(prompt=prompt)
+                log.info("SUMMARY (fallback): %s", summary)
+                return summary
+            except Exception as e2:
+                log.error("Summary fallback also failed: %s", e2)
+                return old_summary or ""
+        
         try:
-            summary = _main_backend.complete(prompt=prompt)
-            log.info("SUMMARY (fallback): %s", summary)
+            # Try dedicated summary endpoint first — via _summary_request, which
+            # now routes through _summary_backend.complete (plan task 1.4).
+            if summary_cfg["enabled"] and summary_url:
+                try:
+                    summary = _summary_request(prompt)
+                except (requests.ConnectionError, requests.Timeout,
+                        requests.HTTPError, BedrockBudgetExceeded) as e:
+                    _trigger_failover("summary", e)
+                    summary = _summary_request(prompt)
+            else:
+                summary = _summary_request(prompt, base_url=BASE_URL,
+                                           model=_config["llm"]["model"])
+            log.info("SUMMARY: %s", summary)
             return summary
-        except Exception as e2:
-            log.error("Summary fallback also failed: %s", e2)
+        except (requests.ConnectionError, requests.Timeout) as e:
+            if summary_url and summary_url != BASE_URL:
+                return _fallback_to_main(e)
+            log.error("Summary generation failed: %s", e)
             return old_summary or ""
-
-    try:
-        # Try dedicated summary endpoint first — via _summary_request, which
-        # now routes through _summary_backend.complete (plan task 1.4).
-        if summary_cfg["enabled"] and summary_url:
-            summary = _summary_request(prompt)
-        else:
-            summary = _summary_request(prompt, base_url=BASE_URL,
-                                       model=_config["llm"]["model"])
-        log.info("SUMMARY: %s", summary)
-        return summary
-    except (requests.ConnectionError, requests.Timeout) as e:
-        if summary_url and summary_url != BASE_URL:
+        except BedrockBudgetExceeded as e:
+            # Budget cap tripped — fall back to local main for the rest of the
+            # session. Avoids cascading context overflow from missing summaries.
             return _fallback_to_main(e)
-        log.error("Summary generation failed: %s", e)
-        return old_summary or ""
-    except BedrockBudgetExceeded as e:
-        # Budget cap tripped — fall back to local main for the rest of the
-        # session. Avoids cascading context overflow from missing summaries.
-        return _fallback_to_main(e)
-    except Exception as e:
-        # For any other summary-backend error, if the summary backend is
-        # different from the main one, try the main backend before giving up.
-        if getattr(_summary_backend, "kind", None) != getattr(
-            _main_backend, "kind", None
-        ):
-            return _fallback_to_main(e)
-        log.error("Summary generation failed: %s", e)
-        return old_summary or ""
-
+        except Exception as e:
+            # For any other summary-backend error, if the summary backend is
+            # different from the main one, try the main backend before giving up.
+            if getattr(_summary_backend, "kind", None) != getattr(
+                _main_backend, "kind", None
+            ):
+                return _fallback_to_main(e)
+            log.error("Summary generation failed: %s", e)
+            return old_summary or ""
 
 # ── Async summarizer ──────────────────────────────────────────────────
 
