@@ -1,6 +1,6 @@
 # Bedrock Integration Plan — Fold AWS Bedrock backend into `agent.py`
 
-> **Status:** Draft — pre-dev. Open questions in [§ 4](#4-design-decisions--open-questions) must be answered before Phase 1 starts. See [§ 22 sign-off checklist](#22--sign-off-checklist) for the single pre-Phase-1 gate.
+> **Status:** **Phases 1 + 2 shipped (2026-04-23/24).** G0 (default llamacpp) and G1 (summary-on-bedrock) are in production use. G2 (main-on-bedrock) is functional but cost-gated and used selectively. See [§ 0.5 — Current integration status](#05--current-integration-status-as-of-2026-04-25) for the rolling status snapshot.
 > **Owner:** mikeblakemore
 > **Target:** `/droid/repos/agent/agent.py`
 > **Source backend:** `/droid/repos/llmbox-cli/bedrock_api.py` (BedrockChatAPI — a REST client for the aws-samples `bedrock-chat` published API).
@@ -11,6 +11,84 @@
 ## 0. TL;DR
 
 We are folding the Bedrock gateway client from `llmbox-cli` into the agent as a second selectable LLM backend, with independent `main` and `summary` role configuration, behind a feature flag defaulting to today's llamacpp behavior. Work is two PR-sized phases: Phase 1 (~4–6h, pure refactor, llamacpp still the only concrete backend) and Phase 2 (~8–12h, BedrockBackend + dev-mode prompt stuffing for tool calls). Total calendar target: **~1 week of focused work + 1 week canary dogfooding** = ~2 weeks to GA. Biggest single risk: Bedrock has no native tool-call support through the gateway, so main-on-bedrock depends entirely on prompt-stuffing format fidelity (`<tool_call>…</tool_call>` regex parse); see [§ 8.4](#84-trade-offs-honest) and [K10](#17-risks--mitigations). Second-biggest: cost exposure with no guardrail today — see [§ 6.5](#65--cost-model) for the budget mechanism added by this plan.
+
+---
+
+## 0.5 — Current integration status (as of 2026-04-25)
+
+The plan's core deliverables are live on `main`. This section is the rolling status snapshot — the original sections below are kept verbatim as the design record.
+
+### Shipped and in production
+
+**Phase 1 (refactor, llamacpp factored behind `Backend` Protocol):**
+- `llm_backend.py` lives, `LlamacppBackend` + `BedrockBackend` + `build_backend(cfg)` factory all in place.
+- `_apply_backend_overrides(main_kind, summary_kind)` hook in `agent.py:367` honors `--backend-main` / `--backend-summary` CLI flags and `CICD_BACKEND_MAIN` / `CICD_BACKEND_SUMMARY` env vars.
+
+**Phase 2 (Bedrock client + dev-mode tool calling):**
+- `bedrock_api.py` ported from llmbox-cli with `send`, `poll`, `poll_message`, `send_and_wait`, `send_and_wait_conv`.
+- `dev_mode_prompt.py` ports `build_dev_prompt`, `parse_dev_response`, `is_truncated`, `_TOOL_CALL_RE` regex.
+- Truncation-recovery loop (§ 8.3): `MAX_CONTINUATIONS=3` continuation chain on `is_truncated()` detection; emits `bedrock.truncation_recovery.{attempted,succeeded,exhausted}`.
+- `BedrockBudgetExceeded` exception + per-day spend file at `CICD/bedrock_spend.json`.
+
+**Telemetry (the [§ 15.75](#1575--observability--telemetry) wishlist) — most of it landed:**
+- `bedrock.session_spend role=X model=Y today_usd=N cap_usd=N` at session exit (atexit hook in `agent.py`, commit `ea553d3`).
+- `bedrock.session_conv_count role=X model=Y count=N` at session exit alongside spend (PR #359).
+- `bedrock.tokens role=X model=Y in=N out=N cost_usd=N` per call at INFO (commit `ff2dde9`). Currently only fires on the `stream_chat()` path; `complete()` path uses an unhandled logger so the line is suppressed in run logs — known one-line fix (pass logger through).
+- `bedrock.token_usage role=X model=Y monthly_total=N/limit used_pct=PCT` at backend init (PR #357 = N1 — calls the gateway's `GET /token-usage` endpoint at startup, escalates to WARNING when ≥90% of monthly cap).
+- `bedrock.tool_parse.result parsed_calls=N stripped_chars=N` per turn — confirms dev-mode tool parse fired.
+- `backend.stream_chat.latency_ms` and `backend.complete.latency_ms` per call.
+- `backend.retry.attempted backend=bedrock attempt=N/M error=...` on retries.
+
+### Plan changes since draft
+
+**Pricing model corrected (§ 6.5).** Earlier estimates used $15/$75 for opus and $0.25/$1.25 for haiku, which were 3× over and 4× under the actual AWS list. Live `_BEDROCK_PRICING` table in `llm_backend.py:370` now uses:
+
+| Model | Input ($/M tokens) | Output ($/M tokens) |
+|---|---|---|
+| claude-v4.5-opus / v4.6-opus / v4.7-opus | 5.00 | 25.00 |
+| claude-v4.5-sonnet / v4.6-sonnet | 3.00 | 15.00 |
+| claude-v4.5-haiku / v3.5-haiku | 1.00 | 5.00 |
+| claude-v3-opus / v3.7-sonnet | (unchanged from draft estimates) | |
+
+Commit `bf2d8eb`. All `bedrock.cost.tick` and `bedrock.session_spend` numbers from runs prior to that commit are inflated by the old factors and should be discounted accordingly when comparing.
+
+**Daily caps revised.** Default `_DEFAULT_DAILY_CAPS` (`llm_backend.py:384`) raised to `{"main": 60.00, "summary": 1.00}` (commit `f8e1ca6`). Original draft envisioned `{"main": 10.00, "summary": 1.00}`; opus turned out to need more headroom for a single full builder+reviewer cycle than $10 affords. Override via `BEDROCK_DAILY_CAP_USD` env var.
+
+**Conversation reuse (N2 / PR #359).** `BedrockBackend` now caches the gateway's returned `conversationId` and passes it on subsequent calls within a session, so a multi-turn run uses one server-side conversation instead of one per turn. `_session_conv_count` exposes the actual count (target = 1) at exit. Tracked only on the `stream_chat()` path; `complete()` path still creates fresh conversations per call (small follow-up).
+
+**Multi-turn prototype** (`proto/bedrock-multiturn`, commit `c74d42d`, **NOT MERGED**): when reuse is on, send only the *incremental* messages each turn instead of repacking the full history. Live smoke test on a healthy gateway showed turn-2 wire body shrink from 901 → 61 chars (93% reduction) and input tokens from 236 → 16. Gated behind `BEDROCK_MULTITURN=1`. Holding off until we want a controlled rollout.
+
+**Crash-handling fixes:**
+- `_call_with_retry` now catches the built-in `TimeoutError` (not just `requests.exceptions.Timeout`) — commit `0f4f606`. Without this, `bedrock_api.poll()` exhausting `poll_timeout` raised an unhandled exception and crashed the agent.
+- `atexit.register(_log_bedrock_session_spend, ...)` — guarantees the session-spend line is emitted even on uncaught exception or `sys.exit`.
+
+**Reviewer-side guardrails (built during dogfooding, not in original plan):**
+- Cycle 75: review commits may only modify `tests/**` (no production-code edits in REQUEST_CHANGES fix-attempts).
+- Cycle 76: pytest summary in MERGE verdict must be the verbatim final summary line (no paraphrasing).
+- Cycle 77: external `gh pr/issue view` verification after every `gh pr create|merge|close|ready` — runner-level catch for fabricated PR/issue numbers.
+- Cycle 78: when an issue body has a "How to verify" command, reviewer must run it and paste output before MERGE.
+
+### Currently in flight
+
+- **Subagent tool** (PR #372 + fix `b99dd0f`) — primary use is reducing parent-agent token spend by delegating exploration to a child subprocess. Working end-to-end (real subprocess, real result-file capture). Not yet wired into the CICD agent's prompts; future cycle will teach the builder when to delegate. Adjacent to but not strictly part of the bedrock plan; affects bedrock cost model because subagents cut the parent's per-turn input tokens.
+- **Multi-turn merge** (above) — when ready.
+- **`bedrock.tokens` logger fix** — pass the agent logger into `complete()` so summary-path token telemetry shows in stdout logs. ~1 line.
+
+### Operational mode summary
+
+| Mode | Main | Summary | Status |
+|---|---|---|---|
+| G0 (default) | llamacpp/gemma | llamacpp/gemma | proven, dozens of clean CICD merges; this is the safe-default daily driver |
+| G1 (canary) | llamacpp/gemma | bedrock/haiku | proven, working as the everyday config when bedrock summary is desired |
+| G2 (full) | bedrock/opus | bedrock/haiku | functional; used selectively because per-cycle spend is ≥10× G1 |
+
+Switch via env: `CICD_BACKEND_MAIN=bedrock` and/or `CICD_BACKEND_SUMMARY=bedrock` on a `cicd.sh` invocation, with `BEDROCK_API_URL` + `BEDROCK_API_KEY` set. Default model when `bedrock` is selected with no model override is `claude-v4.5-opus` for main, `claude-v4.5-haiku` for summary (`agent.py:379`).
+
+### What's intentionally still pending
+
+- Wider G2 use — kept selective on cost grounds; G1 covers most CICD use and is essentially free.
+- `complete()`-path conversation reuse — currently only `stream_chat()` reuses; `complete()` still spawns a fresh conversation per call. Small one-line follow-up but not a current pain point.
+- The detailed sign-off / abandonment / decision-log machinery in [§ 22](#22--sign-off-checklist), [§ 23](#23--abandonment-criteria), [§ 24](#24--decision-log) remains useful for future Bedrock integration revisits but isn't actively maintained day-to-day now that Phases 1 + 2 are live.
 
 ---
 
