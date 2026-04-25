@@ -1940,7 +1940,7 @@ def _log_bedrock_session_spend(log):
             )
 
 
-def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, *, cb=None, tui=False, verbose=False):
+def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, *, cb=None, tui=False, verbose=False, result_file=None):
     """Interactive agent that maintains conversation history.
 
     When `tui=True`, a prompt_toolkit front-end (tui.TuiSession) owns the
@@ -2233,6 +2233,15 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     _delete_checkpoint()
     log.info("Session ended | %d messages in history", len(conversation_history))
     _log_bedrock_session_spend(log)
+
+    if result_file:
+        last_assistant_msg = ""
+        for msg in reversed(conversation_history):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                last_assistant_msg = msg["content"]
+                break
+        with open(result_file, "w", encoding="utf-8") as f:
+            f.write(last_assistant_msg)
 
 
 def run_agent_single(conversation_history: list, summary_state: dict, initial_files,
@@ -3439,8 +3448,12 @@ def main():
                 run += 1
                 label = f"run {run}/{n}" if n > 0 else f"run {run}"
                 _emit("on_repeat_run_start", label)
-                run_agent_interactive(initial_prompt=initial_prompt, auto=True,
-                                      verbose=args.verbose)
+                run_agent_interactive(
+                    initial_prompt=initial_prompt,
+                    auto=True,
+                    verbose=args.verbose,
+                    result_file=args.result_file,
+                )
         except KeyboardInterrupt:
             _emit("on_repeat_done", run)
     else:
@@ -3452,9 +3465,10 @@ def main():
             continue_mode=args.continue_mode,
             tui=tui_enabled,
             verbose=args.verbose,
+            result_file=args.result_file,
         )
-
-
+    
+    
 if __name__ == "__main__":
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(encoding='utf-8')
