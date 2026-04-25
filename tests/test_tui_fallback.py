@@ -1,38 +1,79 @@
-import unittest
-from unittest import mock
-import sys
-from pathlib import Path
-
-# Ensure the agent directory is in path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-import tui
+import pytest
+from unittest.mock import patch, MagicMock
 import agent
+import tui
 
-class TestTuiFallback(unittest.TestCase):
-    def test_run_agent_interactive_tui_fallback_notice(self):
-        """Verify that the agent emits a warning notice when TUI is requested but prompt_toolkit is missing."""
+def test_run_agent_interactive_tui_fallback():
+    """
+    Test that when tui=True but prompt_toolkit is not available, 
+    the agent emits a notice warning the user.
+    """
+    with patch("agent._emit") as mock_emit, \
+         patch("tui._AVAILABLE", False), \
+         patch("builtins.input", side_effect=EOFError), \
+         patch("agent._expand_file_refs", return_value=(None, [], None)), \
+         patch("agent._main_backend") as mock_main, \
+         patch("agent._summary_backend") as mock_sum, \
+         patch("agent.run_agent_single", return_value="done"):
         
-        # We patch tui._AVAILABLE to False. 
-        # Since agent imports tui inside the function, this will be picked up.
-        with mock.patch('tui._AVAILABLE', False):
-            # We patch _emit and input to prevent the agent from actually running/blocking
-            with mock.patch('agent._emit') as mock_emit, \
-                 mock.patch('builtins.input', side_effect=['quit']):
-                
-                try:
-                    agent.run_agent_interactive(tui=True, auto=False)
-                except SystemExit:
-                    pass
-                except Exception as e:
-                    print(f"Caught exception: {e}")
-                
-                # The exact string from agent.py:2104-2108
-                mock_emit.assert_any_call(
-                    "on_notice", 
-                    "warn", 
-                    "prompt_toolkit not installed — using plain prompt. `pip install prompt_toolkit` (or pass --no-tui to silence)."
-                )
+        # Setup mocks to avoid ValueError during unpacking
+        mock_main.health.return_value = (True, "OK")
+        mock_main.model = "test-model"
+        mock_main.detect_ctx_size.return_value = 1000
+        
+        mock_sum.health.return_value = (True, "OK")
+        mock_sum.model = "sum-model"
+        
+        try:
+            agent.run_agent_interactive(
+                tui=True, 
+                auto=False, 
+                initial_prompt=None
+            )
+        except Exception as e:
+            pytest.fail(f"run_agent_interactive raised unexpected exception: {e}")
 
-if __name__ == "__main__":
-    unittest.main()
+        # Verify the fallback path was hit
+        mock_emit.assert_any_call(
+            "on_notice", 
+            "warn", 
+            "prompt_toolkit not installed — using plain prompt. "
+            "`pip install prompt_toolkit` (or pass --no-tui to silence)."
+        )
+
+def test_run_agent_interactive_tui_available():
+    """
+    Test that when tui=True and prompt_toolkit IS available, 
+    the agent does NOT emit the fallback warning.
+    """
+    with patch("agent._emit") as mock_emit, \
+         patch("tui._AVAILABLE", True), \
+         patch("tui.TuiSession", return_value=MagicMock()), \
+         patch("builtins.input", side_effect=EOFError), \
+         patch("agent._expand_file_refs", return_value=(None, [], None)), \
+         patch("agent._main_backend") as mock_main, \
+         patch("agent._summary_backend") as mock_sum, \
+         patch("agent.run_agent_single", return_value="done"):
+        
+        mock_main.health.return_value = (True, "OK")
+        mock_main.model = "test-model"
+        mock_main.detect_ctx_size.return_value = 1000
+        
+        mock_sum.health.return_value = (True, "OK")
+        mock_sum.model = "sum-model"
+
+        # Mock TuiSession's prompt method to exit the loop
+        tui_mock = MagicMock()
+        tui_mock.prompt.side_effect = EOFError
+        with patch("tui.TuiSession", return_value=tui_mock):
+            agent.run_agent_interactive(
+                tui=True, 
+                auto=False, 
+                initial_prompt=None
+            )
+
+        # Verify the fallback warning was NOT sent
+        for call in mock_emit.call_args_list:
+            args, kwargs = call
+            if args and args[0] == "on_notice" and args[1] == "warn":
+                pytest.fail("Fallback warning emitted even though TUI is available")
