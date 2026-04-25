@@ -2818,39 +2818,40 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         try:
             with cancellable():
                 for tool_call in tool_calls:
-                    check_cancelled()
-                    try:
-                        if hasattr(tool_call, 'function'):
-                            func_name = tool_call.function.name
-                            raw_args = tool_call.function.arguments
-                            tool_id = tool_call.id
-                        else:
-                            func_name = tool_call["function"]["name"]
-                            raw_args = tool_call["function"]["arguments"]
-                            tool_id = tool_call["id"]
-                        func_args = json.loads(raw_args)
-                        # Sanitize garbled Gemma 4 args that parsed as valid JSON
-                        # e.g. {"action": "write**,content:"} — valid JSON but bogus values
-                        func_args = _sanitize_tool_args(func_name, func_args, log)
-                    except json.JSONDecodeError:
-                        # Gemma 4 sometimes garbles arguments (e.g. "write**,content:")
-                        # Try to salvage by extracting action from the mess
-                        func_args = _salvage_tool_args(func_name, raw_args, log)
-                        if func_args is None:
-                            log.error("Unsalvageable tool args: %s | raw: %s", func_name, raw_args)
-                            _garbled_count += 1
-                            conversation_history.append({
-                                "role": "tool", "tool_call_id": tool_id,
-                                "name": func_name,
-                                "content": f"Error: malformed arguments — could not parse. "
-                                           f"Use separate JSON keys: {{\"action\": \"write\", \"path\": \"...\", \"content\": \"...\"}}"
-                            })
-                            continue
-                    except Exception as e:
-                        log.error("Error parsing tool call: %s | raw: %s", e, tool_call)
-                        _garbled_count += 1
-                        continue
-
+                      check_cancelled()
+                      try:
+                          # Polymorphism: handle both object and dict tool_calls
+                          if isinstance(tool_call, dict):
+                              func_name = tool_call['function']['name']
+                              raw_args = tool_call['function']['arguments']
+                              tool_id = tool_call['id']
+                          else:
+                              func_name = tool_call.function.name
+                              raw_args = tool_call.function.arguments
+                              tool_id = tool_call.id
+                          func_args = json.loads(raw_args)
+                          # Sanitize garbled Gemma 4 args that parsed as valid JSON
+                          # e.g. { 'action': 'write**,content:' } — valid JSON but bogus values
+                          func_args = _sanitize_tool_args(func_name, func_args, log)
+                      except json.JSONDecodeError:
+                          # Gemma 4 sometimes garbles arguments (e.g. "write**,content:")
+                          # Try to salvage by extracting action from the mess
+                          func_args = _salvage_tool_args(func_name, raw_args, log)
+                          if func_args is None:
+                              log.error("Unsalvageable tool args: %s | raw: %s", func_name, raw_args)
+                              _garbled_count += 1
+                              conversation_history.append({
+                                      "role": "tool", "tool_call_id": tool_id,
+                                      "name": func_name,
+                                      "content": f"Error: malformed arguments — could not parse. "
+                                                     f"Use separate JSON keys: { 'action': 'write', 'path': '...', 'content': '...' }"
+                              })
+                          continue
+                      except Exception as e:
+                          log.error("Error parsing tool call: %s | raw: %s", e, tool_call)
+                          _garbled_count += 1
+                          continue
+                      
                     # Validate required fields — catch cases where sanitizer
                     # extracted the action but lost required params (empty garble)
                     if func_name == "file" and isinstance(func_args, dict):
