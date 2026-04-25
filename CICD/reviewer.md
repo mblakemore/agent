@@ -145,7 +145,7 @@ gh pr merge <N> --squash
 Post-merge: `git pull --ff-only origin main` then run test suite. If red → file regression issue (creator decides revert).
 
 **REQUEST_CHANGES** — small fixes only, do NOT rewrite the PR:
-1. `gh pr review <N> --request-changes --body "..."` — cite exact file:line or test name, state what needs to change.
+1. **Same-account workaround (CRITICAL):** `gh pr review <N> --request-changes` will fail with `"Can not request changes on your own pull request"` on single-actor CICD setups (the same GitHub account opens the PR and runs the reviewer). Use `gh pr comment <N> --body "..."` instead — the comment carries the verdict text. Cite exact file:line or test name, state what needs to change. Do NOT silently skip the verdict if `gh pr review` fails — the formal `reviews` array stays empty either way, and a missing comment leaves the PR with zero record of the verdict (run 176 / PR #390 failure mode).
 2. **Attempt a small, targeted fix** (≤20 lines changed, **max 2 attempts**) in the review worktree:
    - **Scope: `tests/**` only (cycle 75).** Reviewer commits may edit files under `tests/` only. If the fix would require editing `agent.py`, `llm_backend.py`, or any non-test `.py` file, STOP — switch verdict to **CLOSE** (cite rule 13). Production-code gaps are a builder/plan error, not a reviewer fix. Let the builder retry in a fresh cycle with a corrected plan.
    - Only fix the specific issue you identified (e.g. a missing import, a broken test assertion, a typo).
