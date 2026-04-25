@@ -233,3 +233,41 @@ def test_tool_call_generic_exception(mock_config, mock_llm, mock_emit):
     # It DOES NOT append to conversation_history.
     # We verify the agent didn't crash and the loop proceeded to the second LLM call.
     assert mock_llm.call_count >= 2
+
+
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_agent_tui_fallback_coverage(mock_config, mock_llm, mock_emit):
+    """Test that the TUI fallback is triggered when tui._AVAILABLE is False."""
+    from agent import run_agent_interactive
+    import sys
+    from unittest.mock import MagicMock
+
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768}
+    }.get(k)
+    
+    mock_llm.return_value = create_mock_response(content="Hello!")
+    
+    # Create a mock tui module
+    mock_tui = MagicMock()
+    mock_tui._AVAILABLE = False
+    
+    # Force the import of 'tui' to return our mock
+    with patch.dict(sys.modules, {'tui': mock_tui}):
+        with patch('builtins.input', return_value="exit"):
+            try:
+                run_agent_interactive(initial_prompt="Hi", tui=True, auto=False)
+            except (SystemExit, Exception):
+                pass
+
+    # Verify the fallback notice was emitted
+    notice_emitted = any(
+        args[0] == "on_notice" and args[1] == "warn" and "prompt_toolkit not installed" in args[2]
+        for args, kwargs in mock_emit.call_args_list
+    )
+    assert notice_emitted
