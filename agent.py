@@ -227,7 +227,7 @@ _DEFAULT_CONFIG = {
         "max_tokens": 16384,
     },
     "cycle": {
-        "max_turns": 100,
+        "max_turns": 250,
         "wind_down_turns": 10,
         "max_text_only": 3,
         "max_total_nudges": 6,
