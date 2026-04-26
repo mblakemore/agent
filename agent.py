@@ -8,6 +8,24 @@ for single-prompt runs. See ``README.md`` for CLI flags.
 
 __version__ = "0.1.0"
 
+# Boot line — fired BEFORE the heavy imports below so the user sees
+# something within milliseconds of `python3 agent.py`. Without it the
+# terminal is silent for several seconds while requests/prompt_toolkit
+# load and the backend health probes run.
+#
+# Gates: only when run as the main script (silent on test imports), and
+# only when stderr is a TTY (no ANSI garbage in piped CICD logs).
+# The TerminalCallbacks instance reads _BOOT_LINES_PRINTED later so its
+# on_session_start can erase this line via cursor_up_clear before the
+# banner renders.
+_BOOT_LINES_PRINTED = 0
+if __name__ == "__main__":
+    import sys as _boot_sys
+    if _boot_sys.stderr.isatty():
+        _boot_sys.stderr.write("\033[2m  starting agent...\033[0m\n")
+        _boot_sys.stderr.flush()
+        _BOOT_LINES_PRINTED = 1
+
 
 def _git_short_sha() -> str:
     """Short git SHA of the current checkout, or "" if unavailable.
@@ -2028,6 +2046,15 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     global _cb, _cb_log
     _cb = cb if cb is not None else TerminalCallbacks(verbose=verbose)
     _cb_log = log
+    # Hand the boot-line count to the callback so on_session_start can
+    # erase it (along with the on_boot_progress lines below) before the
+    # banner. Setattr instead of constructor arg keeps TerminalCallbacks
+    # / TuiCallbacks signatures stable.
+    if _BOOT_LINES_PRINTED:
+        try:
+            _cb._boot_lines_printed += _BOOT_LINES_PRINTED
+        except AttributeError:
+            pass
 
     # Wire think tool's output through the callback system (D12 compliance).
     # _emit("on_stream_chunk", text) routes through safe_cb so a buggy UI hook
@@ -2037,6 +2064,10 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     _think_mod._output = lambda text: _emit("on_stream_chunk", text)
 
     model_name = _main_backend.model or _config["llm"]["model"]
+    _emit(
+        "on_boot_progress",
+        f"checking main backend — {getattr(_main_backend, 'kind', '?')} {model_name} @ {getattr(_main_backend, 'base_url', '?')}",
+    )
     ok, detail = _main_backend.health()
 
     # Backend banner (plan task 1.5) — one-line log noting which kinds are active.
@@ -2063,6 +2094,10 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     summary_detail = "disabled"
     summary_url = getattr(_summary_backend, "base_url", "") if _summary_backend else ""
     if summary_cfg["enabled"]:
+        _emit(
+            "on_boot_progress",
+            f"checking summary backend — {getattr(_summary_backend, 'kind', '?')} {getattr(_summary_backend, 'model', '?')} @ {summary_url}",
+        )
         try:
             summary_ok, summary_detail = _summary_backend.health()
         except (requests.ConnectionError, requests.Timeout):

@@ -48,6 +48,17 @@ else:
 CLEAR_LINE = "" if _no_color() else "\r\033[K"
 
 
+def cursor_up_clear(n):
+    """ANSI escape: move cursor up n lines and clear from there to end of screen.
+
+    Returns "" when piping or NO_COLOR is set, so log files don't end up with
+    ANSI garbage. n must be > 0 to emit anything.
+    """
+    if n <= 0 or _no_color():
+        return ""
+    return f"\033[{n}A\033[0J"
+
+
 def _truecolor():
     """Return True if the terminal advertises 24-bit color support."""
     ct = os.environ.get("COLORTERM", "").lower()
