@@ -327,7 +327,8 @@ definition = {
             "the default timeout is 120s. For long-running commands, use "
             "background=true and poll with session_id to check output. "
             "You can write files via shell (cat >, heredocs). "
-            "For existing files, you must read them first (cat or file tool) in this session."
+              "For existing files, you must read them first (cat or file tool) in this session. "
+              "Worktrees must be created under WORKTREE_ROOT."
         ),
         "parameters": {
             "type": "object",
