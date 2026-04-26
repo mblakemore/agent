@@ -2882,6 +2882,26 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 )
                 log.info("Hallucination guard: detected fabricated file read, correcting")
                 _emit("on_hallucination_stripped", "file_read")
+            elif (_cycle_persisted and _cicd_branch
+                  and not _cicd_pr_number and _cicd_issue_number):
+                # Cycle 82 (run 187 failure mode): branch pushed but no PR opened.
+                # Builder said "I'm done" and burned 6 generic nudges without ever
+                # running `gh pr create`. Give a hard, specific instruction.
+                nudge = (
+                    f"You pushed branch `{_cicd_branch}` but there is NO open PR for it — "
+                    f"step 8 of MANDATORY IMPLEMENTATION WORKFLOW is incomplete. "
+                    f"Open the PR NOW with this exact shape:\n"
+                    f"  cat > /tmp/pr-body-{_cicd_issue_number}.md << 'EOF'\n"
+                    f"  Closes #{_cicd_issue_number}\n"
+                    f"  <one-paragraph summary of what changed>\n"
+                    f"  EOF\n"
+                    f"  gh pr create --draft --base main --head {_cicd_branch} \\\n"
+                    f"    --title 'CICD: <slug> (#{_cicd_issue_number})' \\\n"
+                    f"    --body \"$(cat /tmp/pr-body-{_cicd_issue_number}.md)\"\n"
+                    f"Do not say you're done — branch-pushed alone is not done. "
+                    f"Run `gh pr create` as your next tool call."
+                )
+                log.info("Auto-nudge (cycle 82): branch pushed but PR missing — directing builder to gh pr create")
             else:
                 # Generic nudge
                 nudge = (
