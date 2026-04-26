@@ -506,6 +506,32 @@ def _approx_token_count(text: str) -> int:
         return max(1, len(text or "") // 4)
 
 
+def _resolve_bedrock_credentials(
+    *, env_url: str, env_key: str
+) -> tuple[str, str, str | None]:
+    """Issue #405 — return ``(url, key, entry_name_or_None)``.
+
+    Consults ``bedrock_store`` if importable; on any failure (module
+    missing, store unreadable, empty store with no env fallback) returns
+    ``(env_url, env_key, None)`` so the legacy env-only path keeps
+    working. The ``ConfigError`` is raised by the caller when both are
+    blank — that mirrors the pre-#405 behaviour.
+    """
+    try:
+        import bedrock_store  # local import — keeps module side-effect-free
+    except Exception:
+        return env_url, env_key, None
+    try:
+        url, key, name = bedrock_store.select_credentials(
+            env_url=env_url, env_key=env_key,
+        )
+        return url, key, name
+    except LookupError:
+        return env_url, env_key, None
+    except Exception:  # pragma: no cover - defensive
+        return env_url, env_key, None
+
+
 class BedrockBackend:
     """Bedrock Chat gateway backend (see plan § 7.3).
 
@@ -521,16 +547,31 @@ class BedrockBackend:
         self._cfg = cfg
         self.role = cfg.get("role", "main")
 
-        api_url = cfg.get("api_url") or os.environ.get("BEDROCK_API_URL", "")
-        api_key = cfg.get("api_key") or os.environ.get("BEDROCK_API_KEY", "")
+        # Issue #405 — consult the bedrock credential store first so a
+        # multi-gateway setup picks the lowest-spend ``up`` entry. Falls
+        # back to env vars when the store is empty (back-compat) or to
+        # the cfg-supplied creds (which still override everything for
+        # the existing test_bedrock_backend_config_beats_env path).
+        cfg_url = cfg.get("api_url")
+        cfg_key = cfg.get("api_key")
+        store_entry_name: str | None = None
+        if cfg_url and cfg_key:
+            api_url = cfg_url
+            api_key = cfg_key
+        else:
+            api_url, api_key, store_entry_name = _resolve_bedrock_credentials(
+                env_url=cfg_url or os.environ.get("BEDROCK_API_URL", ""),
+                env_key=cfg_key or os.environ.get("BEDROCK_API_KEY", ""),
+            )
         if not api_url or not api_key:
             raise ConfigError(
                 "Bedrock backend requires BEDROCK_API_URL and BEDROCK_API_KEY "
-                "(either in config.json or environment)"
+                "(either in config.json, environment, or bedrock_store)"
             )
         # K4 mitigation — trim trailing slash so f"{api_url}/health" doesn't
         # produce a double slash on strict gateways.
         api_url = api_url.rstrip("/")
+        self._store_entry_name = store_entry_name
 
         self.api_url = api_url
         self.base_url = api_url  # banner consistency with LlamacppBackend
@@ -736,6 +777,69 @@ class BedrockBackend:
         assert last_exc is not None  # pragma: no cover
         raise last_exc
 
+    # ── Issue #405 — rotation between calls ──
+
+    def _rotate_to_next_entry(self, exc: BaseException, log) -> bool:
+        """Mark the current store entry ``down`` and swap to the next ``up``.
+
+        Returns True if rotation succeeded (``self._api`` is now pointed at
+        a fresh URL/key and the caller can retry). Returns False if there's
+        no other ``up`` entry — caller re-raises and the outer
+        main→summary→llamacpp failover takes over (criterion 4).
+        """
+        try:
+            import bedrock_store
+        except Exception:
+            return False
+        cur_name = getattr(self, "_store_entry_name", None)
+        # No-op when running off env vars (back-compat path) — the store
+        # has nothing to rotate to.
+        if not cur_name:
+            return False
+        err_summary = bedrock_store.summarize_error(exc)
+        bedrock_store.mark_status(
+            cur_name,
+            status=bedrock_store.STATUS_DOWN,
+            last_error=err_summary,
+        )
+        try:
+            new_url, new_key, new_name = bedrock_store.select_credentials(
+                env_url=os.environ.get("BEDROCK_API_URL", ""),
+                env_key=os.environ.get("BEDROCK_API_KEY", ""),
+            )
+        except LookupError:
+            return False
+        if not new_name or new_name == cur_name:
+            # Either we fell back to env (no name) or there's no sibling
+            # entry to swap to.
+            return False
+        new_url = new_url.rstrip("/")
+        log.info(
+            "bedrock.rotate from=%s to=%s reason=%s",
+            cur_name, new_name, type(exc).__name__,
+        )
+        # Rebuild the underlying API client. ``stream_chat`` is the only
+        # caller that holds an active conversation id, and per criterion 5
+        # we never rotate mid-stream — so it's safe to drop ``_active_conv_id``.
+        from bedrock_api import BedrockChatAPI
+        self.api_url = new_url
+        self.base_url = new_url
+        self._store_entry_name = new_name
+        self._api = BedrockChatAPI(
+            {
+                "api_url": new_url,
+                "api_key": new_key,
+                "origin": self._cfg.get("origin", "http://localhost:8000"),
+                "model": self.model,
+                "poll_interval": self._cfg.get("poll_interval", 0.3),
+                "poll_backoff": self._cfg.get("poll_backoff", 1.5),
+                "poll_max_interval": self._cfg.get("poll_max_interval", 5.0),
+                "poll_timeout": self._cfg.get("poll_timeout", 180),
+            }
+        )
+        self._active_conv_id = None
+        return True
+
     # ── Summary-path: single-shot completion ──
 
     def complete(
@@ -758,13 +862,32 @@ class BedrockBackend:
         t0 = time.monotonic()
         ok = False
         try:
-            msg = self._call_with_retry(
-                self._api.send_and_wait,
-                prompt,
-                _log=log,
-                _cancel_check=cancel_check,
-                cancel_check=cancel_check,
-            )
+            try:
+                msg = self._call_with_retry(
+                    self._api.send_and_wait,
+                    prompt,
+                    _log=log,
+                    _cancel_check=cancel_check,
+                    cancel_check=cancel_check,
+                )
+            except (
+                TimeoutError,
+                BedrockBudgetExceeded,
+                requests.exceptions.HTTPError,
+                requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError,
+            ) as e:
+                # Issue #405 criterion 4 — rotate once on failure.
+                if self._rotate_to_next_entry(e, log):
+                    msg = self._call_with_retry(
+                        self._api.send_and_wait,
+                        prompt,
+                        _log=log,
+                        _cancel_check=cancel_check,
+                        cancel_check=cancel_check,
+                    )
+                else:
+                    raise
             text = self._api.extract_text(msg)
             ok = True
             # Record cost only on a successful call — keeps failed calls
