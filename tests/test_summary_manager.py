@@ -66,12 +66,12 @@ def test_summary_request_success(mock_post):
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
-        "choices": [{"message": {"content": "This is a summary"}}]
+        "choices": [{"message": {"content": "Summary result"}}]
     }
     mock_post.return_value = mock_response
     
     result = _summary_request("prompt")
-    assert result == "This is a summary"
+    assert result == "Summary result"
 
 @patch("requests.post")
 def test_summary_request_failure(mock_post):
