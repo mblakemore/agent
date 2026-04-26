@@ -61,28 +61,21 @@ def test_format_for_summary_truncation():
     assert "..." in result
     assert len(result) < 1000
 
-@patch("requests.post")
-def test_summary_request_success(mock_post):
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {
-        "choices": [{"message": {"content": "This is a summary"}}]
-    }
-    mock_post.return_value = mock_response
+@patch("agent._summary_backend.complete")
+def test_summary_request_success(mock_complete):
+    mock_complete.return_value = "This is a summary"
     
     result = _summary_request("prompt")
     assert result == "This is a summary"
+    mock_complete.assert_called_once_with(prompt="prompt")
 
-@patch("requests.post")
-def test_summary_request_failure(mock_post):
-    mock_response = MagicMock()
-    mock_response.status_code = 500
-    mock_response.raise_for_status.side_effect = requests.HTTPError("500 Server Error")
-    mock_post.return_value = mock_response
+@patch("agent._summary_backend.complete")
+def test_summary_request_failure(mock_complete):
+    mock_complete.side_effect = requests.HTTPError("500 Server Error")
     
     with pytest.raises(requests.HTTPError):
         _summary_request("prompt")
-
+    mock_complete.assert_called_once_with(prompt="prompt")
 def test_condense_summary_no_op():
     short_text = "Short summary"
     result = _condense_summary(short_text)
