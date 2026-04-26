@@ -1,0 +1,7 @@
+# Optional dev/CI extras for agent.py.
+#
+# Telemetry (issue #399 / #400 / #401): opt-in OTLP metrics exporter for the
+# Prometheus + Grafana fleet dashboard. NOT required for normal operation;
+# only installed when developing or running with AGENTPY_TELEMETRY=1.
+opentelemetry-sdk
+opentelemetry-exporter-otlp-proto-http
