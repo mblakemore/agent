@@ -2037,6 +2037,10 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     _think_mod._output = lambda text: _emit("on_stream_chunk", text)
 
     model_name = _main_backend.model or _config["llm"]["model"]
+    _emit(
+        "on_notice", "info",
+        f"checking main backend — {getattr(_main_backend, 'kind', '?')} {model_name} @ {getattr(_main_backend, 'base_url', '?')}",
+    )
     ok, detail = _main_backend.health()
 
     # Backend banner (plan task 1.5) — one-line log noting which kinds are active.
@@ -2063,6 +2067,10 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     summary_detail = "disabled"
     summary_url = getattr(_summary_backend, "base_url", "") if _summary_backend else ""
     if summary_cfg["enabled"]:
+        _emit(
+            "on_notice", "info",
+            f"checking summary backend — {getattr(_summary_backend, 'kind', '?')} {getattr(_summary_backend, 'model', '?')} @ {summary_url}",
+        )
         try:
             summary_ok, summary_detail = _summary_backend.health()
         except (requests.ConnectionError, requests.Timeout):
