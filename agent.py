@@ -547,6 +547,26 @@ def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log):
             "The PR was NOT created."
         )
 
+    # Cycle 81 (run 186 failure mode): block `git push origin main` pre-execute.
+    # Cycle 37's post-execute WARNING let the push through — run 186 builder
+    # committed `ed67439` directly to main, push succeeded with only a log line,
+    # builder reverted as `42a1dac`, then hit hard-cap with no PR opened. 5
+    # turns + the entire cycle were wasted. Make it a hard block at the same
+    # point as the other CICD pre-checks.
+    if re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)git\s+push\b[^&;|]*\borigin\s+main\b", _precmd):
+        log.warning("CICD: git push origin main BLOCKED — must use feature branch (cycle 81)")
+        return True, (
+            "Error: CICD `git push origin main` BLOCKED — direct pushes to main "
+            "are prohibited. All CICD work must land via a feature branch + PR.\n"
+            "If you have a local commit on main that shouldn't be there:\n"
+            "  1. `git reset --hard origin/main` (drops the local commit)\n"
+            "  2. `git worktree add <WORKTREE_ROOT>/<slug> -b cicd/<slug>`\n"
+            "  3. Re-apply your changes inside the worktree\n"
+            "  4. `git push -u origin cicd/<slug>` then `gh pr create --draft ...`\n"
+            "Do NOT use `git revert HEAD && git push origin main` — that still "
+            "pushes to main. The push was NOT executed."
+        )
+
     # Cycle 80 (run 183 failure mode): block `gh pr create` if any edited .py
     # file fails py_compile. Run 183 PR #398 shipped IndentationError at the
     # four "Session ended" sites + a double `continue` in `_iter_stream_chunks`.
