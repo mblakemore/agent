@@ -1,0 +1,1 @@
+opentelemetry-api\nopentelemetry-sdk\nopentelemetry-exporter-otlp-proto-http
