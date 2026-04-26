@@ -43,6 +43,15 @@ class NullCallbacks:
     def on_session_start(self, info: dict) -> None:
         return None
 
+    def on_boot_progress(self, message: str) -> None:
+        """Pre-banner status line (e.g. 'checking main backend …').
+
+        Emitted while backend health probes run, before on_session_start
+        renders the banner. TerminalCallbacks erases these lines when the
+        banner is ready.
+        """
+        return None
+
     def on_cycle_bumped(self, old: int, new: int) -> None:
         return None
 
@@ -164,6 +173,11 @@ class TerminalCallbacks(NullCallbacks):
         self.compact_limit = compact_limit
         self.tool_history: deque = deque(maxlen=tool_history_size)
         self._last_was_stream = False
+        # Boot-progress lines printed before the banner. Bumped by the
+        # caller (agent.py) for the pre-import "starting agent…" line, then
+        # incremented by each on_boot_progress emit. on_session_start
+        # erases all of them via cursor_up_clear before drawing the banner.
+        self._boot_lines_printed = 0
 
     # -- helpers --------------------------------------------------------
 
@@ -186,7 +200,20 @@ class TerminalCallbacks(NullCallbacks):
 
     # -- session lifecycle ----------------------------------------------
 
+    def on_boot_progress(self, message: str) -> None:
+        self._print(theme.dim(f"  {message}"))
+        self._boot_lines_printed += 1
+
     def on_session_start(self, info: dict) -> None:
+        # Erase pre-banner boot-progress lines so the banner shows clean.
+        # cursor_up_clear() is a no-op when piping (NO_COLOR / non-TTY), so
+        # CICD logs see all the lines plus the banner — only interactive
+        # TTY callers get the cursor jump.
+        if self._boot_lines_printed > 0:
+            import sys as _sys
+            _sys.stdout.write(theme.cursor_up_clear(self._boot_lines_printed))
+            _sys.stdout.flush()
+            self._boot_lines_printed = 0
         bar = theme.c(theme.VIOLET, "─" * 60)
         version = info.get("version", "")
         sha = info.get("sha", "")
