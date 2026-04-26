@@ -504,9 +504,45 @@ def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log):
     Returns (is_blocked, error_message).
     If is_blocked is True, the tool should not be executed.
     """
+    # Cycle 84 (runs 190+191 reviewer fix-forward failure mode): block the
+    # reviewer from editing production .py files inside its review worktree.
+    # Cycle 75 already says reviewer commits may only modify `tests/**`, but
+    # the rule was prose only — runs 190 and 191 each saw the reviewer spend
+    # 30+ turns rewriting `tools/exec_command.py` in the `pr-N` worktree
+    # instead of issuing a verdict. The work is throwaway (no commit path)
+    # and the missing verdict leaves the queue stuck.
+    #
+    # Detection: file tool, write/insert/replace action, target is a non-test
+    # `.py` file, AND the target path is inside a `/worktrees/pr-<N>/` review
+    # worktree (vs a builder worktree which has different naming). The marker
+    # `/worktrees/pr-` is what reviewer.md prescribes (`git worktree add
+    # <ROOT>/pr-<N> review/pr-<N>`).
+    if func_name == "file" and isinstance(func_args, dict):
+        _action = func_args.get("action", "")
+        _path = func_args.get("path", "")
+        if (_action in ("write", "insert", "replace")
+                and _path.endswith(".py")
+                and "/tests/" not in _path
+                and not _path.startswith("tests/")
+                and re.search(r"/worktrees/pr-\d+/", _path)):
+            log.warning(
+                "CICD: reviewer file edit BLOCKED — production .py inside review worktree (cycle 84)"
+            )
+            return True, (
+                "Error: CICD reviewer file edit BLOCKED — you are editing a "
+                f"production Python file ({_path}) inside a review worktree. "
+                "Your role is REVIEWER, not BUILDER. Per cycle 75, reviewer "
+                "commits may only modify `tests/**`. If the PR has a real bug "
+                "in production code, the verdict is REQUEST_CHANGES (or CLOSE "
+                "for destruction-class signatures) — leave a `gh pr comment "
+                "<N> --body \"Verdict: REQUEST_CHANGES ...\"` citing the "
+                "exact file:line and expected fix, then move on. Do NOT fix "
+                "the code yourself — the builder owns production changes."
+            )
+
     if func_name != "exec_command":
         return False, None
-    
+
     _precmd = func_args.get("command", "") if isinstance(func_args, dict) else ""
     
     # PRE-MERGE CHECK
