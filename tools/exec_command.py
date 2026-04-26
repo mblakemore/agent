@@ -166,12 +166,8 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         # Only check absolute paths (relative ones are fine — they stay in the repo)
         if os.path.isabs(expanded):
             # Allow cd within the repo tree (parent of home_cwd holds all worktrees)
-            repo_root = os.path.realpath(os.path.dirname(home_cwd))
-            resolved_target = os.path.realpath(expanded)
-            
-            # Ensure we match whole path components by adding trailing slash
-            root_with_slash = repo_root if repo_root.endswith(os.sep) else repo_root + os.sep
-            if not resolved_target.startswith(root_with_slash) and resolved_target != repo_root:
+            repo_root = os.path.dirname(home_cwd)  # e.g. /droid/repos/agent-triad-ex1
+            if not expanded.rstrip('/').startswith(repo_root.rstrip('/')):
                 return (
                     f"Error: You are trying to cd to '{target_dir}' which is outside "
                     f"your repo tree ('{repo_root}'). Your working directory is "
