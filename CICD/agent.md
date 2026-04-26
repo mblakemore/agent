@@ -111,7 +111,9 @@ Explore the codebase for issues. Run the test suite, check for warnings, look fo
 - Performance issues (redundant operations, slow paths)
 - Documentation gaps
 
-**File issues for every bug/friction found** (not just the one you'll work on). Dedupe first:
+**File issues for every bug/friction found** (not just the one you'll work on). Dedupe first.
+
+**EXCEPT: probe-deferral (cycle 79 — runs 175/180 failure mode).** If PERCEIVE's `gh issue list --label cicd` returned ≥1 unclaimed CICD issue that pre-existed this cycle (i.e. `createdAt` < your `git fetch` timestamp), DO NOT file new probe-bug issues this cycle. Note them in a comment on the existing top-of-queue issue or in `progress-${BOT_ID}.md`, and proceed to REFLECT against the pre-existing queue only. Filing a probe-bug-issue this cycle creates a sibling that competes in REFLECT and lets cycle 73 be gamed (the builder pivots to its own newly-filed bug as a "more tractable" target). Probe-bug issues you DO file at any other time are queued for the *next* bot to claim, never for this cycle. The user's queue takes precedence over cycle-internal discoveries.
 ```bash
 gh issue list --state all --search "<key words>" --limit 10
 ```
@@ -158,6 +160,19 @@ gh issue comment <ISSUE> --body "Picked up by CICD cycle NNN. Metric: <metric> (
 3. Ties among unclaimed CICD issues: pick oldest by `createdAt`. Do NOT skip an issue because its task type (docs, config, refactor) is outside your usual pattern — the task type does not grant exemption.
 4. Only exception: if a candidate issue is demonstrably already resolved on HEAD (tests green, feature present, docs already match), comment "Cannot reproduce on HEAD" and move to the next-oldest. Do NOT use scope-pivot language ("lower impact than …") as a reason to skip.
 5. The `think` tool is not a license to re-rank. If your THINK ANSWER concludes "I'll file a new issue because target X would be better," STOP — that is the exact failure mode cycle 73 blocks.
+6. **Cycle-internal issue filings are NOT REFLECT candidates this cycle (cycle 79).** REFLECT may only consider issues whose `createdAt` < this cycle's `git fetch` timestamp. If you filed a probe-bug issue mid-cycle, it joins the queue for the *next* cycle, not this one. This forecloses the run 180 path: "I found a regression, filed #393, worked it instead of the user's queued #387."
+
+**SCOPE FIT — partial delivery is a first-class outcome (cycle 79).** A big issue (≥3 acceptance criteria, or estimated >150 lines, or new subsystem like a new module + tests + dependency) does NOT mean "skip in favor of a smaller target." It means **deliver a chunk this cycle, resume next cycle**. Concretely:
+
+1. **Pick the issue anyway.** Cycle 73 still applies — you MUST work on the existing CICD queue. Big-issue avoidance ("I can't finish this in one cycle so I'll file a smaller bug") is a cycle-79-blocked failure mode.
+2. **In your DECIDE paragraph, name the partial scope.** Instead of "Done-when: all 8 ACs", state "This cycle: AC1 + AC2 only. Deferred to next cycle: AC3-AC8." Pick ACs that are independently testable and don't break existing behavior — usually the foundational ones (env-flag plumbing, no-op mode, lazy import) come before the heavy ones (real OTLP push, full schema).
+3. **PR conventions for partial delivery:**
+   - PR body header: `Partial: AC<list this cycle>` (e.g. `Partial: AC1 + AC2 + AC3`)
+   - PR body line: `Deferred to next cycle: AC<list>` + a one-sentence-per-AC reason
+   - Trailer: `Refs #<N>` (NOT `Closes #<N>`) — the issue stays open across cycles
+   - The `in-progress-bot-${BOT_ID}` + `cicd-cycle-NNN` labels persist on the issue between cycles. Next cycle, this same bot (or its successor) reads PROBE → sees the issue is still claimed → goes to step 4 below.
+4. **Resuming a partial issue next cycle:** PERCEIVE should detect "this issue has prior partial PRs against it" by `gh pr list --search "Refs #<N>" --state merged`. Read the prior PR bodies to know which ACs are done, then pick the next chunk. Do NOT re-implement done ACs; build on top.
+5. **When does an issue close?** Only the cycle that delivers the LAST AC uses `Closes #N`. Until then, every cycle uses `Refs #N` and the issue keeps its in-progress label.
 
 ## Phase 5 — PLAN
 
