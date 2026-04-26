@@ -120,6 +120,7 @@ Exactly one verdict from the decision matrix:
 |---|---|
 | Tests green + metric verified ±5% + scope clean + issue matches | **MERGE** |
 | PR body has `Partial: AC<list>` + `Refs #N` (NOT `Closes`) + tests green for the partial scope + diff doesn't break existing tests | **MERGE** (issue stays open for next cycle, in-progress label persists — cycle 79 partial-delivery path). Verify the partial body lists which ACs landed AND which are deferred; reject `Partial: …` PRs that don't enumerate both. Do NOT require all the issue's ACs to land in this PR — partial-by-design is the contract. |
+| Diff against main shows `deletions > additions × 5` AND deletions > 100 lines on any production file (`agent.py`, `llm_backend.py`, etc.) | **CLOSE** immediately (cycle 79 — run 182 destruction). The builder accidentally rewrote the file from scratch via `file action=write`, deleting working code. Comment cites the line count: `agent.py shrunk from <X> on main to <Y> on branch — unsalvageable, builder must restart additively from current main.` Run `git show origin/main:<file> \| wc -l` and `git show <branch>:<file> \| wc -l` to capture the numbers, paste both into the close comment. Do NOT attempt to fix forward — reviewer scope (`tests/**` only, cycle 75) means production code restoration is a builder responsibility. |
 | Any test fails | **REQUEST_CHANGES** (cite test names + errors) |
 | Metric off >5% wrong direction or command broken | **REQUEST_CHANGES** (cite measurements) |
 | New skips not justified in plan | **REQUEST_CHANGES** |
