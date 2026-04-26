@@ -46,11 +46,12 @@ def test_main_failover_timeout():
 def test_summary_failover_timeout():
     """Bedrock summary TimeoutError -> failover to llamacpp summary."""
     agent._summary_backend = FailingBedrock()
+    # Setup config to enable summary and provide url
+    agent._config["summary"] = {"enabled": True, "base_url": "http://summary-api"}
     with patch('llm_backend.build_backend', return_value=WorkingLlama()):
-        # Simulate a summary request
+        # We must call _generate_summary to trigger the failover logic
         try:
-            # We use _summary_request which is the internal wrapper
-            res = agent._summary_request("prompt")
+            res = agent._generate_summary("old_summary", [], logging.getLogger('test'))
             assert agent._summary_backend.kind == 'llamacpp'
         except Exception as e:
             pytest.fail(f"Summary failover failed: {e}")
