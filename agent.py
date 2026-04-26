@@ -85,6 +85,7 @@ except Exception:
 import theme
 import commands as _commands
 from callbacks import NullCallbacks, TerminalCallbacks, safe_cb
+import telemetry
 from types import SimpleNamespace
 
 RESET = theme.RESET
@@ -793,7 +794,6 @@ def _iter_stream_chunks(response):
     tests that mock ``_llm_request`` with ``iter_lines.return_value = [...]``
     continue to work without modification, while ``BedrockBackend.stream_chat``
     (a plain generator of dicts) now flows through ``run_agent_single``
-    end-to-end. See plan § 7.1 open question on StreamDelta Protocol.
     """
     if hasattr(response, "iter_lines"):
         for raw_line in response.iter_lines(decode_unicode=False):
@@ -804,8 +804,15 @@ def _iter_stream_chunks(response):
             if payload == "[DONE]":
                 return
             try:
-                yield json.loads(payload)
+                chunk = json.loads(payload)
+                if "usage" in chunk:
+                    u = chunk["usage"]
+                    model_name = getattr(_main_backend, 'model', 'unknown_model')
+                    telemetry.record_tokens(model_name, "prompt", u.get("prompt_tokens", 0))
+                    telemetry.record_tokens(model_name, "completion", u.get("completion_tokens", 0))
+                yield chunk
             except json.JSONDecodeError:
+                continue
                 continue
     else:
         for chunk in response:
@@ -2158,25 +2165,31 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             conversation_history, summary_state, start_turn, initial_files = cp
             log.info("CONTINUE: resuming from checkpoint (turn %d, %d messages)",
                      start_turn, len(conversation_history))
-            # Cap summary from old checkpoints that may have bloated summaries
-            if summary_state.get("text"):
-                summary_state["text"] = _condense_summary(summary_state["text"], log)
-            _emit("on_continue_resumed", start_turn, len(conversation_history))
-            # Add a resume nudge so the model knows it's continuing
-            conversation_history.append({"role": "user", "content":
-                "Continue where you left off. The session was interrupted — "
-                "pick up from your current phase and finish the cycle."})
-            result = run_agent_single(conversation_history, summary_state, initial_files, log,
-                                      gen["temperature"], gen["top_p"], gen["top_k"],
-                                      gen["presence_penalty"], max_tokens, ctx_size,
-                                      start_turn=start_turn,
-                                      async_summarizer=_async_summarizer)
-            if auto:
-                cleanup_temp_sessions()
-                _delete_checkpoint()
-                log.info("Session ended (continue mode) | %d messages", len(conversation_history))
-                _log_bedrock_session_spend(log)
-                return
+              # Cap summary from old checkpoints that may have bloated summaries
+              if summary_state.get("text"):
+                  summary_state["text"] = _condense_summary(summary_state["text"], log)
+              _emit("on_continue_resumed", start_turn, len(conversation_history))
+              # Add a resume nudge so the model knows it's continuing
+              conversation_history.append({"role": "user", "content":
+                  "Continue where you left off. The session was interrupted — "
+                  "pick up from your current phase and finish the cycle."})
+              try:
+                  t0 = time.time()
+                  result = run_agent_single(conversation_history, summary_state, initial_files, log,
+                                          gen["temperature"], gen["top_p"], gen["top_k"],
+                                          gen["presence_penalty"], max_tokens, ctx_size,
+                                          start_turn=start_turn,
+                                          async_summarizer=_async_summarizer)
+                  telemetry.record_cycle(duration=time.time() - t0)
+              except Exception as e:
+                  telemetry.record_error(exception=e)
+                  raise e
+              if auto:
+                  cleanup_temp_sessions()
+                  _delete_checkpoint()
+                  log.info("Session ended (continue mode) | %d messages", len(conversation_history))
+                  _log_bedrock_session_spend(log)
+                  return
             # Fall through to interactive loop if not auto
         else:
             _emit("on_continue_none")
@@ -2231,10 +2244,16 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             log.info("Pinned instructions extracted (%d chars)", len(pinned))
         conversation_history.append({"role": "user", "content": expanded})
         log.debug("USER: %s", expanded)
-        result = run_agent_single(conversation_history, summary_state, initial_files, log,
-                                  gen["temperature"], gen["top_p"], gen["top_k"],
-                                  gen["presence_penalty"], max_tokens, ctx_size,
-                                  async_summarizer=_async_summarizer)
+          try:
+              t0 = time.time()
+              result = run_agent_single(conversation_history, summary_state, initial_files, log,
+                                        gen["temperature"], gen["top_p"], gen["top_k"],
+                                        gen["presence_penalty"], max_tokens, ctx_size,
+                                        async_summarizer=_async_summarizer)
+              telemetry.record_cycle(duration=time.time() - t0)
+          except Exception as e:
+              telemetry.record_error(exception=e)
+              raise e
 
         if auto:
             if result == "cancelled":
@@ -2262,10 +2281,16 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                         "Continue where you left off. Finish your current cycle."})
                     log.info("OPERATOR: [resume — no guidance]")
                 # Continue in auto mode until the agent finishes
-                run_agent_single(conversation_history, summary_state, initial_files, log,
-                                 gen["temperature"], gen["top_p"], gen["top_k"],
-                                 gen["presence_penalty"], max_tokens, ctx_size,
-                                 async_summarizer=_async_summarizer)
+                  try:
+                      t0 = time.time()
+                      run_agent_single(conversation_history, summary_state, initial_files, log,
+                                       gen["temperature"], gen["top_p"], gen["top_k"],
+                                       gen["presence_penalty"], max_tokens, ctx_size,
+                                       async_summarizer=_async_summarizer)
+                      telemetry.record_cycle(duration=time.time() - t0)
+                  except Exception as e:
+                      telemetry.record_error(exception=e)
+                      raise e
             cleanup_temp_sessions()
             _delete_checkpoint()
             log.info("Session ended (auto mode) | %d messages in history", len(conversation_history))
@@ -2333,10 +2358,16 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         conversation_history.append({"role": "user", "content": expanded})
         log.debug("USER: %s", expanded)
 
-        run_agent_single(conversation_history, summary_state, initial_files, log,
-                         gen["temperature"], gen["top_p"], gen["top_k"],
-                         gen["presence_penalty"], max_tokens, ctx_size,
-                         async_summarizer=_async_summarizer)
+          try:
+              t0 = time.time()
+              run_agent_single(conversation_history, summary_state, initial_files, log,
+                               gen["temperature"], gen["top_p"], gen["top_k"],
+                               gen["presence_penalty"], max_tokens, ctx_size,
+                               async_summarizer=_async_summarizer)
+              telemetry.record_cycle(duration=time.time() - t0)
+          except Exception as e:
+              telemetry.record_error(exception=e)
+              raise e
 
     if tui_session is not None:
         tui_session.close()
