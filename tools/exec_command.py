@@ -165,9 +165,18 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         expanded = os.path.expanduser(target_dir)
         # Only check absolute paths (relative ones are fine — they stay in the repo)
         if os.path.isabs(expanded):
-            # Allow cd within the repo tree (parent of home_cwd holds all worktrees)
-            repo_root = os.path.dirname(home_cwd)  # e.g. /droid/repos/agent-triad-ex1
-            if not expanded.rstrip('/').startswith(repo_root.rstrip('/')):
+            # Resolve both to absolute, real paths to handle symlinks and avoid prefix bugs
+            real_target = os.path.realpath(expanded)
+            repo_root = os.path.realpath(os.path.dirname(home_cwd))
+            
+            # Check if real_target is inside repo_root
+            try:
+                is_inside = os.path.commonpath([repo_root, real_target]) == repo_root
+            except ValueError: 
+                # This can happen if paths are on different drives (Windows)
+                is_inside = False
+
+            if not is_inside:
                 return (
                     f"Error: You are trying to cd to '{target_dir}' which is outside "
                     f"your repo tree ('{repo_root}'). Your working directory is "
@@ -327,8 +336,7 @@ definition = {
             "the default timeout is 120s. For long-running commands, use "
             "background=true and poll with session_id to check output. "
             "You can write files via shell (cat >, heredocs). "
-              "For existing files, you must read them first (cat or file tool) in this session. "
-              "Worktrees must be created under WORKTREE_ROOT."
+            "For existing files, you must read them first (cat or file tool) in this session."
         ),
         "parameters": {
             "type": "object",
@@ -345,7 +353,7 @@ definition = {
                 },
                 "timeout": {
                     "type": "number",
-                    "description": "Max seconds to wait for the command to finish (default 120). LLM-calling scripts may need 300+.",
+                    "description": "Max seconds to wait (default 120). LLM-calling scripts may need 300+.",
                     "default": 120,
                 },
                 "background": {
