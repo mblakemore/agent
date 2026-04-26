@@ -158,16 +158,30 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     # Block cd to paths outside the repo tree.
     # Relative cd (cd ../shared && ...) is fine — only block absolute paths and ~ expansion
     # that leave the repo.
-    cd_match = re.match(r'^cd\s+(\S+)\s*&&\s*(.+)', command)
+    # We use a more flexible regex to catch 'cd path && cmd' even with varied spacing
+    cd_match = re.search(r'^cd\s+(\S+)\s*&&\s*(.+)', command)
     if cd_match:
         target_dir = cd_match.group(1)
         # Expand ~ so we can check the resolved path
         expanded = os.path.expanduser(target_dir)
         # Only check absolute paths (relative ones are fine — they stay in the repo)
         if os.path.isabs(expanded):
-            # Allow cd within the repo tree (parent of home_cwd holds all worktrees)
-            repo_root = os.path.dirname(home_cwd)  # e.g. /droid/repos/agent-triad-ex1
-            if not expanded.rstrip('/').startswith(repo_root.rstrip('/')):
+            # Resolve symlinks to avoid blocking valid in-tree paths accessed via symlinks
+            resolved_expanded = os.path.realpath(expanded)
+            
+            # To determine the repo root, we look at the current working directory.
+            # In this environment, the agent is always in a worktree directory.
+            # The repo root is the parent of the worktree.
+            repo_root = os.path.realpath(os.path.dirname(home_cwd))
+            
+            # Use os.sep to ensure we match whole path components and avoid prefix collisions
+            # (e.g., /foo-other should not be seen as starting with /foo)
+            norm_resolved = resolved_expanded.rstrip(os.sep)
+            norm_root = repo_root.rstrip(os.sep)
+            
+            # We allow cd if the resolved path is the repo root or is inside the repo root.
+            # We check for norm_root + os.sep to ensure we are matching a directory component.
+            if not (norm_resolved == norm_root or norm_resolved.startswith(norm_root + os.sep)):
                 return (
                     f"Error: You are trying to cd to '{target_dir}' which is outside "
                     f"your repo tree ('{repo_root}'). Your working directory is "
