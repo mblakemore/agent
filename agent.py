@@ -698,6 +698,53 @@ def _llm_request_raw(log, **kwargs):
             time.sleep(delay)
 
 
+def _is_failover_error(e):
+    """Check if an exception should trigger failover to llamacpp.
+    
+    Handles both specific exception classes and generic exceptions containing
+    failover keywords (useful for some mock tests and generic Bedrock errors).
+    """
+    if isinstance(e, (BedrockBudgetExceeded, requests.exceptions.ConnectionError,
+                      requests.exceptions.Timeout, TimeoutError)):
+        return True
+    
+    err_msg = str(e)
+    failover_keywords = ["BedrockBudgetExceeded", "Capacity exceeded", "Rate limit exceeded"]
+    return any(kw in err_msg for kw in failover_keywords)
+
+def _trigger_failover(log, backend_type):
+    """Swap Bedrock for llamacpp if Bedrock is failing.
+    
+    Args:
+        log: Logger instance.
+        backend_type: Either 'main' or 'summary'.
+    """
+    global _main_backend, _summary_backend
+    
+    try:
+        # Attempt to build a llamacpp backend. 
+        from llm_backend import build_backend
+        from agent import _config
+        
+        llamacpp_cfg = _config.get("backends", {}).get("llamacpp", {})
+        
+        new_backend = build_backend(llamacpp_cfg)
+        healthy, msg = new_backend.health()
+        if healthy:
+            if backend_type == 'main':
+                _main_backend = new_backend
+            else:
+                _summary_backend = new_backend
+            log.warning("Failover successful: %s backend is now llamacpp (%s)", backend_type, msg)
+            return True
+        else:
+            log.error("Failover failed: llamacpp backend unhealthy (%s)", msg)
+            return False
+            
+    except Exception as e:
+        log.error("Failover critical failure: %s", e)
+        return False
+
 def _llm_request(log, **kwargs):
     """Main-path streaming request. Thin wrapper that routes through the
     module-level ``_main_backend`` (see plan task 1.4).
@@ -705,8 +752,14 @@ def _llm_request(log, **kwargs):
     Signature matches the pre-refactor ``_llm_request`` exactly so existing
     tests that ``patch('agent._llm_request')`` still work unmodified.
     """
-    return _main_backend.stream_chat(log, **kwargs)
-
+    try:
+        return _main_backend.stream_chat(log, **kwargs)
+    except Exception as e:
+        if _is_failover_error(e):
+            if _trigger_failover(log, 'main'):
+                log.info("Retrying request with failover backend...")
+                return _main_backend.stream_chat(log, **kwargs)
+        raise e
 
 def _iter_stream_chunks(response):
     """Yield OpenAI-shape delta dicts from either backend shape.
@@ -1080,33 +1133,46 @@ def _format_for_summary(messages):
     return "\n".join(parts)
 
 
-def _summary_request(prompt, base_url=None, model=None):
+def _summary_request(prompt, base_url=None, model=None, log=None):
     """POST a summary prompt to the summary backend. Returns summary text.
-
+    
     Plan task 1.4: routes through ``_summary_backend.complete(prompt=prompt)``.
     The ``base_url`` / ``model`` parameters are preserved for signature
     compatibility (see ``tests/test_summary_request_signature.py``). They are
     only honored when ``_summary_backend.kind == "llamacpp"``; for non-llamacpp
     backends a DEBUG log line is emitted and the backend's own config wins.
     """
-    backend = _summary_backend
-    if backend.kind == "llamacpp" and (base_url or model):
-        # Build a transient backend with the overrides — preserves the old
-        # fallback-to-main semantics where callers pass BASE_URL explicitly.
-        override_cfg = dict(backend._cfg)
-        if base_url:
-            override_cfg["base_url"] = base_url
-        if model:
-            override_cfg["model"] = model
-        transient = _build_backend({**override_cfg, "kind": "llamacpp"})
-        return transient.complete(prompt=prompt)
-    if backend.kind != "llamacpp" and (base_url or model):
-        logging.getLogger("agent").debug(
-            "_summary_request ignoring base_url/model override — "
-            "summary backend kind=%s",
-            backend.kind,
-        )
-    return backend.complete(prompt=prompt)
+    # Use default logger if none provided
+    if log is None:
+        import logging
+        log = logging.getLogger("agent")
+
+    try:
+        backend = _summary_backend
+        if backend.kind == "llamacpp" and (base_url or model):
+            # Build a transient backend with the overrides
+            override_cfg = dict(backend._cfg)
+            if base_url:
+                override_cfg["base_url"] = base_url
+            if model:
+                override_cfg["model"] = model
+            transient = _build_backend({**override_cfg, "kind": "llamacpp"})
+            return transient.complete(prompt=prompt)
+        if backend.kind != "llamacpp" and (base_url or model):
+            log.debug(
+                "_summary_request ignoring base_url/model override — "
+                "summary backend kind=%s",
+                backend.kind,
+            )
+        return backend.complete(prompt=prompt)
+    except Exception as e:
+        if _is_failover_error(e):
+            log.info("Summary backend failed. Triggering failover...")
+            if _trigger_failover(log, 'summary'):
+                log.info("Retrying summary with failover backend...")
+                # Recursive call with updated backend
+                return _summary_request(prompt, base_url, model, log)
+        raise e
 
 
 def _condense_summary(text, log=None):
@@ -1245,7 +1311,21 @@ def _generate_summary(old_summary, new_messages, log):
                                        model=_config["llm"]["model"])
         log.info("SUMMARY: %s", summary)
         return summary
-    except (requests.ConnectionError, requests.Timeout) as e:
+    except (requests.ConnectionError, requests.Timeout,
+            TimeoutError, BedrockBudgetExceeded) as e:
+        if _trigger_failover(log, 'summary'):
+            log.info("Retrying summary with failover backend...")
+            try:
+                if summary_cfg["enabled"] and summary_url:
+                    summary = _summary_request(prompt)
+                else:
+                    summary = _summary_request(prompt, base_url=BASE_URL,
+                                               model=_config["llm"]["model"])
+                log.info("SUMMARY (retry): %s", summary)
+                return summary
+            except Exception as e2:
+                log.error("Summary retry failed: %s", e2)
+                return _fallback_to_main(e2)
         if summary_url and summary_url != BASE_URL:
             return _fallback_to_main(e)
         log.error("Summary generation failed: %s", e)
