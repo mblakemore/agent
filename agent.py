@@ -1133,7 +1133,7 @@ def _format_for_summary(messages):
     return "\n".join(parts)
 
 
-def _summary_request(prompt, base_url=None, model=None, log=None):
+def _summary_request(prompt, base_url=None, model=None, **kwargs):
     """POST a summary prompt to the summary backend. Returns summary text.
     
     Plan task 1.4: routes through ``_summary_backend.complete(prompt=prompt)``.
@@ -1143,6 +1143,7 @@ def _summary_request(prompt, base_url=None, model=None, log=None):
     backends a DEBUG log line is emitted and the backend's own config wins.
     """
     # Use default logger if none provided
+    log = kwargs.get("log")
     if log is None:
         import logging
         log = logging.getLogger("agent")
@@ -1166,12 +1167,6 @@ def _summary_request(prompt, base_url=None, model=None, log=None):
             )
         return backend.complete(prompt=prompt)
     except Exception as e:
-        if _is_failover_error(e):
-            log.info("Summary backend failed. Triggering failover...")
-            if _trigger_failover(log, 'summary'):
-                log.info("Retrying summary with failover backend...")
-                # Recursive call with updated backend
-                return _summary_request(prompt, base_url, model, log)
         raise e
 
 
@@ -1278,15 +1273,19 @@ def _generate_summary(old_summary, new_messages, log):
     summary_cfg = _config["summary"]
     summary_url = summary_cfg["base_url"]
 
+    # Guard: If summary is disabled or no base_url is provided, skip attempt.
+    if not summary_cfg["enabled"] or not summary_url:
+        return old_summary
+
     def _fallback_to_main(reason_exc):
         """Route the summary through the main backend after a summary failure.
 
-        The legacy path called ``_summary_request(prompt, base_url=BASE_URL, …)``
+        The legacy path called ``_summary_request(prompt, base_url=BASE_URL, ...)``
         which only re-homes to a llamacpp override and is a no-op when the
         summary backend is non-llamacpp (Bedrock). Go directly to the
         ``_main_backend.complete()`` so the fallback actually runs through a
         different backend kind when the primary is Bedrock and e.g. the
-        daily cost cap tripped. See plan § 15 rollback / § 6.5 guardrail.
+        daily cost cap tripped. See plan section 15 rollback / section 6.5 guardrail.
         """
         log.warning(
             "Summary failed on %s backend (%s); falling back to main model",
@@ -1304,11 +1303,7 @@ def _generate_summary(old_summary, new_messages, log):
     try:
         # Try dedicated summary endpoint first — via _summary_request, which
         # now routes through _summary_backend.complete (plan task 1.4).
-        if summary_cfg["enabled"] and summary_url:
-            summary = _summary_request(prompt)
-        else:
-            summary = _summary_request(prompt, base_url=BASE_URL,
-                                       model=_config["llm"]["model"])
+        summary = _summary_request(prompt, log=log)
         log.info("SUMMARY: %s", summary)
         return summary
     except (requests.ConnectionError, requests.Timeout,
@@ -1316,20 +1311,13 @@ def _generate_summary(old_summary, new_messages, log):
         if _trigger_failover(log, 'summary'):
             log.info("Retrying summary with failover backend...")
             try:
-                if summary_cfg["enabled"] and summary_url:
-                    summary = _summary_request(prompt)
-                else:
-                    summary = _summary_request(prompt, base_url=BASE_URL,
-                                               model=_config["llm"]["model"])
+                summary = _summary_request(prompt, log=log)
                 log.info("SUMMARY (retry): %s", summary)
                 return summary
             except Exception as e2:
                 log.error("Summary retry failed: %s", e2)
                 return _fallback_to_main(e2)
-        if summary_url and summary_url != BASE_URL:
-            return _fallback_to_main(e)
-        log.error("Summary generation failed: %s", e)
-        return old_summary or ""
+        return _fallback_to_main(e)
     except BedrockBudgetExceeded as e:
         # Budget cap tripped — fall back to local main for the rest of the
         # session. Avoids cascading context overflow from missing summaries.
