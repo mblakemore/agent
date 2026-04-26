@@ -60,6 +60,7 @@ import subprocess
 import sys
 import threading
 import time
+import telemetry
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -2131,6 +2132,10 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
 
     log, log_path, error_log_path = _setup_logger()
 
+    # OTLP telemetry: init once per session (no-op if disabled / SDK missing).
+    _telemetry_on = telemetry.init()
+    t0 = time.time()
+
     # Install the UI callback handle for this session
     global _cb, _cb_log
     _cb = cb if cb is not None else TerminalCallbacks(verbose=verbose)
@@ -2264,6 +2269,9 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 cleanup_temp_sessions()
                 _delete_checkpoint()
                 log.info("Session ended (continue mode) | %d messages", len(conversation_history))
+                if _telemetry_on:
+                    telemetry.record_cycle(status="continue_completed", duration_s=time.time() - t0)
+                    telemetry.shutdown()
                 _log_bedrock_session_spend(log)
                 return
             # Fall through to interactive loop if not auto
@@ -2334,6 +2342,9 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                     guidance = input("\nOperator: ").strip()
                 except (EOFError, KeyboardInterrupt):
                     log.info("Session ended (operator cancelled) | %d messages", len(conversation_history))
+                    if _telemetry_on:
+                        telemetry.record_cycle(status="cancelled", duration_s=time.time() - t0)
+                        telemetry.shutdown()
                     _log_bedrock_session_spend(log)
                     _emit("on_notice", "info", "")
                     return
@@ -2358,6 +2369,9 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             cleanup_temp_sessions()
             _delete_checkpoint()
             log.info("Session ended (auto mode) | %d messages in history", len(conversation_history))
+            if _telemetry_on:
+                telemetry.record_cycle(status="auto_completed", duration_s=time.time() - t0)
+                telemetry.shutdown()
             _log_bedrock_session_spend(log)
             if result_file:
                 last_assistant_msg = ""
@@ -2432,6 +2446,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     cleanup_temp_sessions()
     _delete_checkpoint()
     log.info("Session ended | %d messages in history", len(conversation_history))
+    if _telemetry_on:
+        telemetry.record_cycle(status="completed", duration_s=time.time() - t0)
     _log_bedrock_session_spend(log)
 
     if result_file:
@@ -2442,6 +2458,9 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 break
         with open(result_file, "w", encoding="utf-8") as f:
             f.write(last_assistant_msg)
+
+    if _telemetry_on:
+        telemetry.shutdown()
 
 
 def run_agent_single(conversation_history: list, summary_state: dict, initial_files,
