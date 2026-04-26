@@ -835,7 +835,6 @@ def _iter_stream_chunks(response):
                 continue
             payload = line[len("data: "):]
             if payload == "[DONE]":
-                return
                 try:
                     chunk = json.loads(payload)
                     if "usage" in chunk:
@@ -2216,13 +2215,12 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             except Exception as e:
                 telemetry.record_error(exception=e)
                 raise e
-            if auto:
-                  cleanup_temp_sessions()
-                  _delete_checkpoint()
-                  log.info("Session ended (continue mode) | %d messages", len(conversation_history))
-                  _log_bedrock_session_spend(log)
-                  return
-            # Fall through to interactive loop if not auto
+                if auto:
+                    cleanup_temp_sessions()
+                    _delete_checkpoint()
+                    log.info("Session ended (continue mode) | %d messages", len(conversation_history))
+                    _log_bedrock_session_spend(log)
+                    return
         else:
             _emit("on_continue_none")
             log.debug("CONTINUE: no checkpoint found, starting fresh")
@@ -2287,27 +2285,28 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             telemetry.record_error(exception=e)
             raise e
   
-        if auto:
-            _emit("on_notice", "info",
-                  f"\n{BOLD}[Agent paused — enter guidance, or press Enter to resume]{RESET}")
-            try:
-                guidance = input("\nOperator: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                log.info("Session ended (operator cancelled) | %d messages", len(conversation_history))
-                _log_bedrock_session_spend(log)
-                _emit("on_notice", "info", "")
-                return
-            if guidance:
-                if err_g:
-                    _emit("on_error", err_g)
+            if auto:
+                _emit("on_notice", "info",
+                      f"\n{BOLD}[Agent paused — enter guidance, or press Enter to resume]{RESET}")
+                try:
+                    guidance = input("\nOperator: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    log.info("Session ended (operator cancelled) | %d messages", len(conversation_history))
+                    _log_bedrock_session_spend(log)
+                    _emit("on_notice", "info", "")
+                    return
+                if guidance:
+                    expanded_g, files_g, err_g = _expand_file_refs(guidance)
+                    if err_g:
+                        _emit("on_error", err_g)
+                    else:
+                        initial_files = files_g
+                        conversation_history.append({"role": "user", "content": expanded_g})
+                        log.info("OPERATOR: %s", expanded_g)
                 else:
-                    initial_files = files_g
-                    conversation_history.append({"role": "user", "content": expanded_g})
-                    log.info("OPERATOR: %s", expanded_g)
-            else:
-                conversation_history.append({"role": "user", "content":
-                    "Continue where you left off. Finish your current cycle."})
-                log.info("OPERATOR: [resume — no guidance]")
+                    conversation_history.append({"role": "user", "content":
+                        "Continue where you left off. Finish your current cycle."})
+                    log.info("OPERATOR: [resume — no guidance]")
             
             try:
                 t0 = time.time()
