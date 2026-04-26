@@ -547,7 +547,40 @@ def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log):
             "note the issue number, then include `Closes #<number>` in the PR body. "
             "The PR was NOT created."
         )
-        
+
+    # Cycle 80 (run 183 failure mode): block `gh pr create` if any edited .py
+    # file fails py_compile. Run 183 PR #398 shipped IndentationError at the
+    # four "Session ended" sites + a double `continue` in `_iter_stream_chunks`.
+    # Cycle 65's "git checkout HEAD -- agent.py and reapply" was prose only;
+    # the builder ignored it and 93 turns + a R-0008 REQUEST_CHANGES were lost.
+    # This guard makes py_compile a hard gate at the same point as the Closes
+    # check — the only way past is to fix the syntax.
+    if re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+create\b", _precmd):
+        import py_compile
+        _syntax_errors = []
+        for _path in sorted(_cicd_edited_files):
+            if not _path.endswith(".py"):
+                continue
+            try:
+                py_compile.compile(_path, doraise=True)
+            except py_compile.PyCompileError as _e:
+                _syntax_errors.append(f"{_path}: {str(_e).strip()}")
+            except OSError:
+                pass
+        if _syntax_errors:
+            log.warning(
+                "CICD: gh pr create BLOCKED — %d edited .py file(s) fail py_compile (cycle 80)",
+                len(_syntax_errors),
+            )
+            return True, (
+                "Error: CICD gh pr create BLOCKED — edited Python files fail py_compile:\n  - "
+                + "\n  - ".join(_syntax_errors)
+                + "\nFix the syntax errors and re-verify with `python3 -m py_compile <file>` "
+                "before opening the PR. If the error keeps moving line-to-line, "
+                "`git checkout HEAD -- <file>` and reapply the change with exact "
+                "indentation (cycle 65). The PR was NOT created."
+            )
+
     return False, None
 
 
