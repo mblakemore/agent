@@ -3622,6 +3622,18 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
 def main():
     """Main entry point."""
+    # Issue #405 — bedrock credential store CLI. Handled before argparse
+    # so the ``bedrock`` subcommand group has its own parser without
+    # disturbing the existing positional ``prompt`` slot.
+    try:
+        import cli_bedrock
+        rc = cli_bedrock.maybe_dispatch(sys.argv[1:])
+        if rc is not None:
+            sys.exit(rc)
+    except SystemExit:
+        raise
+    except Exception:  # pragma: no cover - defensive; never block normal CLI
+        pass
     import argparse
     parser = argparse.ArgumentParser(description="Agent with file tools")
     parser.add_argument("-a", "--auto", action="store_true",
