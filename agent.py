@@ -3261,6 +3261,22 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             _branch_match = re.search(r'-b\s+(\S+)', _cmd)
                             if _branch_match:
                                 _cicd_branch = _branch_match.group(1)
+                        # Cycle 82 capture-fix: when builder claims an EXISTING
+                        # issue via `gh issue view N` or `gh issue edit N`, also
+                        # capture the issue number so cycle 82's nudge can fire
+                        # even on inherited/existing-issue cycles. Run 189 hit
+                        # this gap: builder used `gh issue view 397`, which
+                        # never set `_cicd_issue_number`, so cycle 82's elif
+                        # condition `and _cicd_issue_number` was always False.
+                        if (not _cicd_issue_number) and "exit=0" in result_str:
+                            _existing_match = re.search(
+                                r'^gh\s+issue\s+(?:view|edit|comment)\s+(\d+)\b',
+                                _cmd.lstrip(),
+                            )
+                            if _existing_match:
+                                _cicd_issue_number = _existing_match.group(1)
+                                log.info("CICD phase: issue #%s claimed (existing)",
+                                         _cicd_issue_number)
                         if "gh pr create" in _cmd and "exit=0" in result_str:
                             _pr_match = re.search(
                                 r'pull/(\d+)|#(\d+)', result_str
