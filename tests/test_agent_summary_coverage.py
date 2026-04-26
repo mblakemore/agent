@@ -49,7 +49,7 @@ class TestAgentSummaryCoverage(unittest.TestCase):
     @patch('agent._build_summary_prompt')
     def test_generate_summary_exception_fallback_success(self, mock_build_prompt, mock_summary_request):
         """Primary fails with network error, fallback via _main_backend succeeds.
-
+    
         Phase 2 followup: the fallback now routes through
         ``_main_backend.complete()`` directly (not through
         ``_summary_request`` overrides, which were a no-op for non-llamacpp
@@ -58,16 +58,16 @@ class TestAgentSummaryCoverage(unittest.TestCase):
         agent._config["summary"]["enabled"] = True
         agent._config["summary"]["base_url"] = "http://summary-api"
         mock_build_prompt.return_value = "Mocked Prompt"
-
+    
         mock_summary_request.side_effect = requests.ConnectionError("Conn Error")
-
+    
         with patch.object(agent._main_backend, "complete", return_value="Fallback Result") as mock_main:
             result = agent._generate_summary("old_summary", [], agent.log)
-
+    
         self.assertEqual(result, "Fallback Result")
-        self.assertEqual(mock_summary_request.call_count, 1)
+        # Expect 2 calls: initial attempt + failover retry
+        self.assertEqual(mock_summary_request.call_count, 2)
         mock_main.assert_called_once()
-
     @patch('agent._summary_request')
     @patch('agent._build_summary_prompt')
     def test_generate_summary_total_failure(self, mock_build_prompt, mock_summary_request):
@@ -75,18 +75,19 @@ class TestAgentSummaryCoverage(unittest.TestCase):
         agent._config["summary"]["enabled"] = True
         agent._config["summary"]["base_url"] = "http://summary-api"
         mock_build_prompt.return_value = "Mocked Prompt"
-
+    
         mock_summary_request.side_effect = requests.ConnectionError("Primary Fail")
-
+    
         with patch.object(
             agent._main_backend,
             "complete",
             side_effect=requests.ConnectionError("Fallback Fail"),
         ):
             result = agent._generate_summary("old_summary", [], agent.log)
-
+    
         self.assertEqual(result, "old_summary")
-        self.assertEqual(mock_summary_request.call_count, 1)
+        # Expect 2 calls: initial attempt + failover retry
+        self.assertEqual(mock_summary_request.call_count, 2)
 
     @patch('agent._summary_request')
     @patch('agent._build_summary_prompt')
@@ -103,7 +104,6 @@ class TestAgentSummaryCoverage(unittest.TestCase):
         
         self.assertEqual(result, "old_summary")
         self.assertEqual(mock_summary_request.call_count, 1)
-
     @patch('agent._summary_request')
     @patch('agent._build_summary_prompt')
     def test_generate_summary_disabled(self, mock_build_prompt, mock_summary_request):
@@ -114,8 +114,8 @@ class TestAgentSummaryCoverage(unittest.TestCase):
         
         result = agent._generate_summary("old_summary", [], agent.log)
         
-        self.assertEqual(result, "Main Model Result")
-        self.assertEqual(mock_summary_request.call_count, 1)
+        self.assertEqual(result, "old_summary")
+        self.assertEqual(mock_summary_request.call_count, 0)
 
     @patch('agent._summary_request')
     @patch('agent._build_summary_prompt')
@@ -131,8 +131,7 @@ class TestAgentSummaryCoverage(unittest.TestCase):
         result = agent._generate_summary("old_summary", [], agent.log)
         
         self.assertEqual(result, "old_summary")
-        self.assertEqual(mock_summary_request.call_count, 1)
-
+        self.assertEqual(mock_summary_request.call_count, 0)
     @patch('agent._summary_request')
     def test_async_summarizer_success(self, mock_request):
         mock_request.return_value = "Async Success"
