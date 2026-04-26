@@ -192,6 +192,14 @@ Work in the worktree. Small reviewable commits: `CICD NNN (#ISSUE): <step>`.
 
 **No-op edit detection — hard rule.** If `git commit` returns `nothing to commit, working tree clean` or `git diff` shows no changes after an edit, the target is already implemented on HEAD. Do NOT retry the same edit, do NOT re-plan the same target, do NOT rewrite the file from scratch. Within **3 turns** of the first no-op signal: close the issue (`gh issue close <N> -c "Already implemented on HEAD. <specific evidence>"`), remove the worktree + branch, return to REFLECT, pick a different target. One 60-turn spin on a no-op edit costs an entire cycle.
 
+**Whole-file rewrite is forbidden for production code (cycle 79 — run 182 destruction).** Edits to `agent.py`, `llm_backend.py`, `callbacks.py`, `tui.py`, `bedrock_api.py`, etc. MUST be **additive or in-place**. NEVER use `file({"action":"write", ...})` or `cat > agent.py <<EOF` or any heredoc that supplies the entire file contents. The destruction failure mode: the builder writes 50 lines of new content via a "write" action, the tool replaces the whole file (3500+ lines deleted), tests fail because every imported symbol is gone, builder doesn't notice, opens the PR. Run 182 / PR #396 hit this exact path — agent.py shrunk from 3594 → 293 lines and beewatcher had to manually close the PR before reviewer mistakenly merged it.
+
+**Mandatory: before ANY production-file edit, verify diff scale.** After the first edit to a production file in this cycle, run:
+```bash
+git diff --stat <file>
+```
+If `deletions > additions × 5` AND deletions exceed 100 lines, **STOP** — you've deleted more than you intended. Likely cause: `file action=write` truncated the file. Recovery: `git checkout HEAD -- <file>`, switch to `action=insert` or `action=replace` with explicit line-range, re-apply the edit additively. Do NOT push, do NOT continue, do NOT open the PR with this diff.
+
 **Silent file-write failure — hard rule.** If `git commit` returns `no changes added to commit` AND `git status` shows ONLY `.coverage` as modified (no source or test files listed as modified), your file write silently failed — the target file was NOT changed. Do NOT retry the same write command. Do NOT try to commit again. Instead: (a) verify the file content changed with `git diff tests/`, (b) switch to the `file()` tool with `action="write"` or `action="append"` which writes directly without shell expansion, (c) if using heredoc (`cat >> file << 'EOF'`), ensure the heredoc does not contain `git worktree add` strings — the worktree guard fires on the full command string including heredoc content and will return an error instead of writing the file.
 
 **Sanity check after each edit — MANDATORY, immediately.** The moment any `.py` file is written, before the next tool call that might import it (pytest, a repro script, anything), run:
