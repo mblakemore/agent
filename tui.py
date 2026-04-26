@@ -50,6 +50,37 @@ def _prompt_is_active() -> bool:
     return getattr(_prompt_active, "on", False)
 
 
+def _shorten_cwd(path: str) -> str:
+    """Shorten `path` for display in the toolbar.
+
+    1. If a top-level symlink (e.g. `/droid` → `/mnt/droid`) covers the
+       path, prefer the symlinked form — `/droid/repos/x` reads cleaner
+       than `/mnt/droid/repos/x`.
+    2. Collapse `$HOME` to `~`.
+    """
+    try:
+        candidates = []
+        for name in os.listdir("/"):
+            entry = "/" + name
+            try:
+                if not os.path.islink(entry):
+                    continue
+                target = os.path.realpath(entry)
+            except OSError:
+                continue
+            if path == target or path.startswith(target + os.sep):
+                candidates.append((entry, target))
+        if candidates:
+            entry, target = max(candidates, key=lambda et: len(et[1]))
+            path = entry + path[len(target):]
+    except OSError:
+        pass
+    home = os.path.expanduser("~")
+    if path == home or path.startswith(home + os.sep):
+        path = "~" + path[len(home):]
+    return path
+
+
 try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.completion import Completer, Completion, PathCompleter
@@ -316,12 +347,10 @@ if _AVAILABLE:
             pad = max(1, width - visible_len)
 
             # Second line: full working directory on the left, TUI key
-            # hints right-aligned.
-            full_cwd = os.getcwd()
-            home = os.path.expanduser("~")
-            if full_cwd == home or full_cwd.startswith(home + os.sep):
-                full_cwd = "~" + full_cwd[len(home):]
-            cwd_text = f" {full_cwd} "
+            # hints right-aligned. Leading `: ` distinguishes the
+            # toolbar from a bash prompt.
+            full_cwd = _shorten_cwd(os.getcwd())
+            cwd_text = f" : {full_cwd} "
             right2 = "enter submit  │  ctrl-N newline  │  ↑↓ history "
             cwd_pad = max(1, width - len(cwd_text) - len(right2))
             second = (
