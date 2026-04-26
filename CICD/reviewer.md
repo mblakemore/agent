@@ -53,6 +53,37 @@ Determine the correct test command (see builder agent.md for patterns). If red, 
 
 **CRITICAL (cycle 68 continued):** If a test fails that exists ONLY in the PR diff (i.e., `git show origin/main:tests/<filename>` returns error), it is a **PR bug → REQUEST_CHANGES**, NOT a main regression. Never file a regression issue for a test that only exists on the PR branch.
 
+## Phase 1.5 — ADOPT orphan branches (cycle 83)
+
+Before SELECT, check for `cicd/*` branches on origin without an open PR. These
+are leftovers from a prior cycle where the builder pushed but skipped step 8
+(`gh pr create`). The carve-out: reviewer may open a draft PR for each orphan
+so the queue keeps moving. This is the only authorized reviewer-as-builder
+action — it does NOT modify production code, only creates the PR record.
+
+```bash
+# Branches on origin matching cicd/*
+git ls-remote --heads origin 'cicd/*' | awk '{print $2}' | sed 's|refs/heads/||'
+# PRs already open
+gh pr list --state open --limit 100 --json headRefName --jq '.[].headRefName'
+```
+
+For each orphan branch:
+
+1. **Identify the issue.** Branch name format is `cicd/NNN-slug` or `cicd/<slug>`. If the branch has a numeric prefix (`cicd/397-symlink-fix` → 397), use that issue number. If the branch has only a slug (`cicd/fix-cd-guard`), grep the branch's commit messages for `(#NNN)` or skip the adoption (file a comment on the branch and continue).
+2. **Verify the issue exists and is OPEN.** `gh issue view <N> --json state,labels`. If state ≠ OPEN or labels lack `cicd`, skip — this branch is stale.
+3. **Generate a body file.** `cat > /tmp/pr-body-<N>.md <<EOF` with `Closes #<N>` and a one-paragraph note: `This PR was opened by the CICD reviewer to adopt branch <branch> which the builder pushed without opening a PR (cycle 83). Diff carries forward unchanged.`
+4. **Open the draft PR.** `gh pr create --draft --base main --head <branch> --title "CICD: adopt <branch> for #<N>" --body "$(cat /tmp/pr-body-<N>.md)"`. Cycle 44's `Closes #N` regex passes; cycle 80's syntax check runs.
+5. **Log it.** Append to `reviews-${BOT_ID}.md` as `| R-NNNN | <date> | <PR> | <issue> | ADOPTED | N/A | N/A | Adopted orphan branch from prior cycle |`.
+
+**Carve-out boundaries:**
+- The reviewer ONLY opens the PR. It does NOT add commits to the branch — the builder's commits ride as-is.
+- If the orphan branch's tests fail or the diff is wrong, the adoption still happens; the regular review path then issues REQUEST_CHANGES on the adopted PR (or CLOSE for destruction-class signatures).
+- If multiple orphan branches exist, adopt all of them, then SELECT picks one for full review this cycle. Others wait for next cycle.
+- If hard rule 13 is interpreted strictly ("reviewer commits may only modify `tests/**`"), this carve-out is the explicit exception: `gh pr create` is not a commit. The PR carries the builder's existing commits unchanged.
+
+If no orphan branches exist, skip directly to Phase 2.
+
 ## Phase 2 — SELECT
 
 One PR per cycle. Priority:
