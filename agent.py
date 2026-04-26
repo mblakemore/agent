@@ -2882,26 +2882,50 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 )
                 log.info("Hallucination guard: detected fabricated file read, correcting")
                 _emit("on_hallucination_stripped", "file_read")
-            elif (_cycle_persisted and _cicd_branch
+            elif (_cicd_branch and _cicd_edited_files
                   and not _cicd_pr_number and _cicd_issue_number):
-                # Cycle 82 (run 187 failure mode): branch pushed but no PR opened.
-                # Builder said "I'm done" and burned 6 generic nudges without ever
-                # running `gh pr create`. Give a hard, specific instruction.
+                # Cycle 82 (runs 187+188 failure mode): builder edited files in
+                # the worktree, ran tests, said "I'm done", but never ran the
+                # commit + push + gh pr create sequence. Run 187 hit it after
+                # `git push` succeeded; run 188 hit it before push too. Detection
+                # widened from `_cycle_persisted` to `_cicd_edited_files` so the
+                # nudge fires for both the "edits-but-no-commit" and "pushed-but-
+                # no-PR" branches of the same failure.
+                if _cycle_persisted:
+                    _missing = "PR open"
+                    _next_cmds = (
+                        f"  cat > /tmp/pr-body-{_cicd_issue_number}.md << 'EOF'\n"
+                        f"  Closes #{_cicd_issue_number}\n"
+                        f"  <one-paragraph summary of what changed>\n"
+                        f"  EOF\n"
+                        f"  gh pr create --draft --base main --head {_cicd_branch} \\\n"
+                        f"    --title 'CICD: <slug> (#{_cicd_issue_number})' \\\n"
+                        f"    --body \"$(cat /tmp/pr-body-{_cicd_issue_number}.md)\"\n"
+                    )
+                else:
+                    _missing = "commit + push + PR open"
+                    _next_cmds = (
+                        f"  cd <WORKTREE_ROOT>/{_cicd_branch.split('/', 1)[-1] if '/' in _cicd_branch else _cicd_branch}\n"
+                        f"  git add <edited files>\n"
+                        f"  git commit -m 'CICD <N> (#{_cicd_issue_number}): <what>'\n"
+                        f"  git push -u origin {_cicd_branch}\n"
+                        f"  cat > /tmp/pr-body-{_cicd_issue_number}.md << 'EOF'\n"
+                        f"  Closes #{_cicd_issue_number}\n"
+                        f"  <one-paragraph summary of what changed>\n"
+                        f"  EOF\n"
+                        f"  gh pr create --draft --base main --head {_cicd_branch} \\\n"
+                        f"    --title 'CICD: <slug> (#{_cicd_issue_number})' \\\n"
+                        f"    --body \"$(cat /tmp/pr-body-{_cicd_issue_number}.md)\"\n"
+                    )
                 nudge = (
-                    f"You pushed branch `{_cicd_branch}` but there is NO open PR for it — "
-                    f"step 8 of MANDATORY IMPLEMENTATION WORKFLOW is incomplete. "
-                    f"Open the PR NOW with this exact shape:\n"
-                    f"  cat > /tmp/pr-body-{_cicd_issue_number}.md << 'EOF'\n"
-                    f"  Closes #{_cicd_issue_number}\n"
-                    f"  <one-paragraph summary of what changed>\n"
-                    f"  EOF\n"
-                    f"  gh pr create --draft --base main --head {_cicd_branch} \\\n"
-                    f"    --title 'CICD: <slug> (#{_cicd_issue_number})' \\\n"
-                    f"    --body \"$(cat /tmp/pr-body-{_cicd_issue_number}.md)\"\n"
-                    f"Do not say you're done — branch-pushed alone is not done. "
-                    f"Run `gh pr create` as your next tool call."
+                    f"You edited files in worktree on `{_cicd_branch}` but {_missing} "
+                    f"is incomplete (step 8 of MANDATORY IMPLEMENTATION WORKFLOW). "
+                    f"Tests passing is NOT the cycle ending — the cycle ends when "
+                    f"the PR is open with `Closes #{_cicd_issue_number}`. Run these "
+                    f"commands as your next tool calls:\n{_next_cmds}"
+                    f"Do not say you're done until `gh pr create` exits 0."
                 )
-                log.info("Auto-nudge (cycle 82): branch pushed but PR missing — directing builder to gh pr create")
+                log.info("Auto-nudge (cycle 82): edits/push without PR — directing builder to %s", _missing)
             else:
                 # Generic nudge
                 nudge = (
