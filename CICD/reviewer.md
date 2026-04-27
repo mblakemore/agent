@@ -49,7 +49,13 @@ git fetch origin && git checkout main && git reset --hard origin/main
 ```
 **CRITICAL (cycle 68):** Use `git reset --hard origin/main` — NOT `git pull --ff-only`. The builder's session may leave unpushed commits on the local `main` branch (ahead of origin). `git pull --ff-only` with local ahead reports "Already up to date" but leaves the builder's unpushed (possibly failing) test on main. Always reset to `origin/main` to get the true remote state.
 
-Determine the correct test command (see builder agent.md for patterns). **If main is red (cycle 89 — run 194 cause):**
+**TIMEOUT WARNING (cycle 91 — 8 reviewer timeouts in run 197):** The full test suite (865+ tests) takes >120s and always times out. NEVER run bare `pytest` or `python3 -m pytest` — not even with `-v`, `-m "not integration"`, or other flags. Use ONLY targeted file runs:
+```bash
+python3 -m pytest tests/test_cicd_guards.py tests/test_agent_loop.py -q 2>&1 | tail -5
+```
+If those pass, main is green enough to proceed. For the PR's VERIFY step, run only the test file(s) changed in the PR diff.
+
+**If main is red (cycle 89 — run 194 cause):**
 1. Run ONE targeted test to identify the failing test name(s) — do NOT keep re-running the full suite.
 2. **Immediately** check `gh pr list --state open` — if any open PR title or branch name mentions the failing test file(s), proceed directly to SELECT and review those PRs first. They likely contain the fix; reviewing them takes priority over filing a new issue.
 3. If no open PR targets the failing tests: in ≤2 turns, file `gh issue create --label bug --label regression --label cicd --label in-progress --title "REGRESSION: <test name> failing on main" --body "..."`. Then continue to SELECT with any remaining open PRs.
@@ -127,9 +133,9 @@ Identify which test files are relevant to the PR:
 ```bash
 gh pr diff <N> --name-only
 ```
-Then pick ONE pytest invocation based on scope:
-- **Narrow scope (≤2 source files touched)**: targeted run only (e.g. `pytest tests/test_search_files*.py`). One command, one result.
-- **Broad scope (≥3 source files) or `tests/` itself changed**: full suite once.
+Then pick ONE pytest invocation based on scope — NEVER bare `pytest` (always times out):
+- **Narrow scope (≤2 test files touched)**: targeted run: `pytest tests/test_<file>.py -v`. One command, one result.
+- **Broad scope (≥3 test files) or production `.py` changed**: `pytest tests/test_<primary_file>.py tests/test_<secondary_file>.py -q` — still targeted, NOT the full suite.
 
 **Do not run the targeted suite and then the full suite as a double-check** — this is the #1 source of reviewer-session semantic loops. If the first run is green, it is green. If it has failures, compare against main baseline (same command on main) — only NEW failures block.
 
@@ -179,7 +185,7 @@ Then separately (only after ready succeeds):
 gh pr merge <N> --squash
 ```
 (On same-account setups `gh pr review --approve` fails with "Can not approve your own pull request" — skip approval entirely. The squash-merge itself is the verdict.)
-Post-merge: `git pull --ff-only origin main` then run test suite. If red → file regression issue (creator decides revert).
+Post-merge: `git pull --ff-only origin main` then run the targeted smoke check (`pytest tests/test_cicd_guards.py tests/test_agent_loop.py -q`). If red → file regression issue (creator decides revert). NEVER run bare `pytest` post-merge — it times out.
 
 **REQUEST_CHANGES** — small fixes only, do NOT rewrite the PR:
 1. **Same-account workaround (CRITICAL):** `gh pr review <N> --request-changes` will fail with `"Can not request changes on your own pull request"` on single-actor CICD setups (the same GitHub account opens the PR and runs the reviewer). Use `gh pr comment <N> --body "..."` instead — the comment carries the verdict text. Cite exact file:line or test name, state what needs to change. Do NOT silently skip the verdict if `gh pr review` fails — the formal `reviews` array stays empty either way, and a missing comment leaves the PR with zero record of the verdict (run 176 / PR #390 failure mode).
@@ -235,7 +241,7 @@ Create `reviews-${BOT_ID}.md` in CICD state directory with header table if missi
 8. **Never `--admin`** to bypass checks.
 9. **Never force-push.** Reviewer fixes are additive commits on the PR branch, never amend or rebase.
 10. **Secrets → CLOSE immediately** + file issue. No negotiating.
-11. **Post-merge smoke test mandatory.** Fetch main, run tests, confirm green.
+11. **Post-merge smoke test mandatory.** Fetch main, run `pytest tests/test_cicd_guards.py tests/test_agent_loop.py -q`, confirm green. Do NOT run bare `pytest` — it always times out (cycle 91).
 12. **When in doubt, REQUEST_CHANGES** with a precise question.
 13. **Reviewer commits may only modify `tests/**` (cycle 75).** Any diff to non-test `.py` files (`agent.py`, `llm_backend.py`, `cancel.py`, etc.) in a review commit is a scope violation. Even a "one-line fix" to production code is forbidden — production changes go through the builder path with their own plan + issue. If the builder's tests reference APIs that don't exist on main, that is a builder error: switch verdict to **CLOSE**, reopen the issue, do not fix forward. Rationale: run 142's reviewer spliced a new kwarg into `run_agent_single()` to make broken tests pass, then fabricated a pytest summary and merged an `IndentationError`-corrupted `agent.py` to main. No exceptions.
 14. **Pytest summary must be verbatim (cycle 75).** Before declaring MERGE, paste the literal final summary block from the re-run pytest (e.g. `===== 757 passed in 12.34s =====`) into the review comment. Paraphrased or invented numbers = fabrication = scope violation.
