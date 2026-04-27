@@ -192,6 +192,7 @@ def _emit(method, *args, **kwargs):
 
 
 _FILE_REF = re.compile(r"(?<!\w)@(\.{0,2}/\S+|(?![^\s@]*[@:])[A-Za-z_]\S*)")
+_EXIT_ONLY_RE = re.compile(r'^\[session:[^\]]+\]\s+exit=0\s*$')
 
 # ── Pinned instructions ───────────────────────────────────────────────
 # Content inside <pinned>...</pinned> tags in the initial prompt is
@@ -3624,9 +3625,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     # Skip empty or exit-only results (e.g. `echo >> file`,
                     # `git add`, `mkdir`) — they all hash identically and would
                     # false-positive after 3 consecutive silent commands.
-                    _EXIT_ONLY_RE = re.compile(
-                        r'^\[session:[^\]]+\]\s+exit=0\s*$'
-                    )
+                    # _EXIT_ONLY_RE is compiled at module scope.
                     _result_is_noise = (
                         not result_str.strip()
                         or bool(_EXIT_ONLY_RE.match(result_str.strip()))
