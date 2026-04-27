@@ -3529,12 +3529,13 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 log.warning("CICD: gh pr merge without PRE-MERGE CHECK — injecting reminder")
                                 conversation_history.append({
                                     "role": "user",
-                                    "content": "[SYSTEM: PRE-MERGE CHECK SKIPPED. Before merging, you MUST run "
-                                    "`gh issue view <N> --json state,labels,title,createdAt` on the linked issue "
-                                    "and verify: state is OPEN, labels include `cicd` + `in-progress`, the title "
-                                    "matches the PR's stated scope. If any check fails, do NOT merge — close the "
-                                    "PR and file a null-result instead. Run the gh issue view now, then re-attempt "
-                                    "the merge.]",
+                                    "content": "[SYSTEM: PRE-MERGE CHECK SKIPPED. You must complete these steps "
+                                    "IN ORDER before retrying gh pr merge: "
+                                    "(1) `gh issue view <N> --json state,labels,title,createdAt` — verify OPEN + cicd/in-progress labels; "
+                                    "(2) `think(...)` — confirm tests passed, metric verified, issue valid; "
+                                    "(3) `gh pr ready <N>` — promote draft to ready; "
+                                    "(4) THEN `gh pr merge <N> --squash` as a separate command. "
+                                    "Do NOT skip or combine steps. Do NOT add --delete-branch.]",
                                 })
                             # Guard: must use --squash (NOT --delete-branch — builder worktree holds branch)
                             if "--squash" not in _cmd:
