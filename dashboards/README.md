@@ -21,10 +21,31 @@ UI changes are not in source control.
 If a tweak in the UI is unavoidable (e.g. exploring panel layouts), re-export
 the dashboard with the steps below before committing anything else.
 
+### Authentication
+
+Grafana 11+ enforces fine-grained RBAC; the legacy `admin:admin` basic-auth
+account doesn't have `dashboards:write` even with `isGrafanaAdmin: true` (see
+issue #423 for the full diagnosis). The supported path is a **service account
+token** stored at `~/.config/grafana-cicd-token`:
+
+```bash
+# One-time setup (Grafana UI):
+# 1. http://localhost:3001/org/serviceaccounts → Add service account
+#    name=cicd-dashboard-bot, role=Admin
+# 2. Add token → name=cicd-bot-token → Generate token → Copy
+# 3. echo -n '<paste glsa_... token>' > ~/.config/grafana-cicd-token
+#    chmod 0600 ~/.config/grafana-cicd-token
+
+# All subsequent commands use the token:
+TOKEN=$(cat ~/.config/grafana-cicd-token)
+```
+
 ### Export from Grafana to JSON
 
 ```bash
-curl -s -u admin:admin http://localhost:3001/api/dashboards/uid/agentpy-fleet \
+TOKEN=$(cat ~/.config/grafana-cicd-token)
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://localhost:3001/api/dashboards/uid/agentpy-fleet \
   | jq '.dashboard | del(.id)' \
   > dashboards/agentpy-fleet.json
 ```
@@ -36,14 +57,21 @@ makes the dashboard URL stable, so keep that.
 ### Import (or re-import) JSON to Grafana
 
 ```bash
-curl -s -u admin:admin -X POST -H 'Content-Type: application/json' \
-  -d "{\"dashboard\": $(cat dashboards/agentpy-fleet.json), \"overwrite\": true}" \
+TOKEN=$(cat ~/.config/grafana-cicd-token)
+curl -s -H "Authorization: Bearer $TOKEN" -X POST -H 'Content-Type: application/json' \
+  -d "$(jq '{dashboard: ., overwrite: true}' dashboards/agentpy-fleet.json)" \
   http://localhost:3001/api/dashboards/db
 ```
 
 A successful import returns `{"status":"success", "uid":"agentpy-fleet", ...}`.
 The `overwrite: true` flag lets the import bump the dashboard's version even
 when the UID already exists.
+
+For convenience, `scripts/import_dashboard.sh` wraps this idiom:
+
+```bash
+scripts/import_dashboard.sh dashboards/agentpy-fleet.json
+```
 
 ### Verify panels query valid PromQL
 
