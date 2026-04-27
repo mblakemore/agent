@@ -500,7 +500,7 @@ def _is_read_only_command(cmd):
         return True
     return not any(kw in cmd for kw in _WRITE_KEYWORDS)
 
-def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log, is_cicd_builder=True):
+def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log, is_cicd_builder=True, is_cicd_reviewer=False):
     """
     Returns (is_blocked, error_message).
     If is_blocked is True, the tool should not be executed.
@@ -546,8 +546,10 @@ def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log, is_ci
 
     _precmd = func_args.get("command", "") if isinstance(func_args, dict) else ""
     
-    # PRE-MERGE CHECK
-    if (re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+merge\b", _precmd)
+    # PRE-MERGE CHECK — gated on CICD sessions only (issue #455: don't fire
+    # for non-CICD repos that merge PRs without linked issues).
+    if ((is_cicd_builder or is_cicd_reviewer)
+            and re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+merge\b", _precmd)
             and not cicd_issue_view_called):
         log.warning("CICD: gh pr merge BLOCKED — PRE-MERGE CHECK required (cycle 24)")
         return True, (
@@ -594,7 +596,10 @@ def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log, is_ci
     # builder reverted as `42a1dac`, then hit hard-cap with no PR opened. 5
     # turns + the entire cycle were wasted. Make it a hard block at the same
     # point as the other CICD pre-checks.
-    if re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)git\s+push\b[^&;|]*\borigin\s+main\b", _precmd):
+    # cycle 81 — gated on CICD sessions only (issue #455: non-CICD repos may
+    # legitimately push directly to main).
+    if ((is_cicd_builder or is_cicd_reviewer)
+            and re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)git\s+push\b[^&;|]*\borigin\s+main\b", _precmd)):
         log.warning("CICD: git push origin main BLOCKED — must use feature branch (cycle 81)")
         return True, (
             "Error: CICD `git push origin main` BLOCKED — direct pushes to main "
@@ -3222,7 +3227,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     # `gh issue view`, block execution (the merge is irreversible
                     # once it runs; post-hoc reminders are too late). Return a
                     # synthetic error; next turn the reviewer runs `gh issue view`,
-                    _cicd_blocked, cicd_error = _validate_tool_call(func_name, func_args, _cicd_issue_view_called, log, _is_cicd_builder)
+                    _cicd_blocked, cicd_error = _validate_tool_call(func_name, func_args, _cicd_issue_view_called, log, _is_cicd_builder, _is_reviewer_role)
                     if _cicd_blocked:
                         result_str = cicd_error
                     elif func_name not in MAP_FN:
