@@ -60,7 +60,7 @@ class TestAgentCICDGuardrails(unittest.TestCase):
         mock_exec_command = MagicMock(return_value="Created pull request #456\nexit=0")
         mock_map_fn.__getitem__.side_effect = lambda key: mock_exec_command if key == "exec_command" else None
 
-        history = []
+        history = [{"role": "system", "content": "CICD Improvement Loop — Builder"}]
         agent.run_agent_single(
             history,
             self.summary_state,
@@ -124,7 +124,7 @@ class TestAgentCICDGuardrails(unittest.TestCase):
         mock_exec_command = MagicMock(return_value="Created pull request #456\nexit=0")
         mock_map_fn.__getitem__.side_effect = lambda key: mock_exec_command if key == "exec_command" else None
 
-        history = []
+        history = [{"role": "system", "content": "CICD Improvement Loop — Builder"}]
         agent.run_agent_single(
             history,
             self.summary_state,
