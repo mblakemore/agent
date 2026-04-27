@@ -147,7 +147,7 @@ def _read_byte(timeout):
             except OSError:
                 pass
         return None
-    except (io.UnsupportedOperation, ValueError, select.error):
+    except (io.UnsupportedOperation, ValueError, select.error, TypeError):
         return None
 
 
