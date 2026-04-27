@@ -310,3 +310,70 @@ class TestDisabledNoOps(_BaseTelemetryTest):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     unittest.main(verbosity=2)
+
+@unittest.skipUnless(
+    importlib.util.find_spec("opentelemetry") is not None,
+    "opentelemetry not installed in this interpreter",
+)
+class TestTelemetryErrorHandling(_BaseTelemetryTest):
+    def test_record_cycle_handles_exception(self) -> None:
+        """Verify record_cycle does not crash when OTel raises."""
+        os.environ["AGENTPY_TELEMETRY"] = "1"
+        import telemetry
+        telemetry.init()
+        
+        with mock.patch.object(telemetry._cycles, "add", side_effect=Exception("OTel Fail")):
+            # Should not raise
+            telemetry.record_cycle("completed", 1.0)
+
+    def test_record_tokens_handles_exception(self) -> None:
+        """Verify record_tokens does not crash when OTel raises."""
+        os.environ["AGENTPY_TELEMETRY"] = "1"
+        import telemetry
+        telemetry.init()
+        
+        with mock.patch.object(telemetry._tokens, "add", side_effect=Exception("OTel Fail")):
+            # Should not raise
+            telemetry.record_tokens("sonnet", "input", 100)
+
+    def test_record_error_handles_exception(self) -> None:
+        """Verify record_error does not crash when OTel raises."""
+        os.environ["AGENTPY_TELEMETRY"] = "1"
+        import telemetry
+        telemetry.init()
+        
+        with mock.patch.object(telemetry._errors, "add", side_effect=Exception("OTel Fail")):
+            # Should not raise
+            telemetry.record_error("ValueError")
+
+    def test_record_turn_handles_exception(self) -> None:
+        """Verify record_turn does not crash when OTel raises."""
+        os.environ["AGENTPY_TELEMETRY"] = "1"
+        os.environ["AGENTPY_TELEMETRY_VERBOSE"] = "1"
+        import telemetry
+        telemetry.init()
+        
+        with mock.patch.object(telemetry._turns, "add", side_effect=Exception("OTel Fail")):
+            # Should not raise
+            telemetry.record_turn("assistant", 1.0, 1, 10, 10, "sonnet")
+
+    def test_shutdown_handles_exception(self) -> None:
+        """Verify shutdown does not crash when OTel raises."""
+        os.environ["AGENTPY_TELEMETRY"] = "1"
+        import telemetry
+        telemetry.init()
+        
+
+    def test_record_cycle_duration_handles_exception(self) -> None:
+        """Verify record_cycle handles exception when recording duration."""
+        os.environ["AGENTPY_TELEMETRY"] = "1"
+        import telemetry
+        telemetry.init()
+        
+        # _cycles.add must succeed to reach the duration record call
+        with mock.patch.object(telemetry._cycle_duration, "record", side_effect=Exception("OTel Fail")):
+            # Should not raise
+            telemetry.record_cycle("completed", 1.0)
+        with mock.patch.object(telemetry._provider, "shutdown", side_effect=Exception("OTel Fail")):
+            # Should not raise
+            telemetry.shutdown()
