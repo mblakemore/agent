@@ -152,3 +152,61 @@ def test_cmd_prune_yes(mock_store):
     assert len(store["entries"]) == 1
     assert store["entries"][0]["name"] == "fresh"
     mock_write.assert_called()
+
+def test_cmd_add_value_error(mock_store):
+    store, _ = mock_store
+    args = MagicMock()
+    with patch("bedrock_store.add_entry", side_effect=ValueError("Invalid name")):
+        result = cli_bedrock.cmd_add(args)
+        assert result == 1
+
+def test_cmd_rm_not_found(mock_store):
+    store, _ = mock_store
+    store["entries"] = []
+    args = MagicMock()
+    args.name = "missing"
+    args.yes = True
+    result = cli_bedrock.cmd_rm(args)
+    assert result == 1
+
+def test_cmd_retest_missing_args(mock_store):
+    store, _ = mock_store
+    args = MagicMock()
+    args.name = None
+    args.all_entries = False
+    result = cli_bedrock.cmd_retest(args)
+    assert result == 1
+
+def test_cmd_retest_not_found(mock_store):
+    store, _ = mock_store
+    store["entries"] = []
+    args = MagicMock()
+    args.name = "missing"
+    args.all_entries = False
+    result = cli_bedrock.cmd_retest(args)
+    assert result == 1
+
+def test_cmd_prune_no_victims(mock_store):
+    store, _ = mock_store
+    store["entries"] = []
+    args = MagicMock()
+    args.yes = True
+    with patch("bedrock_store.is_stale", return_value=False):
+        result = cli_bedrock.cmd_prune(args)
+        assert result == 0
+
+def test_cmd_prune_no_confirm(mock_store):
+    store, _ = mock_store
+    store["entries"] = [{"name": "stale"}]
+    args = MagicMock()
+    args.yes = False
+    with patch("bedrock_store.is_stale", return_value=True), \
+         patch("builtins.input", return_value="n"):
+        result = cli_bedrock.cmd_prune(args)
+        assert result == 1
+
+def test_maybe_dispatch_bedrock_success():
+    with patch("cli_bedrock.run", return_value=0) as mock_run:
+        result = cli_bedrock.maybe_dispatch(["bedrock", "list"])
+        assert result == 0
+        mock_run.assert_called_once_with(["list"])
