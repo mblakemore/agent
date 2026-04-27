@@ -17,7 +17,7 @@ def test_validate_tool_call_reads_pr_body_success():
             f_real.write("Closes #324\n")
     try:
         cmd = f'gh pr create --body "$(cat {fname})"'
-        blocked, msg = agent._validate_tool_call("exec_command", {"command": cmd}, False, log)
+        blocked, msg = agent._validate_tool_call("exec_command", {"command": cmd}, False, log, is_cicd_builder=True)
         assert not blocked, f"Tool call was blocked: {msg}"
     finally:
         if os.path.exists("/tmp/pr-body-324.md"):

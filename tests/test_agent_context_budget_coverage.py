@@ -109,7 +109,7 @@ def test_validate_tool_call_reads_pr_body_file(tmp_path):
         blocked, msg = agent._validate_tool_call(
             "exec_command",
             {"command": f'gh pr create --body "$(cat {filename})"'},
-            False, log
+            False, log, is_cicd_builder=True
         )
         # Should not be blocked because the file exists and contains Closes #324
         assert blocked is False
