@@ -3621,17 +3621,26 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
                     # Semantic result-loop detection: same tool returning same
                     # result despite different arguments.
-                    _res_hash = hashlib.md5(
-                        result_str[:200].encode()
-                    ).hexdigest()[:8]
-                    _tool_result_key = (func_name, _res_hash)
-                    _recent_tool_results.append(_tool_result_key)
-                    if len(_recent_tool_results) > _RESULT_LOOP_WINDOW:
-                        _recent_tool_results.pop(0)
-                    _same_result_count = sum(
-                        1 for k in _recent_tool_results[-6:]
-                        if k == _tool_result_key
-                    )
+                    # Skip empty results for exec_command to avoid false positives
+                    # on commands that naturally produce no output.
+                    if func_name == "exec_command" and not result_str.strip():
+                        _tool_result_key = None
+                    else:
+                        _res_hash = hashlib.md5(
+                            result_str[:200].encode()
+                        ).hexdigest()[:8]
+                        _tool_result_key = (func_name, _res_hash)
+
+                    if _tool_result_key:
+                        _recent_tool_results.append(_tool_result_key)
+                        if len(_recent_tool_results) > _RESULT_LOOP_WINDOW:
+                            _recent_tool_results.pop(0)
+                        _same_result_count = sum(
+                            1 for k in _recent_tool_results[-6:]
+                            if k == _tool_result_key
+                        )
+                    else:
+                        _same_result_count = 0
                     if _same_result_count >= _RESULT_LOOP_THRESHOLD:
                         log.warning(
                             "Semantic result loop: %s returned same result %d times",
