@@ -335,6 +335,8 @@ python3 -m pytest tests/test_<your_file>.py --cov=<module> --cov-report=term-mis
 ```
 If the coverage target is `tools/<module>.py`, the `--cov` arg is `tools.<module>` (no `.py`).
 
+**Coverage plateau rule (cycle 100 — run 209 null cause).** If coverage is unchanged across 3 consecutive pytest-cov runs and all tests pass, **stop iterating and proceed immediately to TRACK** — the plateau IS the done condition. Do NOT write more tests hoping for a breakthrough. A gain of any amount (e.g. 37%→47%) is a valid result; open the PR with what you have. The null-result path is only for zero improvement, not plateau improvement.
+
 **After EVERY pytest run (pass or fail): append current status to the improvement plan.** This prevents the async summarizer from replaying a stale error on the next turn. Immediately after each `python3 -m pytest` completes, run:
 ```bash
 echo "## Test Status ($(date +%H:%M)): X passed / Y failed — [error type, e.g. AssertionError not SyntaxError]. Coverage: Z%." >> <CICD_STATE>/improvements/NNN-slug.md
