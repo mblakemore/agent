@@ -38,8 +38,24 @@ def extract_targets(dashboard: dict) -> list[tuple[str, str]]:
     return out
 
 
+_TEMPLATE_VAR_DEFAULTS = {
+    # Grafana template variables aren't valid PromQL — substitute the
+    # `includeAll` regex so verification queries match every series.
+    # Issue #421: the agentpy-fleet dashboard's `$instance` var defaults to
+    # `.+` so the verify script needs the same substitution.
+    "$instance": ".+",
+}
+
+
+def _resolve_template_vars(expr: str) -> str:
+    for token, replacement in _TEMPLATE_VAR_DEFAULTS.items():
+        expr = expr.replace(token, replacement)
+    return expr
+
+
 def query_prom(prom_url: str, expr: str, timeout: float = 5.0) -> tuple[int, int, str]:
     """Return (http_status, series_count, error_message)."""
+    expr = _resolve_template_vars(expr)
     qs = urllib.parse.urlencode({"query": expr})
     url = f"{prom_url.rstrip('/')}/api/v1/query?{qs}"
     try:

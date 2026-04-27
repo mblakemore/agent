@@ -240,6 +240,52 @@ def test_record_error_fires_on_request_exception(mock_llm, mock_record_error):
     assert "_FakeTimeout" in kinds, f"expected '_FakeTimeout' in {kinds}"
 
 
+@patch('agent._llm_request')
+def test_request_body_sets_stream_options_include_usage(mock_llm):
+    """Issue #420 regression: the JSON request body must always include
+    ``stream_options.include_usage = True`` so the llamacpp/gemma path emits
+    a final usage chunk and ``agentpy_tokens_total`` populates.
+    """
+    mock_llm.return_value = _stream_with_usage()
+
+    agent.run_agent_single([], {"text": "", "up_to": 0}, [], _MM())
+
+    # Inspect the JSON body passed to the streaming call.
+    assert mock_llm.call_count >= 1, "stream_chat was never called"
+    call = mock_llm.call_args_list[0]
+    body = call.kwargs.get("json") or (call.args[1] if len(call.args) >= 2 else None)
+    assert isinstance(body, dict), f"expected dict request body, got {type(body)}"
+    assert body.get("stream_options", {}).get("include_usage") is True, (
+        f"request body missing stream_options.include_usage: {body!r}"
+    )
+
+
+@patch('agent.telemetry.record_tokens')
+@patch('agent._llm_request')
+def test_record_tokens_fires_when_llamacpp_chunk_carries_usage(
+    mock_llm, mock_record_tokens
+):
+    """Issue #420 regression: when the llamacpp backend returns a final
+    usage chunk (because the request set stream_options.include_usage), the
+    agent's chunk loop must record both prompt and completion token counts.
+    """
+    mock_llm.return_value = _stream_with_usage(prompt_tokens=100, completion_tokens=50)
+
+    agent.run_agent_single([], {"text": "", "up_to": 0}, [], _MM())
+
+    # At least one prompt=100 and one completion=50 call must have fired.
+    matched_prompt = [
+        c for c in mock_record_tokens.call_args_list
+        if (len(c.args) >= 3 and c.args[1] == "prompt" and c.args[2] == 100)
+    ]
+    matched_completion = [
+        c for c in mock_record_tokens.call_args_list
+        if (len(c.args) >= 3 and c.args[1] == "completion" and c.args[2] == 50)
+    ]
+    assert matched_prompt, f"no prompt=100 call in {mock_record_tokens.call_args_list}"
+    assert matched_completion, f"no completion=50 call in {mock_record_tokens.call_args_list}"
+
+
 @patch('agent.telemetry.record_tokens')
 def test_record_tokens_uses_input_output_aliases(mock_record_tokens):
     """Bedrock-style usage with input_tokens/output_tokens aliases also records."""

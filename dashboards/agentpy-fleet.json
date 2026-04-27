@@ -53,7 +53,7 @@
       },
       "targets": [
         {
-          "expr": "sum(agentpy_up == 1) OR on() vector(0)",
+          "expr": "sum(agentpy_up{instance=~\"$instance\"} == 1) OR on() vector(0)",
           "instant": true,
           "refId": "A"
         }
@@ -85,7 +85,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(agentpy_cycles_total[1h]))",
+          "expr": "sum(increase(agentpy_cycles_total{instance=~\"$instance\"}[1h]))",
           "instant": true,
           "refId": "A"
         }
@@ -138,7 +138,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(agentpy_errors_total[1h]))",
+          "expr": "sum(increase(agentpy_errors_total{instance=~\"$instance\"}[1h]))",
           "instant": true,
           "refId": "A"
         }
@@ -175,7 +175,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(agentpy_tokens_total[1h]))",
+          "expr": "sum(increase(agentpy_tokens_total{instance=~\"$instance\"}[1h]))",
           "instant": true,
           "refId": "A"
         }
@@ -216,7 +216,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (status) (rate(agentpy_cycles_total[5m])) * 60",
+          "expr": "sum by (status) (rate(agentpy_cycles_total{instance=~\"$instance\"}[5m])) * 60",
           "legendFormat": "{{status}}",
           "refId": "A"
         }
@@ -257,17 +257,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(agentpy_cycle_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(agentpy_cycle_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(agentpy_cycle_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(agentpy_cycle_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(agentpy_cycle_duration_seconds_bucket[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(agentpy_cycle_duration_seconds_bucket{instance=~\"$instance\"}[5m])))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -308,7 +308,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (model) (rate(agentpy_tokens_total[5m])) * 60",
+          "expr": "sum by (model) (rate(agentpy_tokens_total{instance=~\"$instance\"}[5m])) * 60",
           "legendFormat": "{{model}}",
           "refId": "A"
         }
@@ -349,7 +349,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (kind) (rate(agentpy_errors_total[5m])) * 60",
+          "expr": "sum by (kind) (rate(agentpy_errors_total{instance=~\"$instance\"}[5m])) * 60",
           "legendFormat": "{{kind}}",
           "refId": "A"
         }
@@ -444,28 +444,28 @@
       "id": 9,
       "targets": [
         {
-          "expr": "agentpy_up",
+          "expr": "agentpy_up{instance=~\"$instance\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "up",
           "refId": "A"
         },
         {
-          "expr": "time() - agentpy_last_seen_timestamp_seconds",
+          "expr": "time() - agentpy_last_seen_timestamp_seconds{instance=~\"$instance\"}",
           "format": "table",
           "instant": true,
           "legendFormat": "age",
           "refId": "B"
         },
         {
-          "expr": "sum by (instance) (increase(agentpy_cycles_total[24h]))",
+          "expr": "sum by (instance) (increase(agentpy_cycles_total{instance=~\"$instance\"}[24h]))",
           "format": "table",
           "instant": true,
           "legendFormat": "cycles_24h",
           "refId": "C"
         },
         {
-          "expr": "sum by (instance) (increase(agentpy_errors_total[24h]))",
+          "expr": "sum by (instance) (increase(agentpy_errors_total{instance=~\"$instance\"}[24h]))",
           "format": "table",
           "instant": true,
           "legendFormat": "errors_24h",
@@ -537,7 +537,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (role) (rate(agentpy_turns_total[1m]))",
+          "expr": "sum by (role) (rate(agentpy_turns_total{instance=~\"$instance\"}[1m]))",
           "legendFormat": "{{role}}",
           "refId": "A"
         }
@@ -578,17 +578,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, sum(rate(agentpy_turn_duration_seconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.50, sum(rate(agentpy_turn_duration_seconds_bucket{instance=~\"$instance\"}[5m])) by (le))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, sum(rate(agentpy_turn_duration_seconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.95, sum(rate(agentpy_turn_duration_seconds_bucket{instance=~\"$instance\"}[5m])) by (le))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, sum(rate(agentpy_turn_duration_seconds_bucket[5m])) by (le))",
+          "expr": "histogram_quantile(0.99, sum(rate(agentpy_turn_duration_seconds_bucket{instance=~\"$instance\"}[5m])) by (le))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -644,7 +644,7 @@
       "pluginVersion": "11.6.0",
       "targets": [
         {
-          "expr": "sum by (le) (rate(agentpy_turn_tool_calls_bucket[5m]))",
+          "expr": "sum by (le) (rate(agentpy_turn_tool_calls_bucket{instance=~\"$instance\"}[5m]))",
           "format": "heatmap",
           "legendFormat": "{{le}}",
           "refId": "A"
@@ -686,7 +686,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (model, kind) (rate(agentpy_turn_tokens_sum[1m]))",
+          "expr": "sum by (model, kind) (rate(agentpy_turn_tokens_sum{instance=~\"$instance\"}[1m]))",
           "legendFormat": "{{model}} / {{kind}}",
           "refId": "A"
         }
@@ -702,7 +702,36 @@
     "custom"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "instance",
+        "label": "instance",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "label_values(agentpy_up, instance)",
+          "refId": "Prometheus-instance-Variable-Query"
+        },
+        "definition": "label_values(agentpy_up, instance)",
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "hide": 0,
+        "skipUrlSync": false,
+        "options": []
+      }
+    ]
   },
   "time": {
     "from": "now-3h",
@@ -710,8 +739,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "agent.py — fleet",
+  "title": "agent.py \u2014 fleet",
   "uid": "agentpy-fleet",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

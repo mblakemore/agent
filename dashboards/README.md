@@ -66,3 +66,30 @@ exits non-zero.
 3. Run `verify_dashboard.py` to confirm the new query is at least
    well-formed.
 4. `git add dashboards/agentpy-fleet.json && git commit`.
+
+## Template variables
+
+The `agentpy-fleet` dashboard exposes a single `instance` template
+variable so operators can drill into one running agent at a time when
+several are emitting metrics concurrently (CICD builder + reviewer +
+beewatcher + ad-hoc sessions).
+
+- **Source:** `label_values(agentpy_up, instance)` — the dropdown is
+  populated from whichever instances are currently `agentpy_up == 1`.
+  `refresh: 2` ("On Time Range Change") keeps the list current without
+  manual refresh.
+- **Default:** `All`, with `allValue = ".+"`. PromQL panels are wired
+  with `{instance=~"$instance"}`, so the default behaviour matches every
+  series and the dashboard looks identical to its pre-variable form.
+- **URL override:** append `?var-instance=<name>` to pin the dashboard
+  to a single instance, e.g.
+  `http://localhost:3001/d/agentpy-fleet?var-instance=aibot-2521793`.
+  Multi-select also works via repeated parameters
+  (`?var-instance=a&var-instance=b`).
+
+Every panel's PromQL must include `{instance=~"$instance"}` (merged
+into any existing label-matcher block) so the variable actually filters
+the panel — `tests/test_dashboard.py::test_every_panel_filters_by_instance_var`
+enforces this. `scripts/verify_dashboard.py` substitutes `$instance`
+with `.+` before sending each query to Prometheus, since the literal
+`$instance` token is not valid PromQL.

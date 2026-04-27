@@ -155,3 +155,90 @@ def test_verify_script_runs(fake_prom: str) -> None:
     # Each panel target should report OK against the fake Prom
     assert "OK" in result.stdout
     assert "FAIL" not in result.stdout
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Issue #421 — instance template variable + per-panel filter
+# ──────────────────────────────────────────────────────────────────────
+
+import re
+
+
+def _walk_targets(dashboard: dict):
+    """Yield every (panel_title, expr) pair from the dashboard, including
+    panels nested under rows."""
+    for panel in dashboard.get("panels", []) or []:
+        title = panel.get("title", "<untitled>")
+        for tgt in panel.get("targets", []) or []:
+            expr = tgt.get("expr")
+            if expr:
+                yield title, expr
+        for sub in panel.get("panels", []) or []:
+            sub_title = sub.get("title", "<untitled>")
+            for tgt in sub.get("targets", []) or []:
+                expr = tgt.get("expr")
+                if expr:
+                    yield sub_title, expr
+
+
+def test_dashboard_has_instance_template_variable(dashboard: dict) -> None:
+    """Issue #421 AC1: the dashboard exposes an `instance` query template var.
+
+    The variable must drive PromQL via $instance and default to "all
+    instances" so existing URLs without ?var-instance= keep working.
+    """
+    templating = dashboard.get("templating", {})
+    var_list = templating.get("list", [])
+    assert isinstance(var_list, list) and var_list, (
+        "templating.list is empty — instance variable not defined"
+    )
+    by_name = {v.get("name"): v for v in var_list}
+    assert "instance" in by_name, (
+        f"no template variable named 'instance' (have {list(by_name)})"
+    )
+    var = by_name["instance"]
+    assert var.get("type") == "query", f"variable type must be 'query', got {var.get('type')}"
+    # Either dict-shaped query or legacy string form is acceptable.
+    q = var.get("query")
+    if isinstance(q, dict):
+        q_text = q.get("query", "")
+    else:
+        q_text = q or ""
+    assert "label_values" in q_text and "agentpy_up" in q_text and "instance" in q_text, (
+        f"variable query should label_values agentpy_up by instance, got {q_text!r}"
+    )
+    assert var.get("multi") is True, "instance var should support multi-select"
+    assert var.get("includeAll") is True, "instance var should expose an All option"
+    assert var.get("allValue") == ".+", (
+        "instance var allValue should be the regex '.+' so PromQL `=~\"$instance\"` "
+        "matches every series when 'All' is selected"
+    )
+
+
+def test_every_panel_filters_by_instance_var(dashboard: dict) -> None:
+    """Issue #421 AC2: every PromQL expr referencing an agentpy_* metric
+    must include the `instance=~"$instance"` matcher so the dropdown
+    actually filters the panel.
+    """
+    metric_re = re.compile(r"agentpy_[A-Za-z0-9_]+")
+    # Match `agentpy_<name>{...instance=~"$instance"...}` (may have other labels).
+    filter_re = re.compile(
+        r'agentpy_[A-Za-z0-9_]+\s*\{[^}]*instance\s*=~\s*"\$instance"[^}]*\}'
+    )
+    failures: list[str] = []
+    for title, expr in _walk_targets(dashboard):
+        if not metric_re.search(expr):
+            continue  # skip panels that don't query an agentpy_* metric
+        # Every distinct agentpy_* metric reference in this expr must carry
+        # the instance filter.
+        # Simpler check: each agentpy_* reference must be immediately followed
+        # by a `{...}` containing `instance=~"$instance"`.
+        for m in metric_re.finditer(expr):
+            metric_start = m.start()
+            tail = expr[metric_start:]
+            if not filter_re.match(tail):
+                failures.append(f"[{title}] missing instance filter in: {expr!r}")
+                break
+    assert not failures, (
+        "panels without instance-var filter:\n  " + "\n  ".join(failures)
+    )
