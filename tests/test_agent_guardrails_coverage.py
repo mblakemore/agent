@@ -97,10 +97,14 @@ def test_cicd_pr_capture_and_trailer_warning(mock_config, mock_llm, mock_emit):
     mock_llm.side_effect = [resp1, resp2]
 
     with patch('tools.exec_command.fn', return_value="pull/12345"):
-        try:
-            run_agent_interactive(initial_prompt="Create PR", auto=True)
-        except (StopIteration, Exception):
-            pass
+        with patch('agent._expand_file_refs') as mock_expand:
+            # Inject builder context to trigger guardrail
+            mock_expand.return_value = ("CICD Improvement Loop — Builder: Create PR", [], None)
+            
+            try:
+                run_agent_interactive(initial_prompt="Create PR", auto=True)
+            except (StopIteration, Exception):
+                pass
         
         # Verify a second request was made
         assert mock_llm.call_count >= 2, "Agent did not make a second LLM request after PR creation"
@@ -114,9 +118,6 @@ def test_cicd_pr_capture_and_trailer_warning(mock_config, mock_llm, mock_emit):
                 found_warning = True
                 break
         
-        if not found_warning:
-            print(f"DEBUG: Messages in Turn 2: {messages}")
-            
         assert found_warning, "Warning for missing 'Closes #N' trailer was not sent to LLM as a tool result"
 
 @patch('agent._emit')
@@ -142,10 +143,13 @@ def test_cicd_pr_capture_success(mock_config, mock_llm, mock_emit):
     mock_llm.side_effect = [resp1, resp2]
 
     with patch('tools.exec_command.fn', return_value="pull/54321"):
-        try:
-            run_agent_interactive(initial_prompt="Create PR", auto=True)
-        except (StopIteration, Exception):
-            pass
+        # For consistency, also inject builder context here since the guardrail checks it
+        with patch('agent._expand_file_refs') as mock_expand:
+            mock_expand.return_value = ("CICD Improvement Loop — Builder: Create PR", [], None)
+            try:
+                run_agent_interactive(initial_prompt="Create PR", auto=True)
+            except (StopIteration, Exception):
+                pass
         
         # Verify a second request was made
         assert mock_llm.call_count >= 2, "Agent did not make a second LLM request after PR creation"
