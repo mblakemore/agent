@@ -3492,7 +3492,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                         l == "cicd" or l.startswith("in-progress") or l.startswith("cicd-cycle-")
                                         for l in _lnames
                                     )
-                                    if _istate.upper() == "OPEN" and _has_valid_labels:
+                                    if "state" not in _issue_data:
+                                        # state field absent → not a PRE-MERGE CHECK call
+                                        # (e.g. `gh issue view N --json body`); skip silently.
+                                        pass
+                                    elif _istate.upper() == "OPEN" and _has_valid_labels:
                                         _premerge_ok = True
                                     else:
                                         log.warning(
