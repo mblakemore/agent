@@ -61,6 +61,8 @@ class TestAgentCICDGuardrails(unittest.TestCase):
         mock_map_fn.__getitem__.side_effect = lambda key: mock_exec_command if key == "exec_command" else None
 
         history = []
+        # Inject builder context into history to satisfy _is_cicd_builder detection
+        history.insert(0, {"role": "system", "content": "CICD Improvement Loop — Builder"})
         agent.run_agent_single(
             history,
             self.summary_state,
