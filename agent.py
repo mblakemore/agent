@@ -3621,17 +3621,28 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
                     # Semantic result-loop detection: same tool returning same
                     # result despite different arguments.
-                    _res_hash = hashlib.md5(
-                        result_str[:200].encode()
-                    ).hexdigest()[:8]
-                    _tool_result_key = (func_name, _res_hash)
-                    _recent_tool_results.append(_tool_result_key)
-                    if len(_recent_tool_results) > _RESULT_LOOP_WINDOW:
-                        _recent_tool_results.pop(0)
+                    # Skip empty or exit-only results (e.g. `echo >> file`,
+                    # `git add`, `mkdir`) — they all hash identically and would
+                    # false-positive after 3 consecutive silent commands.
+                    _EXIT_ONLY_RE = re.compile(
+                        r'^\[session:[^\]]+\]\s+exit=0\s*$'
+                    )
+                    _result_is_noise = (
+                        not result_str.strip()
+                        or bool(_EXIT_ONLY_RE.match(result_str.strip()))
+                    )
+                    if not _result_is_noise:
+                        _res_hash = hashlib.md5(
+                            result_str[:200].encode()
+                        ).hexdigest()[:8]
+                        _tool_result_key = (func_name, _res_hash)
+                        _recent_tool_results.append(_tool_result_key)
+                        if len(_recent_tool_results) > _RESULT_LOOP_WINDOW:
+                            _recent_tool_results.pop(0)
                     _same_result_count = sum(
                         1 for k in _recent_tool_results[-6:]
                         if k == _tool_result_key
-                    )
+                    ) if not _result_is_noise else 0
                     if _same_result_count >= _RESULT_LOOP_THRESHOLD:
                         log.warning(
                             "Semantic result loop: %s returned same result %d times",
