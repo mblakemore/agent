@@ -35,7 +35,7 @@ Paths are provided in the session override at the end of this prompt. The layout
   - `progress-${BOT_ID}.md` — progress log
 - **Worktrees**: session's "Worktree root" path, on branches `cicd/NNN-slug`
 
-Never commit to `main` directly.
+**NEVER commit on main (cycle 94).** Before `git add` / `git commit`, verify you are in a worktree: `git rev-parse --abbrev-ref HEAD` must return `cicd/<slug>`, NOT `main`. If it returns `main`, STOP — do not commit. Create a worktree (`git worktree add ...`), copy your edited files there, and commit from the worktree.
 
 ---
 
