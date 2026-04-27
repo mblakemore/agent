@@ -501,7 +501,7 @@ def _is_read_only_command(cmd):
         return True
     return not any(kw in cmd for kw in _WRITE_KEYWORDS)
 
-def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log, is_cicd_builder=True, is_cicd_reviewer=False):
+def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log, is_cicd_builder=False, is_cicd_reviewer=False):
     """
     Returns (is_blocked, error_message).
     If is_blocked is True, the tool should not be executed.

@@ -9,7 +9,7 @@ log = logging.getLogger(__name__)
 def test_validate_tool_call_pr_body_oserror():
     # Targets lines 332-333: except OSError: pass
     cmd = 'gh pr create --body "$(cat /tmp/pr-body-99999.md)"'
-    blocked, msg = agent._validate_tool_call("exec_command", {"command": cmd}, False, log)
+    blocked, msg = agent._validate_tool_call("exec_command", {"command": cmd}, False, log, is_cicd_builder=True)
     # OSError caught and passed — guard falls through to check Closes #N in _precmd itself
     # Since there's no Closes #N in the command string, it should be blocked.
     assert blocked
@@ -44,7 +44,7 @@ def test_validate_tool_call_reads_pr_body_success(tmp_path):
     
     try:
         cmd = f'gh pr create --body "$(cat {tmp_dest})"'
-        blocked, msg = agent._validate_tool_call("exec_command", {"command": cmd}, False, log)
+        blocked, msg = agent._validate_tool_call("exec_command", {"command": cmd}, False, log, is_cicd_builder=True)
         assert not blocked
     finally:
         if os.path.exists(tmp_dest):
