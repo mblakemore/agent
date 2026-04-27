@@ -129,3 +129,134 @@ def test_shutdown_called_at_session_end(
         agent.run_agent_interactive(tui=False)
 
     assert mock_shutdown.call_count == 1
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Issue #401 — token / error / verbose-turn wiring inside run_agent_single
+# ──────────────────────────────────────────────────────────────────────
+
+import json
+from unittest.mock import MagicMock as _MM
+
+
+def _stream_with_usage(prompt_tokens=11, completion_tokens=22, model="test-model"):
+    """Build a mock streaming Response that yields one content chunk plus
+    a final usage chunk in OpenAI streaming shape (llamacpp/SSE form).
+
+    Returned object has ``iter_lines`` so it's recognised by
+    ``_iter_stream_chunks`` as the legacy Response shape.
+    """
+    content_chunk = {"choices": [{"delta": {"content": "ok. Cycle complete."}}]}
+    usage_chunk = {
+        "choices": [],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    }
+    lines = [
+        b"data: " + json.dumps(content_chunk).encode("utf-8"),
+        b"data: " + json.dumps(usage_chunk).encode("utf-8"),
+        b"data: [DONE]",
+    ]
+    resp = _MM()
+    resp.status_code = 200
+    resp.iter_lines.return_value = lines
+    return resp
+
+
+@patch('agent.telemetry.record_tokens')
+@patch('agent._llm_request')
+def test_record_tokens_prompt_and_completion(mock_llm, mock_record_tokens):
+    """Streaming usage chunk drives `record_tokens` for prompt AND completion."""
+    mock_llm.return_value = _stream_with_usage(prompt_tokens=11, completion_tokens=22)
+
+    history = []
+    agent.run_agent_single(history, {"text": "", "up_to": 0}, [], _MM())
+
+    kinds = [c.args[1] if len(c.args) >= 2 else c.kwargs.get("kind")
+             for c in mock_record_tokens.call_args_list]
+    counts = [c.args[2] if len(c.args) >= 3 else c.kwargs.get("n")
+              for c in mock_record_tokens.call_args_list]
+    assert "prompt" in kinds, f"prompt kind missing in {mock_record_tokens.call_args_list}"
+    assert "completion" in kinds, f"completion kind missing in {mock_record_tokens.call_args_list}"
+    assert 11 in counts and 22 in counts, f"counts wrong: {counts}"
+
+
+@patch('agent.telemetry.verbose_enabled', return_value=False)
+@patch('agent.telemetry.record_turn')
+@patch('agent._llm_request')
+def test_verbose_disabled_skips_record_turn(mock_llm, mock_record_turn, _verbose):
+    """When verbose telemetry is off, record_turn is NOT called."""
+    mock_llm.return_value = _stream_with_usage()
+
+    history = []
+    agent.run_agent_single(history, {"text": "", "up_to": 0}, [], _MM())
+
+    assert mock_record_turn.call_count == 0
+
+
+@patch('agent.telemetry.verbose_enabled', return_value=True)
+@patch('agent.telemetry.record_turn')
+@patch('agent._llm_request')
+def test_verbose_enabled_records_main_turn(mock_llm, mock_record_turn, _verbose):
+    """With verbose enabled, record_turn fires once per turn iteration with role='main'."""
+    mock_llm.return_value = _stream_with_usage()
+
+    history = []
+    agent.run_agent_single(history, {"text": "", "up_to": 0}, [], _MM())
+
+    assert mock_record_turn.call_count >= 1, "record_turn never fired"
+    # At least one call must use role="main"
+    main_calls = [c for c in mock_record_turn.call_args_list
+                  if c.kwargs.get("role") == "main"]
+    assert main_calls, f"no role='main' call in {mock_record_turn.call_args_list}"
+    # Each main call must carry a non-negative duration_s and an int tool_calls
+    for c in main_calls:
+        assert isinstance(c.kwargs.get("duration_s"), float)
+        assert c.kwargs["duration_s"] >= 0.0
+        assert isinstance(c.kwargs.get("tool_calls"), int)
+
+
+@patch('agent.telemetry.record_error')
+@patch('agent._llm_request')
+def test_record_error_fires_on_request_exception(mock_llm, mock_record_error):
+    """A RequestException at the request site triggers record_error with the class name."""
+    import requests as _rq
+
+    class _FakeTimeout(_rq.exceptions.RequestException):
+        pass
+
+    mock_llm.side_effect = _FakeTimeout("simulated timeout")
+
+    history = []
+    result = agent.run_agent_single(history, {"text": "", "up_to": 0}, [], _MM())
+
+    assert result == "error"
+    assert mock_record_error.call_count >= 1
+    # `kind` is the simple class name of the raised exception
+    kinds = [c.kwargs.get("kind") for c in mock_record_error.call_args_list]
+    assert "_FakeTimeout" in kinds, f"expected '_FakeTimeout' in {kinds}"
+
+
+@patch('agent.telemetry.record_tokens')
+def test_record_tokens_uses_input_output_aliases(mock_record_tokens):
+    """Bedrock-style usage with input_tokens/output_tokens aliases also records."""
+    # Hit the chunk site directly via _iter_stream_chunks to keep the test tight.
+    # Build a generator-of-dicts (Bedrock shape) and run the same loop logic by
+    # calling run_agent_single with a mocked _llm_request returning that shape.
+    chunks = iter([
+        {"choices": [{"delta": {"content": "done"}}]},
+        {
+            "choices": [],
+            "usage": {"input_tokens": 7, "output_tokens": 9},
+        },
+    ])
+
+    with patch('agent._llm_request', return_value=chunks):
+        agent.run_agent_single([], {"text": "", "up_to": 0}, [], _MM())
+
+    counts = [c.args[2] if len(c.args) >= 3 else c.kwargs.get("n")
+              for c in mock_record_tokens.call_args_list]
+    assert 7 in counts and 9 in counts, f"alias counts missing: {counts}"

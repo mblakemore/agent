@@ -1408,11 +1408,22 @@ def _generate_summary(old_summary, new_messages, log):
             log.error("Summary fallback also failed: %s", e2)
             return old_summary or ""
 
+    _summary_t0 = time.monotonic()
     try:
         # Try dedicated summary endpoint first — via _summary_request, which
         # now routes through _summary_backend.complete (plan task 1.4).
         summary = _summary_request(prompt, log=log)
         log.info("SUMMARY: %s", summary)
+        if telemetry.verbose_enabled():
+            telemetry.record_turn(
+                role="summary",
+                duration_s=time.monotonic() - _summary_t0,
+                tool_calls=0,
+                in_tokens=0,
+                out_tokens=0,
+                model=getattr(_summary_backend, "model", "")
+                or _config.get("summary", {}).get("model", ""),
+            )
         return summary
     except (requests.ConnectionError, requests.Timeout,
             TimeoutError, BedrockBudgetExceeded) as e:
@@ -1438,6 +1449,7 @@ def _generate_summary(old_summary, new_messages, log):
         ):
             return _fallback_to_main(e)
         log.error("Summary generation failed: %s", e)
+        telemetry.record_error(kind=type(e).__name__)
         return old_summary or ""
 
 
@@ -2570,6 +2582,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
     while True:
         turn += 1
+        _turn_t0 = time.monotonic()
+        _turn_in_tokens = 0
+        _turn_out_tokens = 0
 
         # ── Memory pressure management (tiers 2 + 3) ──
         # Tier 2: force gc + glibc malloc_trim so pymalloc arenas freed during
@@ -2711,6 +2726,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 continue
             except requests.exceptions.RequestException as e:
                 log.error("Request failed after retries: %s", e)
+                telemetry.record_error(kind=type(e).__name__)
                 _emit("on_error", f"Error calling server: {e}")
                 return "error"
 
@@ -2744,6 +2760,21 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         _safe_close(response)
                         break
 
+                    # Capture per-chunk token usage (final chunk in OpenAI
+                    # streaming carries `usage`). Both bedrock and llamacpp
+                    # backends emit usage in this shape; record before the
+                    # no-choices skip below so we don't drop it.
+                    _usage = chunk.get("usage") if isinstance(chunk, dict) else None
+                    if _usage:
+                        _u_model = request_body.get("model") or ""
+                        _u_in = _usage.get("prompt_tokens") or _usage.get("input_tokens") or 0
+                        _u_out = _usage.get("completion_tokens") or _usage.get("output_tokens") or 0
+                        if _u_in:
+                            telemetry.record_tokens(_u_model, "prompt", int(_u_in))
+                            _turn_in_tokens += int(_u_in)
+                        if _u_out:
+                            telemetry.record_tokens(_u_model, "completion", int(_u_out))
+                            _turn_out_tokens += int(_u_out)
                     choices = chunk.get("choices")
                     if not choices:
                         continue  # skip usage/stats chunks
@@ -2797,6 +2828,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             status.finish()
             _safe_close(response)
             log.error("Streaming connection lost: %s", e)
+            telemetry.record_error(kind=type(e).__name__)
             _emit("on_error", f"Streaming error: {e}")
             # Treat as empty response — the text-only handler will nudge or stop
         except Exception as e:
@@ -2804,6 +2836,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             status.finish()
             _safe_close(response)
             log.error("Unexpected error during streaming: %s", e, exc_info=True)
+            telemetry.record_error(kind=type(e).__name__)
             _emit("on_error", f"Streaming error: {e}")
 
         renderer.flush()
@@ -2822,6 +2855,21 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
         if full_content:
             log.debug("ASSISTANT: %s", full_content)
+
+        # Verbose-only per-turn telemetry — fires once per turn iteration after
+        # the assistant response is processed, BEFORE any early-return branches
+        # (completion-signal stop, tool loops, etc.). Gated at the call site so
+        # disabled mode pays only one bool check; SDK PeriodicExportingMetricReader
+        # handles flushing — no force-flush per turn (issue #401).
+        if telemetry.verbose_enabled():
+            telemetry.record_turn(
+                role="main",
+                duration_s=time.monotonic() - _turn_t0,
+                tool_calls=len(tool_calls),
+                in_tokens=_turn_in_tokens,
+                out_tokens=_turn_out_tokens,
+                model=(_main_backend.model or _config["llm"]["model"]),
+            )
 
         # Detect degenerate text loops (model repeating itself)
         if full_content:
