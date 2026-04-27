@@ -191,6 +191,92 @@ class TestEnabledVerbose(_BaseTelemetryTest):
         )
 
 
+@unittest.skipUnless(
+    importlib.util.find_spec("opentelemetry") is not None,
+    "opentelemetry not installed in this interpreter",
+)
+class TestHostileTemporalityEnv(_BaseTelemetryTest):
+    """Regression for issue #416 — temporality must be hard-set, not setdefault.
+
+    The Prometheus OTLP receiver only accepts cumulative-temporality metrics.
+    A shell-level ``OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=delta``
+    export (common in deployments using a non-Prom OTel stack) used to be
+    silently honored by ``init()``'s ``os.environ.setdefault(...)`` call,
+    causing telemetry to fail invisibly: HTTP 200 from the exporter, but
+    Prom dropped the payload. ``init()`` now hard-sets the var so the
+    agent's choice always wins.
+    """
+
+    def test_init_overrides_hostile_temporality_env(self) -> None:
+        os.environ["AGENTPY_TELEMETRY"] = "1"
+        os.environ["OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE"] = "delta"
+
+        import telemetry
+
+        self.assertTrue(telemetry.init())
+        self.assertEqual(
+            os.environ["OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE"],
+            "cumulative",
+        )
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("opentelemetry") is not None,
+    "opentelemetry not installed in this interpreter",
+)
+class TestHistogramNaming(_BaseTelemetryTest):
+    """Regression for issue #417 — histogram metric names must not pre-apply
+    a unit suffix.
+
+    The Prometheus OTLP receiver appends a unit suffix (``_seconds``,
+    ``_bytes``, ...) to histogram metrics during OTLP→Prom translation,
+    based on the OTel ``unit=`` argument. If the SDK-side metric name
+    already ends in ``_seconds`` AND ``unit="s"`` is set, Prom emits a
+    doubled ``..._seconds_seconds_*`` series — the dashboard panels stay
+    empty because they query the canonical un-doubled name.
+    """
+
+    def test_histogram_names_do_not_pre_apply_unit_suffix(self) -> None:
+        os.environ["AGENTPY_TELEMETRY"] = "1"
+        os.environ["AGENTPY_TELEMETRY_VERBOSE"] = "1"
+
+        import telemetry
+
+        self.assertTrue(telemetry.init())
+
+        # Both seconds-unit histograms must be created with bare names so
+        # Prom can append ``_seconds`` itself. We inspect the SDK-internal
+        # ``_InstrumentationScope`` registry through the stable Instrument
+        # ``name`` attribute — robust across SDK micro-versions.
+        seconds_histograms = [
+            telemetry._cycle_duration,
+            telemetry._turn_duration,
+        ]
+        for h in seconds_histograms:
+            self.assertIsNotNone(h)
+            name = getattr(h, "name", None) or getattr(
+                getattr(h, "_real_instrument", None), "name", None
+            )
+            self.assertIsNotNone(
+                name,
+                f"could not introspect histogram name for {h!r}",
+            )
+            self.assertFalse(
+                name.endswith("_seconds"),
+                f"histogram {name!r} pre-applies the ``_seconds`` unit "
+                f"suffix; Prom would translate this to "
+                f"``{name}_seconds_*`` (double-suffix bug, issue #417). "
+                f"Drop ``_seconds`` from the SDK-side name and rely on "
+                f"``unit='s'`` for the suffix.",
+            )
+
+        # Sanity: the no-unit histograms (turn_tokens, turn_tool_calls)
+        # are unaffected — they have no unit suffix to apply, so any name
+        # is acceptable. We only assert they exist.
+        self.assertIsNotNone(telemetry._turn_tokens)
+        self.assertIsNotNone(telemetry._turn_tool_calls)
+
+
 class TestDisabledNoOps(_BaseTelemetryTest):
     def test_record_helpers_are_no_ops_when_disabled(self) -> None:
         """With base disabled, record_* must not raise and must not import OTel."""

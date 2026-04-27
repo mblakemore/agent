@@ -246,19 +246,15 @@ def test_otlp_verbose_export_lands_in_prometheus(_require_prom, _telemetry_env, 
     )
     assert float(turns[0]["value"][1]) == 5.0
 
-    # Prometheus's OTLP-to-Prom translation appends ``_seconds`` to histograms
-    # whose unit is ``s`` even when the metric name already ends in
-    # ``_seconds``; the resulting count series is therefore
-    # ``agentpy_turn_duration_seconds_seconds_count`` in Prometheus's catalog.
-    # Count this name with a fallback to the un-double-suffixed form so the
-    # test stays correct if the SDK/Prom upgrade collapses the duplication.
+    # Prom's OTLP→Prom translation appends ``_seconds`` to histograms whose
+    # unit is ``s``. Per issue #417 the SDK-side metric name is now
+    # ``agentpy_turn_duration`` (NO pre-applied ``_seconds``), so Prom emits
+    # the canonical ``agentpy_turn_duration_seconds_count`` series. We query
+    # ONLY the canonical form — no fallback to the doubled-suffix name, so a
+    # regression to the pre-#417 naming fails this test cleanly.
     duration_count = _wait_for_series(
-        f'agentpy_turn_duration_seconds_seconds_count{{instance="{instance}"}}'
+        f'agentpy_turn_duration_seconds_count{{instance="{instance}"}}'
     )
-    if not duration_count:
-        duration_count = _wait_for_series(
-            f'agentpy_turn_duration_seconds_count{{instance="{instance}"}}'
-        )
     assert duration_count, "turn duration histogram count did not land"
     assert float(duration_count[0]["value"][1]) == 5.0
 
@@ -295,7 +291,7 @@ def test_verbose_does_not_leak_per_turn_label(_require_prom, _telemetry_env, mon
     # names that match agentpy_turn_duration* for this instance and assert
     # none carry a ``turn`` label.
     _wait_for_series(
-        f'agentpy_turn_duration_seconds_seconds_count{{instance="{instance}"}}'
+        f'agentpy_turn_duration_seconds_count{{instance="{instance}"}}'
     )
 
     matches = _series(
