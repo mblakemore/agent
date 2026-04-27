@@ -3404,13 +3404,20 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 log.info("CICD phase: issue #%s claimed (existing)",
                                          _cicd_issue_number)
                         if "gh pr create" in _cmd and "exit=0" in result_str:
-                            _pr_match = re.search(
-                                r'pull/(\d+)|#(\d+)', result_str
-                            )
+                            # cycle 87 (run 192 false-positive): only recognise a
+                            # real PR URL (`pull/NNN`) as proof the PR was created.
+                            # The old `#(\d+)` fallback fired on `Closes #424`
+                            # appearing in the PR body string inside the result,
+                            # causing the tracker to record "PR #424 opened" when
+                            # no PR existed on GitHub — the branch hadn't even been
+                            # pushed yet.  `gh pr create` always returns the full
+                            # URL on success; if there is no URL in the result the
+                            # command silently failed and we should NOT set a PR
+                            # number (which would suppress the reviewer's "no open
+                            # PRs" early-exit and cause confusing downstream state).
+                            _pr_match = re.search(r'pull/(\d+)', result_str)
                             if _pr_match:
-                                _cicd_pr_number = next(
-                                    g for g in _pr_match.groups() if g
-                                )
+                                _cicd_pr_number = _pr_match.group(1)
                                 log.info("CICD phase: PR #%s opened",
                                          _cicd_pr_number)
                             # Guard: PR body must contain `Closes #N` trailer
