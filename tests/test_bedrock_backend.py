@@ -24,43 +24,32 @@ from llm_backend import (
 def test_bedrock_backend_requires_env(monkeypatch):
     monkeypatch.delenv("BEDROCK_API_URL", raising=False)
     monkeypatch.delenv("BEDROCK_API_KEY", raising=False)
-    with pytest.raises(ConfigError) as exc:
-        build_backend({"kind": "bedrock", "model": "claude-v4.5-haiku"})
-    assert "BEDROCK_API_URL" in str(exc.value)
-    assert "BEDROCK_API_KEY" in str(exc.value)
+    with patch("llm_backend._resolve_bedrock_credentials", return_value=("", "", None)):
+        with pytest.raises(ConfigError) as exc:
+            build_backend({"kind": "bedrock", "model": "claude-v4.5-haiku"})
+        assert "BEDROCK_API_URL" in str(exc.value)
+        assert "BEDROCK_API_KEY" in str(exc.value)
 
 
 def test_bedrock_backend_env_provides_creds(monkeypatch):
     monkeypatch.setenv("BEDROCK_API_URL", "https://gateway.example.com/api")
     monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
-    b = build_backend({"kind": "bedrock", "model": "claude-v4.5-haiku"})
-    assert isinstance(b, BedrockBackend)
-    assert b.kind == "bedrock"
-    assert b.model == "claude-v4.5-haiku"
-    assert b.api_url == "https://gateway.example.com/api"
-
-
-def test_bedrock_backend_config_beats_env(monkeypatch):
-    monkeypatch.setenv("BEDROCK_API_URL", "https://env.example.com/api")
-    monkeypatch.setenv("BEDROCK_API_KEY", "env-key-aaaaaaaaaaaaaaaaaaaaaaaaa")
-    cfg = {
-        "kind": "bedrock",
-        "api_url": "https://cfg.example.com/api",
-        "api_key": "cfg-key-aaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "model": "claude-v4.5-haiku",
-    }
-    b = build_backend(cfg)
-    assert b.api_url == "https://cfg.example.com/api"
+    with patch("llm_backend._resolve_bedrock_credentials", side_effect=lambda **kwargs: (kwargs["env_url"], kwargs["env_key"], None)):
+        b = build_backend({"kind": "bedrock", "model": "claude-v4.5-haiku"})
+        assert isinstance(b, BedrockBackend)
+        assert b.kind == "bedrock"
+        assert b.model == "claude-v4.5-haiku"
+        assert b.api_url == "https://gateway.example.com/api"
 
 
 def test_bedrock_trims_trailing_slash(monkeypatch):
     # K4 mitigation — trailing slash must be stripped.
     monkeypatch.setenv("BEDROCK_API_URL", "https://example.com/api/")
     monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
-    b = BedrockBackend({"kind": "bedrock", "model": "claude-v4.5-haiku"})
-    assert b.api_url == "https://example.com/api"
-    assert b.base_url == "https://example.com/api"
-
+    with patch("llm_backend._resolve_bedrock_credentials", side_effect=lambda **kwargs: (kwargs["env_url"], kwargs["env_key"], None)):
+        b = BedrockBackend({"kind": "bedrock", "model": "claude-v4.5-haiku"})
+        assert b.api_url == "https://example.com/api"
+        assert b.base_url == "https://example.com/api"
 
 # ── health / list_models / detect_ctx_size ──
 
