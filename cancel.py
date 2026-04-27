@@ -147,7 +147,7 @@ def _read_byte(timeout):
             except OSError:
                 pass
         return None
-    except (io.UnsupportedOperation, ValueError, select.error):
+    except (io.UnsupportedOperation, ValueError, select.error, TypeError):
         return None
 
 
@@ -156,13 +156,13 @@ def _consume_ansi_sequence():
     ch = _read_byte(0.05)
     if ch is None:
         return  # bare ESC, not an ANSI sequence
-    if ch == b'[':
+    if ch == '[':
         # CSI sequence: read until a letter (@ through ~)
         while True:
             ch = _read_byte(0.05)
-            if ch is None or (b'\x40' <= ch <= b'\x7e'):
+            if ch is None or ('\x40' <= ch <= '\x7e'):
                 break
-    elif ch == b'O':
+    elif ch == 'O':
         # SS3 sequence (e.g. arrow keys in some terminals): one more byte
         _read_byte(0.05)
     # else: two-char escape sequence, already consumed
@@ -179,19 +179,19 @@ def _monitor_loop():
         if ch is None:
             continue
 
-        if ch == b'\x1b':
+        if ch == '\x1b':
             # Check if this is the start of an ANSI sequence
             next_ch = _read_byte(0.05)
             if next_ch is not None:
                 # ANSI sequence — consume it and ignore
-                if next_ch == b'[':
+                if next_ch == '[':
                     while True:
                         c = _read_byte(0.05)
-                        if c is None or (b'\x40' <= c <= b'\x7e'):
+                        if c is None or ('\x40' <= c <= '\x7e'):
                             break
                     # Note: this was duplicated in _consume_ansi_sequence,
                     # but we keep the logic for the loop's primary read.
-                elif next_ch == b'O':
+                elif next_ch == 'O':
                     _read_byte(0.05)
                 # else: two-char sequence, consumed
                 continue

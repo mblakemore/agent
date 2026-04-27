@@ -34,6 +34,10 @@ def test_build_backend_bedrock_requires_env(monkeypatch):
     # (no config override either).
     monkeypatch.delenv("BEDROCK_API_URL", raising=False)
     monkeypatch.delenv("BEDROCK_API_KEY", raising=False)
+    # Point the credential store at a non-existent path so store entries
+    # don't shadow the missing env vars (bedrock_store falls back to env
+    # when the store file is absent).
+    monkeypatch.setenv("AGENT_BEDROCK_STORE", "/nonexistent/bedrock_creds_test.json")
     with pytest.raises(ConfigError) as exc:
         build_backend({"kind": "bedrock"})
     assert "BEDROCK_API_URL" in str(exc.value)
