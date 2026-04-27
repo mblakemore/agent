@@ -49,7 +49,11 @@ git fetch origin && git checkout main && git reset --hard origin/main
 ```
 **CRITICAL (cycle 68):** Use `git reset --hard origin/main` — NOT `git pull --ff-only`. The builder's session may leave unpushed commits on the local `main` branch (ahead of origin). `git pull --ff-only` with local ahead reports "Already up to date" but leaves the builder's unpushed (possibly failing) test on main. Always reset to `origin/main` to get the true remote state.
 
-Determine the correct test command (see builder agent.md for patterns). If red, stop — file a `bug`+`regression`+`cicd` issue and defer all reviews.
+Determine the correct test command (see builder agent.md for patterns). **If main is red (cycle 89 — run 194 cause):**
+1. Run ONE targeted test to identify the failing test name(s) — do NOT keep re-running the full suite.
+2. **Immediately** check `gh pr list --state open` — if any open PR title or branch name mentions the failing test file(s), proceed directly to SELECT and review those PRs first. They likely contain the fix; reviewing them takes priority over filing a new issue.
+3. If no open PR targets the failing tests: in ≤2 turns, file `gh issue create --label bug --label regression --label cicd --label in-progress --title "REGRESSION: <test name> failing on main" --body "..."`. Then continue to SELECT with any remaining open PRs.
+4. **Cap: ≤5 turns total on broken-main investigation.** Do NOT attempt to write or push a fix yourself — that is builder scope. Do NOT defer all reviews; continue to SELECT after the investigation cap.
 
 **CRITICAL (cycle 68 continued):** If a test fails that exists ONLY in the PR diff (i.e., `git show origin/main:tests/<filename>` returns error), it is a **PR bug → REQUEST_CHANGES**, NOT a main regression. Never file a regression issue for a test that only exists on the PR branch.
 
