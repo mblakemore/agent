@@ -124,6 +124,86 @@ class TestHandleCommand(unittest.TestCase):
         self.assertTrue(any(level == "warn" and "/clear" in msg
                             for level, msg in notices))
 
+    def test_clear_resets_async_summarizer(self):
+        ctx = _make_ctx()
+        ctx.async_summarizer = SimpleNamespace(reset=lambda: None)
+        # Use a mock for reset to verify it was called
+        import unittest.mock as um
+        ctx.async_summarizer.reset = um.Mock()
+        commands.handle_command("/clear", ctx)
+        ctx.async_summarizer.reset.assert_called_once()
+
+    def test_tools_no_render_tools_capability(self):
+        ctx = _make_ctx()
+        # Remove render_tools from callbacks
+        del ctx.cb.render_tools
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            commands.handle_command("/tools", ctx)
+        self.assertEqual(buf.getvalue(), "")
+
+    def test_tools_valid_int_limit(self):
+        ctx = _make_ctx()
+        # Mock render_tools to verify limit
+        import unittest.mock as um
+        ctx.cb.render_tools = um.Mock(return_value="tools-output")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            commands.handle_command("/tools 5", ctx)
+        ctx.cb.render_tools.assert_called_once_with(limit=5)
+
+    def test_tools_invalid_int_limit(self):
+        ctx = _make_ctx()
+        notices = []
+        ctx.cb.on_notice = lambda level, msg: notices.append((level, msg))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            commands.handle_command("/tools not-a-number", ctx)
+        self.assertTrue(any(level == "warn" and "usage: /tools" in msg 
+                            for level, msg in notices))
+
+    def test_tools_non_positive_int_limit(self):
+        ctx = _make_ctx()
+        notices = []
+        ctx.cb.on_notice = lambda level, msg: notices.append((level, msg))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            commands.handle_command("/tools 0", ctx)
+        self.assertTrue(any(level == "warn" and "positive integer" in msg 
+                            for level, msg in notices))
+
+    def test_tools_all_keyword(self):
+        ctx = _make_ctx()
+        import unittest.mock as um
+        ctx.cb.render_tools = um.Mock(return_value="all-tools")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            commands.handle_command("/tools all", ctx)
+        ctx.cb.render_tools.assert_called_once_with(limit=None)
+
+    def test_phase_success(self):
+        ctx = _make_ctx()
+        import unittest.mock as um
+        with um.patch("commands.get_tasks", return_value=[
+            {"description": "perceive", "status": "done"},
+            {"description": "probe", "status": "in_progress"},
+        ]):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                commands.handle_command("/phase", ctx)
+            out = buf.getvalue()
+            self.assertIn("PERCEIVE ✓", out)
+            self.assertIn("PROBE ✗", out)
+            self.assertIn("DECIDE ✗", out)
+
+    def test_phase_error_loading_tasks(self):
+        ctx = _make_ctx()
+        import unittest.mock as um
+        with um.patch("commands.get_tasks", side_effect=Exception("disk error")):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                commands.handle_command("/phase", ctx)
+            self.assertIn("Error loading tasks: disk error", buf.getvalue())
 
 class TestVerboseCli(unittest.TestCase):
     """--verbose CLI flag must be forwarded into run_agent_interactive."""
