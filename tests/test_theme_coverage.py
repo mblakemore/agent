@@ -79,3 +79,70 @@ class TestThemeCoverage(unittest.TestCase):
                 esc = theme.escape(rgb)
                 self.assertIn("38;5;", esc)
 
+    def test_cursor_up_clear(self):
+        """Test cursor_up_clear() logic. (Lines 57-59)"""
+        # Test n <= 0
+        self.assertEqual(theme.cursor_up_clear(0), "")
+        self.assertEqual(theme.cursor_up_clear(-1), "")
+        
+        # Test color suppressed
+        with mock.patch.object(theme, "_no_color", return_value=True):
+            self.assertEqual(theme.cursor_up_clear(1), "")
+        
+        # Test valid call
+        with mock.patch.object(theme, "_no_color", return_value=False):
+            self.assertEqual(theme.cursor_up_clear(1), "\033[1A\033[0J")
+            self.assertEqual(theme.cursor_up_clear(5), "\033[5A\033[0J")
+
+    def test_escape_full(self):
+        """Test escape() variants. (Lines 93, 96-97)"""
+        # Test color suppressed
+        with mock.patch.object(theme, "_no_color", return_value=True):
+            self.assertEqual(theme.escape((255,0,0)), "")
+            
+        with mock.patch.object(theme, "_no_color", return_value=False):
+            # Test TrueColor path
+            with mock.patch.object(theme, "_truecolor", return_value=True):
+                # Bold = False
+                self.assertEqual(theme.escape((255,0,0), bold=False), "\033[38;2;255;0;0m")
+                # Bold = True
+                self.assertEqual(theme.escape((255,0,0), bold=True), theme.BOLD + "\033[38;2;255;0;0m")
+
+    def test_c_with_color(self):
+        """Test c() with color. (Line 105)"""
+        with mock.patch.object(theme, "_no_color", return_value=False):
+            rgb = (255,0,0)
+            text = "test"
+            # Bold = False
+            res = theme.c(rgb, text, bold=False)
+            self.assertIn(text, res)
+            self.assertTrue(res.endswith(theme.RESET))
+            
+            # Bold = True
+            res_bold = theme.c(rgb, text, bold=True)
+            self.assertIn(theme.BOLD, res_bold)
+
+    def test_dim_with_color(self):
+        """Test dim() with color. (Line 112)"""
+        with mock.patch.object(theme, "_no_color", return_value=False):
+            self.assertEqual(theme.dim("hello"), f"{theme.DIM}hello{theme.RESET}")
+
+    def test_pulse_functions(self):
+        """Test pulse_rgb and pulse_escape. (Lines 130-134, 139)"""
+        # pulse_rgb(t)
+        # phase = (sin(t * 2pi/3) + 1) / 2
+        # t=0 -> phase=0.5 -> boundary between violet/sky and sky/mint
+        # t=0.75 -> sin(pi/2) = 1 -> phase=1.0 -> mint
+        # t=1.5 -> sin(pi) = 0 -> phase=0.5
+        # t=2.25 -> sin(3pi/2) = -1 -> phase=0.0 -> violet
+        
+        res_violet = theme.pulse_rgb(2.25)
+        self.assertEqual(res_violet, theme.VIOLET)
+        
+        res_mint = theme.pulse_rgb(0.75)
+        self.assertEqual(res_mint, theme.MINT)
+        
+        # Test pulse_escape
+        with mock.patch.object(theme, "_no_color", return_value=False):
+            esc = theme.pulse_escape(2.25)
+            self.assertEqual(esc, theme.escape(theme.VIOLET))
