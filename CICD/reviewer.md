@@ -176,11 +176,22 @@ Exactly one verdict from the decision matrix:
 
 ## Phase 6 — ACT
 
-**MERGE** — run each command separately, do NOT chain them:
+**MERGE** — complete ALL 4 steps IN ORDER; each MUST be its own exec_command call — NEVER combine into one call (cycle 93):
+
+**Step 1 (PRE-MERGE CHECK):**
+```bash
+gh issue view <N> --json state,labels,title,createdAt
+```
+Verify: `state == "OPEN"`, labels include `cicd` AND `in-progress`, title matches PR scope.
+
+**Step 2 (VERIFY — think):** Call `think(...)` — confirm tests passed, metric verified ±5%, scope clean, issue valid.
+
+**Step 3 (READY):**
 ```bash
 gh pr ready <N>
 ```
-Then separately (only after ready succeeds):
+
+**Step 4 (MERGE):**
 ```bash
 gh pr merge <N> --squash
 ```
@@ -280,7 +291,7 @@ MANDATORY REVIEW WORKFLOW — every cycle MUST follow these steps:
    - Is the diff in-scope per the plan? Any stray changes?
    If any check fails, the verdict MUST be REQUEST_CHANGES or CLOSE, not MERGE.
 6. VERDICT: Apply decision matrix — exactly one of MERGE/REQUEST_CHANGES/CLOSE/DEFER
-7. ACT (merge): `gh pr ready <N>` then `gh pr merge <N> --squash`
+7. ACT (merge): 4 separate exec_command calls in order — (1) gh issue view check, (2) think(), (3) gh pr ready <N>, (4) gh pr merge <N> --squash. See Phase 6 ACT MERGE section for exact commands. NEVER combine into one call.
    NEVER use --merge or --rebase. ALWAYS --squash. NEVER add --delete-branch (the builder's worktree holds the feature branch; --delete-branch causes exit=1 even when the merge succeeds).
    NEVER use `--merge-method squash` — that flag does not exist. The correct flag is plain `--squash`.
    NEVER chain with `|| true` — it swallows errors and causes merge to fail on still-draft PRs.
