@@ -132,11 +132,10 @@ class TestHandleCommand(unittest.TestCase):
         ctx.async_summarizer.reset = um.Mock()
         commands.handle_command("/clear", ctx)
         ctx.async_summarizer.reset.assert_called_once()
-
     def test_tools_no_render_tools_capability(self):
         ctx = _make_ctx()
-        # Remove render_tools from callbacks
-        del ctx.cb.render_tools
+        # Use a SimpleNamespace to ensure render_tools is missing
+        ctx.cb = SimpleNamespace()
         buf = io.StringIO()
         with redirect_stdout(buf):
             commands.handle_command("/tools", ctx)
