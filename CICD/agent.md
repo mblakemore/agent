@@ -67,11 +67,11 @@ gh issue list --state open --label cicd --limit 20 --json number,title,labels,up
 gh pr list --state open --limit 10 --json number,title,isDraft,headRefName,labels
 ```
 
-Then in a second turn, run the test suite. Look for a `Makefile`, `pytest.ini`, `package.json` (scripts.test), or similar to determine the correct test command. Common patterns:
-- Python: `python3 -m pytest` or `python3 -m unittest discover tests`
-- Node: `npm test`
-- Go: `go test ./...`
-- Rust: `cargo test`
+Then in a second turn, check if main is green. **TIMEOUT WARNING (cycle 91)**: the full test suite (865+ tests) takes >120s and will time out. NEVER run bare `python3 -m pytest` or `python3 -m pytest tests/` — it always times out. Use a targeted subset:
+```bash
+python3 -m pytest tests/test_cicd_guards.py tests/test_agent_loop.py -q 2>&1 | tail -5
+```
+If those pass (they cover the critical paths), main is green. If you need the full suite, use `background=True` and poll. For Node/Go/Rust, `npm test` / `go test ./...` / `cargo test` are fine as-is.
 
 Read: CICD state `progress-${BOT_ID}.md`, recent 2-3 improvement plans, project README.
 
@@ -325,7 +325,15 @@ This protocol turned a 4-cycle, 200-turn failure into a one-shot success. Use it
 
 ## Phase 7 — VERIFY
 
-In the worktree: run full test suite, compute delta on the metric. **Gate**: tests 100% green AND metric improved. If not, debug and retry (max 3 iterations). If still failing → null-result path.
+In the worktree: run **targeted** tests for the file(s) you changed, then compute the metric delta. **Gate**: tests 100% green AND metric improved. If not, debug and retry (max 3 iterations). If still failing → null-result path.
+
+**TIMEOUT WARNING (cycle 91 — 14 timeouts in run 197)**: NEVER run bare `python3 -m pytest` — the full suite (865+ tests) always times out at 120s. Always target the file you changed:
+```bash
+python3 -m pytest tests/test_<your_file>.py -v
+# For coverage delta:
+python3 -m pytest tests/test_<your_file>.py --cov=<module> --cov-report=term-missing -q 2>&1 | tail -5
+```
+If the coverage target is `tools/<module>.py`, the `--cov` arg is `tools.<module>` (no `.py`).
 
 **After EVERY pytest run (pass or fail): append current status to the improvement plan.** This prevents the async summarizer from replaying a stale error on the next turn. Immediately after each `python3 -m pytest` completes, run:
 ```bash
