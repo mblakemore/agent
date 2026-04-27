@@ -2685,6 +2685,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 "tools": tools,
                 "tool_choice": "auto",
                 "stream": True,
+                # OpenAI streaming protocol (which llama.cpp implements) only
+                # emits a final usage chunk when `stream_options.include_usage`
+                # is set. Without this flag, the llamacpp/gemma path produces
+                # no token telemetry. Bedrock builds usage server-side and
+                # ignores this flag, so it is safe to include unconditionally.
+                "stream_options": {"include_usage": True},
             }
 
             try:
@@ -2760,10 +2766,13 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         _safe_close(response)
                         break
 
-                    # Capture per-chunk token usage (final chunk in OpenAI
-                    # streaming carries `usage`). Both bedrock and llamacpp
-                    # backends emit usage in this shape; record before the
-                    # no-choices skip below so we don't drop it.
+                    # Capture per-chunk token usage. For the llamacpp path,
+                    # the final OpenAI streaming chunk carries `usage` ONLY
+                    # when the request body sets
+                    # `stream_options: {include_usage: true}` (see request_body
+                    # construction above). Bedrock builds the usage dict
+                    # server-side and emits it in the same shape regardless.
+                    # Record before the no-choices skip below so we don't drop it.
                     _usage = chunk.get("usage") if isinstance(chunk, dict) else None
                     if _usage:
                         _u_model = request_body.get("model") or ""
