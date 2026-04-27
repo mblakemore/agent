@@ -10,6 +10,11 @@ the cumulative-temporality requirement that Prometheus's OTLP receiver imposes.
 
 Counter names intentionally have NO ``_total`` suffix — Prometheus's OTLP
 translation appends it automatically; double-suffixing breaks the dashboard.
+
+By the same rule, histogram names MUST NOT pre-apply a unit suffix
+(``_seconds``, ``_bytes``, etc.) — Prom appends one based on the OTel
+``unit=`` argument. Pre-applying produces ``..._seconds_seconds_*`` in
+Prom's catalog (see issue #417).
 """
 
 from __future__ import annotations
@@ -81,10 +86,13 @@ def init() -> bool:
 
     # Prometheus's OTLP receiver only accepts cumulative temporality; OTel
     # SDK defaults to delta. Set this BEFORE importing opentelemetry so the
-    # SDK picks it up at module load time.
-    os.environ.setdefault(
-        "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE", "cumulative"
-    )
+    # SDK picks it up at module load time. We HARD-SET (not setdefault) — a
+    # hostile shell-level ``OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE``
+    # export (e.g. ``delta`` from an unrelated OTel deployment) would
+    # otherwise silently break the Prom receiver path: HTTP 200, but the
+    # receiver discards the payload as "invalid temporality and type
+    # combination" with no exporter-side error. See issue #416.
+    os.environ["OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE"] = "cumulative"
 
     try:
         # Lazy imports — these only happen when telemetry is enabled.
@@ -123,8 +131,12 @@ def init() -> bool:
     _cycles = meter.create_counter("agentpy_cycles", description="cycles run")
     _tokens = meter.create_counter("agentpy_tokens", description="tokens consumed")
     _errors = meter.create_counter("agentpy_errors", description="errors raised")
+    # Histogram name does NOT carry the ``_seconds`` suffix — Prom's
+    # OTLP→Prom translation appends it from ``unit="s"``. Pre-applying
+    # ``_seconds`` produces the doubled ``..._seconds_seconds_*`` series
+    # surfaced in issue #417.
     _cycle_duration = meter.create_histogram(
-        "agentpy_cycle_duration_seconds",
+        "agentpy_cycle_duration",
         description="cycle wallclock duration",
         unit="s",
     )
@@ -157,8 +169,10 @@ def init() -> bool:
     if _truthy(os.environ.get("AGENTPY_TELEMETRY_VERBOSE")):
         _verbose = True
         _turns = meter.create_counter("agentpy_turns", description="LLM turns")
+        # Same idiom as ``_cycle_duration`` — name MUST NOT pre-apply
+        # ``_seconds``; Prom appends it from ``unit="s"`` (see #417).
         _turn_duration = meter.create_histogram(
-            "agentpy_turn_duration_seconds",
+            "agentpy_turn_duration",
             description="LLM turn wallclock duration",
             unit="s",
         )
