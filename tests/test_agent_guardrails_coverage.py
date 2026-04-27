@@ -94,25 +94,66 @@ def test_cicd_pr_capture_and_trailer_warning(mock_config, mock_llm, mock_emit):
     # Response 2: Acknowledge
     resp2 = create_llm_response(content="Done.")
     
-    mock_llm.side_effect = [resp1, resp2]
-
-    with patch('tools.exec_command.fn', return_value="pull/12345"):
-        try:
-            run_agent_interactive(initial_prompt="Create PR", auto=True)
-        except (StopIteration, Exception):
-            pass
-        
-        # Verify a second request was made
-        assert mock_llm.call_count >= 2, "Agent did not make a second LLM request after PR creation"
-        
-        messages = get_messages_from_call(mock_llm.call_args_list[1])
-        
-        # Search for the block message in the tool results
-        found_warning = False
-        for msg in messages:
-            if msg.get("role") == "tool" and "Error: CICD gh pr create blocked" in msg.get("content", ""):
-                found_warning = True
-                break
+    @patch('agent._emit')
+    @patch('agent._llm_request')
+    @patch('agent._config')
+    def test_cicd_pr_capture_and_trailer_warning(mock_config, mock_llm, mock_emit):
+        """Test capture of PR number and warning for missing 'Closes #N' trailer."""
+        mock_config.__getitem__.side_effect = lambda k: {
+            "llm": {"model": "test-model"},
+            "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+            "context": {"max_tokens": 4096, "ctx_size": 32768},
+            "summary": {"enabled": False}
+        }.get(k)
+    
+        # Response 1: Create PR without trailer (causes a tool result error, but not a retry)
+        resp1 = create_llm_response(
+            tool_calls=[{"id": "tool_1", "type": "function", "function": {"name": "exec_command", "arguments": '{"command": "gh pr create --title Test --body \'No trailer here\'"}'}}]
+        )
+    
+        # Response 2: Acknowledge
+        resp2 = create_llm_response(content="Done.")
+    
+        mock_llm.side_effect = [resp1, resp2]
+    
+        with patch('tools.exec_command.fn', return_value="pull/12345"):
+            # Patch _is_cicd_builder detection to always return True
+            with patch('agent.run_agent_single', wraps=agent.run_agent_single) as mock_single:
+                # We actually need to patch the detection inside agent.py or the way it's called.
+                # The simplest way is to patch the logic that checks for "CICD Improvement Loop"
+                with patch('agent.run_agent_interactive', wraps=agent.run_agent_interactive) as mock_interactive:
+                    # Since run_agent_interactive calls run_agent_single, we can't easily 
+                    # inject history. Let's just patch the detection variable/function.
+                    pass
+            
+            # Try a different approach: patch the detection logic in agent.py directly.
+            # But we are in a test, so we can't easily change the source.
+            # Wait, we can use patch.object or patch if it's a function.
+            # The detection is a local variable _is_cicd_builder in run_agent_single.
+            # We can't patch local variables.
+            
+            # Let's try to provide the "CICD Improvement Loop" string in the initial prompt.
+            try:
+                run_agent_interactive(initial_prompt="CICD Improvement Loop — Builder: Create PR", auto=True)
+            except (StopIteration, Exception):
+                pass
+    
+            # Verify a second request was made
+            assert mock_llm.call_count >= 2, "Agent did not make a second LLM request after PR creation"
+    
+            messages = get_messages_from_call(mock_llm.call_args_list[1])
+    
+            # Search for the block message in the tool results
+            found_warning = False
+            for msg in messages:
+                if msg.get("role") == "tool" and "Error: CICD gh pr create blocked" in msg.get("content", ""):
+                    found_warning = True
+                    break
+    
+            if not found_warning:
+                print(f"DEBUG: Messages in Turn 2: {messages}")
+                
+            assert found_warning, "Warning for missing 'Closes #N' trailer was not sent to LLM as a tool result"
         
         if not found_warning:
             print(f"DEBUG: Messages in Turn 2: {messages}")
