@@ -87,15 +87,18 @@ def test_cicd_guards_warnings(monkeypatch, command, tool_result, expected_warnin
             mock_text_response("Done")
         ]
         
-        history = [{"role": "user", "content": "Test prompt"}]
+        # Use a CICD builder prompt so _is_cicd_builder=True and guards like
+        # cycle 44 (gh pr create without Closes #N) activate.  All test cases
+        # here exercise CICD-specific guards, so this is the correct context.
+        history = [{"role": "user", "content": "# CICD Improvement Loop — Builder\nTest prompt"}]
         mock_log = MagicMock()
-        
+
         # To avoid the PRE-MERGE CHECK blocking the merge command,
         # we must ensure _cicd_issue_view_called is True.
-        # Since it's a local variable inside run_agent_single, we can't 
+        # Since it's a local variable inside run_agent_single, we can't
         # easily mock it unless we patch the variable in the scope or
-        # simulate the flow. 
-        # However, looking at agent.py, we can simulate the flow by 
+        # simulate the flow.
+        # However, looking at agent.py, we can simulate the flow by
         # adding a gh issue view call BEFORE the merge call.
         
         if "gh pr merge" in command:
