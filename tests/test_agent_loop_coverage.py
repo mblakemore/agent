@@ -31,8 +31,8 @@ def create_mock_response(content=None, tool_calls=None):
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_grace_period_exhaustion(mock_config, mock_llm, mock_emit):
-    """Covers agent.py lines 2976-2980.
-    Required: _cycle_persisted = True AND grace_used >= _CYCLE_GRACE_TURNS.
+    """Covers agent.py lines 2978-2979.
+    Required: _cycle_persisted = True AND grace_used >= _CYCLE_GRACE_TURNS (default 7).
     """
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
@@ -47,19 +47,24 @@ def test_grace_period_exhaustion(mock_config, mock_llm, mock_emit):
     
     # Turn 1: push (sets _cycle_persisted=True)
     # Turns 2-10: text-only (grace_used increments)
+    # 10 turns > default _CYCLE_GRACE_TURNS = 7
     mock_llm.side_effect = [
         create_mock_response(tool_calls=[push_tool]),
         *[create_mock_response(content=f"Thinking {i}") for i in range(10)]
     ]
     
+    mock_log = MagicMock()
     with patch('agent._NUDGE_ENABLED', True), \
          patch('agent._MAX_TEXT_ONLY', 20), \
          patch('agent._MAX_TOTAL_NUDGES', 20), \
          patch.dict('agent.MAP_FN', {"exec_command": lambda **kwargs: "exit=0\nPushed."}):
         result = run_agent_single(
-            [{"role": "user", "content": "test"}], {"text": "", "up_to": 0}, [], log)
+            [{"role": "user", "content": "test"}], {"text": "", "up_to": 0}, [], mock_log)
     
     assert result == "done"
+    # Verify the specific log message for grace period exhaustion was called
+    # Note: the actual value in the log will be the default 7
+    mock_log.info.assert_any_call("Stopping: cycle persisted %d turns ago, grace period exhausted", 7)
 
 @patch('agent._emit')
 @patch('agent._llm_request')
@@ -76,10 +81,16 @@ def test_consecutive_text_only_cap(mock_config, mock_llm, mock_emit):
     
     # Use distinct content each call to avoid _TEXT_LOOP_THRESHOLD=3 firing before
     # the consecutive cap. The cap fires at turn 3 (_consecutive=3 >= _MAX_TEXT_ONLY=3).
+    # We need more than 3 because the first one is stripped by the hallucination guard.
     mock_llm.side_effect = [create_mock_response(content=f"Working on it {i}") for i in range(10)]
     
-    with patch('agent._NUDGE_ENABLED', True):
+    mock_log = MagicMock()
+    with patch('agent._NUDGE_ENABLED', True), \
+         patch('agent._MAX_TEXT_ONLY', 3), \
+         patch('agent._MAX_TOTAL_NUDGES', 20):
         result = run_agent_single(
-            [{"role": "user", "content": "test"}], {"text": "", "up_to": 0}, [], log)
+            [{"role": "user", "content": "test"}], {"text": "", "up_to": 0}, [], mock_log)
     
     assert result == "done"
+    # Verify the specific log message for consecutive text-only cap was called
+    mock_log.info.assert_any_call("Stopping: %d consecutive text-only responses", 3)
