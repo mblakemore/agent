@@ -1,107 +1,121 @@
 import pytest
-import agent
 import logging
-from unittest.mock import patch
+import json
+from unittest.mock import patch, MagicMock
+import agent
+from agent import run_agent_single
 
-def reset_agent_globals():
-    agent._cicd_branch = None
-    agent._cicd_edited_files = set()
-    agent._cicd_pr_number = None
-    agent._cicd_issue_number = None
-    agent._cycle_persisted = False
-    agent.conversation_history = []
+logging.basicConfig(level=logging.ERROR)
+log = logging.getLogger("test_agent_cicd_nudge")
 
-@pytest.fixture(autouse=True)
-def run_around_tests():
-    reset_agent_globals()
-    yield
-    reset_agent_globals()
+def create_mock_response(content=None, tool_calls=None):
+    """Helper to create a mock LLM response in SSE format."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    lines = []
+    if tool_calls:
+        for tc in tool_calls:
+            payload = {"choices": [{"delta": {"tool_calls": [tc]}}]}
+            lines.append(f"data: {json.dumps(payload)}".encode())
+        lines.append(b'data: [DONE]')
+    elif content:
+        payload = {"choices": [{"delta": {"content": content}}]}
+        lines.append(f"data: {json.dumps(payload)}".encode())
+        lines.append(b'data: [DONE]')
+    else:
+        lines.append(b'data: [DONE]')
+    mock_resp.iter_lines.return_value = lines
+    return mock_resp
 
-def run_agent_with_nudge_check(branch, edited_files, pr_number, issue_number, persisted):
-    agent._cicd_branch = branch
-    agent._cicd_edited_files = set(edited_files) if edited_files else set()
-    agent._cicd_pr_number = pr_number
-    agent._cicd_issue_number = issue_number
-    agent._cycle_persisted = persisted
-    
-    history = []
-    
-    mock_chunks = [{"choices": [{"delta": {"content": "I am done."}}]}]
-    
-    with patch('agent._emit'), \
-         patch('agent._llm_request') as mock_llm:
-        
-        def breaking_llm(*args, **kwargs):
-            if not hasattr(breaking_llm, "called"):
-                breaking_llm.called = True
-                return mock_chunks
-            raise RuntimeError("Exit Loop")
-        
-        mock_llm.side_effect = breaking_llm
-        
-        with patch('agent._maybe_resummarize', return_value=False):
-            # The nudge logic happens when the agent is in a "text-only" response loop
-            # or after a turn where it didn't use tools. 
-            # We need to simulate the agent producing a text-only response.
-            # In agent.py: run_agent_single handles the turn.
-            # The nudge is added when _consecutive_text_only >= 1.
-            
-            # We force a text-only response by mocking the LLM to return a string
-            # (which is what triggers the text-only counter in the real agent)
-            # Wait, the agent logic for text-only is based on whether the LLM
-            # returned a tool call or just text.
-            
-            # Let's mock the turn so it looks like a text response was received.
-            # The logic is:
-            # if response_has_tool_calls:
-            #    ...
-            # else:
-            #    _consecutive_text_only += 1
-            #    if _consecutive_text_only >= 1:
-            #        # Check for hallucinated read, THEN check for CICD nudge
-            
-            # To trigger this, we need _llm_request to return a response 
-            # that result in no tool calls.
-            
-            try:
-                agent.run_agent_single(
-                    conversation_history=history,
-                    summary_state={"text": "", "up_to": 0},
-                    initial_files=[],
-                    log=logging.getLogger("test")
-                )
-            except RuntimeError as e:
-                if str(e) != "Exit Loop":
-                    raise e
-            except Exception:
-                pass
-            
-    return history
+_mock_config_side_effect = lambda k: {
+    "llm": {"model": "test-model"},
+    "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+    "context": {"max_tokens": 4096, "ctx_size": 32768}
+}.get(k)
 
-def test_nudge_pr_open_missing():
-    """Case 1: Edited files, no PR, persisted cycle -> Expect 'PR open' nudge."""
-    history = run_agent_with_nudge_check("cicd/test-branch", ["file1.py"], None, 466, True)
-    
-    nudges = [msg['content'] for msg in history if msg['role'] == 'user']
-    assert any("PR open" in nudge for nudge in nudges)
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_cicd_auto_nudge_missing_pr(mock_config, mock_llm, mock_emit):
+    """CICD nudge fires with 'PR open' when edits done, no PR, no push yet."""
+    mock_config.__getitem__.side_effect = _mock_config_side_effect
 
-def test_nudge_commit_push_missing():
-    """Case 2: Edited files, no PR, NOT persisted cycle -> Expect 'commit + push + PR open' nudge."""
-    history = run_agent_with_nudge_check("cicd/test-branch", ["file1.py"], None, 466, False)
-    
-    nudges = [msg['content'] for msg in history if msg['role'] == 'user']
-    assert any("commit + push + PR open" in nudge for nudge in nudges)
+    import agent as agent_module
+    call_count = [0]
 
-def test_no_nudge_when_pr_exists():
-    """Case 3: PR already open -> Expect no CICD nudge."""
-    history = run_agent_with_nudge_check("cicd/test-branch", ["file1.py"], 123, 466, True)
-    
-    nudges = [msg['content'] for msg in history if msg['role'] == 'user']
-    assert not any("PR open" in nudge for nudge in nudges)
+    def llm_with_cicd_state(*args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            agent_module._cicd_issue_number = 466
+            agent_module._cicd_branch = 'cicd/test-branch'
+            agent_module._cicd_edited_files = {'agent.py'}
+        return create_mock_response(content="I have finished the edits.")
 
-def test_no_nudge_no_edits():
-    """Case 4: No edited files -> Expect no CICD nudge."""
-    history = run_agent_with_nudge_check("cicd/test-branch", None, None, 466, True)
-    
-    nudges = [msg['content'] for msg in history if msg['role'] == 'user']
-    assert not any("PR open" in nudge for nudge in nudges)
+    mock_llm.side_effect = llm_with_cicd_state
+    conversation_history = [{"role": "user", "content": "Fix the bug"}]
+    summary_state = {"text": "", "up_to": 0}
+    with patch('agent._NUDGE_ENABLED', True):
+        run_agent_single(conversation_history, summary_state, [], log)
+
+    assert any("PR open" in msg.get("content", "")
+               for msg in conversation_history if msg.get("role") == "user")
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_cicd_auto_nudge_missing_commit(mock_config, mock_llm, mock_emit):
+    """CICD nudge fires with 'commit + push + PR open' when edits done but nothing pushed."""
+    mock_config.__getitem__.side_effect = _mock_config_side_effect
+
+    import agent as agent_module
+    call_count = [0]
+
+    def llm_with_cicd_state(*args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            agent_module._cicd_issue_number = 466
+            agent_module._cicd_branch = 'cicd/test-branch'
+            agent_module._cicd_edited_files = {'agent.py'}
+        return create_mock_response(content="I have finished the edits.")
+
+    mock_llm.side_effect = llm_with_cicd_state
+    conversation_history = [{"role": "user", "content": "Fix the bug"}]
+    summary_state = {"text": "", "up_to": 0}
+    with patch('agent._NUDGE_ENABLED', True):
+        run_agent_single(conversation_history, summary_state, [], log)
+
+    assert any("commit + push + PR open" in msg.get("content", "")
+               for msg in conversation_history if msg.get("role") == "user")
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_cicd_auto_nudge_persisted_pr_only(mock_config, mock_llm, mock_emit):
+    """CICD nudge fires 'PR open' only when push done (_cycle_persisted=True) but no PR yet."""
+    mock_config.__getitem__.side_effect = _mock_config_side_effect
+
+    import agent as agent_module
+    call_count = [0]
+    push_tool = {"index": 0, "id": "cp1", "function": {
+        "name": "exec_command",
+        "arguments": '{"command": "git push origin cicd/test-branch"}'
+    }}
+
+    def llm_with_push(*args, **kwargs):
+        call_count[0] += 1
+        if call_count[0] == 1:
+            agent_module._cicd_issue_number = 466
+            agent_module._cicd_branch = 'cicd/test-branch'
+            agent_module._cicd_edited_files = {'agent.py'}
+            return create_mock_response(tool_calls=[push_tool])
+        return create_mock_response(content="Done.")
+
+    mock_llm.side_effect = llm_with_push
+    conversation_history = [{"role": "user", "content": "Fix the bug"}]
+    summary_state = {"text": "", "up_to": 0}
+    with patch('agent._NUDGE_ENABLED', True), \
+         patch.dict('agent.MAP_FN', {"exec_command": lambda **kwargs: "exit=0\nPushed."}):
+        run_agent_single(conversation_history, summary_state, [], log)
+
+    assert any("PR open" in msg.get("content", "")
+               for msg in conversation_history if msg.get("role") == "user")
