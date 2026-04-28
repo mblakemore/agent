@@ -54,6 +54,7 @@ def test_grace_period_exhaustion(mock_config, mock_llm, mock_emit):
     
     with patch('agent._NUDGE_ENABLED', True), \
          patch('agent._MAX_TEXT_ONLY', 20), \
+         patch('agent._MAX_TOTAL_NUDGES', 20), \
          patch.dict('agent.MAP_FN', {"exec_command": lambda **kwargs: "exit=0\nPushed."}):
         result = run_agent_single(
             [{"role": "user", "content": "test"}], {"text": "", "up_to": 0}, [], log)
@@ -73,7 +74,9 @@ def test_consecutive_text_only_cap(mock_config, mock_llm, mock_emit):
         "context": {"max_tokens": 4096, "ctx_size": 32768}
     }.get(k)
     
-    mock_llm.return_value = create_mock_response(content="Working on it.")
+    # Use distinct content each call to avoid _TEXT_LOOP_THRESHOLD=3 firing before
+    # the consecutive cap. The cap fires at turn 3 (_consecutive=3 >= _MAX_TEXT_ONLY=3).
+    mock_llm.side_effect = [create_mock_response(content=f"Working on it {i}") for i in range(10)]
     
     with patch('agent._NUDGE_ENABLED', True):
         result = run_agent_single(
