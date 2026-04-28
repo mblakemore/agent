@@ -170,75 +170,112 @@ def test_tool_call_generic_exception(mock_config, mock_llm, mock_emit):
         run_agent_single(conversation_history, summary_state, [], log)
     assert mock_llm.call_count >= 2
 
+_mock_cfg_nudge = lambda k: {
+    "llm": {"model": "test-model"},
+    "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+    "context": {"max_tokens": 4096, "ctx_size": 32768}
+}.get(k)
+
+_think_tool_nudge = {"index": 0, "id": "tc1", "function": {
+    "name": "think", "arguments": '{"content": "x"}'
+}}
+
 @patch('agent._emit')
 @patch('agent._llm_request')
 @patch('agent._config')
-def test_text_only_completion_signal(mock_config, mock_llm, mock_emit):
-    """Test that a completion signal ends the cycle when work is persisted."""
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768}
-    }.get(k)
-    mock_llm.return_value = create_mock_response(content="improvement cycle 466 is complete")
-    conversation_history = [{"role": "user", "content": "test"}]
-    summary_state = {"text": "", "up_to": 0}
-    
-    # We can't easily patch _has_committed if it's not a global.
-    # But we can patch the components of _has_persisted_work if we can find them.
-    # Since _has_persisted_work is calculated inside run_agent_single, 
-    # we can patch _cicd_phase_state if it's a global.
-    with patch('agent._cicd_phase_state', {"track": True}):
-        result = run_agent_single(conversation_history, summary_state, [], log)
+def test_nudge_budget_exhausted(mock_config, mock_llm, mock_emit):
+    """Nudge budget exhaustion stops the cycle (covers agent.py lines 2993-2995).
+    _MAX_TOTAL_NUDGES=0 means the first text-only response exceeds the budget."""
+    mock_config.__getitem__.side_effect = _mock_cfg_nudge
+    mock_llm.return_value = create_mock_response(content="Working on it.")
+    with patch('agent._NUDGE_ENABLED', True), patch('agent._MAX_TOTAL_NUDGES', 0):
+        result = run_agent_single(
+            [{"role": "user", "content": "test"}], {"text": "", "up_to": 0}, [], log)
     assert result == "done"
 
 @patch('agent._emit')
 @patch('agent._llm_request')
 @patch('agent._config')
-def test_text_only_overtime(mock_config, mock_llm, mock_emit):
-    """Test that a text-only response in overtime ends the cycle."""
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768}
-    }.get(k)
-    mock_llm.return_value = create_mock_response(content="Just some text.")
-    conversation_history = [{"role": "user", "content": "test"}]
-    summary_state = {"text": "", "up_to": 0}
-    with patch('agent._MAX_TURNS', 0):
-        result = run_agent_single(conversation_history, summary_state, [], log)
+def test_consecutive_text_only_limit(mock_config, mock_llm, mock_emit):
+    """Consecutive text-only cap stops the cycle (covers agent.py lines 2998-2999).
+    Default _MAX_TEXT_ONLY=3: strip on turn 1, nudge on turn 2, cap on turn 3."""
+    mock_config.__getitem__.side_effect = _mock_cfg_nudge
+    mock_llm.return_value = create_mock_response(content="Working on it.")
+    with patch('agent._NUDGE_ENABLED', True):
+        result = run_agent_single(
+            [{"role": "user", "content": "test"}], {"text": "", "up_to": 0}, [], log)
     assert result == "done"
 
 @patch('agent._emit')
 @patch('agent._llm_request')
 @patch('agent._config')
-def test_text_only_nudge_budget(mock_config, mock_llm, mock_emit):
-    """Test that exceeding the total nudge budget ends the cycle."""
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768}
-    }.get(k)
-    mock_llm.return_value = create_mock_response(content="Just some text.")
-    conversation_history = [{"role": "user", "content": "test"}]
-    summary_state = {"text": "", "up_to": 0}
-    with patch('agent._MAX_TOTAL_NUDGES', 0):
-        result = run_agent_single(conversation_history, summary_state, [], log)
+def test_completion_signal_with_persisted_work(mock_config, mock_llm, mock_emit):
+    """Completion signal after git commit stops the cycle (covers agent.py lines 2968-2969).
+    exec_command(git commit) sets _has_committed=True; then 'cycle complete' content stops."""
+    mock_config.__getitem__.side_effect = _mock_cfg_nudge
+    commit_tool = {"index": 0, "id": "tc1", "function": {
+        "name": "exec_command",
+        "arguments": '{"command": "git commit -m CICD 468: add tests"}'
+    }}
+    mock_llm.side_effect = [
+        create_mock_response(tool_calls=[commit_tool]),
+        create_mock_response(content="Improvement cycle is complete."),
+    ]
+    with patch('agent._NUDGE_ENABLED', True), \
+         patch.dict('agent.MAP_FN', {"exec_command": lambda **kwargs: "exit=0\n[main abc] CICD"}):
+        result = run_agent_single(
+            [{"role": "user", "content": "test"}], {"text": "", "up_to": 0}, [], log)
     assert result == "done"
 
 @patch('agent._emit')
 @patch('agent._llm_request')
 @patch('agent._config')
-def test_text_only_consecutive_limit(mock_config, mock_llm, mock_emit):
-    """Test that too many consecutive text-only responses end the cycle."""
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768}
-    }.get(k)
-    mock_llm.return_value = create_mock_response(content="Just some text.")
-    conversation_history = [{"role": "user", "content": "test"}]
-    summary_state = {"text": "", "up_to": 0}
-    with patch('agent._MAX_TEXT_ONLY', 0):
-        result = run_agent_single(conversation_history, summary_state, [], log)
+def test_overtime_text_only_stop(mock_config, mock_llm, mock_emit):
+    """Text-only response in overtime stops the cycle (covers agent.py lines 2984-2986).
+    _MAX_TURNS=2: two tool-call turns then a text-only at turn 3 triggers overtime stop."""
+    mock_config.__getitem__.side_effect = _mock_cfg_nudge
+    mock_llm.side_effect = [
+        create_mock_response(tool_calls=[_think_tool_nudge]),
+        create_mock_response(tool_calls=[_think_tool_nudge]),
+        create_mock_response(content="Just some text."),
+    ]
+    with patch('agent._NUDGE_ENABLED', True), patch('agent._MAX_TURNS', 2), \
+         patch.dict('agent.MAP_FN', {"think": lambda **kwargs: ""}):
+        result = run_agent_single(
+            [{"role": "user", "content": "test"}], {"text": "", "up_to": 0}, [], log)
     assert result == "done"
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_completion_signal_ignored_no_work(mock_config, mock_llm, mock_emit):
+    """Completion signal without persisted work is ignored (covers agent.py lines 2970-2971).
+    No git commit means _has_persisted_work=False; signal is logged but loop continues."""
+    mock_config.__getitem__.side_effect = _mock_cfg_nudge
+    mock_llm.return_value = create_mock_response(content="Improvement cycle is complete.")
+    with patch('agent._NUDGE_ENABLED', True):
+        result = run_agent_single(
+            [{"role": "user", "content": "test"}], {"text": "", "up_to": 0}, [], log)
+    assert result == "done"
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_hallucinated_file_read_correction(mock_config, mock_llm, mock_emit):
+    """Hallucinated file read triggers correction nudge (covers agent.py lines 3015-3022).
+    Turn 1: tool call. Turn 2: text-only #1 (stripped). Turn 3: claims to read agent.py
+    without using file tool — triggers _detect_hallucinated_read guard."""
+    mock_config.__getitem__.side_effect = _mock_cfg_nudge
+    mock_llm.side_effect = [
+        create_mock_response(tool_calls=[_think_tool_nudge]),
+        create_mock_response(content="Still thinking."),
+        create_mock_response(content="I read agent.py and found _MAX_TURNS = 250."),
+        create_mock_response(content="OK."),
+    ]
+    conversation_history = [{"role": "user", "content": "test"}]
+    with patch('agent._NUDGE_ENABLED', True), patch('agent._MAX_TOTAL_NUDGES', 3), \
+         patch.dict('agent.MAP_FN', {"think": lambda **kwargs: ""}):
+        result = run_agent_single(conversation_history, {"text": "", "up_to": 0}, [], log)
+    assert result == "done"
+    assert any("did NOT actually read" in str(msg.get("content", ""))
+               for msg in conversation_history if msg.get("role") == "user")
