@@ -48,3 +48,47 @@ def test_git_short_sha_failure():
     """Cover the exception handler in _git_short_sha."""
     with patch('subprocess.check_output', side_effect=Exception("Git failed")):
         assert agent._git_short_sha() == ""
+
+def test_check_worktree_guard_violation():
+    """Cover the worktree guard violation path (lines 107-110)."""
+    import os
+    from pathlib import Path
+    
+    # Use current directory as cwd and a subdirectory as worktree
+    cwd = Path().resolve()
+    wt = cwd / "fake_worktree"
+    wt.mkdir(exist_ok=True)
+    
+    # File inside cwd but OUTSIDE worktree
+    file_path = cwd / "forbidden_file.txt"
+    
+    is_violation, correction = agent._check_worktree_guard(str(file_path), str(wt))
+    
+    assert is_violation is True
+    assert str(wt) in correction
+    
+    wt.rmdir()
+
+def test_check_worktree_guard_no_violation():
+    """Cover the no-violation path (line 113)."""
+    import os
+    from pathlib import Path
+    
+    cwd = Path().resolve()
+    wt = cwd / "fake_worktree"
+    wt.mkdir(exist_ok=True)
+    
+    # File inside worktree
+    file_path = wt / "safe_file.txt"
+    
+    is_violation, correction = agent._check_worktree_guard(str(file_path), str(wt))
+    
+    assert is_violation is False
+    assert correction is None
+    
+    wt.rmdir()
+
+def test_check_worktree_guard_none_inputs():
+    """Cover the None/empty inputs (line 100)."""
+    assert agent._check_worktree_guard(None, "/tmp") == (False, None)
+    assert agent._check_worktree_guard("/tmp", None) == (False, None)
