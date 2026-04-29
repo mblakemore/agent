@@ -2341,7 +2341,6 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 estimate_tokens=_estimate_tokens,
             )
             _cb = _tuimod.TuiCallbacks(tui_session, verbose=getattr(_cb, "verbose", False))
-            # Hints are now in the bottom-toolbar right-align; no scrollback line needed.
         else:
             _emit("on_notice", "warn",
                   "prompt_toolkit not installed — using plain prompt. "
@@ -2349,9 +2348,13 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
 
     if initial_prompt and not (continue_mode and start_turn > 0):
         _emit("on_user_message", initial_prompt)
-        expanded, files, err = _expand_file_refs(initial_prompt)
-        if err:
-            _emit("on_error", err)
+        try:
+            expanded, files, err = _expand_file_refs(initial_prompt)
+            if err:
+                _emit("on_error", err)
+                return
+        except Exception as e:
+            _emit("on_error", f"Unexpected error expanding initial prompt: {e}")
             return
         if files:
             initial_files = files
@@ -2389,7 +2392,6 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 with open(result_file, "w", encoding="utf-8") as f:
                     f.write(last_assistant_msg)
             return
-
     while True:
         try:
             if tui_session is not None:
