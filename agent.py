@@ -1077,11 +1077,10 @@ def _sanitize_tool_args(func_name, args, log):
 
     # Fix action if it was garbled
     if "action" in fixed and fixed["action"] not in _FILE_ACTIONS:
-        for valid_action in _FILE_ACTIONS:
-            if valid_action in str(fixed["action"]).lower():
-                fixed["action"] = valid_action
-                break
-
+        import difflib
+        matches = difflib.get_close_matches(str(fixed["action"]).lower(), _FILE_ACTIONS, n=1, cutoff=0.6)
+        if matches:
+            fixed["action"] = matches[0]
     log.info("Sanitized args: %s",
              {k: repr(v)[:60] if isinstance(v, str) else v for k, v in fixed.items()})
     return fixed
