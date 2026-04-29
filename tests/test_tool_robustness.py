@@ -91,3 +91,41 @@ def test_salvage_tool_args_exception():
     # Trigger broad except block at line 1134
     # Passing None should trigger a TypeError in .replace() or .lower()
     assert _salvage_tool_args("file", None, log) is None
+
+def test_sanitize_tool_args_fuzzy_match():
+    # Test fuzzy match (typo) for action
+    args = {"action": "readd"}
+    result = _sanitize_tool_args("file", args, log)
+    assert result["action"] == "read"
+
+def test_sanitize_tool_args_no_match():
+    # Test action that doesn't match anything
+    args = {"action": "completely_wrong"}
+    result = _sanitize_tool_args("file", args, log)
+    assert result["action"] == "completely_wrong"
+
+def test_sanitize_tool_args_non_dict():
+    # Test non-dict args
+    assert _sanitize_tool_args("file", "not a dict", log) == "not a dict"
+
+def test_salvage_tool_args_json_decode_error():
+    # Test JSONDecodeError path in _salvage_tool_args
+    # String that looks like JSON but is invalid
+    raw = '{"action": "read", "path": "test.txt", ' # trailing comma/incomplete
+    # Since it's "file", it will try to salvage using regex if JSON fails
+    # But we want to hit the JSONDecodeError block.
+    # If we use a tool other than 'file' or 'exec_command', it will just fail JSON and return None.
+    result = _salvage_tool_args("other", raw, log)
+    assert result is None
+
+def test_salvage_tool_args_file_json_salvage():
+    # Test when JSON fails but regex salvage works for 'file'
+    raw = 'read,path:test.txt'
+    result = _salvage_tool_args("file", raw, log)
+    assert result == {"action": "read", "path": "test.txt"}
+
+def test_salvage_tool_args_exec_json_salvage():
+    # Test when JSON fails but regex salvage works for 'exec_command'
+    raw = 'command: ls -la'
+    result = _salvage_tool_args("exec_command", raw, log)
+    assert result == {"command": "ls -la"}
