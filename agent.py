@@ -2363,37 +2363,9 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
 
         if auto:
             if result == "cancelled":
-                # Double-escape in auto mode: prompt operator for guidance, then continue
-                _emit("on_notice", "info",
-                      f"\n{BOLD}[Agent paused — enter guidance, or press Enter to resume]{RESET}")
-                try:
-                    guidance = input("\nOperator: ").strip()
-                except (EOFError, KeyboardInterrupt):
-                    log.info("Session ended (operator cancelled) | %d messages", len(conversation_history))
-                    if _telemetry_on:
-                        telemetry.record_cycle(status="cancelled", duration_s=time.time() - t0)
-                        telemetry.shutdown()
-                    _log_bedrock_session_spend(log)
-                    _emit("on_notice", "info", "")
-                    return
-                if guidance:
-                    expanded_g, files_g, err_g = _expand_file_refs(guidance)
-                    if err_g:
-                        _emit("on_error", err_g)
-                    else:
-                        if files_g:
-                            initial_files = files_g
-                        conversation_history.append({"role": "user", "content": expanded_g})
-                        log.info("OPERATOR: %s", expanded_g)
-                else:
-                    conversation_history.append({"role": "user", "content":
-                        "Continue where you left off. Finish your current cycle."})
-                    log.info("OPERATOR: [resume — no guidance]")
-                # Continue in auto mode until the agent finishes
-                run_agent_single(conversation_history, summary_state, initial_files, log,
-                                 gen["temperature"], gen["top_p"], gen["top_k"],
-                                 gen["presence_penalty"], max_tokens, ctx_size,
-                                 async_summarizer=_async_summarizer)
+                result = _handle_auto_guidance(conversation_history, summary_state, initial_files, log,
+                                               gen, max_tokens, ctx_size, _async_summarizer,
+                                               _telemetry_on, t0)
             cleanup_temp_sessions()
             _delete_checkpoint()
             log.info("Session ended (auto mode) | %d messages in history", len(conversation_history))
@@ -2490,6 +2462,45 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     if _telemetry_on:
         telemetry.shutdown()
 
+
+
+def _handle_auto_guidance(conversation_history, summary_state, initial_files, log, 
+                               gen, max_tokens, ctx_size, async_summarizer, 
+                               telemetry_on, t0):
+    """
+    Handles the operator guidance loop when the agent is cancelled in auto-mode.
+    Returns the result of the subsequent run_agent_single call, or 'interrupted'.
+    """
+    _emit("on_notice", "info",
+          f"\n{BOLD}[Agent paused — enter guidance, or press Enter to resume]{RESET}")
+    try:
+        guidance = input("\nOperator: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        log.info("Session ended (operator cancelled) | %d messages", len(conversation_history))
+        if telemetry_on:
+            import telemetry
+            telemetry.record_cycle(status="cancelled", duration_s=time.time() - t0)
+            telemetry.shutdown()
+        _log_bedrock_session_spend(log)
+        _emit("on_notice", "info", "")
+        return "interrupted"
+    if guidance:
+        expanded_g, files_g, err_g = _expand_file_refs(guidance)
+        if err_g:
+            _emit("on_error", err_g)
+        else:
+            if files_g:
+                initial_files = files_g
+            conversation_history.append({"role": "user", "content": expanded_g})
+            log.info("OPERATOR: %s", expanded_g)
+    else:
+        conversation_history.append({"role": "user", "content":
+            "Continue where you left off. Finish your current cycle."})
+        log.info("OPERATOR: [resume — no guidance]")
+    return run_agent_single(conversation_history, summary_state, initial_files, log,
+                           gen["temperature"], gen["top_p"], gen["top_k"],
+                           gen["presence_penalty"], max_tokens, ctx_size,
+                           async_summarizer=async_summarizer)
 
 def run_agent_single(conversation_history: list, summary_state: dict, initial_files,
                      log: logging.Logger,
