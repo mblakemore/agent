@@ -1076,12 +1076,19 @@ def _sanitize_tool_args(func_name, args, log):
             fixed[key] = val
 
     # Fix action if it was garbled
+    # Fix action if it was garbled
     if "action" in fixed and fixed["action"] not in _FILE_ACTIONS:
-        for valid_action in _FILE_ACTIONS:
-            if valid_action in str(fixed["action"]).lower():
-                fixed["action"] = valid_action
-                break
-
+        import difflib
+        action_lower = str(fixed["action"]).lower()
+        # 1. Try substring match (e.g., "read_this_file" -> "read")
+        substring_match = next((t for t in _FILE_ACTIONS if t in action_lower), None)
+        # 2. Try fuzzy match for typos (e.g., "raed" -> "read")
+        fuzzy_matches = difflib.get_close_matches(action_lower, _FILE_ACTIONS, n=1, cutoff=0.6)
+        
+        if substring_match:
+            fixed["action"] = substring_match
+        elif fuzzy_matches:
+            fixed["action"] = fuzzy_matches[0]
     log.info("Sanitized args: %s",
              {k: repr(v)[:60] if isinstance(v, str) else v for k, v in fixed.items()})
     return fixed
