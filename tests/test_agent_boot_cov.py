@@ -43,3 +43,8 @@ def test_run_agent_interactive_boot_coverage():
             agent.run_agent_interactive()
         except KeyboardInterrupt:
             pass
+
+def test_git_short_sha_failure():
+    """Cover the exception handler in _git_short_sha."""
+    with patch('subprocess.check_output', side_effect=Exception("Git failed")):
+        assert agent._git_short_sha() == ""
