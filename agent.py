@@ -2916,7 +2916,6 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 out_tokens=_turn_out_tokens,
                 model=(_main_backend.model or _config["llm"]["model"]),
             )
-
         # Detect degenerate text loops (model repeating itself)
         if full_content:
             _text_hash = hashlib.md5(full_content.encode()).hexdigest()
@@ -2962,8 +2961,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             # merge (reviewer role).  _cicd_phase_state["track"] is set when
             # `gh pr merge` exits 0.
             _has_persisted_work = (_has_committed
-                                   or _cicd_phase_state.get("track", False)
-                                   or _has_reviewer_persisted)
+                                    or _cicd_phase_state.get("track", False)
+                                    or _has_reviewer_persisted)
             # Cycle 39: regex patterns for natural paraphrases ("cycle 249 is complete")
             _completion_signal_patterns = (
                 r"cycle\s+\S+\s+is\s+(now\s+)?complete",  # "cycle 249 is complete", "cycle N is now complete"
@@ -2989,7 +2988,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     log.info("Stopping: cycle persisted %d turns ago, grace period exhausted", grace_used)
                     return "done"
                 log.info("Cycle persisted but grace period active (%d/%d turns) — nudging for TRACK work",
-                         grace_used, _CYCLE_GRACE_TURNS)
+                        grace_used, _CYCLE_GRACE_TURNS)
             # Past turn limit + no tool use = end cycle immediately
             if turn > _MAX_TURNS:
                 log.warning("Overtime + text-only response — ending cycle")
@@ -3252,11 +3251,14 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         result_str = f"Error: Unknown tool '{func_name}'"
                     else:
                         try:
+                            print(f"DEBUG: Executing tool {func_name} with args {func_args}")
                             result_str = str(MAP_FN[func_name](**func_args))
                         except CircuitBreakerError as e:
                             # Tool temporarily unavailable - return graceful degradation
                             result_str = f"Tool {func_name} temporarily unavailable: {e}"
+                            print(f"DEBUG: Tool {func_name} circuit breaker triggered: {e}")
                         except CancelledError:
+                            # Propagate to outer handler to return 'cancelled'
                             raise
                         except Exception as e:
                             result_str = f"Error executing tool: {str(e)}"
