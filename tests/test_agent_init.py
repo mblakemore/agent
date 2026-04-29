@@ -315,22 +315,23 @@ def test_result_file_writing():
             # Verify that open() was called to write the result
             mock_open.assert_called()
 
-def test_tui_fallback_logic():
-    with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
-         patch('telemetry.init', return_value=True), \
-         patch('agent._emit') as mock_emit, \
-         patch('agent.AsyncSummarizer'), \
-         patch('agent._main_backend') as mock_main, \
-         patch('agent._summary_backend') as mock_summary:
+    def test_tui_fallback_logic():
+        with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
+             patch('telemetry.init', return_value=True), \
+             patch('agent._emit') as mock_emit, \
+             patch('agent.AsyncSummarizer'), \
+             patch('agent._main_backend') as mock_main, \
+             patch('agent._summary_backend') as mock_summary:
         
-        mock_main.health.return_value = (True, "OK")
-        mock_main.detect_ctx_size.return_value = 32768
-        mock_summary.health.return_value = (True, "OK")
-        mock_summary.detect_ctx_size.return_value = 32768
+            mock_main.health.return_value = (True, "OK")
+            mock_main.detect_ctx_size.return_value = 32768
+            mock_summary.health.return_value = (True, "OK")
+            mock_summary.detect_ctx_size.return_value = 32768
         
-        # Mock TUI unavailable
-        with patch('tui._AVAILABLE', False):
-            agent.run_agent_interactive(tui=True, auto=False)
-            
-        # Verify a notice was emitted about prompt_toolkit missing
-        mock_emit.assert_any_call("on_notice", "warn", ANY)
+            # Mock TUI unavailable
+            with patch('tui._AVAILABLE', False), \
+                 patch('builtins.input', side_effect=EOFError):
+                agent.run_agent_interactive(tui=True, auto=False)
+                
+            # Verify a notice was emitted about prompt_toolkit missing
+            mock_emit.assert_any_call("on_notice", "warn", ANY)
