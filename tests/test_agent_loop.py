@@ -219,21 +219,22 @@ def test_completion_signal_with_persisted_work(mock_config, mock_llm, mock_emit)
             [{"role": "user", "content": "test"}], {"text": "", "up_to": 0}, [], log)
     assert result == "done"
 
-@patch('agent._emit')
-@patch('agent._llm_request')
-@patch('agent._config')
-def test_overtime_text_only_stop(mock_config, mock_llm, mock_emit):
-    mock_config.__getitem__.side_effect = _mock_cfg_nudge
-    mock_llm.side_effect = [
-        create_mock_response(tool_calls=[_think_tool_nudge]),
-        create_mock_response(content="Just some text."),
-    ]
-    with patch('agent._NUDGE_ENABLED', True), patch('agent._MAX_TURNS', 2), \
-         patch.dict('agent.MAP_FN', {"think": lambda **kwargs: ""}), \
-         patch('agent._MAX_TEXT_ONLY', 3):
-        result = run_agent_single(
-            [{"role": "user", "content": "test"}], {"text": "", "up_to": 0}, [], log)
-    assert result == "done"
+    @patch('agent._emit')
+    @patch('agent._llm_request')
+    @patch('agent._config')
+    def test_overtime_text_only_stop(mock_config, mock_llm, mock_emit):
+        mock_config.__getitem__.side_effect = _mock_cfg_nudge
+        mock_llm.side_effect = [
+            create_mock_response(tool_calls=[_think_tool_nudge]),
+            create_mock_response(content="Just some text."),
+            create_mock_response(content="Still text."),
+        ]
+        with patch('agent._NUDGE_ENABLED', True), patch('agent._MAX_TURNS', 2), \
+             patch.dict('agent.MAP_FN', {"think": lambda **kwargs: ""}), \
+             patch('agent._MAX_TEXT_ONLY', 3):
+            result = run_agent_single(
+                [{"role": "user", "content": "test"}], {"text": "", "up_to": 0}, [], log)
+        assert result == "done"
 
 @patch('agent._emit')
 @patch('agent._llm_request')
