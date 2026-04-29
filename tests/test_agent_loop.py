@@ -318,3 +318,32 @@ def test_auto_guidance_keyboard_interrupt(mock_input):
     assert result == "interrupted"
     assert len(history) == 0 # History should not be modified
 
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_run_agent_single_empty_tool_output(mock_config, mock_llm, mock_emit):
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768}
+    }.get(k)
+    
+    tool_call = {"index": 0, "id": "call_1", "function": {"name": "search_files", "arguments": '{"pattern": "test"}'}}
+    mock_resp = create_mock_response(tool_calls=[tool_call])
+    
+    # LLM calls tool, then the tool returns an empty string, then LLM responds with text
+    mock_llm.side_effect = [
+        mock_resp,
+        create_mock_response(content="The tool returned nothing, but I can still answer.")
+    ]
+    
+    conversation_history = [{"role": "user", "content": "Search for 'test'"}]
+    summary_state = {"text": "", "up_to": 0}
+    
+    # Mock the tool to return an empty string
+    with patch.dict('agent.MAP_FN', {"search_files": lambda **kwargs: ""}):
+        run_agent_single(conversation_history, summary_state, [], log)
+    
+    assert mock_llm.call_count >= 2
+    assert any("tool" in msg.get("role", "") for msg in conversation_history)
