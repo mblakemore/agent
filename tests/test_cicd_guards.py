@@ -61,7 +61,7 @@ def mock_text_response(content):
      "PR creation without Closes trailer"),
     ('gh pr review 456 --approve', 
      "exit=0\nApproved", 
-     "You approved a PR without using the think tool first", 
+     "Proceed with merge only after thinking", 
      "PR approval without think"),
     ('gh pr merge 456',
      "exit=0\nMerged",
@@ -87,32 +87,16 @@ def test_cicd_guards_warnings(monkeypatch, command, tool_result, expected_warnin
             mock_text_response("Done")
         ]
         
-        # Use a CICD builder prompt so _is_cicd_builder=True and guards like
-        # cycle 44 (gh pr create without Closes #N) activate.  All test cases
-        # here exercise CICD-specific guards, so this is the correct context.
         history = [{"role": "user", "content": "# CICD Improvement Loop — Builder\nTest prompt"}]
         mock_log = MagicMock()
-
-        # To avoid the PRE-MERGE CHECK blocking the merge command,
-        # we must ensure _cicd_issue_view_called is True.
-        # Since it's a local variable inside run_agent_single, we can't
-        # easily mock it unless we patch the variable in the scope or
-        # simulate the flow.
-        # However, looking at agent.py, we can simulate the flow by
-        # adding a gh issue view call BEFORE the merge call.
-        
+    
         if "gh pr merge" in command:
-            # If this is a merge test, we need to satisfy the PRE-MERGE CHECK first.
-            # We modify the side_effect to include a gh issue view call.
             issue_json = json.dumps({"state": "OPEN", "labels": [{"name": "cicd"}, {"name": "in-progress"}]})
-            
             mock_llm.side_effect = [
                 mock_llm_response({"command": "gh issue view 1 --json state,labels"}),
                 mock_llm_response({"command": command}),
                 mock_text_response("Done")
             ]
-            
-            # Update mock_exec to handle both calls
             mock_exec.side_effect = [f"exit=0\n{issue_json}", tool_result]
         
         with patch('agent._check_api_health', return_value=(True, "ok")), \
@@ -194,24 +178,20 @@ from agent import _handle_cicd_file_edit, _check_worktree_guard
 
 def test_check_worktree_guard():
     """Test that _check_worktree_guard correctly identifies violations."""
-    # Mock paths
     cwd = "/mnt/droid/repos/agent/temp/20260420_192045/repo"
     wt = "/mnt/droid/repos/agent/temp/20260420_192045/worktrees/245-cicd-guards"
     
     with patch('os.getcwd', return_value=cwd):
-        # Case 1: Correct path (inside worktree)
         path_ok = os.path.join(wt, "tests/test_cicd_guards.py")
         is_violation, correction = _check_worktree_guard(path_ok, wt)
         assert is_violation is False
         assert correction is None
         
-        # Case 2: Violation path (inside repo clone, not in worktree)
         path_bad = os.path.join(cwd, "README.md")
         is_violation, correction = _check_worktree_guard(path_bad, wt)
         assert is_violation is True
         assert correction == os.path.join(wt, "README.md")
         
-        # Case 3: Outside both (should be fine)
         path_outside = "/tmp/some_file.txt"
         is_violation, correction = _check_worktree_guard(path_outside, wt)
         assert is_violation is False
@@ -225,7 +205,6 @@ def test_handle_cicd_file_edit_logic():
     phase_state = {"plan": False}
     edited_files = set()
     
-    # Case 1: First edit
     args = {"path": "file.txt"}
     has_edited, persisted = _handle_cicd_file_edit(
         args, history, wt_path, phase_state, edited_files, False, False, 1, mock_log
@@ -233,8 +212,6 @@ def test_handle_cicd_file_edit_logic():
     assert has_edited is True
     assert "file.txt" in edited_files
     
-    # Case 2: Worktree violation
-    # We must mock _check_worktree_guard to return a violation
     with patch('agent._check_worktree_guard', return_value=(True, "/correct/path")):
         args = {"path": "/bad/path"}
         _handle_cicd_file_edit(
@@ -242,21 +219,18 @@ def test_handle_cicd_file_edit_logic():
         )
         assert any("WRONG PATH!" in m["content"] for m in history if m["role"] == "user")
     
-    # Case 3: Plan file edit
     args = {"path": "improvements/245-slug.md"}
-    _handle_cicd_file_edit(
+    has_edited, persisted = _handle_cicd_file_edit(
         args, history, wt_path, phase_state, edited_files, True, False, 3, mock_log
     )
     assert phase_state["plan"] is True
     
-    # Case 4: reviews.md edit
     args = {"path": "reviews.md"}
     has_edited, persisted = _handle_cicd_file_edit(
         args, history, wt_path, phase_state, edited_files, True, False, 4, mock_log
     )
     assert persisted is True
     
-    # Case 5: Normal file (no state change)
     args = {"path": "src/main.py"}
     has_edited, persisted = _handle_cicd_file_edit(
         args, history, wt_path, phase_state, edited_files, True, True, 5, mock_log
@@ -265,13 +239,10 @@ def test_handle_cicd_file_edit_logic():
     assert persisted is True
 
 @pytest.mark.parametrize("issue_json, description", [
-    # Case 1: Issue is CLOSED
     (json.dumps({"state": "CLOSED", "labels": [{"name": "cicd"}, {"name": "in-progress"}]}), 
      "CLOSED issue"),
-    # Case 2: Issue is OPEN but has no labels
     (json.dumps({"state": "OPEN", "labels": []}), 
      "missing labels"),
-    # Case 3: Issue is OPEN but has wrong labels
     (json.dumps({"state": "OPEN", "labels": [{"name": "bug"}]}), 
      "wrong labels"),
 ])
@@ -287,12 +258,12 @@ def test_pre_merge_check_invalid_criteria(monkeypatch, issue_json, description):
             mock_text_response("Done")
         ]
         
-        # First call returns the invalid issue JSON, second returns "Merged"
         mock_exec.side_effect = [f"exit=0\n{issue_json}", "exit=0\nMerged"]
         
         history = [{"role": "user", "content": f"Merge with {description}"}]
         mock_log = MagicMock()
         with patch('agent._check_api_health', return_value=(True, "ok")), \
+             patch('agent._setup_logger'), \
              patch('agent._setup_logger'), \
              patch('agent._detect_ctx_size', return_value=None):
             
@@ -305,3 +276,108 @@ def test_pre_merge_check_invalid_criteria(monkeypatch, issue_json, description):
         
         history_str = "".join([str(m) for m in history])
         assert "PRE-MERGE CHECK FAILED" in history_str, f"Failed to detect {description}"
+
+def test_reviewer_file_edit_blocked(monkeypatch):
+    """Test that a CICD Reviewer is blocked from editing .py files in their worktree."""
+    mock_file = MagicMock(return_value="File written")
+    monkeypatch.setitem(MAP_FN, "file", mock_file)
+    
+    with patch('agent._llm_request') as mock_llm:
+        def mock_file_response(args):
+            chunks = ['data: {"choices": [{"delta": {"content": ""}}]}']
+            payload = {
+                "choices": [{"delta": {"tool_calls": [{
+                    "index": 0, "id": "call_123", "type": "function",
+                    "function": {"name": "file", "arguments": json.dumps(args)}
+                }]}}]
+            }
+            chunks.append(f'data: {json.dumps(payload)}')
+            chunks.append('data: [DONE]')
+            resp = MagicMock()
+            resp.iter_lines.return_value = [l.encode("utf-8") for l in chunks]
+            resp.status_code = 200
+            resp.close = MagicMock()
+            return resp
+
+        mock_llm.side_effect = [
+            mock_file_response({"action": "write", "path": "/mnt/droid/repos/agent/temp/worktrees/pr-123/agent.py"}),
+            mock_text_response("Done")
+        ]
+        
+        history = [{"role": "user", "content": "# CICD Improvement Loop — Reviewer\nTest prompt"}]
+        mock_log = MagicMock()
+        
+        with patch('agent._check_api_health', return_value=(True, "ok")), \
+             patch('agent._setup_logger'), \
+             patch('agent._detect_ctx_size', return_value=None):
+            
+            run_agent_single(
+                conversation_history=history,
+                summary_state={"text": "", "up_to": 0},
+                initial_files=[],
+                log=mock_log
+            )
+        
+        assert any("Error: CICD reviewer file edit BLOCKED" in str(m.get("content", "")) for m in history)
+
+def test_push_to_main_blocked(monkeypatch):
+    """Test that a CICD Builder/Reviewer is blocked from pushing directly to main."""
+    mock_exec = MagicMock(return_value="exit=0\nPushed")
+    monkeypatch.setitem(MAP_FN, "exec_command", mock_exec)
+    
+    with patch('agent._llm_request') as mock_llm:
+        mock_llm.side_effect = [
+            mock_llm_response({"command": "git push origin main"}),
+            mock_text_response("Done")
+        ]
+        
+        history = [{"role": "user", "content": "# CICD Improvement Loop — Builder\nTest prompt"}]
+        mock_log = MagicMock()
+        
+        with patch('agent._check_api_health', return_value=(True, "ok")), \
+             patch('agent._setup_logger'), \
+             patch('agent._detect_ctx_size', return_value=None):
+            
+            run_agent_single(
+                conversation_history=history,
+                summary_state={"text": "", "up_to": 0},
+                initial_files=[],
+                log=mock_log
+            )
+        
+        # Flexible check for blocking message
+        assert any(
+            "Error: CICD" in str(m.get("content", "")) and 
+            "git push origin main" in str(m.get("content", "")) and 
+            "BLOCKED" in str(m.get("content", "")) 
+            for m in history
+        ), "Expected block message for push to main was not found"
+
+def test_pre_merge_warning_logged(monkeypatch):
+    """Test that a warning is logged when gh pr merge is called without viewing the issue first."""
+    mock_exec = MagicMock(return_value="exit=0\nMerged")
+    monkeypatch.setitem(MAP_FN, "exec_command", mock_exec)
+    
+    with patch('agent._llm_request') as mock_llm:
+        mock_llm.side_effect = [
+            mock_llm_response({"command": "gh pr merge 123 --squash"}),
+            mock_text_response("Done")
+        ]
+        
+        history = [{"role": "user", "content": "# CICD Improvement Loop — Builder\nTest prompt"}]
+        mock_log = MagicMock()
+        
+        with patch('agent._check_api_health', return_value=(True, "ok")), \
+             patch('agent._setup_logger'), \
+             patch('agent._detect_ctx_size', return_value=None):
+            
+            run_agent_single(
+                conversation_history=history,
+                summary_state={"text": "", "up_to": 0},
+                initial_files=[],
+                log=mock_log
+            )
+        
+        calls = mock_log.warning.call_args_list
+        assert any("PRE-MERGE CHECK required" in call[0][0] for call in calls), \
+            "Warning log for PRE-MERGE CHECK was not found"
