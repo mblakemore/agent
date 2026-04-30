@@ -3,7 +3,7 @@ import logging
 import json
 import requests
 from unittest.mock import patch, MagicMock
-from agent import run_agent_single, CancelledError, _handle_auto_guidance
+from agent import run_agent_single, CancelledError, _handle_auto_guidance, _pick_model_interactive
 
 # Setup basic logging to avoid noise
 logging.basicConfig(level=logging.ERROR)
@@ -692,3 +692,56 @@ def test_boot_sequence_no_tty(mock_stderr):
                 found = True
                 break
         assert not found, "Boot message 'starting agent...' should NOT be found in stderr.write calls"
+
+@patch('agent._emit')
+@patch('agent._list_available_models')
+@patch('agent.input')
+def test_pick_model_interactive_success(mock_input, mock_list, mock_emit):
+    """Test successful model selection."""
+    mock_list.return_value = ["model-1", "model-2", "model-3"]
+    mock_input.return_value = "2"
+    result = _pick_model_interactive("model-1", "http://api.test")
+    assert result == "model-2"
+    assert mock_emit.called
+
+@patch('agent._emit')
+@patch('agent._list_available_models')
+@patch('agent.input')
+def test_pick_model_interactive_cancel(mock_input, mock_list, mock_emit):
+    """Test canceling model selection (blank input)."""
+    mock_list.return_value = ["model-1", "model-2"]
+    mock_input.return_value = ""
+    result = _pick_model_interactive("model-1", "http://api.test")
+    assert result is None
+
+@patch('agent._emit')
+@patch('agent._list_available_models')
+@patch('agent.input')
+def test_pick_model_interactive_invalid_input(mock_input, mock_list, mock_emit):
+    """Test invalid input (non-integer or out of range)."""
+    mock_list.return_value = ["model-1", "model-2"]
+    mock_input.side_effect = ["abc", "5", "1"]
+    result = _pick_model_interactive("model-1", "http://api.test")
+    assert result is None
+    assert any(args[0] == "on_notice" and "Invalid selection" in args[2] 
+               for args, kwargs in mock_emit.call_args_list)
+
+@patch('agent._emit')
+@patch('agent._list_available_models')
+@patch('agent.input')
+def test_pick_model_interactive_keyboard_interrupt(mock_input, mock_list, mock_emit):
+    """Test KeyboardInterrupt handling."""
+    mock_list.return_value = ["model-1", "model-2"]
+    mock_input.side_effect = KeyboardInterrupt
+    result = _pick_model_interactive("model-1", "http://api.test")
+    assert result is None
+
+@patch('agent._emit')
+@patch('agent._list_available_models')
+def test_pick_model_interactive_no_models(mock_list, mock_emit):
+    """Test case where no models are available."""
+    mock_list.return_value = []
+    result = _pick_model_interactive("model-1", "http://api.test")
+    assert result is None
+    assert any(args[0] == "on_notice" and "Could not list models from http://api.test/v1/models" in args[2] 
+               for args, kwargs in mock_emit.call_args_list)
