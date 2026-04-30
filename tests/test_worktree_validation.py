@@ -2,7 +2,7 @@ import pytest
 import os
 from pathlib import Path
 from unittest.mock import patch
-from agent import _validate_worktree_write
+from agent import _check_worktree_guard as _validate_worktree_write
 
 def test_validate_worktree_write_none_inputs():
     assert _validate_worktree_write(None, "some/path") == (False, None)
