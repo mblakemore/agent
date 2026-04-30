@@ -408,3 +408,102 @@ def test_run_agent_interactive_init_and_exit(mock_logger, mock_summary, mock_mai
     assert mock_summary.health.called
     assert mock_input.called
     assert mock_emit.called
+
+# --- TESTS FOR ISSUE #499: Context Overflow Recovery ---
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_context_overflow_recovery_success(mock_config, mock_llm, mock_emit):
+    """Tests that the agent successfully recovers from context overflow by reducing history."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768},
+        "summary": {"enabled": True, "base_url": "http://localhost:8082"}
+    }.get(k)
+    
+    from agent import ContextOverflowError
+    
+    # Simulate: Overflow -> Overflow -> Success
+    mock_llm.side_effect = [
+        ContextOverflowError("Context window exceeded"),
+        ContextOverflowError("Context window exceeded"),
+        create_mock_response(content="Finally fit!")
+    ]
+    
+    # Need enough history to allow reduction
+    conversation_history = [
+        {"role": "user", "content": "Msg 1"}, {"role": "assistant", "content": "Resp 1"},
+        {"role": "user", "content": "Msg 2"}, {"role": "assistant", "content": "Resp 2"},
+        {"role": "user", "content": "Msg 3"}, {"role": "assistant", "content": "Resp 3"},
+        {"role": "user", "content": "Msg 4"}, {"role": "assistant", "content": "Resp 4"},
+    ]
+    summary_state = {"text": "", "up_to": 0}
+    
+    result = run_agent_single(conversation_history, summary_state, [], log)
+    
+    assert result == "done"
+    assert mock_llm.call_count == 3
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_context_overflow_max_retries_failure(mock_config, mock_llm, mock_emit):
+    """Tests that the agent returns 'error' after exceeding _CTX_REDUCE_MAX attempts."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768},
+        "summary": {"enabled": True, "base_url": "http://localhost:8082"}
+    }.get(k)
+    
+    from agent import ContextOverflowError
+    
+    # Always raise overflow. _CTX_REDUCE_MAX is 10.
+    mock_llm.side_effect = [ContextOverflowError("Still too big")] * 15
+    
+    conversation_history = [{"role": "user", "content": "test"}] * 20
+    summary_state = {"text": "", "up_to": 0}
+    
+    result = run_agent_single(conversation_history, summary_state, [], log)
+    
+    assert result == "error"
+    assert any(args[0] == "on_error" for args, kwargs in mock_emit.call_args_list)
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_context_overflow_summary_truncation(mock_config, mock_llm, mock_emit):
+    """Tests that the agent truncates the summary when history is already minimal."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768},
+        "summary": {"enabled": True, "base_url": "http://localhost:8082"}
+    }.get(k)
+    
+    from agent import ContextOverflowError
+    
+    # Minimal history (2 messages)
+    conversation_history = [
+        {"role": "user", "content": "Hello"},
+        {"role": "assistant", "content": "Hi there"}
+    ]
+    # Large summary to be truncated
+    summary_state = {"text": "A" * 1000, "up_to": 0}
+    
+    # Overflow -> Success
+    mock_llm.side_effect = [
+        ContextOverflowError("Too big"),
+        create_mock_response(content="Fixed!")
+    ]
+    
+    result = run_agent_single(conversation_history, summary_state, [], log)
+    
+    assert result == "done"
+    # Check if the "truncating summary" notice was emitted
+    assert any(
+        args[0] == "on_notice" and "truncating summary" in str(args[2]) 
+        for args, kwargs in mock_emit.call_args_list
+    )
