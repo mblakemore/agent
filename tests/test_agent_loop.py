@@ -347,3 +347,34 @@ def test_run_agent_single_empty_tool_output(mock_config, mock_llm, mock_emit):
     
     assert mock_llm.call_count >= 2
     assert any("tool" in msg.get("role", "") for msg in conversation_history)
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_tool_execution_cancelled(mock_config, mock_llm, mock_emit):
+    """
+    Tests that a CancelledError raised during tool execution is correctly 
+    propagated and handled by the agent's main loop.
+    """
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768}
+    }.get(k)
+
+    # Mock LLM to call a tool
+    tool_call = {"index": 0, "id": "call_1", "function": {"name": "cancel_tool", "arguments": "{}"}}
+    mock_llm.return_value = create_mock_response(tool_calls=[tool_call])
+
+    conversation_history = [{"role": "user", "content": "Cancel me"}]
+    summary_state = {"text": "", "up_to": 0}
+
+    # Mock the tool to raise CancelledError
+    with patch.dict('agent.MAP_FN', {"cancel_tool": lambda **kwargs: exec('raise CancelledError("Cancelled")')}):
+        # In run_agent_single, the CancelledError is caught and re-raised.
+        # We check if run_agent_single returns "cancelled" or allows the error to bubble up.
+        # Based on test_streaming_cancelled, the expectation is that it returns "cancelled".
+        result = run_agent_single(conversation_history, summary_state, [], log)
+
+    assert result == "cancelled"
+    assert any(args[0] == "on_cancelled" for args, kwargs in mock_emit.call_args_list)
