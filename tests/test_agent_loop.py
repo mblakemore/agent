@@ -378,3 +378,33 @@ def test_tool_execution_cancelled(mock_config, mock_llm, mock_emit):
 
     assert result == "cancelled"
     assert any(args[0] == "on_cancelled" for args, kwargs in mock_emit.call_args_list)
+
+@patch('agent.input')
+@patch('agent.run_agent_single')
+@patch('agent._emit')
+@patch('agent._main_backend')
+@patch('agent._summary_backend')
+@patch('agent._setup_logger')
+def test_run_agent_interactive_init_and_exit(mock_logger, mock_summary, mock_main, mock_emit, mock_run, mock_input):
+    """Test the initialization sequence and immediate exit of the interactive loop."""
+    # Mock backend health checks
+    mock_main.health.return_value = (True, "ok")
+    mock_main.detect_ctx_size.return_value = 32768
+    mock_summary.health.return_value = (True, "ok")
+    mock_summary.detect_ctx_size.return_value = 32768
+    
+    # Mock input to exit immediately
+    mock_input.return_value = "quit"
+    
+    # Mock logger to avoid file creation
+    mock_logger.return_value = (MagicMock(), "log_path", "err_path")
+    
+    # Execute
+    from agent import run_agent_interactive
+    run_agent_interactive(tui=False, auto=False)
+    
+    # Assertions
+    assert mock_main.health.called
+    assert mock_summary.health.called
+    assert mock_input.called
+    assert mock_emit.called
