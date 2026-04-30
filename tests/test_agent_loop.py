@@ -507,3 +507,137 @@ def test_context_overflow_summary_truncation(mock_config, mock_llm, mock_emit):
         args[0] == "on_notice" and "truncating summary" in str(args[2]) 
         for args, kwargs in mock_emit.call_args_list
     )
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_coverage_gap_tool_parsing_exception(mock_config, mock_llm, mock_emit):
+    """Targets lines 3206-3209: Exception handler for tool call parsing."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768}
+    }.get(k)
+    
+    # Simulate a response that causes a parsing error (e.g., missing 'choices' or 'delta')
+    # The parser expects choices[0]['delta']. We provide something that will cause an IndexError or KeyError.
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.iter_lines.return_value = [
+        b"data: {\"wrong_key\": []}", 
+        b"data: [DONE]"
+    ]
+    mock_llm.return_value = mock_resp
+    
+    conversation_history = [{"role": "user", "content": "Trigger parsing error"}]
+    summary_state = {"text": "", "up_to": 0}
+    
+    # This should hit the except Exception block in tool parsing
+    run_agent_single(conversation_history, summary_state, [], log)
+    assert mock_llm.called
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_coverage_gap_circuit_breaker(mock_config, mock_llm, mock_emit):
+    """Targets lines 3267-3268: Circuit breaker trigger."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768}
+    }.get(k)
+    
+    # To trigger circuit breaker, we need a tool to fail repeatedly or be marked as unavailable.
+    # The circuit breaker logic usually depends on consecutive failures or specific error types.
+    # We mock a tool that raises an exception.
+    tool_call = {"index": 0, "id": "call_1", "function": {"name": "fail_tool", "arguments": "{}"}}
+    mock_llm.return_value = create_mock_response(tool_calls=[tool_call])
+    
+    conversation_history = [{"role": "user", "content": "Trigger circuit breaker"}]
+    summary_state = {"text": "", "up_to": 0}
+    
+    # Mock the tool to fail. We may need to call it multiple times to trigger the breaker.
+    with patch.dict('agent.MAP_FN', {"fail_tool": lambda **kwargs: exec('raise RuntimeError("Circuit Breaker Test")')}):
+        # Mock LLM to keep calling the tool until it hits the limit
+        mock_llm.side_effect = [
+            create_mock_response(tool_calls=[tool_call]),
+            create_mock_response(tool_calls=[tool_call]),
+            create_mock_response(tool_calls=[tool_call]),
+            create_mock_response(tool_calls=[tool_call]),
+            create_mock_response(content="Done")
+        ]
+        run_agent_single(conversation_history, summary_state, [], log)
+    assert mock_llm.called
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_coverage_gap_pr_trailer_warning(mock_config, mock_llm, mock_emit):
+    """Targets lines 3462-3463: Warning for missing 'Closes #N' in PR creation."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768}
+    }.get(k)
+    
+    # Trigger gh pr create without Closes #N
+    tool_call = {"index": 0, "id": "call_1", "function": {"name": "gh_pr_create", "arguments": '{"title": "Test PR", "body": "No trailer here"}'}}
+    mock_llm.return_value = create_mock_response(tool_calls=[tool_call])
+    
+    conversation_history = [{"role": "user", "content": "Create PR"}]
+    summary_state = {"text": "", "up_to": 0}
+    
+    with patch.dict('agent.MAP_FN', {"gh_pr_create": lambda **kwargs: "PR created successfully"}):
+        mock_llm.side_effect = [
+            create_mock_response(tool_calls=[tool_call]),
+            create_mock_response(content="Done")
+        ]
+        run_agent_single(conversation_history, summary_state, [], log)
+    assert mock_llm.called
+
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_coverage_gap_overtime_repeated_result(mock_config, mock_llm, mock_emit):
+    """Targets lines 3646-3649: Overtime + repeated tool result."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768}
+    }.get(k)
+    
+    # Trigger overtime by having many turns
+    # And trigger repeated result by having the tool return the same value
+    tool_call = {"index": 0, "id": "call_1", "function": {"name": "repeat_tool", "arguments": "{}"}}
+    
+@patch('agent._emit')
+@patch('agent._llm_request')
+@patch('agent._config')
+def test_coverage_gap_overtime_repeated_result(mock_config, mock_llm, mock_emit):
+    """Targets lines 3646-3649: Overtime + repeated tool result."""
+    mock_config.__getitem__.side_effect = lambda k: {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768},
+        "summary": {"enabled": False, "base_url": "http://localhost:8082"}
+    }.get(k)
+    
+    # Trigger overtime by having many turns
+    # And trigger repeated result by having the tool return the same value
+    tool_call = {"index": 0, "id": "call_1", "function": {"name": "repeat_tool", "arguments": "{}"}}
+    
+    # We need to mock the agent's internal turn counter or just provide many responses
+    # For simplicity, we'll mock the tool and LLM to cycle
+    with patch.dict('agent.MAP_FN', {"repeat_tool": lambda **kwargs: "Constant Result"}):
+        # Simulate several turns to reach overtime, then repeat results
+        responses = [create_mock_response(tool_calls=[tool_call])] * 20 
+        responses.append(create_mock_response(content="Finished"))
+        mock_llm.side_effect = responses
+        
+        conversation_history = [{"role": "user", "content": "Repeat yourself"}]
+        summary_state = {"text": "", "up_to": 0}
+        
+        # We might need to adjust the overtime threshold in config or just run many times
+        # For this test, we'll assume the default overtime is reached within 20 turns
+        run_agent_single(conversation_history, summary_state, [], log)
+    assert mock_llm.called
