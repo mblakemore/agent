@@ -745,3 +745,74 @@ def test_pick_model_interactive_no_models(mock_list, mock_emit):
     assert result is None
     assert any(args[0] == "on_notice" and "Could not list models from http://api.test/v1/models" in args[2] 
                for args, kwargs in mock_emit.call_args_list)
+
+def test_validate_tool_call_blocks_pr_with_syntax_errors(monkeypatch):
+    import tempfile
+    import os
+    from unittest.mock import MagicMock
+    from agent import _validate_tool_call
+    
+    # 1. Create a temporary file with a syntax error
+    with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w") as tmp:
+        tmp.write("if True: \n    print('missing colon' ") # Intentional syntax error
+        tmp_path = tmp.name
+
+    try:
+        # 2. Patch the global set in agent.py
+        monkeypatch.setattr("agent._cicd_edited_files", {tmp_path})
+        
+        # 3. Use a mock logger
+        mock_log = MagicMock()
+
+        # 4. Define the tool call arguments
+        func_name = "exec_command"
+        func_args = {"command": "gh pr create --body 'Closes #519'"}
+        
+        is_blocked, message = _validate_tool_call(
+            func_name=func_name,
+            func_args=func_args,
+            cicd_issue_view_called=False,
+            log=mock_log,
+            is_cicd_builder=True
+        )
+
+        # 5. Verify the result
+        assert is_blocked is True
+        assert "Error: CICD gh pr create BLOCKED" in message
+        assert tmp_path in message
+
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+def test_validate_tool_call_allows_pr_with_valid_syntax(monkeypatch):
+    import tempfile
+    import os
+    from unittest.mock import MagicMock
+    from agent import _validate_tool_call
+    
+    with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w") as tmp:
+        tmp.write("print('Hello World')")
+        tmp_path = tmp.name
+
+    try:
+        monkeypatch.setattr("agent._cicd_edited_files", {tmp_path})
+        mock_log = MagicMock()
+
+        func_name = "exec_command"
+        func_args = {"command": "gh pr create --body 'Closes #519'"}
+        
+        is_blocked, message = _validate_tool_call(
+            func_name=func_name,
+            func_args=func_args,
+            cicd_issue_view_called=False,
+            log=mock_log,
+            is_cicd_builder=True
+        )
+
+        # Should NOT be blocked by syntax errors
+        assert is_blocked is False or "py_compile" not in (message or "")
+
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
