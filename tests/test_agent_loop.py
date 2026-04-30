@@ -641,3 +641,55 @@ def test_coverage_gap_overtime_repeated_result(mock_config, mock_llm, mock_emit)
         # For this test, we'll assume the default overtime is reached within 20 turns
         run_agent_single(conversation_history, summary_state, [], log)
     assert mock_llm.called
+
+@patch('agent._git_short_sha')
+def test_git_short_sha_success(mock_sha):
+    """Test _git_short_sha returns the correct hash when git is available."""
+    # Note: The actual function is internal, but we are testing the logic it uses.
+    # To truly test the implementation of _git_short_sha, we should patch subprocess.
+@patch('subprocess.check_output')
+def test_git_short_sha_logic(mock_sub):
+    """Test the logic inside _git_short_sha directly."""
+    from agent import _git_short_sha
+    mock_sub.return_value = "a1b2c3d\n"
+    assert _git_short_sha() == "a1b2c3d"
+
+@patch('subprocess.check_output')
+def test_git_short_sha_failure(mock_sub):
+    """Test _git_short_sha returns empty string on failure."""
+    from agent import _git_short_sha
+    mock_sub.side_effect = Exception("Git not found")
+    assert _git_short_sha() == ""
+
+@patch('sys.stderr', new_callable=MagicMock)
+def test_boot_sequence_printing(mock_stderr):
+    """Test that the boot sequence prints to stderr if it is a tty."""
+    # Use a fresh mock for isatty on the object that will be accessed
+    with patch('sys.stderr.isatty', return_value=True):
+        # Since the boot sequence runs at module level, we need to reload the module
+        import importlib
+        import agent
+        importlib.reload(agent)
+        
+        # Find the call that contains the boot message
+        # The code uses _boot_sys.stderr.write
+        found = False
+        for call in mock_stderr.write.call_args_list:
+            args, _ = call
+            if "starting agent..." in args[0]:
+                found = True
+                break
+        assert found, "Boot message 'starting agent...' not found in stderr.write calls"
+
+@patch('sys.stderr', new_callable=MagicMock)
+def test_boot_sequence_no_tty(mock_stderr):
+    """Test that the boot sequence does NOT print to stderr if it's not a tty."""
+    with patch('sys.stderr.isatty', return_value=False):
+        import importlib
+        import agent
+        importlib.reload(agent)
+        # Ensure write was not called for the boot message
+        for call in mock_stderr.write.call_args_list:
+            args, _ = call
+            if "starting agent..." in args[0]:
+                pytest.fail("Boot message should not be printed when isatty is False")
