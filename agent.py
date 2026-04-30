@@ -19,13 +19,18 @@ __version__ = "0.1.0"
 # on_session_start can erase this line via cursor_up_clear before the
 # banner renders.
 _BOOT_LINES_PRINTED = 0
-if __name__ == "__main__":
+
+def _do_boot() -> int:
+    """Prints the boot sequence to stderr if it is a tty."""
     import sys as _boot_sys
     if _boot_sys.stderr.isatty():
         _boot_sys.stderr.write("\033[2m  starting agent...\033[0m\n")
         _boot_sys.stderr.flush()
-        _BOOT_LINES_PRINTED = 1
+        return 1
+    return 0
 
+if __name__ == "__main__":
+    _BOOT_LINES_PRINTED = _do_boot()
 
 def _git_short_sha() -> str:
     """Short git SHA of the current checkout, or "" if unavailable.

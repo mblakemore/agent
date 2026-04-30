@@ -664,15 +664,12 @@ def test_git_short_sha_failure(mock_sub):
 @patch('sys.stderr', new_callable=MagicMock)
 def test_boot_sequence_printing(mock_stderr):
     """Test that the boot sequence prints to stderr if it is a tty."""
-    # Use a fresh mock for isatty on the object that will be accessed
+    # Mock isatty to return True to trigger the print
     with patch('sys.stderr.isatty', return_value=True):
-        # Since the boot sequence runs at module level, we need to reload the module
-        import importlib
         import agent
-        importlib.reload(agent)
+        agent._do_boot()
         
-        # Find the call that contains the boot message
-        # The code uses _boot_sys.stderr.write
+        # Verify the specific boot message was written to stderr
         found = False
         for call in mock_stderr.write.call_args_list:
             args, _ = call
@@ -685,11 +682,13 @@ def test_boot_sequence_printing(mock_stderr):
 def test_boot_sequence_no_tty(mock_stderr):
     """Test that the boot sequence does NOT print to stderr if it's not a tty."""
     with patch('sys.stderr.isatty', return_value=False):
-        import importlib
         import agent
-        importlib.reload(agent)
+        agent._do_boot()
         # Ensure write was not called for the boot message
+        found = False
         for call in mock_stderr.write.call_args_list:
             args, _ = call
             if "starting agent..." in args[0]:
-                pytest.fail("Boot message should not be printed when isatty is False")
+                found = True
+                break
+        assert not found, "Boot message 'starting agent...' should NOT be found in stderr.write calls"
