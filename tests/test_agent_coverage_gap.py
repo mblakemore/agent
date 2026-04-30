@@ -1,8 +1,12 @@
 import pytest
 import logging
 import os
+import sys
 import agent
 from unittest.mock import patch, MagicMock
+import importlib
+import runpy
+import io
 
 log = logging.getLogger(__name__)
 
@@ -66,3 +70,29 @@ def test_build_summary_prompt_with_cicd_globals():
         (agent._cicd_worktree_path, agent._cicd_edited_files, agent._cicd_issue_number,
          agent._cicd_pr_number, agent._cicd_branch) = orig
 
+def test_boot_sequence_tty():
+    """Test the boot sequence when stderr is a TTY."""
+    captured_output = io.StringIO()
+    # Patch sys.stderr and its isatty method
+    # Also patch agent.main to avoid running the full agent
+    with patch('sys.stderr', new=captured_output), \
+         patch('sys.stderr.isatty', return_value=True), \
+         patch('agent.main'):
+        # Mock sys.argv to avoid argparse errors if main() is called
+        with patch.object(sys, 'argv', ['agent']):
+            runpy.run_module('agent', run_name='__main__')
+    
+    output = captured_output.getvalue()
+    assert "\033[2m  starting agent...\033[0m" in output
+
+def test_boot_sequence_no_tty():
+    """Test the boot sequence when stderr is NOT a TTY."""
+    captured_output = io.StringIO()
+    with patch('sys.stderr', new=captured_output), \
+         patch('sys.stderr.isatty', return_value=False), \
+         patch('agent.main'):
+        with patch.object(sys, 'argv', ['agent']):
+            runpy.run_module('agent', run_name='__main__')
+    
+    output = captured_output.getvalue()
+    assert "\033[2m  starting agent...\033[0m" not in output
