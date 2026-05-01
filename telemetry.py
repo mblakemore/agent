@@ -23,6 +23,7 @@ import logging
 import os
 import socket
 import time
+import threading
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -269,8 +270,17 @@ def shutdown() -> None:
     if _provider is None:
         return
     try:
-        _provider.shutdown()
+        def _do_shutdown():
+            try:
+                _provider.shutdown()
+            except Exception:
+                logger.debug("telemetry.shutdown failed", exc_info=True)
+
+        t = threading.Thread(target=_do_shutdown, daemon=True)
+        t.start()
+        t.join(timeout=2.0)
     except Exception:
         logger.debug("telemetry.shutdown failed", exc_info=True)
     finally:
         _provider = None
+
