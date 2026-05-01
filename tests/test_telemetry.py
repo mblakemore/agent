@@ -307,6 +307,84 @@ class TestDisabledNoOps(_BaseTelemetryTest):
             )
 
 
+class TestOtelLoggersSilenced(_BaseTelemetryTest):
+    """Regression for issue #530 — OTel export-retry loggers must be CRITICAL.
+
+    This test works without a real opentelemetry install by stubbing out the
+    lazy imports inside ``init()`` with MagicMock objects.  It then asserts
+    that the three noisy loggers are set to ``logging.CRITICAL`` after a
+    successful ``init()`` call.
+    """
+
+    def _make_fake_import(self, real_import):
+        """Return an __import__ shim that stubs all opentelemetry sub-imports."""
+        import types
+
+        # Build a minimal fake package tree so the from-import dance in init()
+        # resolves without errors.
+        fake_resource = mock.MagicMock(name="Resource")
+        fake_resource.create.return_value = mock.MagicMock()
+
+        fake_meter_provider_cls = mock.MagicMock(name="MeterProvider")
+        fake_provider_instance = mock.MagicMock()
+        fake_meter_instance = mock.MagicMock()
+        fake_provider_instance.get_meter.return_value = fake_meter_instance
+        fake_meter_provider_cls.return_value = fake_provider_instance
+
+        fake_reader_cls = mock.MagicMock(name="PeriodicExportingMetricReader")
+        fake_exporter_cls = mock.MagicMock(name="OTLPMetricExporter")
+
+        _stubs = {
+            "opentelemetry.sdk.resources": mock.MagicMock(Resource=fake_resource),
+            "opentelemetry.sdk.metrics": mock.MagicMock(MeterProvider=fake_meter_provider_cls),
+            "opentelemetry.sdk.metrics.export": mock.MagicMock(
+                PeriodicExportingMetricReader=fake_reader_cls
+            ),
+            "opentelemetry.exporter.otlp.proto.http.metric_exporter": mock.MagicMock(
+                OTLPMetricExporter=fake_exporter_cls
+            ),
+            "opentelemetry.metrics": mock.MagicMock(Observation=mock.MagicMock()),
+        }
+
+        def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name in _stubs:
+                return _stubs[name]
+            if name == "opentelemetry" or name.startswith("opentelemetry."):
+                mod = types.ModuleType(name)
+                return mod
+            return real_import(name, globals, locals, fromlist, level)
+
+        return fake_import
+
+    def test_otel_export_loggers_set_to_critical_after_init(self) -> None:
+        """After init(), the three noisy OTel loggers must be CRITICAL."""
+        os.environ["AGENTPY_TELEMETRY"] = "1"
+
+        import builtins
+        real_import = builtins.__import__
+        fake_import = self._make_fake_import(real_import)
+
+        import telemetry
+
+        with mock.patch.object(builtins, "__import__", side_effect=fake_import):
+            result = telemetry.init()
+
+        self.assertTrue(result, "init() should return True with stubbed OTel")
+
+        noisy_loggers = [
+            "opentelemetry.sdk.metrics._internal.export",
+            "opentelemetry.exporter.otlp.proto.http",
+            "opentelemetry",
+        ]
+        for name in noisy_loggers:
+            lvl = logging.getLogger(name).level
+            self.assertEqual(
+                lvl,
+                logging.CRITICAL,
+                f"logger {name!r} should be CRITICAL (50) but got {lvl}",
+            )
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     unittest.main(verbosity=2)
