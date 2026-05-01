@@ -126,6 +126,17 @@ def init() -> bool:
     provider = MeterProvider(resource=resource, metric_readers=[reader])
     meter = provider.get_meter("agentpy")
 
+    # Silence the OTel SDK's noisy export-retry loggers so that transient
+    # endpoint unavailability (e.g. Prometheus not running) does not spam
+    # stderr.  These failures are expected and non-actionable at the terminal;
+    # set CRITICAL so only truly fatal events surface.
+    for _noisy_logger in (
+        "opentelemetry.sdk.metrics._internal.export",
+        "opentelemetry.exporter.otlp.proto.http",
+        "opentelemetry",
+    ):
+        logging.getLogger(_noisy_logger).setLevel(logging.CRITICAL)
+
     # Base meters — always created when telemetry is enabled.
     # NOTE: NO `_total` suffix — Prom appends it during OTLP translation.
     _cycles = meter.create_counter("agentpy_cycles", description="cycles run")
