@@ -26,7 +26,7 @@ _DEFAULT_CONFIG = {
     "api_url": "",
     "api_key": "",
     "origin": "http://localhost:8000",
-    "model": "claude-v4.5-sonnet",
+    "model": "claude-v4.6-sonnet",
     "poll_interval": 0.3,
     "poll_backoff": 1.5,
     "poll_max_interval": 5.0,
