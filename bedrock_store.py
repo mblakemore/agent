@@ -332,7 +332,7 @@ def health_check(
     key: str,
     *,
     timeout: float = HEALTH_CHECK_TIMEOUT_SECONDS,
-    model: str = "claude-v4.5-haiku",
+    model: str = "claude-v4.6-sonnet",
 ) -> tuple[bool, str | None]:
     """Probe a bedrock endpoint.
 
