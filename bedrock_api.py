@@ -75,7 +75,8 @@ class BedrockChatAPI:
             return None
 
     def send(self, prompt: str, enable_reasoning: bool = False,
-             conversation_id: str | None = None) -> tuple[str, str]:
+             conversation_id: str | None = None,
+             inference_params: dict | None = None) -> tuple[str, str]:
         """Send a message. Returns (conversation_id, message_id).
 
         If conversation_id is provided, continues that conversation on the server.
@@ -90,6 +91,9 @@ class BedrockChatAPI:
             payload["conversationId"] = conversation_id
         if enable_reasoning:
             payload["enableReasoning"] = True
+        if inference_params:
+            # Keys inside must be camelCase: maxTokens, topP, topK, stopSequences
+            payload["inferenceParams"] = inference_params
 
         resp = self.session.post(f"{self.api_url}/conversation", json=payload, timeout=30)
         resp.raise_for_status()
@@ -160,19 +164,22 @@ class BedrockChatAPI:
         return resp.json()
 
     def send_and_wait(self, prompt: str, enable_reasoning: bool = False,
-                      cancel_check=None) -> dict:
+                      cancel_check=None,
+                      inference_params: dict | None = None) -> dict:
         """Send a message and wait for the response. Returns the full assistant message."""
-        conv_id, _ = self.send(prompt, enable_reasoning)
+        conv_id, _ = self.send(prompt, enable_reasoning, inference_params=inference_params)
         return self.poll(conv_id, cancel_check=cancel_check)
 
     def send_and_wait_conv(self, prompt: str, conversation_id: str | None = None,
-                           cancel_check=None) -> tuple[dict, str]:
+                           cancel_check=None,
+                           inference_params: dict | None = None) -> tuple[dict, str]:
         """Send a message and wait for the response, returning the conversation_id.
 
         Returns (assistant_message, conversation_id). For continuing conversations,
         uses message-specific polling for reliable response retrieval.
         """
-        conv_id, msg_id = self.send(prompt, conversation_id=conversation_id)
+        conv_id, msg_id = self.send(prompt, conversation_id=conversation_id,
+                                    inference_params=inference_params)
         if conversation_id:
             msg = self.poll_message(conv_id, msg_id, cancel_check=cancel_check)
         else:
