@@ -279,23 +279,79 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         return f"[session: {sid}]\nCommand started in background. Poll with session_id to check output."
 
     # ── Foreground execution ──────────────────────────────────────────
+    # Collect stdout in a background reader thread so the main thread
+    # can poll the cancel flag (double-Escape) and deadline without
+    # blocking on subprocess.run(). When cancel fires, the subprocess
+    # is killed immediately and CancelledError propagates to the caller.
     try:
-        result = subprocess.run(
+        import cancel as _cancel_mod
+        _cancel_available = True
+    except ImportError:
+        _cancel_available = False
+
+    import time as _time
+
+    try:
+        proc = subprocess.Popen(
             ['bash', '-c', f'{command} 2>&1'],
             cwd=home_cwd,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=timeout,
         )
-    except subprocess.TimeoutExpired:
+    except Exception as e:
+        return f"Error running command: {e}"
+
+    deadline = _time.monotonic() + timeout
+    output_parts: list = []
+    _reader_done = threading.Event()
+
+    def _collect_stdout():
+        try:
+            for chunk in iter(proc.stdout.readline, ''):
+                output_parts.append(chunk)
+        except Exception:
+            pass
+        finally:
+            _reader_done.set()
+
+    reader_thread = threading.Thread(target=_collect_stdout, daemon=True)
+    reader_thread.start()
+
+    timed_out = False
+    _POLL_INTERVAL = 0.05  # 50 ms — responsive to double-Escape
+
+    try:
+        while not _reader_done.wait(timeout=_POLL_INTERVAL):
+            if _cancel_available and _cancel_mod.is_cancelled():
+                proc.kill()
+                proc.wait()
+                reader_thread.join(timeout=1.0)
+                raise _cancel_mod.CancelledError()
+            if _time.monotonic() > deadline:
+                proc.kill()
+                proc.wait()
+                reader_thread.join(timeout=1.0)
+                timed_out = True
+                break
+    finally:
+        # Ensure the reader thread always finishes before we proceed.
+        reader_thread.join(timeout=2.0)
+
+    if timed_out:
         return (
             f"[session: {sid}] (timed out after {timeout}s)\n"
             f"The command is no longer running. Try a shorter operation or "
             f"use background=true for long-running commands."
         )
-    except Exception as e:
-        return f"Error running command: {e}"
 
+    proc.wait()
+
+    class _Result:
+        returncode = proc.returncode
+        stdout = "".join(output_parts)
+
+    result = _Result()
     output = result.stdout.rstrip('\n')
 
     # Post-write sanitizer: strip trailing EOF/heredoc junk from written files.
