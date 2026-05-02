@@ -174,7 +174,43 @@ def test_json_corruption():
     p = Path(_TASKS_FILE)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("NOT JSON", encoding='utf-8')
-    
+
     # _load_tasks should handle this and return []
     res = fn(action="list")
     assert res == "No tasks."
+
+
+# ── Issue #535: description must be optional (no KeyError when omitted) ──
+
+def test_list_without_description_arg():
+    """Calling task_tracker without description must not raise KeyError."""
+    fn(action="add", description="A task")
+    # Pass only action — model may omit description entirely
+    res = fn(**{"action": "list"})
+    assert "A task" in res
+
+
+def test_done_without_description_arg():
+    """action=done without description must not raise."""
+    fn(action="add", description="Task to complete")
+    res = fn(**{"action": "done", "task_id": 1})
+    assert "Completed task #1" in res
+
+
+def test_update_without_description_arg():
+    """action=update without description must not raise."""
+    fn(action="add", description="Task to update")
+    res = fn(**{"action": "update", "task_id": 1, "status": "in_progress"})
+    assert "Updated task #1" in res
+
+
+def test_task_missing_description_field_list():
+    """Tasks stored without 'description' key must not crash list action."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    # Write a task record that lacks the 'description' field
+    p.write_text(json.dumps([{"id": 1, "status": "open", "created": "2026-01-01T00:00:00"}]) + "\n",
+                 encoding="utf-8")
+    res = fn(action="list")
+    assert "#1" in res
+    assert "KeyError" not in res
