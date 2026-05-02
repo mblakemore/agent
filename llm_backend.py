@@ -353,14 +353,29 @@ _DEV_MODE_PREAMBLE_RESERVE_CHARS = 8000
 
 
 _MODEL_CONTEXT_CHARS = {
-    "claude-v4.5-opus": 700000,
+    "claude-v4.6-opus": 700000,
+    "claude-v4.6-sonnet": 700000,
+    "claude-v4.5-opus": 700000,  # keep for back-compat during rollover
     "claude-v4.5-sonnet": 700000,
     "claude-v4.5-haiku": 700000,
     "claude-v3.7-sonnet": 700000,
+    "claude-v3.5-haiku": 700000,
+    "claude-v3-opus": 700000,
+    "llama-4-maverick-17b-instruct": 450000,
+    "llama-4-scout-17b-instruct": 450000,
+    "llama3-3-70b-instruct": 450000,
     "llama": 450000,
+    "mistral-large-2": 112000,
+    "mistral-large": 112000,
     "mistral": 112000,
+    "mixtral": 112000,
+    "deepseek-r1": 224000,
     "deepseek": 224000,
+    "amazon-nova-pro": 450000,
+    "amazon-nova-lite": 450000,
+    "amazon-nova-micro": 450000,
     "amazon-nova": 450000,
+    "qwen3-32b": 112000,
     "qwen": 112000,
 }
 
