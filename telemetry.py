@@ -41,6 +41,10 @@ _cycles: Any = None
 _tokens: Any = None
 _errors: Any = None
 _cycle_duration: Any = None
+_tool_calls: Any = None
+_tool_errors: Any = None
+_hallucinations: Any = None
+_summaries: Any = None
 
 # Verbose-only meters. Created only when verbose is enabled.
 _turns: Any = None
@@ -138,6 +142,23 @@ def init() -> bool:
     ):
         logging.getLogger(_noisy_logger).setLevel(logging.CRITICAL)
 
+    # New metrics for tool execution and agent health.
+    _tool_calls = meter.create_counter(
+        "agentpy_tool_calls",
+        description="tool invocations by tool name",
+    )
+    _tool_errors = meter.create_counter(
+        "agentpy_tool_errors",
+        description="tool invocation errors by tool name",
+    )
+    _hallucinations = meter.create_counter(
+        "agentpy_hallucinations",
+        description="hallucination guard firings",
+    )
+    _summaries = meter.create_counter(
+        "agentpy_summaries",
+        description="context summarization events",
+    )
     # Base meters — always created when telemetry is enabled.
     # NOTE: NO `_total` suffix — Prom appends it during OTLP translation.
     _cycles = meter.create_counter("agentpy_cycles", description="cycles run")
@@ -284,3 +305,39 @@ def shutdown() -> None:
     finally:
         _provider = None
 
+
+def record_tool_call(name: str) -> None:
+    """Record a tool call by name. No-op when telemetry is disabled."""
+    if not _enabled or _tool_calls is None:
+        return
+    try:
+        _tool_calls.add(1, {"tool": name})
+    except Exception:
+        logger.debug("telemetry.record_tool_call failed", exc_info=True)
+
+def record_tool_error(name: str, kind: str) -> None:
+    """Record a tool error by name and kind. No-op when telemetry is disabled."""
+    if not _enabled or _tool_errors is None:
+        return
+    try:
+        _tool_errors.add(1, {"tool": name, "kind": kind})
+    except Exception:
+        logger.debug("telemetry.record_tool_error failed", exc_info=True)
+
+def record_hallucination() -> None:
+    """Record a hallucination guard firing. No-op when telemetry is disabled."""
+    if not _enabled or _hallucinations is None:
+        return
+    try:
+        _hallucinations.add(1)
+    except Exception:
+        logger.debug("telemetry.record_hallucination failed", exc_info=True)
+
+def record_summary() -> None:
+    """Record a context summarization event. No-op when telemetry is disabled."""
+    if not _enabled or _summaries is None:
+        return
+    try:
+        _summaries.add(1)
+    except Exception:
+        logger.debug("telemetry.record_summary failed", exc_info=True)
