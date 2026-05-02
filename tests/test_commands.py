@@ -132,6 +132,7 @@ class TestHandleCommand(unittest.TestCase):
         ctx.async_summarizer.reset = um.Mock()
         commands.handle_command("/clear", ctx)
         ctx.async_summarizer.reset.assert_called_once()
+
     def test_tools_no_render_tools_capability(self):
         ctx = _make_ctx()
         # Use a SimpleNamespace to ensure render_tools is missing
@@ -158,7 +159,7 @@ class TestHandleCommand(unittest.TestCase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             commands.handle_command("/tools not-a-number", ctx)
-        self.assertTrue(any(level == "warn" and "usage: /tools" in msg 
+        self.assertTrue(any(level == "warn" and "usage: /tools" in msg
                             for level, msg in notices))
 
     def test_tools_non_positive_int_limit(self):
@@ -168,7 +169,7 @@ class TestHandleCommand(unittest.TestCase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             commands.handle_command("/tools 0", ctx)
-        self.assertTrue(any(level == "warn" and "positive integer" in msg 
+        self.assertTrue(any(level == "warn" and "positive integer" in msg
                             for level, msg in notices))
 
     def test_tools_all_keyword(self):
@@ -204,6 +205,7 @@ class TestHandleCommand(unittest.TestCase):
                 commands.handle_command("/phase", ctx)
             self.assertIn("Error loading tasks: disk error", buf.getvalue())
 
+
 class TestVerboseCli(unittest.TestCase):
     """--verbose CLI flag must be forwarded into run_agent_interactive."""
 
@@ -236,6 +238,69 @@ class TestVerboseCli(unittest.TestCase):
         self.assertTrue(cb.verbose)
         cb2 = _cb.TerminalCallbacks(verbose=False)
         self.assertFalse(cb2.verbose)
+
+
+class TestAgentWizard:
+    """Tests for the /agent scaffold wizard (pytest-style, uses tmp_path)."""
+
+    def _run_wizard(self, monkeypatch, tmp_path, inputs):
+        monkeypatch.chdir(tmp_path)
+        input_iter = iter(inputs)
+        monkeypatch.setattr("builtins.input", lambda prompt="": next(input_iter))
+        ctx = _make_ctx()
+        import unittest.mock as um
+        with um.patch("sys.stdout", io.StringIO()):
+            commands._cmd_agent(ctx, "")
+
+    def test_agent_wizard_creates_agent_md(self, monkeypatch, tmp_path):
+        """Wizard with standard inputs creates AGENT.md containing the agent name."""
+        self._run_wizard(monkeypatch, tmp_path, [
+            "TestBot",    # agent name
+            "A test bot", # role
+            "6-phase",    # loop type
+            "AGENT.md",   # filename
+            "",           # extras (none)
+        ])
+        agent_md = tmp_path / "AGENT.md"
+        assert agent_md.exists(), "AGENT.md was not created"
+        assert "TestBot" in agent_md.read_text()
+
+    def test_agent_wizard_creates_state_files(self, monkeypatch, tmp_path):
+        """Wizard creates state/current-state.json, state/focus.json, state/memories/context.json."""
+        self._run_wizard(monkeypatch, tmp_path, [
+            "BotA", "", "", "", "",
+        ])
+        assert (tmp_path / "state" / "current-state.json").exists()
+        assert (tmp_path / "state" / "focus.json").exists()
+        assert (tmp_path / "state" / "memories" / "context.json").exists()
+
+    def test_agent_wizard_skips_existing_file(self, monkeypatch, tmp_path):
+        """Wizard does not overwrite a pre-existing AGENT.md."""
+        existing = tmp_path / "AGENT.md"
+        existing.write_text("old")
+        self._run_wizard(monkeypatch, tmp_path, [
+            "BotB", "", "", "", "",
+        ])
+        assert existing.read_text() == "old"
+
+    def test_agent_wizard_memory_extras_patterns(self, monkeypatch, tmp_path):
+        """Specifying 'patterns' in extras creates state/memories/patterns.jsonl."""
+        self._run_wizard(monkeypatch, tmp_path, [
+            "BotC", "", "", "", "patterns",
+        ])
+        assert (tmp_path / "state" / "memories" / "patterns.jsonl").exists()
+
+    def test_agent_wizard_default_loop_is_six_phase(self, monkeypatch, tmp_path):
+        """Empty answer for loop type defaults to 6-phase (AGENT.md contains PERCEIVE)."""
+        self._run_wizard(monkeypatch, tmp_path, [
+            "BotD", "", "", "", "",
+        ])
+        content = (tmp_path / "AGENT.md").read_text()
+        assert "PERCEIVE" in content or "6-phase" in content
+
+    def test_agent_wizard_registered_in_commands(self):
+        """/agent is registered in _COMMANDS."""
+        assert "/agent" in commands._COMMANDS
 
 
 if __name__ == "__main__":
