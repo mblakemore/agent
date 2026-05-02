@@ -547,6 +547,64 @@ def _resolve_bedrock_credentials(
         return env_url, env_key, None
 
 
+# Per-model inference parameter defaults for the Bedrock gateway.
+# Keys use snake_case internally; _build_inference_params() renames to camelCase.
+# Lookup uses longest-prefix match so "amazon-nova-micro" wins over "amazon-nova".
+_BEDROCK_INFERENCE_DEFAULTS: dict[str, dict] = {
+    "claude-v4":          {"temperature": 1.0, "max_tokens": 4096, "top_p": 0.999, "top_k": 250},
+    "claude-v3":          {"temperature": 1.0, "max_tokens": 4096, "top_p": 0.999, "top_k": 250},
+    "llama-4":            {"temperature": 0.7, "max_tokens": 2048, "top_p": 0.9},
+    "llama3":             {"temperature": 0.7, "max_tokens": 2048, "top_p": 0.9},
+    "llama":              {"temperature": 0.7, "max_tokens": 2048, "top_p": 0.9},
+    "mistral-large":      {"temperature": 0.5, "max_tokens": 2048, "top_p": 0.9},
+    "mistral":            {"temperature": 0.5, "max_tokens": 2048, "top_p": 0.9},
+    "mixtral":            {"temperature": 0.5, "max_tokens": 2048, "top_p": 0.9},
+    "amazon-nova-micro":  {"temperature": 0.7, "max_tokens": 1024, "top_p": 0.9},
+    "amazon-nova-lite":   {"temperature": 0.7, "max_tokens": 2048, "top_p": 0.9},
+    "amazon-nova-pro":    {"temperature": 0.7, "max_tokens": 4096, "top_p": 0.9},
+    "deepseek-r1":        {"temperature": 0.6, "max_tokens": 4096, "top_p": 0.95},
+    "qwen3":              {"temperature": 0.7, "max_tokens": 2048, "top_p": 0.9},
+}
+
+# snake_case → camelCase rename map for gateway payload keys.
+_KEY_RENAME = {
+    "max_tokens": "maxTokens",
+    "top_p": "topP",
+    "top_k": "topK",
+    "stop_sequences": "stopSequences",
+    "temperature": "temperature",
+}
+
+
+def _build_inference_params(model: str, overrides: dict | None = None) -> dict | None:
+    """Return an inferenceParams dict for the gateway payload, or None.
+
+    Key names in the returned dict are camelCase: maxTokens, topP, topK,
+    stopSequences (matching the gateway's InferenceParams schema).
+
+    Lookup algorithm:
+      1. Iterate _BEDROCK_INFERENCE_DEFAULTS keys sorted by length descending.
+      2. First key that is a prefix of ``model`` wins (longest-prefix match).
+      3. If no match: use empty dict as base.
+      4. Merge ``overrides`` on top (override wins). None values stripped.
+      5. Rename keys to camelCase before return.
+    Returns None (not {}) when the result is empty.
+    """
+    base: dict = {}
+    if model:
+        for key in sorted(_BEDROCK_INFERENCE_DEFAULTS, key=len, reverse=True):
+            if model.startswith(key):
+                base = dict(_BEDROCK_INFERENCE_DEFAULTS[key])
+                break
+    merged = {**base, **(overrides or {})}
+    result = {
+        _KEY_RENAME.get(k, k): v
+        for k, v in merged.items()
+        if v is not None
+    }
+    return result or None
+
+
 class BedrockBackend:
     """Bedrock Chat gateway backend (see plan § 7.3).
 
@@ -623,6 +681,12 @@ class BedrockBackend:
         self._active_conv_id: str | None = None
         self._session_conv_count = 0
 
+        # Issue #543 — per-call inference defaults loaded from config.json.
+        # None values are stripped so callers can use sentinel-None to unset.
+        self._base_inference_params = {
+            k: v for k, v in cfg.get("inference_params", {}).items()
+            if v is not None
+        }
 
     def _log_token_usage(self) -> None:
         """Fetch and log monthly token usage from the gateway.

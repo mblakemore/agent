@@ -430,3 +430,68 @@ def test_conv_reuse_second_call_uses_cached_id(monkeypatch, tmp_path):
     assert calls[1] == "conv-STABLE-1"
     # Only one distinct conversation opened server-side.
     assert b._session_conv_count == 1
+
+
+# ── _build_inference_params (issue #543) ──
+
+
+from llm_backend import _build_inference_params
+
+
+def test_build_inference_params_claude_v4():
+    """claude-v4.6-opus matches 'claude-v4' prefix; returns camelCase keys."""
+    result = _build_inference_params("claude-v4.6-opus")
+    assert result == {"temperature": 1.0, "maxTokens": 4096, "topP": 0.999, "topK": 250}
+
+
+def test_build_inference_params_longest_prefix_wins():
+    """'amazon-nova-micro' matches the specific entry, not the shorter ones."""
+    result_micro = _build_inference_params("amazon-nova-micro")
+    result_lite = _build_inference_params("amazon-nova-lite")
+    result_pro = _build_inference_params("amazon-nova-pro")
+    # micro has max_tokens=1024, lite=2048, pro=4096
+    assert result_micro["maxTokens"] == 1024
+    assert result_lite["maxTokens"] == 2048
+    assert result_pro["maxTokens"] == 4096
+
+
+def test_build_inference_params_override():
+    """Caller override wins over the table default."""
+    result = _build_inference_params("claude-v4.5-haiku", overrides={"max_tokens": 512})
+    assert result["maxTokens"] == 512
+    # Other keys from default still present
+    assert result["temperature"] == 1.0
+
+
+def test_build_inference_params_none_values_stripped():
+    """override with None removes the key from output."""
+    result = _build_inference_params("claude-v4.6-opus", overrides={"temperature": None})
+    assert "temperature" not in result
+
+
+def test_build_inference_params_unknown_model():
+    """No table entry → returns None (not empty dict)."""
+    result = _build_inference_params("totally-unknown-model-xyz")
+    assert result is None
+
+
+def test_build_inference_params_key_rename():
+    """All snake_case keys in table become camelCase in output."""
+    result = _build_inference_params("claude-v4.5-sonnet")
+    assert "max_tokens" not in result
+    assert "top_p" not in result
+    assert "top_k" not in result
+    assert "maxTokens" in result
+    assert "topP" in result
+    assert "topK" in result
+
+
+def test_bedrock_backend_stores_base_inference_params(monkeypatch):
+    """BedrockBackend stores inference_params from cfg, stripping None values."""
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    b = BedrockBackend(
+        {"kind": "bedrock", "model": "claude-v4.5-haiku",
+         "inference_params": {"temperature": 0.5, "top_k": None}}
+    )
+    assert b._base_inference_params == {"temperature": 0.5}
