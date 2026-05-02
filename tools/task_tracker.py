@@ -38,10 +38,12 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
 
     Args:
         action: One of "add", "done", "update", "drop", "list".
-        description: Task description (for add) or note (for update).
+        description: Task description (for add) or note (for update). Optional — omit for list/done/drop.
         task_id: Task ID (for done, update, drop).
         status: New status string (for update). Common: "in_progress", "blocked", "deferred".
     """
+    # Ensure description is always a string even if the model omits the field
+    description = description or ""
     tasks = _load_tasks()
 
     # Treat update with completed/done status as the "done" action
@@ -56,8 +58,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
         elif description:
             # Try fuzzy match by description substring
             desc_lower = description.lower()
-            matches = [t for t in open_tasks if desc_lower in t["description"].lower()
-                       or t["description"].lower() in desc_lower]
+            matches = [t for t in open_tasks if desc_lower in t.get("description", "").lower()
+                       or t.get("description", "").lower() in desc_lower]
             if len(matches) == 1:
                 task_id = matches[0]["id"]
 
@@ -71,7 +73,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
                         f"existing task, use action='update' with task_id=<N>, status='{status}'.")
             return "Error: description required for 'add'"
         existing = next((t for t in tasks if t["status"] not in ("done", "completed")
-                         and t["description"].strip() == description.strip()), None)
+                         and t.get("description", "").strip() == description.strip()), None)
         if existing:
             return f"Task #{existing['id']} already exists (open): {description}"
         task = {
@@ -86,7 +88,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
 
     elif action == "done":
         if task_id <= 0:
-            available = [f"#{t['id']} ({t['status']}): {t['description']}" for t in tasks if t["status"] != "done"]
+            available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] != "done"]
             return f"Error: task_id required for 'done'. Example: task_tracker(action=\"done\", task_id=1)\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
         for t in tasks:
             if t["id"] == task_id:
@@ -95,12 +97,12 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
                 if description:
                     t["note"] = description
                 _save_tasks(tasks)
-                return f"Completed task #{task_id}: {t['description']}"
+                return f"Completed task #{task_id}: {t.get('description', '')}"
         return f"Error: task #{task_id} not found"
 
     elif action == "update":
         if task_id <= 0:
-            available = [f"#{t['id']} ({t['status']}): {t['description']}" for t in tasks if t["status"] != "done"]
+            available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] != "done"]
             return f"Error: task_id required for 'update'. Example: task_tracker(action=\"update\", task_id=1, status=\"in_progress\")\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
         for t in tasks:
             if t["id"] == task_id:
@@ -119,7 +121,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
             if t["id"] == task_id:
                 removed = tasks.pop(i)
                 _save_tasks(tasks)
-                return f"Dropped task #{task_id}: {removed['description']}"
+                return f"Dropped task #{task_id}: {removed.get('description', '')}"
         return f"Error: task #{task_id} not found"
 
     elif action == "list":
@@ -128,7 +130,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
         lines = []
         for t in tasks:
             marker = "x" if t["status"] == "done" else " "
-            line = f"[{marker}] #{t['id']} ({t['status']}): {t['description']}"
+            line = f"[{marker}] #{t['id']} ({t['status']}): {t.get('description', '')}"
             if t.get("note"):
                 line += f" — {t['note']}"
             lines.append(line)
@@ -162,7 +164,7 @@ definition = {
                 },
                 "description": {
                     "type": "string",
-                    "description": "Task description (for add) or note (for update/done).",
+                    "description": "Task description (for add) or note (for update/done). Optional — omit for list/done/drop.",
                 },
                 "task_id": {
                     "type": "integer",
