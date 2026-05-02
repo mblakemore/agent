@@ -418,12 +418,12 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
     ``_config["backends"][role]["kind"]`` and rebuild the corresponding
     backend module-level global. If a flag selects ``bedrock`` without an
     explicit model already in the config block, a sensible default is
-    supplied (``claude-v4.5-sonnet`` for main, ``claude-v4.5-haiku`` for
+    supplied (``claude-v4.6-opus`` for main, ``claude-v4.5-haiku`` for
     summary) and an INFO log line is emitted.
     """
     global _main_backend, _summary_backend
 
-    defaults = {"main": "claude-v4.5-opus", "summary": "claude-v4.5-haiku"}
+    defaults = {"main": "claude-v4.6-opus", "summary": "claude-v4.5-haiku"}
 
     # Model IDs the Bedrock gateway accepts. An existing model that doesn't
     # match one of these prefixes was set for the OTHER backend kind (likely
