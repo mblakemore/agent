@@ -113,6 +113,55 @@ def test_send_with_options(api):
     assert conv_id == "conv-123"
     assert msg_id == "msg-456"
 
+def test_send_inference_params_included(api):
+    resp = MagicMock()
+    resp.status_code = 201
+    resp.json.return_value = {"conversationId": "conv-123", "messageId": "msg-456"}
+    with patch.object(api.session, "post", return_value=resp) as mock_post:
+        api.send("Hello", inference_params={"maxTokens": 512})
+    call_kwargs = mock_post.call_args
+    payload = call_kwargs[1]["json"] if "json" in call_kwargs[1] else call_kwargs[0][1]
+    assert payload["inferenceParams"] == {"maxTokens": 512}
+
+def test_send_no_inference_params_omits_key(api):
+    resp = MagicMock()
+    resp.status_code = 201
+    resp.json.return_value = {"conversationId": "conv-123", "messageId": "msg-456"}
+    with patch.object(api.session, "post", return_value=resp) as mock_post:
+        api.send("Hello", inference_params=None)
+    call_kwargs = mock_post.call_args
+    payload = call_kwargs[1]["json"] if "json" in call_kwargs[1] else call_kwargs[0][1]
+    assert "inferenceParams" not in payload
+
+def test_send_and_wait_forwards_inference_params(api):
+    with patch.object(api, "send", return_value=("conv-123", "msg-456")) as mock_send, \
+         patch.object(api, "poll", return_value={"role": "assistant"}):
+        api.send_and_wait("Hello", inference_params={"maxTokens": 256})
+    mock_send.assert_called_once()
+    _, kwargs = mock_send.call_args
+    assert kwargs.get("inference_params") == {"maxTokens": 256}
+
+def test_send_and_wait_conv_forwards_inference_params(api):
+    with patch.object(api, "send", return_value=("conv-123", "msg-456")) as mock_send, \
+         patch.object(api, "poll", return_value={"role": "assistant"}):
+        api.send_and_wait_conv("Hello", inference_params={"maxTokens": 128})
+    mock_send.assert_called_once()
+    _, kwargs = mock_send.call_args
+    assert kwargs.get("inference_params") == {"maxTokens": 128}
+
+def test_send_inference_params_with_other_options(api):
+    resp = MagicMock()
+    resp.status_code = 201
+    resp.json.return_value = {"conversationId": "conv-123", "messageId": "msg-456"}
+    with patch.object(api.session, "post", return_value=resp) as mock_post:
+        api.send("Hello", enable_reasoning=True, conversation_id="conv-existing",
+                 inference_params={"maxTokens": 1024, "topP": 0.9})
+    call_kwargs = mock_post.call_args
+    payload = call_kwargs[1]["json"] if "json" in call_kwargs[1] else call_kwargs[0][1]
+    assert payload["inferenceParams"] == {"maxTokens": 1024, "topP": 0.9}
+    assert payload["conversationId"] == "conv-existing"
+    assert payload["enableReasoning"] is True
+
 def test_poll_with_cancel_check(api):
     # Targets line 106
     cancel_mock = MagicMock()
@@ -143,7 +192,7 @@ def test_poll_timeout(api):
     resp = MagicMock()
     resp.status_code = 200
     resp.json.return_value = {"lastMessageId": None}
-    
+
     # Set a very short timeout for the test
     api.poll_timeout = 0.1
     with patch.object(api.session, "get", return_value=resp), \
@@ -169,7 +218,7 @@ def test_poll_message_retry_404_429(api):
     resp_200 = MagicMock()
     resp_200.status_code = 200
     resp_200.json.return_value = {"message": {"role": "assistant", "content": [{"body": "hi"}]}}
-    
+
     with patch.object(api.session, "get", side_effect=[resp_404, resp_429, resp_200]), \
          patch("time.sleep"):
         out = api.poll_message("conv-123", "msg-456")
@@ -179,7 +228,7 @@ def test_poll_message_timeout(api):
     resp = MagicMock()
     resp.status_code = 200
     resp.json.return_value = {"message": {"role": "user"}}
-    
+
     api.poll_timeout = 0.1
     with patch.object(api.session, "get", return_value=resp), \
          patch("time.sleep"):
@@ -208,12 +257,12 @@ def test_send_and_wait_conv_orchestration(api):
     with patch.object(api, "send", return_value=("conv-123", "msg-456")), \
          patch.object(api, "poll", return_value={"role": "assistant"}), \
          patch.object(api, "poll_message", return_value={"role": "assistant"}):
-        
+
         # No conv_id
         out1, cid1 = api.send_and_wait_conv("Hello")
         assert out1["role"] == "assistant"
         assert cid1 == "conv-123"
-        
+
         # With conv_id
         out2, cid2 = api.send_and_wait_conv("Hello", conversation_id="conv-existing")
         assert out2["role"] == "assistant"
