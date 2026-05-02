@@ -605,6 +605,16 @@ def _build_inference_params(model: str, overrides: dict | None = None) -> dict |
     return result or None
 
 
+def _extract_gen_params_from_body(body: dict | None) -> dict:
+    """Extract gen params from an OpenAI-style body dict. Ignores None values."""
+    if not body:
+        return {}
+    return {
+        k: body[k] for k in ("temperature", "max_tokens", "top_p", "top_k")
+        if body.get(k) is not None
+    }
+
+
 class BedrockBackend:
     """Bedrock Chat gateway backend (see plan § 7.3).
 
@@ -931,12 +941,20 @@ class BedrockBackend:
     ) -> str:
         """Non-streaming single-shot completion. Returns the extracted text.
 
-        ``gen_params`` is accepted for signature parity with
-        ``LlamacppBackend.complete`` but Bedrock gateway doesn't expose
-        per-call gen params; they're stored on the server-side model.
-        The ``timeout`` argument is also accepted for signature parity;
-        the gateway poll uses its own ``poll_timeout`` from config.
+        ``gen_params`` overrides are merged with ``_base_inference_params``
+        and forwarded to the gateway. The ``timeout`` argument is accepted
+        for signature parity; the gateway poll uses its own ``poll_timeout``
+        from config.
         """
+        gp = gen_params or {}
+        _caller_overrides = {**self._base_inference_params, **gp}
+        _inference_params = _build_inference_params(self.model, _caller_overrides)
+        # Summary path: always clamp maxTokens to 1024
+        if _inference_params:
+            _inference_params["maxTokens"] = min(_inference_params.get("maxTokens", 1024), 1024)
+        else:
+            _inference_params = {"maxTokens": 1024}
+
         log = logging.getLogger("llm_backend")
         t0 = time.monotonic()
         ok = False
@@ -948,6 +966,7 @@ class BedrockBackend:
                     _log=log,
                     _cancel_check=cancel_check,
                     cancel_check=cancel_check,
+                    inference_params=_inference_params,
                 )
             except (
                 TimeoutError,
@@ -964,6 +983,7 @@ class BedrockBackend:
                         _log=log,
                         _cancel_check=cancel_check,
                         cancel_check=cancel_check,
+                        inference_params=_inference_params,
                     )
                 else:
                     raise
@@ -1003,7 +1023,7 @@ class BedrockBackend:
 
           - ``messages``: OpenAI-shape message list.
           - ``tools``: OpenAI-shape tool list (or None).
-          - ``gen_params``: dict (currently unused — gateway-side).
+          - ``gen_params``: dict overrides for inference params.
           - ``cancel_check``: callable.
           - ``log``: logger (positional or keyword).
 
@@ -1038,6 +1058,14 @@ class BedrockBackend:
             if tools is None:
                 tools = body.get("tools")
 
+        gen_params_kwarg = kwargs.pop("gen_params", None) or {}
+        _caller_overrides = {
+            **self._base_inference_params,
+            **_extract_gen_params_from_body(body),
+            **gen_params_kwarg,
+        }
+        _inference_params = _build_inference_params(self.model, _caller_overrides)
+
         prompt = build_dev_prompt(messages or [], tools)
 
         t0 = time.monotonic()
@@ -1061,6 +1089,7 @@ class BedrockBackend:
                     cancel_check=cancel_check,
                     _log=log,
                     _cancel_check=cancel_check,
+                    inference_params=_inference_params,
                 )
                 self._active_conv_id = conv_id
             else:
@@ -1076,6 +1105,7 @@ class BedrockBackend:
                     cancel_check=cancel_check,
                     _log=log,
                     _cancel_check=cancel_check,
+                    inference_params=_inference_params,
                 )
                 self._active_conv_id = conv_id
 

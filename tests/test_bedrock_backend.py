@@ -394,7 +394,8 @@ def test_conv_reuse_first_call_creates_new(monkeypatch, tmp_path):
                 "content": [{"contentType": "text", "body": "hi"}]}
     sent_kwargs = {}
 
-    def _fake_send(prompt_text, conversation_id=None, cancel_check=None):
+    def _fake_send(prompt_text, conversation_id=None, cancel_check=None,
+                   inference_params=None):
         sent_kwargs["conversation_id"] = conversation_id
         return fake_msg, "conv-NEW-123"
 
@@ -415,7 +416,8 @@ def test_conv_reuse_second_call_uses_cached_id(monkeypatch, tmp_path):
                 "content": [{"contentType": "text", "body": "ok"}]}
     calls = []
 
-    def _fake_send(prompt_text, conversation_id=None, cancel_check=None):
+    def _fake_send(prompt_text, conversation_id=None, cancel_check=None,
+                   inference_params=None):
         calls.append(conversation_id)
         # Gateway returns a stable conv_id on continuation.
         return fake_msg, "conv-STABLE-1"
@@ -495,3 +497,117 @@ def test_bedrock_backend_stores_base_inference_params(monkeypatch):
          "inference_params": {"temperature": 0.5, "top_k": None}}
     )
     assert b._base_inference_params == {"temperature": 0.5}
+
+
+# ── stream_chat / complete inference_params wiring (issue #545) ──
+
+
+def test_stream_chat_passes_inference_params(monkeypatch, tmp_path):
+    """stream_chat() passes inference_params derived from model defaults to send_and_wait_conv."""
+    monkeypatch.setattr("llm_backend._SPEND_FILE", str(tmp_path / "spend.json"))
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    b = BedrockBackend({"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "main"})
+    fake_msg = {"role": "assistant",
+                "content": [{"contentType": "text", "body": "ok"}]}
+    captured = {}
+
+    def _fake_send(prompt_text, conversation_id=None, cancel_check=None,
+                   inference_params=None):
+        captured["inference_params"] = inference_params
+        return fake_msg, "conv-1"
+
+    with patch.object(b._api, "send_and_wait_conv", side_effect=_fake_send):
+        list(b.stream_chat(logging.getLogger("test"),
+                           json={"messages": [{"role": "user", "content": "hi"}]}))
+
+    assert captured["inference_params"] is not None
+    # claude-v4.5-haiku matches claude-v4 prefix — should have maxTokens
+    assert "maxTokens" in captured["inference_params"]
+
+
+def test_stream_chat_body_gen_params_override(monkeypatch, tmp_path):
+    """stream_chat() uses max_tokens from body to override inference defaults."""
+    monkeypatch.setattr("llm_backend._SPEND_FILE", str(tmp_path / "spend.json"))
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    b = BedrockBackend({"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "main"})
+    fake_msg = {"role": "assistant",
+                "content": [{"contentType": "text", "body": "ok"}]}
+    captured = {}
+
+    def _fake_send(prompt_text, conversation_id=None, cancel_check=None,
+                   inference_params=None):
+        captured["inference_params"] = inference_params
+        return fake_msg, "conv-1"
+
+    with patch.object(b._api, "send_and_wait_conv", side_effect=_fake_send):
+        list(b.stream_chat(logging.getLogger("test"),
+                           json={"messages": [{"role": "user", "content": "hi"}],
+                                 "max_tokens": 512}))
+
+    assert captured["inference_params"]["maxTokens"] == 512
+
+
+def test_stream_chat_base_inference_params_applied(monkeypatch, tmp_path):
+    """stream_chat() applies temperature from cfg inference_params."""
+    monkeypatch.setattr("llm_backend._SPEND_FILE", str(tmp_path / "spend.json"))
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    b = BedrockBackend({"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "main",
+                        "inference_params": {"temperature": 0.3}})
+    fake_msg = {"role": "assistant",
+                "content": [{"contentType": "text", "body": "ok"}]}
+    captured = {}
+
+    def _fake_send(prompt_text, conversation_id=None, cancel_check=None,
+                   inference_params=None):
+        captured["inference_params"] = inference_params
+        return fake_msg, "conv-1"
+
+    with patch.object(b._api, "send_and_wait_conv", side_effect=_fake_send):
+        list(b.stream_chat(logging.getLogger("test"),
+                           json={"messages": [{"role": "user", "content": "hi"}]}))
+
+    assert captured["inference_params"]["temperature"] == 0.3
+
+
+def test_complete_clamps_max_tokens_to_1024(monkeypatch, tmp_path):
+    """complete() always sends maxTokens <= 1024 regardless of model defaults."""
+    monkeypatch.setattr("llm_backend._SPEND_FILE", str(tmp_path / "spend.json"))
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    # claude-v4.5-haiku default maxTokens is 4096 — must be clamped
+    b = BedrockBackend({"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "summary"})
+    captured = {}
+
+    def _fake_send(prompt, enable_reasoning=False, cancel_check=None,
+                   inference_params=None):
+        captured["inference_params"] = inference_params
+        return _mock_assistant_msg("done")
+
+    with patch.object(b._api, "send_and_wait", side_effect=_fake_send):
+        b.complete(prompt="hi")
+
+    assert captured["inference_params"]["maxTokens"] <= 1024
+
+
+def test_complete_passes_inference_params(monkeypatch, tmp_path):
+    """complete() passes inference_params to send_and_wait."""
+    monkeypatch.setattr("llm_backend._SPEND_FILE", str(tmp_path / "spend.json"))
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    b = BedrockBackend({"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "summary"})
+    captured = {}
+
+    def _fake_send(prompt, enable_reasoning=False, cancel_check=None,
+                   inference_params=None):
+        captured["inference_params"] = inference_params
+        return _mock_assistant_msg("result")
+
+    with patch.object(b._api, "send_and_wait", side_effect=_fake_send):
+        out = b.complete(prompt="summarize this")
+
+    assert out == "result"
+    assert captured["inference_params"] is not None
+    assert "maxTokens" in captured["inference_params"]
