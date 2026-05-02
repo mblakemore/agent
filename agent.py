@@ -269,6 +269,9 @@ _DEFAULT_CONFIG = {
         "enabled": True,
         "max_wait_on_save": 10,
     },
+    "bedrock": {
+        "adaptive_max_tokens": True,
+    },
 }
 
 
@@ -1198,6 +1201,26 @@ def _classify_turn_complexity(messages: list[dict]) -> str:
     if tool_result_count > 0 or len(user_text) > 100:
         return "standard"
     return "simple"
+
+
+_COMPLEXITY_MAX_TOKENS = {
+    "claude":        {"simple": 512,  "standard": 2048, "extended": 4096},
+    "llama":         {"simple": 512,  "standard": 1536, "extended": 2048},
+    "mistral":       {"simple": 512,  "standard": 1536, "extended": 2048},
+    "mixtral":       {"simple": 512,  "standard": 1536, "extended": 2048},
+    "amazon-nova":   {"simple": 512,  "standard": 1536, "extended": 4096},
+    "deepseek-r1":   {"simple": 1024, "standard": 2048, "extended": 4096},
+    "qwen3":         {"simple": 512,  "standard": 1536, "extended": 2048},
+    "_default":      {"simple": 512,  "standard": 2048, "extended": 4096},
+}
+
+
+def _get_adaptive_max_tokens(model: str, complexity: str) -> int:
+    """Return the max_tokens budget for a given model prefix and complexity class."""
+    for prefix in sorted(_COMPLEXITY_MAX_TOKENS, key=len, reverse=True):
+        if prefix != "_default" and model.startswith(prefix):
+            return _COMPLEXITY_MAX_TOKENS[prefix][complexity]
+    return _COMPLEXITY_MAX_TOKENS["_default"][complexity]
 
 
 _TOOLS_TOKENS = None
@@ -2788,6 +2811,13 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 # ignores this flag, so it is safe to include unconditionally.
                 "stream_options": {"include_usage": True},
             }
+
+            if (
+                getattr(_main_backend, "kind", None) == "bedrock"
+                and _config.get("bedrock", {}).get("adaptive_max_tokens", True)
+            ):
+                _complexity = _classify_turn_complexity(messages_to_send)
+                request_body["max_tokens"] = _get_adaptive_max_tokens(_main_backend.model, _complexity)
 
             try:
                 response = _llm_request(log, json=request_body, stream=True, timeout=(30, 300))
