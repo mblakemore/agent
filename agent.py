@@ -1155,6 +1155,51 @@ def _estimate_tokens(msg):
     return count_tokens_from_message(msg)
 
 
+_EXTENDED_KEYWORDS = frozenset({
+    "plan", "design", "architect", "refactor", "implement", "rewrite",
+    "explain in detail", "write tests", "analyse", "analyze", "migrate",
+    "debug", "investigate", "benchmark", "optimize",
+})
+
+def _classify_turn_complexity(messages: list[dict]) -> str:
+    """
+    Classify a turn as 'simple' | 'standard' | 'extended'.
+    Inspects the last user message text and count of tool results.
+    """
+    tool_result_count = sum(
+        1 for m in messages
+        if isinstance(m.get("content"), list)
+        and any(c.get("type") == "tool_result" for c in m["content"])
+    )
+    if tool_result_count > 4:
+        return "extended"
+
+    user_text = ""
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            content = m.get("content", "")
+            if isinstance(content, str):
+                user_text = content
+            elif isinstance(content, list):
+                user_text = " ".join(
+                    c.get("text", c.get("body", ""))
+                    for c in content
+                    if isinstance(c, dict) and c.get("type") in ("text", None)
+                )
+            break
+
+    lower = user_text.lower()
+    if any(kw in lower for kw in _EXTENDED_KEYWORDS):
+        return "extended"
+    if "```" in user_text or len(user_text) > 400:
+        return "extended"
+    if tool_result_count > 2:
+        return "extended"
+    if tool_result_count > 0 or len(user_text) > 100:
+        return "standard"
+    return "simple"
+
+
 _TOOLS_TOKENS = None
 
 
