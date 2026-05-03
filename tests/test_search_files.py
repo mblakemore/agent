@@ -219,6 +219,69 @@ class TestSearchFilesDefinition(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+class TestSearchFilesPathIsFile(unittest.TestCase):
+    """path= points to a single file (not a directory) — issue #567."""
+
+    def test_file_path_returns_match(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "sample.py")
+            p.write_text("def hello():\n    pass\ndef world():\n    pass\n")
+            result = search_files.fn("def hello", path=str(p))
+            self.assertIn("1 matched", result)
+            body = _body(result)
+            self.assertIn("sample.py:1:", body)
+            self.assertIn("def hello", body)
+
+    def test_file_path_no_match(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "sample.py")
+            p.write_text("def hello():\n    pass\n")
+            result = search_files.fn("def xyzzy_nothere", path=str(p))
+            self.assertIn("0 matched", result)
+            body = _body(result)
+            self.assertIn("No matches found.", body)
+
+    def test_file_path_context_zero(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "sample.py")
+            p.write_text("line1\nHIT\nline3\n")
+            result = search_files.fn("HIT", path=str(p), context=0)
+            body = _body(result)
+            self.assertEqual(body, "sample.py:2: HIT")
+
+    def test_file_path_with_context(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "sample.py")
+            p.write_text("before\nHIT\nafter\n")
+            result = search_files.fn("HIT", path=str(p), context=1)
+            body = _body(result)
+            self.assertIn("sample.py:2: HIT", body)
+            self.assertIn("sample.py-1- before", body)
+            self.assertIn("sample.py-3- after", body)
+
+    def test_file_path_count_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "sample.py")
+            p.write_text("HIT\nHIT\nnope\nHIT\n")
+            result = search_files.fn("HIT", path=str(p), count_only=True)
+            self.assertIn("3 results", result)
+            self.assertIn("1 matched", result)
+
+    def test_issue_567_reproduction(self):
+        """Exact scenario from issue #567: path to a real file with known pattern."""
+        agent_py = Path(__file__).parent.parent / "agent.py"
+        if not agent_py.exists():
+            self.skipTest("agent.py not found; skipping reproduction test")
+        result = search_files.fn(
+            pattern="def _classify_turn_complexity",
+            path=str(agent_py),
+        )
+        self.assertNotIn("0 results", result)
+        body = _body(result)
+        self.assertNotEqual(body.strip(), "No matches found.")
+        self.assertIn("def _classify_turn_complexity", body)
+
+
 class TestSearchFilesEdgeCases(unittest.TestCase):
 
     def test_empty_pattern(self):
