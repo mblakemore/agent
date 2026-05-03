@@ -8,6 +8,116 @@ from collections import deque
 _MAX_RESULTS = 100
 _MAX_CONTEXT = 20
 
+# Directories/patterns excluded by default to avoid noise from CICD
+# session artifacts and dependency caches.  Callers can pass
+# include_temp=True to skip these exclusions entirely.
+DEFAULT_EXCLUDES = [
+    "temp/",
+    "worktrees/",
+    "state/debug/",
+    ".venv*/",
+    "node_modules/",
+    "__pycache__/",
+    ".git/",
+    "*.log",
+]
+
+# Directory-name stems extracted from DEFAULT_EXCLUDES (entries ending
+# with "/" are treated as directory names for fast os.walk pruning).
+_DEFAULT_EXCLUDE_DIRS = {e.rstrip("/") for e in DEFAULT_EXCLUDES if e.endswith("/")}
+# File-level glob patterns from DEFAULT_EXCLUDES.
+_DEFAULT_EXCLUDE_FILE_GLOBS = [e for e in DEFAULT_EXCLUDES if not e.endswith("/")]
+
+
+def _search_single_file(file_path, base_dir, regex, context, count_only):
+    """Search a single file and return formatted results."""
+    from collections import deque
+    rel = str(file_path.relative_to(base_dir))
+    resolved = file_path
+    total_matches = 0
+    files_searched = 1
+    files_matched = 0
+    truncated = False
+    match_lines = []
+    context_groups = []
+
+    if context < 0:
+        context = 0
+    elif context > _MAX_CONTEXT:
+        context = _MAX_CONTEXT
+
+    try:
+        with file_path.open(encoding='utf-8', errors='ignore') as f:
+            if count_only:
+                for line in f:
+                    if regex.search(line):
+                        total_matches += 1
+                if total_matches > 0:
+                    files_matched = 1
+            elif context == 0:
+                for line_num, line in enumerate(f, 1):
+                    if regex.search(line):
+                        files_matched = 1
+                        total_matches += 1
+                        match_lines.append(f"{rel}:{line_num}: {line.rstrip()}")
+                        if len(match_lines) >= _MAX_RESULTS:
+                            truncated = True
+                            break
+            else:
+                buffer = deque(maxlen=context)
+                current_group = []
+                lines_to_emit = 0
+                for line_num, line in enumerate(f, 1):
+                    text_line = line.rstrip()
+                    is_match = bool(regex.search(text_line))
+                    if is_match:
+                        files_matched = 1
+                        total_matches += 1
+                        if total_matches >= _MAX_RESULTS:
+                            truncated = True
+                            break
+                        if not current_group:
+                            for b_num, b_text in buffer:
+                                current_group.append(f"{rel}-{b_num}- {b_text}")
+                        current_group.append(f"{rel}:{line_num}: {text_line}")
+                        lines_to_emit = context
+                    else:
+                        if current_group:
+                            if lines_to_emit > 0:
+                                current_group.append(f"{rel}-{line_num}- {text_line}")
+                                lines_to_emit -= 1
+                            else:
+                                context_groups.append(current_group)
+                                current_group = []
+                        buffer.append((line_num, text_line))
+                if current_group:
+                    context_groups.append(current_group)
+    except Exception:
+        pass
+
+    display_count = total_matches
+    if not count_only and truncated:
+        display_count = _MAX_RESULTS
+
+    header = (
+        f"[Searched '{resolved}' "
+        f"({files_searched} files, {files_matched} matched, {display_count} results)"
+    )
+    if truncated:
+        header += " (truncated)"
+    header += "]\n"
+
+    if count_only:
+        return header.rstrip("\n")
+
+    if total_matches == 0:
+        return header + "No matches found."
+
+    if context == 0:
+        return header + "\n".join(match_lines)
+
+    return header + "\n--\n".join("\n".join(g) for g in context_groups)
+
 
 def _search_single_file(file_path, base_dir, regex, context, count_only):
     """Search a single file and return formatted results."""
@@ -106,6 +216,7 @@ def fn(
     ignore_case: bool = True,
     context: int = 3,
     count_only: bool = False,
+    include_temp: bool = False,
 ) -> str:
     """Search file contents for a regex pattern.
 
@@ -120,7 +231,12 @@ def fn(
         count_only: If True, return only the match count summary (files
             searched, files matched, total matches) without the match lines.
             Use this when you only need to know how many matches exist, not where they are.
+        include_temp: If True, disable DEFAULT_EXCLUDES so that temp/,
+            worktrees/, state/debug/, and similar high-noise directories
+            are included in the search.  Default False.
     """
+    import fnmatch as _fnmatch
+
     if not pattern or not pattern.strip():
         return "Error: Search pattern cannot be empty."
 
@@ -166,30 +282,33 @@ def fn(
         # Filter directories to skip hidden ones (mimicking rglob behavior with .agent filter)
         # Modifying 'dirs' in-place allows os.walk to prune the search tree.
         dirs[:] = [d for d in dirs if not d.startswith(".") and d != ".agent"]
-        
-        # Further exclude common large/unnecessary directories
-        root_str = str(root)
-        if "__pycache__" in root_str or "node_modules" in root_str:
-            continue
-            
+
+        if not include_temp:
+            # Prune directories that are in DEFAULT_EXCLUDES.
+            dirs[:] = [d for d in dirs if d not in _DEFAULT_EXCLUDE_DIRS]
+
         for file_name in files:
-            import fnmatch
-            if not fnmatch.fnmatch(file_name, glob):
+            if not _fnmatch.fnmatch(file_name, glob):
                 continue
-            
+
             # Skip hidden files
             if file_name.startswith("."):
                 continue
 
+            if not include_temp:
+                # Skip files matching DEFAULT_EXCLUDES file-level patterns.
+                if any(_fnmatch.fnmatch(file_name, pat) for pat in _DEFAULT_EXCLUDE_FILE_GLOBS):
+                    continue
+
             file_path = Path(root) / file_name
-            
+
             if truncated:
                 break
-            
+
             rel = str(file_path.relative_to(search_path))
             files_searched += 1
             file_has_match = False
-            
+
             try:
                 with file_path.open(encoding='utf-8', errors='ignore') as f:
                     if count_only:
@@ -217,11 +336,11 @@ def fn(
                         buffer = deque(maxlen=context)
                         current_group = []
                         lines_to_emit = 0
-                        
+
                         for line_num, line in enumerate(f, 1):
                             text_line = line.rstrip()
                             is_match = bool(regex.search(text_line))
-                            
+
                             if is_match:
                                 file_has_match = True
                                 total_matches += 1
@@ -241,9 +360,9 @@ def fn(
                                     else:
                                         context_groups.append(current_group)
                                         current_group = []
-                                
+
                                 buffer.append((line_num, text_line))
-                        
+
                         if current_group:
                             context_groups.append(current_group)
                         if file_has_match:
@@ -269,7 +388,7 @@ def fn(
     if permission_errors > 0:
         header += f" (Warning: {permission_errors} directories skipped due to permissions)"
     header += "]\n"
-    
+
     if count_only:
         return header.rstrip("\n")
 
@@ -358,6 +477,16 @@ definition = {
                     "description": "If True, return only the match count summary (files searched, files matched, total matches) without the match lines. Use this when you only need to know how many matches exist, not where they are. Default: false.",
                         "default": False,
                     },
+                "include_temp": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, disable the default exclusion of high-noise directories "
+                        "(temp/, worktrees/, state/debug/, .venv*/, node_modules/, "
+                        "__pycache__/, .git/, *.log). Use this only when you specifically "
+                        "need to search inside those directories. Default: false."
+                    ),
+                    "default": False,
+                },
                 },
                 "required": ["pattern"],
             },
