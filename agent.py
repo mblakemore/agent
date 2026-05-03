@@ -3307,6 +3307,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             continue
 
                     log.debug("TOOL CALL: %s(%s) [id=%s]", func_name, json.dumps(func_args), tool_id)
+                    telemetry.record_tool_call(func_name)
 
                     # Track think tool usage for CICD phase-gate enforcement
                     if func_name == "think":
@@ -3351,6 +3352,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             raise
                         except Exception as e:
                             result_str = f"Error executing tool: {str(e)}"
+                            telemetry.record_tool_error(func_name, "execution_error")
                         # Conversational tool recovery: on error, try to fix params
                         if result_str.startswith("Error"):
                             try:

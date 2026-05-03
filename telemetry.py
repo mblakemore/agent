@@ -84,6 +84,7 @@ def init() -> bool:
     global _provider, _meter, _enabled, _verbose
     global _cycles, _tokens, _errors, _cycle_duration
     global _turns, _turn_duration, _turn_tool_calls, _turn_tokens
+    global _tool_calls, _tool_errors, _hallucinations, _summaries, _context_size
 
     if not _truthy(os.environ.get("AGENTPY_TELEMETRY")):
         _enabled = False
@@ -158,6 +159,11 @@ def init() -> bool:
     _summaries = meter.create_counter(
         "agentpy_summaries",
         description="context summarization events",
+    )
+    _context_size = meter.create_histogram(
+        "agentpy_context_size",
+        description="current context window size in tokens",
+        unit="tokens",
     )
     # Base meters — always created when telemetry is enabled.
     # NOTE: NO `_total` suffix — Prom appends it during OTLP translation.
