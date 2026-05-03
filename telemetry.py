@@ -347,3 +347,12 @@ def record_summary() -> None:
         _summaries.add(1)
     except Exception:
         logger.debug("telemetry.record_summary failed", exc_info=True)
+
+def record_context_size(size: int) -> None:
+    """Record current context window size. No-op when telemetry is disabled."""
+    if not _enabled or _context_size is None:
+        return
+    try:
+        _context_size.record(int(size))
+    except Exception:
+        logger.debug("telemetry.record_context_size failed", exc_info=True)
