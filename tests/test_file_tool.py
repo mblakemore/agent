@@ -130,6 +130,57 @@ class TestFileRead(unittest.TestCase):
             result = file_tool.fn(action="read", path=d)
             self.assertTrue(result.startswith("Error"), "Should return error when reading directory as file")
 
+    def test_read_start_line_returns_content_at_correct_line(self):
+        """start_line=N must return content beginning at line N, not earlier or later."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            # Use distinct prefixes so substrings don't collide (e.g. "alpha" vs "bravo")
+            lines = [f"alpha_{i:03d}\n" for i in range(1, 21)]
+            target.write_text("".join(lines), encoding="utf-8")
+
+            result = file_tool.fn(action="read", path=str(target), start_line=10)
+
+            # Lines before start_line must not appear
+            for i in range(1, 10):
+                self.assertNotIn(f"alpha_{i:03d}", result,
+                                 msg=f"alpha_{i:03d} should not appear when start_line=10")
+            # Lines from start_line onward must appear
+            for i in range(10, 21):
+                self.assertIn(f"alpha_{i:03d}", result,
+                              msg=f"alpha_{i:03d} should appear when start_line=10")
+            # The header must report the correct starting line
+            self.assertIn("lines 10-", result,
+                          msg="Header should confirm content starts at line 10")
+
+    def test_read_start_line_after_prior_full_read_same_file(self):
+        """A second read with start_line=N on the same file must start at N,
+        not be affected by the position of the prior full read (issue #570)."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            # Build a file large enough that start_line falls beyond _MAX_READ_LINES
+            num_lines = 600
+            content = "".join(f"content_{i}\n" for i in range(1, num_lines + 1))
+            target.write_text(content, encoding="utf-8")
+
+            # First read: no start_line — reads lines 1..500 (capped by _MAX_READ_LINES)
+            first = file_tool.fn(action="read", path=str(target))
+            self.assertIn("lines 1-", first, "First read should start at line 1")
+
+            # Second read: explicit start_line beyond the first read's window
+            start = 550
+            second = file_tool.fn(action="read", path=str(target), start_line=start)
+
+            # Must start at the requested line, not re-use any stale offset
+            self.assertIn(f"lines {start}-", second,
+                          msg=f"Header must say lines {start}-..., got: {second[:200]}")
+            self.assertIn(f"content_{start}", second,
+                          msg=f"content_{start} must be present when start_line={start}")
+            # Lines before start must not appear in the second result
+            self.assertNotIn("content_1\n", second,
+                             msg="content from line 1 must not leak into a read with start_line=550")
+            self.assertNotIn("content_549\n", second,
+                             msg="content from line 549 must not leak into a read with start_line=550")
+
 
 class TestFileWrite(unittest.TestCase):
     def test_write_full_file(self):
