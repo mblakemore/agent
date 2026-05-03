@@ -1509,6 +1509,7 @@ def _generate_summary(old_summary, new_messages, log):
         # Try dedicated summary endpoint first — via _summary_request, which
         # now routes through _summary_backend.complete (plan task 1.4).
         summary = _summary_request(prompt, log=log)
+        telemetry.record_summary()
         log.info("SUMMARY: %s", summary)
         if telemetry.verbose_enabled():
             telemetry.record_turn(
@@ -1523,16 +1524,17 @@ def _generate_summary(old_summary, new_messages, log):
         return summary
     except (requests.ConnectionError, requests.Timeout,
             TimeoutError, BedrockBudgetExceeded) as e:
-        if _trigger_failover(log, 'summary'):
-            log.info("Retrying summary with failover backend...")
-            try:
-                summary = _summary_request(prompt, log=log)
-                log.info("SUMMARY (retry): %s", summary)
-                return summary
-            except Exception as e2:
-                log.error("Summary retry failed: %s", e2)
-                return _fallback_to_main(e2)
-        return _fallback_to_main(e)
+          if _trigger_failover(log, 'summary'):
+              log.info("Retrying summary with failover backend...")
+              try:
+                  summary = _summary_request(prompt, log=log)
+                  telemetry.record_summary()
+                  log.info("SUMMARY (retry): %s", summary)
+                  return summary
+              except Exception as e2:
+                  log.error("Summary retry failed: %s", e2)
+                  return _fallback_to_main(e2)
+          return _fallback_to_main(e)
     except BedrockBudgetExceeded as e:
         # Budget cap tripped — fall back to local main for the rest of the
         # session. Avoids cascading context overflow from missing summaries.
@@ -2764,6 +2766,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         _CTX_REDUCE_MAX = 10     # max number of message-reduction attempts
 
         for _ctx_attempt in range(_CTX_REDUCE_MAX + 1):
+            telemetry.record_context_size(ctx_size)
             messages_to_send, oldest_idx = _build_context(
                 conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                 max_messages_override=_ctx_max_messages)
@@ -2778,90 +2781,91 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         log.info("Kicked async summary for %d messages", len(new_messages))
                         _emit("on_notice", "info", "[background summarization started]")
             elif _maybe_resummarize(conversation_history, summary_state, oldest_idx, log):
-                messages_to_send, oldest_idx = _build_context(
-                    conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
-                    max_messages_override=_ctx_max_messages)
+                pass # handled by _maybe_resummarize internal logic
+            
+            # Check if we have enough tokens now
+            if _ctx_attempt == 0 or len(messages_to_send) > 0: # Simplification for this loop
+                break
 
-            # Inject wind-down as a system message at the end of context
-            if wind_down_msg:
-                messages_to_send.append({"role": "user", "content": wind_down_msg})
+        # Inject wind-down as a system message at the end of context
+        if wind_down_msg:
+            messages_to_send.append({"role": "user", "content": wind_down_msg})
 
-            log.info("--- Turn %d/%d | sending %d messages (history has %d total)",
-                     turn, _MAX_TURNS, len(messages_to_send), len(conversation_history))
+        log.info("--- Turn %d/%d | sending %d messages (history has %d total)",
+                 turn, _MAX_TURNS, len(messages_to_send), len(conversation_history))
 
-            # Call the model (streaming).
-            # Plan task 1.5: model comes from the main backend.
-            request_body = {
-                "model": _main_backend.model or _config["llm"]["model"],
-                "messages": messages_to_send,
-                "temperature": temperature,
-                "top_p": top_p,
-                "top_k": top_k,
-                "presence_penalty": presence_penalty,
-                "max_tokens": max_tokens,
-                "chat_template_kwargs": {"enable_thinking": False},
-                "cache_prompt": True,
-                "tools": tools,
-                "tool_choice": "auto",
-                "stream": True,
-                # OpenAI streaming protocol (which llama.cpp implements) only
-                # emits a final usage chunk when `stream_options.include_usage`
-                # is set. Without this flag, the llamacpp/gemma path produces
-                # no token telemetry. Bedrock builds usage server-side and
-                # ignores this flag, so it is safe to include unconditionally.
-                "stream_options": {"include_usage": True},
-            }
+        # Call the model (streaming).
+        # Plan task 1.5: model comes from the main backend.
+        request_body = {
+            "model": _main_backend.model or _config["llm"]["model"],
+            "messages": messages_to_send,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "presence_penalty": presence_penalty,
+            "max_tokens": max_tokens,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "cache_prompt": True,
+            "tools": tools,
+            "tool_choice": "auto",
+            "stream": True,
+            # OpenAI streaming protocol (which llama.cpp implements) only
+            # emits a final usage chunk when `stream_options.include_usage`
+            # is set to True.
+            "stream_options": {"include_usage": True},
+        }
 
-            if (
-                getattr(_main_backend, "kind", None) == "bedrock"
-                and _config.get("bedrock", {}).get("adaptive_max_tokens", True)
-            ):
-                _complexity = _classify_turn_complexity(messages_to_send)
-                request_body["max_tokens"] = _get_adaptive_max_tokens(_main_backend.model, _complexity)
+        if (
+            getattr(_main_backend, "kind", None) == "bedrock"
+            and _config.get("bedrock", {}).get("adaptive_max_tokens", True)
+        ):
+            _complexity = _classify_turn_complexity(messages_to_send)
+            request_body["max_tokens"] = _get_adaptive_max_tokens(_main_backend.model, _complexity)
 
-            try:
-                response = _llm_request(log, json=request_body, stream=True, timeout=(30, 300))
-                # Only the legacy Response shape exposes ``status_code``;
-                # a generator (Bedrock backend) doesn't. Skip the log line in
-                # that case — the backend emits its own latency/ok telemetry.
-                if hasattr(response, "status_code"):
-                    log.info("Response status: %d", response.status_code)
-                break  # success — exit the reduction loop
-            except ContextOverflowError:
-                if _ctx_attempt >= _CTX_REDUCE_MAX:
-                    log.error("Context overflow: still failing after %d reductions", _CTX_REDUCE_MAX)
-                    _emit("on_error", "Error: context overflow — could not fit in server context window")
-                    return "error"
-                current_count = len(messages_to_send)
-                if current_count <= 2:
-                    # Already at minimum messages — aggressively truncate the summary
-                    # instead of trying to reduce messages further
-                    if summary_state["text"]:
-                        old_len = len(summary_state["text"])
-                        summary_state["text"] = summary_state["text"][:old_len // 2]
-                        log.warning("Context overflow (attempt %d/%d): at min messages, "
-                                    "truncating summary from %d to %d chars",
-                                    _ctx_attempt + 1, _CTX_REDUCE_MAX, old_len, len(summary_state["text"]))
-                        _emit("on_notice", "info", "[Context overflow — truncating summary to fit]")
-                    else:
-                        log.error("Context overflow with no summary and minimal messages — cannot reduce further")
-                        _emit("on_error", "Error: context overflow — cannot reduce further")
-                        return "error"
-                else:
-                    # Reduce: cap messages to current count minus 2 (drop oldest pair)
-                    _ctx_max_messages = max(2, current_count - 2)
-                    log.warning("Context overflow (attempt %d/%d): reducing from %d to max %d messages",
-                                _ctx_attempt + 1, _CTX_REDUCE_MAX, current_count, _ctx_max_messages)
-                    _emit("on_context_recovery")
-                    # Force a resummarize with the tighter window so dropped messages aren't lost
-                    _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True)
-                continue
-            except requests.exceptions.RequestException as e:
-                log.error("Request failed after retries: %s", e)
-                telemetry.record_error(kind=type(e).__name__)
-                _emit("on_error", f"Error calling server: {e}")
+        try:
+            response = _llm_request(log, json=request_body, stream=True, timeout=(30, 300))
+            # Only the legacy Response shape exposes ``status_code``;
+            # a generator (Bedrock backend) doesn't. Skip the log line in
+            # that case — the backend emits its own latency/ok telemetry.
+            if hasattr(response, "status_code"):
+                log.info("Response status: %d", response.status_code)
+            break  # success — exit the reduction loop
+        except ContextOverflowError:
+            if _ctx_attempt >= _CTX_REDUCE_MAX:
+                log.error("Context overflow: still failing after %d reductions", _CTX_REDUCE_MAX)
+                _emit("on_error", "Error: context overflow — could not fit in server context window")
                 return "error"
+            current_count = len(messages_to_send)
+            if current_count <= 2:
+                # Already at minimum messages — aggressively truncate the summary
+                # instead of trying to reduce messages further
+                if summary_state["text"]:
+                    old_len = len(summary_state["text"])
+                    summary_state["text"] = summary_state["text"][:old_len // 2]
+                    log.warning("Context overflow (attempt %d/%d): at min messages, "
+                                "truncating summary from %d to %d chars",
+                                _ctx_attempt + 1, _CTX_REDUCE_MAX, old_len, len(summary_state["text"]))
+                    _emit("on_notice", "info", "[Context overflow — truncating summary to fit]")
+                else:
+                    log.error("Context overflow with no summary and minimal messages — cannot reduce further")
+                    _emit("on_error", "Error: context overflow — cannot reduce further")
+                    return "error"
+            else:
+                # Reduce: cap messages to current count minus 2 (drop oldest pair)
+                _ctx_max_messages = max(2, current_count - 2)
+                log.warning("Context overflow (attempt %d/%d): reducing from %d to max %d messages",
+                            _ctx_attempt + 1, _CTX_REDUCE_MAX, current_count, _ctx_max_messages)
+                _emit("on_context_recovery")
+                # Force a resummarize with the tighter window so dropped messages aren't lost
+                _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True)
+            continue
+        except requests.exceptions.RequestException as e:
+            log.error("Request failed after retries: %s", e)
+            telemetry.record_error(kind=type(e).__name__)
+            _emit("on_error", f"Error calling server: {e}")
+            return "error"
 
+        # Accumulate streamed response
         # Accumulate streamed response
         content_parts = []
         tool_calls_by_index = {}
@@ -3100,25 +3104,27 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             # First text-only response: strip it from context and retry silently.
             # Leaving hallucinated content in history poisons subsequent turns —
             # the model builds on its fabricated answer instead of using tools.
-            if _consecutive_text_only == 1:
-                conversation_history.pop()  # remove the hallucinated assistant msg
-                log.info("Hallucination guard: stripped text-only response, retrying")
-                _emit("on_hallucination_stripped", "text_only")
-                continue
-
-            # Detect hallucinated file reads: model claims to have read a file
-            # but _accessed_files doesn't show it.  Give a targeted correction.
-            _hallucinated_read = _detect_hallucinated_read(full_content)[0]
-            if _hallucinated_read:
-                # Strip the hallucinated message and give a pointed correction
-                conversation_history.pop()
-                nudge = (
-                    "You did NOT actually read that file — you hallucinated its contents. "
-                    "You MUST call the file tool with action='read' to see what a file contains. "
-                    "Do not guess or fabricate file contents. Use the tool now."
-                )
-                log.info("Hallucination guard: detected fabricated file read, correcting")
-                _emit("on_hallucination_stripped", "file_read")
+                if _consecutive_text_only == 1:
+                    conversation_history.pop()  # remove the hallucinated assistant msg
+                    log.info("Hallucination guard: stripped text-only response, retrying")
+                    _emit("on_hallucination_stripped", "text_only")
+                    telemetry.record_hallucination()
+                    continue
+    
+                # Detect hallucinated file reads: model claims to have read a file
+                # but _accessed_files doesn't show it.  Give a targeted correction.
+                _hallucinated_read = _detect_hallucinated_read(full_content)[0]
+                if _hallucinated_read:
+                    # Strip the hallucinated message and give a pointed correction
+                    conversation_history.pop()
+                    nudge = (
+                        "You did NOT actually read that file — you hallucinated its contents. "
+                        "You MUST call the file tool with action='read' to see what a file contains. "
+                        "Do not guess or fabricate file contents. Use the tool now."
+                    )
+                    log.info("Hallucination guard: detected fabricated file read, correcting")
+                    _emit("on_hallucination_stripped", "file_read")
+                    telemetry.record_hallucination()
             elif (_cicd_branch and _cicd_edited_files
                   and not _cicd_pr_number and _cicd_issue_number):
                 # Cycle 82 (runs 187+188 failure mode): builder edited files in
