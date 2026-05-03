@@ -326,3 +326,74 @@ class TestSearchFilesEdgeCases(unittest.TestCase):
             # Verify we only got 100 results in the body
             body = _body(result)
             self.assertEqual(len(body.split("\n")), 100)
+
+
+class TestDefaultExcludes(unittest.TestCase):
+    """Tests for DEFAULT_EXCLUDES and include_temp — issue #568."""
+
+    def _make_tree(self, d):
+        """Create a tree with agent.py at root and a copy under temp/foo/."""
+        root = Path(d)
+        (root / "agent.py").write_text("def my_function(): pass\n")
+        (root / "temp").mkdir()
+        (root / "temp" / "foo").mkdir()
+        (root / "temp" / "foo" / "agent.py").write_text("def my_function(): pass\n")
+        return root
+
+    def test_default_excludes_constant_exists(self):
+        self.assertTrue(hasattr(search_files, "DEFAULT_EXCLUDES"))
+        self.assertIsInstance(search_files.DEFAULT_EXCLUDES, list)
+        self.assertIn("temp/", search_files.DEFAULT_EXCLUDES)
+        self.assertIn("worktrees/", search_files.DEFAULT_EXCLUDES)
+        self.assertIn("state/debug/", search_files.DEFAULT_EXCLUDES)
+
+    def test_default_hides_temp_directory(self):
+        """By default, files under temp/ must not appear in results."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d)
+            result = search_files.fn("my_function", path=d, context=0)
+            body = _body(result)
+            lines = [l for l in body.split("\n") if l.strip()]
+            self.assertEqual(len(lines), 1, f"Expected 1 match, got: {lines}")
+            self.assertIn("agent.py:1:", lines[0])
+            self.assertNotIn("temp", lines[0])
+
+    def test_include_temp_shows_all_matches(self):
+        """With include_temp=True both files must appear in results."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d)
+            result = search_files.fn(
+                "my_function", path=d, context=0, include_temp=True
+            )
+            body = _body(result)
+            lines = [l for l in body.split("\n") if l.strip()]
+            self.assertEqual(len(lines), 2, f"Expected 2 matches, got: {lines}")
+            paths = {l.split(":")[0] for l in lines}
+            self.assertTrue(
+                any("temp" in p for p in paths),
+                f"Expected a temp/ path in results, got: {paths}",
+            )
+
+    def test_worktrees_excluded_by_default(self):
+        """Files under worktrees/ are excluded by default."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "main.py").write_text("TARGET_SYMBOL = 1\n")
+            (root / "worktrees").mkdir()
+            (root / "worktrees" / "br").mkdir()
+            (root / "worktrees" / "br" / "main.py").write_text("TARGET_SYMBOL = 1\n")
+            result = search_files.fn("TARGET_SYMBOL", path=d, context=0)
+            body = _body(result)
+            lines = [l for l in body.split("\n") if l.strip()]
+            self.assertEqual(len(lines), 1, f"Expected 1 match, got: {lines}")
+            self.assertNotIn("worktrees", lines[0])
+
+    def test_include_temp_false_is_default(self):
+        """Calling fn without include_temp must behave the same as include_temp=False."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_tree(d)
+            result_default = search_files.fn("my_function", path=d, context=0)
+            result_explicit = search_files.fn(
+                "my_function", path=d, context=0, include_temp=False
+            )
+            self.assertEqual(result_default, result_explicit)
