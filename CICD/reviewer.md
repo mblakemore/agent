@@ -153,6 +153,34 @@ git diff --stat origin/main...HEAD | awk '$3 ~ /[0-9]{4,}/ { print }'
 ```
 Secrets → CLOSE immediately. Large binaries, out-of-scope files, stray non-ASCII → REQUEST_CHANGES.
 
+**Step 4 — Scope creep within in-scope files**: the existing destruction rule (`deletions > additions × 5 AND > 100 lines`) catches "rewrote from scratch" but misses *churn-balanced* scope creep — e.g. PR #563 added 118 lines and deleted 110 on `agent.py` while the issue only required ~5 lines of additions. Sweep the per-file diff:
+
+```bash
+gh pr diff <N> --name-only \
+  | xargs -I {} sh -c 'echo "{}: $(git diff origin/main...HEAD -- {} | grep -cE "^[+-][^+-]")"'
+```
+
+For each production file, compare the change count to what the linked issue/plan actually requires. If a file shows more than ~30 changed lines and the plan's `In:` list does not enumerate that scope (refactor, restructure, rewrite), → **REQUEST_CHANGES** with the cite: `<file>: <N> lines changed; plan only requires <Y> lines for <stated scope>. Revert the unrelated changes.` Do NOT MERGE in this case even if tests are green — out-of-scope churn is how regressions sneak in (15 tests broken in PR #563's second cycle came from this exact pattern).
+
+**Step 5 — Closes-trailer + AC coverage**: when the PR body has `Closes #N` (vs `Partial: AC… Refs #N`), verify the PR actually addresses the *full* issue, not a slice:
+
+```bash
+gh issue view <N> --json body --jq '.body' | grep -E "^[-*] " | head -20
+gh pr diff <N> | grep -E "^\+" | wc -l
+```
+
+If the issue body has bullet-pointed acceptance criteria and the diff demonstrably skips one or more of them → **REQUEST_CHANGES** with the missing-AC list, OR ask the builder to retitle as `Partial: AC<landed list>` + `Refs #N`. The default failure mode is "builder claims `Closes` but only delivered half the work" (PR #563 v1: claimed metrics-for-#556, delivered 4 of 6).
+
+**Step 6 — New-API call-site smoke**: when the diff adds a new public function in a non-test module (`def record_X` in `telemetry.py`, `def some_helper` in `llm_backend.py`, etc.) that the issue's plan implies should be *used*, grep the diff for at least one call site:
+
+```bash
+git diff origin/main...HEAD | grep -E "^\+.*def (record_|_?[a-z][a-z_]*\()" -A0
+# For each new public function added in a non-test file, check there's at least one + line invoking it:
+git diff origin/main...HEAD | grep -F "<func_name>("
+```
+
+If a new public helper is added but no call site exists in the same diff → **REQUEST_CHANGES** with: `<func_name> defined at <file>:<line> but never invoked anywhere in the diff. Add the call site or remove the function.` This catches the "framework-only PR" failure (PR #563 v1: defined `record_tool_call`/`record_tool_error`/`record_hallucination`/`record_summary` but no agent.py call sites — meters would have stayed at zero forever).
+
 ## Phase 5 — ASSESS
 
 Exactly one verdict from the decision matrix:
@@ -166,6 +194,9 @@ Exactly one verdict from the decision matrix:
 | Metric off >5% wrong direction or command broken | **REQUEST_CHANGES** (cite measurements) |
 | New skips not justified in plan | **REQUEST_CHANGES** |
 | Diff touches files outside plan scope | **REQUEST_CHANGES** |
+| In-scope file changed >30 lines and plan's `In:` list does not enumerate that scope (cycle 103 — PR #563-style scope creep within an in-scope file). Tests may be green but unsolicited refactor introduces regression risk | **REQUEST_CHANGES** with `<file>: <N> lines changed; plan only required <Y>. Revert the unrelated changes.` |
+| PR body uses `Closes #N` AND the issue's bullet-pointed ACs are not all addressed by the diff (cycle 103) | **REQUEST_CHANGES** with the missing-AC list, OR direct the builder to retitle as `Partial: AC<list> Refs #N` + remove the `Closes` trailer |
+| Diff adds a new public function in a non-test file (`def record_X`, `def helper_Y`) and no `+`-line elsewhere in the diff invokes it (cycle 103 — framework-only PR) | **REQUEST_CHANGES** with `<func_name> defined at <file>:<line> but never invoked anywhere in the diff. Add the call site or remove the function.` |
 | Tests patch or call a production symbol that does not exist on main (verified by `grep -n '<symbol>' agent.py`) | **CLOSE** (cycle 75 — builder error, not reviewer-fixable) |
 | Issue body has a "How to verify" or "Verification" section with executable commands and the reviewer has not run them and pasted the output (cycle 78) | **REQUEST_CHANGES** with the verification command + observed output |
 | CICD PR with no plan/metric/issue | **CLOSE** (hard-rule violation) |
