@@ -1509,6 +1509,7 @@ def _generate_summary(old_summary, new_messages, log):
         # Try dedicated summary endpoint first — via _summary_request, which
         # now routes through _summary_backend.complete (plan task 1.4).
         summary = _summary_request(prompt, log=log)
+        telemetry.record_summary()
         log.info("SUMMARY: %s", summary)
         if telemetry.verbose_enabled():
             telemetry.record_turn(
@@ -1527,6 +1528,7 @@ def _generate_summary(old_summary, new_messages, log):
             log.info("Retrying summary with failover backend...")
             try:
                 summary = _summary_request(prompt, log=log)
+                telemetry.record_summary()
                 log.info("SUMMARY (retry): %s", summary)
                 return summary
             except Exception as e2:
@@ -2764,6 +2766,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         _CTX_REDUCE_MAX = 10     # max number of message-reduction attempts
 
         for _ctx_attempt in range(_CTX_REDUCE_MAX + 1):
+            telemetry.record_context_size(ctx_size)
             messages_to_send, oldest_idx = _build_context(
                 conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                 max_messages_override=_ctx_max_messages)
@@ -2904,11 +2907,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         _u_model = request_body.get("model") or ""
                         _u_in = _usage.get("prompt_tokens") or _usage.get("input_tokens") or 0
                         _u_out = _usage.get("completion_tokens") or _usage.get("output_tokens") or 0
+                        _u_backend = getattr(_main_backend, "kind", None)
                         if _u_in:
-                            telemetry.record_tokens(_u_model, "prompt", int(_u_in))
+                            telemetry.record_tokens(_u_model, "prompt", int(_u_in), backend=_u_backend)
                             _turn_in_tokens += int(_u_in)
                         if _u_out:
-                            telemetry.record_tokens(_u_model, "completion", int(_u_out))
+                            telemetry.record_tokens(_u_model, "completion", int(_u_out), backend=_u_backend)
                             _turn_out_tokens += int(_u_out)
                     choices = chunk.get("choices")
                     if not choices:
@@ -3104,6 +3108,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 conversation_history.pop()  # remove the hallucinated assistant msg
                 log.info("Hallucination guard: stripped text-only response, retrying")
                 _emit("on_hallucination_stripped", "text_only")
+                telemetry.record_hallucination()
                 continue
 
             # Detect hallucinated file reads: model claims to have read a file
@@ -3119,6 +3124,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 )
                 log.info("Hallucination guard: detected fabricated file read, correcting")
                 _emit("on_hallucination_stripped", "file_read")
+                telemetry.record_hallucination()
             elif (_cicd_branch and _cicd_edited_files
                   and not _cicd_pr_number and _cicd_issue_number):
                 # Cycle 82 (runs 187+188 failure mode): builder edited files in
@@ -3307,6 +3313,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             continue
 
                     log.debug("TOOL CALL: %s(%s) [id=%s]", func_name, json.dumps(func_args), tool_id)
+                    telemetry.record_tool_call(func_name)
 
                     # Track think tool usage for CICD phase-gate enforcement
                     if func_name == "think":
@@ -3351,6 +3358,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             raise
                         except Exception as e:
                             result_str = f"Error executing tool: {str(e)}"
+                            telemetry.record_tool_error(func_name, "execution_error")
                         # Conversational tool recovery: on error, try to fix params
                         if result_str.startswith("Error"):
                             try:
