@@ -41,6 +41,11 @@ _cycles: Any = None
 _tokens: Any = None
 _errors: Any = None
 _cycle_duration: Any = None
+_tool_calls: Any = None
+_tool_errors: Any = None
+_hallucinations: Any = None
+_summaries: Any = None
+_context_size: Any = None
 
 # Verbose-only meters. Created only when verbose is enabled.
 _turns: Any = None
@@ -80,6 +85,7 @@ def init() -> bool:
     global _provider, _meter, _enabled, _verbose
     global _cycles, _tokens, _errors, _cycle_duration
     global _turns, _turn_duration, _turn_tool_calls, _turn_tokens
+    global _tool_calls, _tool_errors, _hallucinations, _summaries, _context_size
 
     if not _truthy(os.environ.get("AGENTPY_TELEMETRY")):
         _enabled = False
@@ -138,6 +144,28 @@ def init() -> bool:
     ):
         logging.getLogger(_noisy_logger).setLevel(logging.CRITICAL)
 
+    # New metrics for tool execution and agent health.
+    _tool_calls = meter.create_counter(
+        "agentpy_tool_calls",
+        description="tool invocations by tool name",
+    )
+    _tool_errors = meter.create_counter(
+        "agentpy_tool_errors",
+        description="tool invocation errors by tool name",
+    )
+    _hallucinations = meter.create_counter(
+        "agentpy_hallucinations",
+        description="hallucination guard firings",
+    )
+    _summaries = meter.create_counter(
+        "agentpy_summaries",
+        description="context summarization events",
+    )
+    _context_size = meter.create_histogram(
+        "agentpy_context_size",
+        description="current context window size in tokens",
+        unit="tokens",
+    )
     # Base meters — always created when telemetry is enabled.
     # NOTE: NO `_total` suffix — Prom appends it during OTLP translation.
     _cycles = meter.create_counter("agentpy_cycles", description="cycles run")
@@ -219,12 +247,19 @@ def record_cycle(status: str, duration_s: float) -> None:
         logger.debug("telemetry.record_cycle failed", exc_info=True)
 
 
-def record_tokens(model: str, kind: str, n: int) -> None:
-    """Record token usage. No-op when telemetry is disabled."""
+def record_tokens(model: str, kind: str, n: int, backend: str | None = None) -> None:
+    """Record token usage. No-op when telemetry is disabled.
+
+    ``backend`` (e.g. ``"llamacpp"`` or ``"bedrock"``) is included as a label
+    when provided so spend can be split by backend in Grafana.
+    """
     if not _enabled or _tokens is None:
         return
     try:
-        _tokens.add(int(n), {"model": model, "kind": kind})
+        attrs = {"model": model, "kind": kind}
+        if backend:
+            attrs["backend"] = backend
+        _tokens.add(int(n), attrs)
     except Exception:
         logger.debug("telemetry.record_tokens failed", exc_info=True)
 
@@ -284,3 +319,48 @@ def shutdown() -> None:
     finally:
         _provider = None
 
+
+def record_tool_call(name: str) -> None:
+    """Record a tool call by name. No-op when telemetry is disabled."""
+    if not _enabled or _tool_calls is None:
+        return
+    try:
+        _tool_calls.add(1, {"tool": name})
+    except Exception:
+        logger.debug("telemetry.record_tool_call failed", exc_info=True)
+
+def record_tool_error(name: str, kind: str) -> None:
+    """Record a tool error by name and kind. No-op when telemetry is disabled."""
+    if not _enabled or _tool_errors is None:
+        return
+    try:
+        _tool_errors.add(1, {"tool": name, "kind": kind})
+    except Exception:
+        logger.debug("telemetry.record_tool_error failed", exc_info=True)
+
+def record_hallucination() -> None:
+    """Record a hallucination guard firing. No-op when telemetry is disabled."""
+    if not _enabled or _hallucinations is None:
+        return
+    try:
+        _hallucinations.add(1)
+    except Exception:
+        logger.debug("telemetry.record_hallucination failed", exc_info=True)
+
+def record_summary() -> None:
+    """Record a context summarization event. No-op when telemetry is disabled."""
+    if not _enabled or _summaries is None:
+        return
+    try:
+        _summaries.add(1)
+    except Exception:
+        logger.debug("telemetry.record_summary failed", exc_info=True)
+
+def record_context_size(size: int) -> None:
+    """Record current context window size. No-op when telemetry is disabled."""
+    if not _enabled or _context_size is None:
+        return
+    try:
+        _context_size.record(int(size))
+    except Exception:
+        logger.debug("telemetry.record_context_size failed", exc_info=True)

@@ -289,7 +289,13 @@ class TestDisabledNoOps(_BaseTelemetryTest):
         telemetry.record_cycle("failed", 0.5)
         telemetry.record_tokens("sonnet", "input", 1234)
         telemetry.record_tokens("sonnet", "output", 567)
+        telemetry.record_tokens("sonnet", "input", 1234, backend="bedrock")
         telemetry.record_error("ValueError")
+        telemetry.record_tool_call("exec_command")
+        telemetry.record_tool_error("exec_command", "execution_error")
+        telemetry.record_hallucination()
+        telemetry.record_summary()
+        telemetry.record_context_size(12345)
         telemetry.record_turn(
             role="assistant",
             duration_s=1.0,
