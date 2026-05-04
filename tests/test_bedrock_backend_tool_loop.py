@@ -148,7 +148,7 @@ def test_stream_chat_truncation_recovery(monkeypatch, caplog, tmp_path):
 
     calls = []
 
-    def fake_send_and_wait_conv(prompt, conversation_id=None, cancel_check=None):
+    def fake_send_and_wait_conv(prompt, conversation_id=None, cancel_check=None, inference_params=None):
         calls.append((prompt, conversation_id))
         if len(calls) == 1:
             return _mock_msg(first), "conv-1"
@@ -188,7 +188,7 @@ def test_stream_chat_serializes_tool_results(monkeypatch, tmp_path):
     b = _make_backend(monkeypatch, tmp_path)
     seen_prompts = []
 
-    def fake_send_and_wait_conv(prompt, conversation_id=None, cancel_check=None):
+    def fake_send_and_wait_conv(prompt, conversation_id=None, cancel_check=None, inference_params=None):
         seen_prompts.append(prompt)
         return _mock_msg("done"), "conv-2"
 
