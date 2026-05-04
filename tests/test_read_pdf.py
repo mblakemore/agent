@@ -568,3 +568,57 @@ def test_read_pdf_page_extraction_exception_returns_error(mock_open):
     assert isinstance(result, str), "Must return a string, not raise"
     assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
     assert "reading PDF page" in result or "internal fitz error" in result
+
+
+# ── Path confinement and null-byte validation (#872) ──────────────────────────
+
+class TestReadPdfPathConfinement:
+    """read_pdf must reject paths outside the working directory (#872)."""
+
+    def setup_method(self):
+        self._orig_cwd = os.getcwd()
+        self._outer = tempfile.mkdtemp()
+        import pathlib
+        self._project = pathlib.Path(self._outer) / "project"
+        self._project.mkdir()
+        os.chdir(str(self._project))
+
+    def teardown_method(self):
+        os.chdir(self._orig_cwd)
+        import shutil
+        shutil.rmtree(self._outer, ignore_errors=True)
+
+    def test_absolute_path_outside_cwd_returns_error(self):
+        """read_pdf with an absolute path outside cwd must be rejected. (#872)"""
+        result = fn(path=self._outer)
+        assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+        assert "outside" in result
+
+    def test_relative_traversal_outside_cwd_returns_error(self):
+        """read_pdf with '../' traversal outside cwd must be rejected. (#872)"""
+        result = fn(path="../escape.pdf")
+        assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+        assert "outside" in result
+
+    def test_null_byte_in_path_returns_error(self):
+        """read_pdf with a null byte in path must return Error, not crash. (#872)"""
+        result = fn(path="/tmp/test\x00.pdf")
+        assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+        assert "null byte" in result
+
+    @patch("fitz.open")
+    def test_valid_path_inside_cwd_still_works(self, mock_open):
+        """read_pdf with a valid path inside cwd must not be rejected. (#872)"""
+        import pathlib
+        mock_doc = MagicMock()
+        mock_doc.is_pdf = True
+        mock_doc.needs_pass = 0
+        mock_doc.__len__ = MagicMock(return_value=1)
+        page = MagicMock()
+        page.get_text.return_value = "page content"
+        mock_doc.__getitem__ = MagicMock(return_value=page)
+        mock_open.return_value = mock_doc
+
+        inside = str(self._project / "doc.pdf")
+        result = fn(path=inside)
+        assert not result.startswith("Error:"), f"Expected success for cwd path, got: {result!r}"

@@ -4,6 +4,9 @@ NOTE: This tool is for PDF files ONLY. Do NOT use it to read .log, .py, .json, o
 Use the file tool (action='read') for text files.
 """
 
+import os
+from pathlib import Path
+
 import fitz  # PyMuPDF
 
 
@@ -20,6 +23,21 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
     """
     if not isinstance(path, str):
         return f"Error: 'path' must be a string, got {type(path).__name__}"
+    if '\x00' in path:
+        return "Error: path contains a null byte, which is not allowed"
+    # Confinement: reject paths that resolve outside the working directory (#872)
+    try:
+        cwd_resolved = Path.cwd().resolve()
+        cwd_prefix = str(cwd_resolved) + os.sep
+        resolved = Path(path).resolve()
+        if resolved != cwd_resolved and not str(resolved).startswith(cwd_prefix):
+            return (
+                f"Error: path '{path}' resolves to '{resolved}' which is outside "
+                f"the working directory '{cwd_resolved}'. "
+                f"Only files inside the current working directory can be accessed."
+            )
+    except (OSError, ValueError):
+        pass  # let fitz.open fail naturally
     try:
         doc = fitz.open(path)
     except Exception as e:
