@@ -174,13 +174,19 @@ def find_symbol(
     else:
         py_files = _collect_py_files(search_path)
 
+    single_file = search_path.is_file()
     results = []
 
     for py_file in py_files:
         try:
             source = py_file.read_text(encoding="utf-8", errors="ignore")
             tree = ast.parse(source, filename=str(py_file))
-        except SyntaxError:
+        except SyntaxError as exc:
+            # When the caller targeted a single file, surface the parse failure
+            # so the agent can distinguish "not found" from "file is broken".
+            # When scanning a directory, silently skip broken files.
+            if single_file:
+                return [{"error": f"SyntaxError: {exc}", "path": str(py_file)}]
             continue
         except Exception:
             continue
@@ -222,7 +228,9 @@ definition = {
             "mode='callers' to find all call sites, or mode='both' for both. "
             "Optionally filter by kind: 'function', 'class', or 'method'. "
             "Returns a list of matches, each with path, line number, kind, scope, and context. "
-            "Returns [] when nothing is found (never raises). "
+            "Returns [] when nothing is found. "
+            "Returns [{\"error\": \"SyntaxError: ...\", \"path\": \"...\"}] when a single "
+            "target file cannot be parsed — check this before assuming a symbol is absent. "
             "IMPORTANT: always pass `path` explicitly with an absolute path when you know "
             "the directory you want to search."
         ),
