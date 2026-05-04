@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -96,13 +97,14 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
     if not isinstance(description, str):
         description = str(description) if description is not None else ""
     description = description.strip()
-    # Collapse embedded newlines (and surrounding whitespace on each segment) into
-    # a single space so that descriptions and notes remain single-line.  This
-    # prevents the `list` output — which formats one task per line — from being
-    # broken by a multi-line description stored verbatim in the JSON file.
-    # e.g. "line1\nline2" → "line1 line2"
-    if "\n" in description or "\r" in description:
-        description = " ".join(part.strip() for part in description.splitlines() if part.strip())
+    # Collapse embedded newlines/tabs (and any adjacent spaces) into a single
+    # space so that descriptions and notes remain single-line.  This prevents
+    # the `list` output — which formats one task per line — from being broken
+    # by a multi-line or tab-containing description stored verbatim in the JSON.
+    # e.g. "line1\nline2" → "line1 line2",  "a\tb" → "a b"
+    # Tabs were not handled by the original newline-only guard (#728).
+    if "\n" in description or "\r" in description or "\t" in description:
+        description = re.sub(r" *[\t\n\r][ \t\n\r]*", " ", description).strip()
 
     # Validate task_id type — must be an integer (or the default 0).
     # Non-integer values (e.g. strings passed by a model) would cause
