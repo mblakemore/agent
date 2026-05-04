@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -781,7 +782,7 @@ class TestFileDirectoryPathEdgeCases(unittest.TestCase):
             result = file_tool.fn(action="write", path=d, content="oops\n")
         self.assertIsInstance(result, str)
         # The write attempt either hits the unread-file guard (Error:) or
-        # the OS rejects it with IsADirectoryError wrapped in "Error (write):…"
+        # the OS rejects it with IsADirectoryError wrapped in "Error: action 'write' failed:…"
         self.assertIn("Error", result, f"Expected error message, got: {result!r}")
 
 
@@ -1063,3 +1064,29 @@ class TestFileAppendEmptyContent(unittest.TestCase):
             file_tool.fn(action="append", path=str(target), content="")
             self.assertEqual(target.read_text(encoding="utf-8"), "original\n",
                              "File must be unchanged after rejected append")
+
+
+# ── Regression tests: error message format (must start with "Error: ") ──────────
+
+class TestFileErrorMessageFormat(unittest.TestCase):
+    """All file tool error paths must return strings starting with 'Error: '."""
+
+    def test_write_streaming_exception_error_format(self):
+        """Streaming write exception must produce 'Error: streaming write failed: ...'."""
+        import tools.file as file_mod
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "out.txt"
+            target.write_text("existing\n", encoding="utf-8")
+            file_mod._accessed_files.add(str(target.resolve()))
+            with patch("builtins.open", side_effect=OSError("disk full")):
+                result = file_tool.fn(action="write", path=str(target), content="new\n")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+
+    def test_dispatch_exception_error_format(self):
+        """Top-level dispatch exception must produce 'Error: action ... failed: ...'."""
+        import tools.file as file_mod
+        with patch.object(file_mod, "_read", side_effect=RuntimeError("unexpected")):
+            result = file_tool.fn(action="read", path="/tmp/nonexistent_file_xyz.txt")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")

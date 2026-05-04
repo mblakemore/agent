@@ -98,7 +98,7 @@ def fn(url: str) -> str:
                 text = text[:_MAX_CHARS]
 
     except requests.exceptions.RequestException as e:
-        return f"Error fetching URL: {e}"
+        return f"Error: fetching URL: {e}"
     except Exception as e:
         return f"Error: {e}"
 

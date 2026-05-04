@@ -120,7 +120,7 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
         else:
             return f"Error: unknown action '{action}'. Use: read, write, insert, append, delete, list."
     except Exception as e:
-        return f"Error ({action}): {e}"
+        return f"Error: action '{action}' failed: {e}"
 
 
 _BLOCKED_FILENAMES = {"conversation_checkpoint.json"}
@@ -243,7 +243,7 @@ def _write(path, content, start_line, end_line):
         except Exception as e:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-            return f"Error during streaming write: {e}"
+            return f"Error: streaming write failed: {e}"
 
         with open(p, 'r', encoding='utf-8', errors='replace') as f:
             new_content = f.read()
@@ -450,7 +450,7 @@ def _insert(path, content, start_line):
     except Exception as e:
         if os.path.exists(temp_path):
             os.remove(temp_path)
-        return f"Error during streaming insert: {e}"
+        return f"Error: streaming insert failed: {e}"
 
     with open(p, 'r', encoding='utf-8', errors='replace') as f:
         new_content = f.read()
@@ -511,7 +511,7 @@ def _delete(path, start_line=0, end_line=0):
         except Exception as e:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-            return f"Error during line deletion: {e}"
+            return f"Error: line deletion failed: {e}"
 
         with open(p, 'r', encoding='utf-8', errors='replace') as f:
             new_content = f.read()

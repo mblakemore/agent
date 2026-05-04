@@ -382,7 +382,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
                 env=_auto_env,
             )
         except Exception as e:
-            return f"Error starting background command: {e}"
+            return f"Error: starting background command: {e}"
         session["bg_proc"] = proc
         session["bg_output"] = ""
         t = threading.Thread(target=_read_bg_output, args=(proc, session), daemon=True)
@@ -413,7 +413,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
             env=_auto_env,
         )
     except Exception as e:
-        return f"Error running command: {e}"
+        return f"Error: running command: {e}"
 
     deadline = _time.monotonic() + timeout
     output_parts: list = []
