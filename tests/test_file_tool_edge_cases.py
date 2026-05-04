@@ -687,5 +687,93 @@ class TestFileLineFloatRejection(unittest.TestCase):
                       f"Error must show the bad value 3.7, got: {result!r}")
 
 
+# ── String / None line number rejection (#899) ───────────────────────────────
+
+
+class TestFileLineStringNoneRejection(unittest.TestCase):
+    """start_line and end_line must reject string and None values with a clear
+    type error rather than leaking a raw 'not supported between instances of
+    str and int' TypeError from the comparison operator (#899).
+
+    Before the fix, strings and None passed the bool and float guards and
+    reached internal comparisons (start_line < 1, end_line > len(lines)),
+    causing TypeError to be caught by the outer except and re-emitted as a
+    raw stdlib message.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._target = str(Path(self._tmpdir.name) / "lines.txt")
+        Path(self._target).write_text("line1\nline2\nline3\nline4\nline5\n")
+        file_tool.fn(action="read", path=self._target)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _assert_type_error(self, result, param_name, type_name):
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertIn(param_name, result, f"Error must name the param: {result!r}")
+        self.assertIn(type_name, result, f"Error must name the bad type: {result!r}")
+        self.assertNotIn("not supported between instances", result,
+                         f"Raw TypeError must not be exposed: {result!r}")
+
+    # --- string start_line ---
+
+    def test_read_start_line_string_returns_type_error(self):
+        """start_line='2' must return a clean type error, not a raw TypeError (#899)."""
+        result = file_tool.fn(action="read", path=self._target, start_line="2")
+        self._assert_type_error(result, "start_line", "str")
+
+    def test_write_start_line_string_returns_type_error(self):
+        """start_line='1' for write must return a clean type error (#899)."""
+        result = file_tool.fn(action="write", path=self._target,
+                              content="new", start_line="1", end_line=1)
+        self._assert_type_error(result, "start_line", "str")
+
+    # --- None start_line ---
+
+    def test_read_start_line_none_returns_type_error(self):
+        """start_line=None must return a clean type error, not a raw TypeError (#899)."""
+        result = file_tool.fn(action="read", path=self._target, start_line=None)
+        self._assert_type_error(result, "start_line", "NoneType")
+
+    # --- string end_line ---
+
+    def test_read_end_line_string_returns_type_error(self):
+        """end_line='3' must return a clean type error (#899)."""
+        result = file_tool.fn(action="read", path=self._target,
+                              start_line=1, end_line="3")
+        self._assert_type_error(result, "end_line", "str")
+
+    # --- None end_line ---
+
+    def test_read_end_line_none_returns_type_error(self):
+        """end_line=None must return a clean type error (#899)."""
+        result = file_tool.fn(action="read", path=self._target,
+                              start_line=1, end_line=None)
+        self._assert_type_error(result, "end_line", "NoneType")
+
+    # --- string error hints about quotes ---
+
+    def test_start_line_string_error_hints_at_removing_quotes(self):
+        """The string error must hint to remove quotes (#899)."""
+        result = file_tool.fn(action="read", path=self._target, start_line="5")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertTrue(
+            "quote" in result.lower() or "without" in result.lower(),
+            f"Error should hint about removing quotes: {result!r}",
+        )
+
+    # --- normal integers still work ---
+
+    def test_read_normal_int_unaffected_by_string_guard(self):
+        """Plain integer line numbers must not be broken by the new string/None guard (#899)."""
+        result = file_tool.fn(action="read", path=self._target, start_line=2, end_line=4)
+        self.assertFalse(result.startswith("Error:"), f"Normal int broke: {result!r}")
+        self.assertIn("line2", result)
+        self.assertIn("line4", result)
+
+
 if __name__ == "__main__":
     unittest.main()
