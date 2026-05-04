@@ -152,6 +152,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
             return f"Error: task_id required for 'done'. Example: task_tracker(action=\"done\", task_id=1)\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
         for t in tasks:
             if t["id"] == task_id:
+                if t["status"] in ("done", "completed"):
+                    return f"Error: task #{task_id} is already done"
                 t["status"] = "done"
                 t["completed"] = datetime.now().isoformat(timespec="seconds")
                 if description:

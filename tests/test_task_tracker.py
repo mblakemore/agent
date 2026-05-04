@@ -457,3 +457,37 @@ def test_add_description_stripped_of_surrounding_whitespace():
     # Verify stored description is stripped
     tasks = json.loads(Path(_TASKS_FILE).read_text())
     assert tasks[0]["description"] == "real task"
+
+
+# ── Issue #704: done action must reject already-completed tasks ──────────────
+
+def test_done_on_already_done_task_returns_error():
+    """done on an already-done task must return Error, not silent success (#704)."""
+    fn(action="add", description="Task to complete")
+    fn(action="done", task_id=1)
+    res = fn(action="done", task_id=1)
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    assert "already done" in res
+
+
+def test_done_on_already_done_task_does_not_overwrite_timestamp():
+    """done on an already-done task must not overwrite the completed timestamp (#704)."""
+    fn(action="add", description="Task")
+    fn(action="done", task_id=1)
+    tasks_after_first = json.loads(Path(_TASKS_FILE).read_text())
+    first_ts = tasks_after_first[0]["completed"]
+
+    fn(action="done", task_id=1)  # second call — should be rejected
+    tasks_after_second = json.loads(Path(_TASKS_FILE).read_text())
+    second_ts = tasks_after_second[0]["completed"]
+
+    assert first_ts == second_ts, "completed timestamp must not be overwritten by a duplicate done"
+
+
+def test_done_on_open_task_still_works_after_fix():
+    """Completing an open task must still succeed after the guard is in place (#704)."""
+    fn(action="add", description="Normal task")
+    res = fn(action="done", task_id=1)
+    assert "Completed task #1" in res
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["status"] == "done"
