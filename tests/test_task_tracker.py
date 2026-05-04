@@ -491,3 +491,52 @@ def test_done_on_open_task_still_works_after_fix():
     assert "Completed task #1" in res
     tasks = json.loads(Path(_TASKS_FILE).read_text())
     assert tasks[0]["status"] == "done"
+
+
+# ── Issue #706: update action must not reopen completed tasks ─────────────────
+
+def test_update_on_done_task_returns_error():
+    """update on a done task must return Error, not silently reopen it (#706)."""
+    fn(action="add", description="Task to complete")
+    fn(action="done", task_id=1)
+    res = fn(action="update", task_id=1, status="in_progress")
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    assert "already done" in res
+
+
+def test_update_on_done_task_does_not_change_status():
+    """update on a done task must not modify the stored status (#706)."""
+    fn(action="add", description="Task")
+    fn(action="done", task_id=1)
+    fn(action="update", task_id=1, status="in_progress")  # must be rejected
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["status"] == "done", "status must remain 'done' after rejected update"
+
+
+def test_update_on_done_task_does_not_add_note():
+    """update with description on a done task must not add a note (#706)."""
+    fn(action="add", description="Task")
+    fn(action="done", task_id=1)
+    fn(action="update", task_id=1, description="spurious note")
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert "note" not in tasks[0], "note must not be added to a completed task by a rejected update"
+
+
+def test_update_on_done_task_cannot_be_done_again():
+    """After a rejected update on a done task the task must still be done (#706)."""
+    fn(action="add", description="Task")
+    fn(action="done", task_id=1)
+    fn(action="update", task_id=1, status="in_progress")  # rejected
+    # done a second time must also be rejected (not silently succeed)
+    res2 = fn(action="done", task_id=1)
+    assert res2.startswith("Error:"), f"Expected Error on second done, got: {res2!r}"
+    assert "already done" in res2
+
+
+def test_update_on_open_task_still_works_after_706_fix():
+    """update on an open task must still succeed after the #706 guard is added."""
+    fn(action="add", description="Open task")
+    res = fn(action="update", task_id=1, status="in_progress")
+    assert "Updated task #1: status=in_progress" in res
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["status"] == "in_progress"
