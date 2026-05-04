@@ -822,3 +822,48 @@ def test_exec_command_background_binary_output_not_silently_dropped():
     assert "�" in poll or len(poll.split("\n", 1)[-1].strip()) > 0, (
         f"Background binary output was silently dropped: {poll!r}"
     )
+
+
+# ── Null byte validation (#758) ───────────────────────────────────────────────
+
+
+def test_exec_command_null_byte_in_env_value_returns_clear_error():
+    """env value containing a null byte must return a descriptive error, not a cryptic
+    subprocess exception (#758).
+
+    Before the fix, the null byte passed isinstance(v, str) validation and only
+    failed inside subprocess.Popen with "embedded null byte", giving no hint
+    about which env key was the culprit.
+    """
+    result = fn(command="echo hi", env={"TEST": "hello\x00world"})
+    assert result.startswith("Error:"), f"Expected error, got: {result!r}"
+    assert "null byte" in result, f"Error message should mention null byte: {result!r}"
+    assert "'TEST'" in result, f"Error message should name the offending key: {result!r}"
+
+
+def test_exec_command_null_byte_in_command_returns_clear_error():
+    """command string containing a null byte must return a descriptive error (#758).
+
+    Before the fix, the null byte passed the basic str check and only failed
+    inside subprocess.Popen with a cryptic "embedded null byte" message.
+    """
+    result = fn(command="echo hi\x00there")
+    assert result.startswith("Error:"), f"Expected error, got: {result!r}"
+    assert "null byte" in result, f"Error message should mention null byte: {result!r}"
+
+
+def test_exec_command_null_byte_env_value_names_key():
+    """The null-byte error for an env value must include the key name so the caller
+    can identify which variable is malformed (#758)."""
+    result = fn(command="echo hi", env={"MY_VAR": "val\x00ue"})
+    assert "'MY_VAR'" in result or "MY_VAR" in result, (
+        f"Expected key name in error message, got: {result!r}"
+    )
+
+
+def test_exec_command_env_value_without_null_byte_still_works():
+    """Env values that are valid strings (no null byte) must continue to work normally
+    after adding the null-byte check (#758)."""
+    result = fn(command="echo $SAFE_VAR", env={"SAFE_VAR": "all_good"})
+    assert "exit=0" in result
+    assert "all_good" in result
