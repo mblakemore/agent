@@ -58,6 +58,19 @@ def test_read_pdf_paging_cap():
         assert "Pages 1-50 of 100" in result
         assert "[Use read_pdf with start_page=51 to continue reading]" in result
 
+def test_read_pdf_non_pdf_file():
+    """read_pdf must reject files that fitz opens but identifies as non-PDF."""
+    with patch('fitz.open') as mock_open:
+        mock_doc = MagicMock()
+        mock_doc.is_pdf = False
+        mock_open.return_value = mock_doc
+        result = fn("notes.txt")
+        assert result.startswith("Error:")
+        assert "not a PDF" in result
+        assert "file" in result  # directs caller to the file tool
+        mock_doc.close.assert_called_once()
+
+
 def test_read_pdf_custom_range():
     with patch('fitz.open') as mock_open:
         mock_doc = MagicMock()
