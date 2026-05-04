@@ -1073,4 +1073,51 @@ class TestSearchFilesNullByteValidation(unittest.TestCase):
             Path(d, "a.txt").write_text("hello world\n")
             result = search_files.fn(pattern="hello", path=d, context=0)
         self.assertIn("hello world", result)
+
+
+# ── invalid regex patterns (#770) ─────────────────────────────────────────────
+
+class TestSearchFilesInvalidRegex(unittest.TestCase):
+    """search_files must return a clear error for invalid regex patterns instead of
+    crashing with re.error (#770)."""
+
+    def test_unclosed_bracket_returns_error(self):
+        """[unclosed must produce Error: invalid regex pattern, not raise re.error."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("line\n")
+            result = search_files.fn(pattern="[unclosed", path=d)
+        self.assertIsInstance(result, str, "fn() must return a string, not raise")
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertIn("invalid regex pattern", result)
+
+    def test_backslash_only_pattern_returns_error(self):
+        """A bare backslash (trailing escape) must return a clear error, not re.error.
+
+        This is a common mistake when a caller passes a single-backslash string
+        that is an incomplete escape sequence.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("line\n")
+            result = search_files.fn(pattern="\\", path=d)
+        self.assertIsInstance(result, str, "fn() must return a string, not raise")
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertIn("invalid regex pattern", result)
+
+    def test_invalid_regex_on_single_file_returns_error(self):
+        """Invalid regex must also be caught when path points to a single file."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "f.txt")
+            p.write_text("hello\n")
+            result = search_files.fn(pattern="[bad", path=str(p))
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertIn("invalid regex pattern", result)
+
+    def test_valid_pattern_still_works(self):
+        """Regression guard: a normal pattern must still return results after the guard."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("alpha\nbeta\n")
+            result = search_files.fn(pattern="alpha", path=d, context=0)
+        self.assertIn("alpha", result)
+        self.assertNotIn("Error", result)
         self.assertNotIn("Error:", result)

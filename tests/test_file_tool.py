@@ -748,3 +748,66 @@ class TestFileNullByteInPath(unittest.TestCase):
             target = str(Path(d) / "ok.txt")
             result = file_tool.fn(action="write", path=target, content="hi")
             self.assertTrue(result.startswith("Wrote '"), f"Normal write broke: {result!r}")
+
+
+# ── directory-path edge cases (#770) ──────────────────────────────────────────
+
+class TestFileDirectoryPathEdgeCases(unittest.TestCase):
+    """read/write on a directory path must return clear errors, not crash (#770)."""
+
+    def test_read_directory_returns_error_with_list_suggestion(self):
+        """Reading a directory path must return an error suggesting 'list' action."""
+        with tempfile.TemporaryDirectory() as d:
+            result = file_tool.fn(action="read", path=d)
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("directory", result)
+        self.assertIn("list", result)
+
+    def test_write_directory_returns_error(self):
+        """Writing to a directory path must return an error, not corrupt the directory."""
+        with tempfile.TemporaryDirectory() as d:
+            # Without prior read the "unread file" guard fires first — still an error
+            result = file_tool.fn(action="write", path=d, content="oops\n")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+
+    def test_write_directory_after_fake_read_returns_error(self):
+        """Even if the directory path is in _accessed_files, writing must return an error."""
+        import tools.file as file_mod
+        with tempfile.TemporaryDirectory() as d:
+            # Manually prime the accessed-files set as if a read had been done
+            file_mod._accessed_files.add(str(Path(d).resolve()))
+            result = file_tool.fn(action="write", path=d, content="oops\n")
+        self.assertIsInstance(result, str)
+        # The write attempt either hits the unread-file guard (Error:) or
+        # the OS rejects it with IsADirectoryError wrapped in "Error (write):…"
+        self.assertIn("Error", result, f"Expected error message, got: {result!r}")
+
+
+# ── append to nonexistent file (#770) ─────────────────────────────────────────
+
+class TestFileAppendNonexistent(unittest.TestCase):
+    """append to a nonexistent file creates it — documents intentional behaviour (#770)."""
+
+    def test_append_to_nonexistent_creates_file(self):
+        """append on a missing file must create it, like shell '>>' redirection."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "brand_new.txt"
+            self.assertFalse(target.exists(), "pre-condition: file must not exist")
+            result = file_tool.fn(action="append", path=str(target), content="hello\n")
+            # Check file existence inside the with-block while tmpdir is still alive
+            self.assertIsInstance(result, str)
+            self.assertFalse(result.startswith("Error:"),
+                             f"append to nonexistent must succeed, got: {result!r}")
+            self.assertIn("Appended to", result)
+            self.assertTrue(target.exists(), "file must be created after append")
+            self.assertEqual(target.read_text(), "hello\n")
+
+    def test_append_to_nonexistent_empty_content_returns_error(self):
+        """Appending empty content to a nonexistent file must still return an error."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "missing.txt"
+            result = file_tool.fn(action="append", path=str(target), content="")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
