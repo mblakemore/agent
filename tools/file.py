@@ -88,6 +88,19 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
             f"Error: 'path' must be a string, got {type(path).__name__}: {path!r}. "
             f"Pass a plain string file path."
         )
+    # Booleans are a subclass of int in Python; reject them for line-number params
+    # so that start_line=True (silently 1) or end_line=False (silently 0) don't
+    # slip through as valid line numbers.
+    if isinstance(start_line, bool):
+        return (
+            f"Error: 'start_line' must be a plain integer, got bool ({start_line!r}). "
+            f"Pass a plain integer line number."
+        )
+    if isinstance(end_line, bool):
+        return (
+            f"Error: 'end_line' must be a plain integer, got bool ({end_line!r}). "
+            f"Pass a plain integer line number."
+        )
     try:
         resolved = str(_resolve_path(path.strip()))
         if action == "read":
