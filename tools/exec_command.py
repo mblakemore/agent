@@ -352,7 +352,8 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
                 cwd=run_cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
+                encoding='utf-8',
+                errors='replace',
                 env=_auto_env,
             )
         except Exception as e:
@@ -382,7 +383,8 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
             cwd=run_cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
+            encoding='utf-8',
+            errors='replace',
             env=_auto_env,
         )
     except Exception as e:

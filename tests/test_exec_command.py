@@ -700,3 +700,65 @@ def test_exec_command_caller_pythonpath_does_not_clobber_auto_injected(tmp_path)
     assert ":" in pp_line[0], (
         f"PYTHONPATH was not merged — only caller's value present: {pp_line[0]!r}"
     )
+
+
+# ── Binary / non-UTF-8 output (#752) ─────────────────────────────────────────
+
+
+def test_exec_command_binary_output_not_silently_dropped():
+    """Non-UTF-8 bytes must not cause silent output loss (#752).
+
+    Before the fix, text=True caused UnicodeDecodeError in the reader thread,
+    which was caught by bare except Exception, leaving output_parts empty.
+    The caller received only the exit-code header with no content.
+    """
+    # 0x80 and 0xFF are not valid UTF-8 start bytes
+    result = fn(command="printf '\\x80\\xFF'")
+    assert "exit=0" in result
+    # Output must contain *something* beyond just the header
+    output_body = result.split("\n", 1)[1] if "\n" in result else ""
+    assert len(output_body) > 0, (
+        "Binary output was silently dropped — expected replacement characters, got nothing"
+    )
+
+
+def test_exec_command_binary_output_uses_replacement_chars():
+    """Non-UTF-8 bytes must be replaced with Unicode replacement characters, not dropped."""
+    result = fn(command="printf '\\x80\\xFF'")
+    assert "exit=0" in result
+    # The replacement character U+FFFD (or its UTF-8 encoding \xef\xbf\xbd) must appear
+    assert "�" in result, (
+        f"Expected Unicode replacement char in output, got: {result!r}"
+    )
+
+
+def test_exec_command_latin1_output_not_silently_dropped():
+    """Latin-1 encoded text (e.g. b'caf\\xe9') must survive as replacement chars."""
+    result = fn(command="python3 -c \"import sys; sys.stdout.buffer.write(b'caf\\xe9')\"")
+    assert "exit=0" in result
+    output_body = result.split("\n", 1)[1] if "\n" in result else ""
+    # 'caf' must be preserved; \\xe9 becomes replacement char
+    assert "caf" in output_body, (
+        f"Printable prefix of latin-1 output was lost: {result!r}"
+    )
+
+
+def test_exec_command_normal_utf8_unaffected_by_fix():
+    """Regular UTF-8 commands must continue to work correctly after the fix."""
+    result = fn(command="echo 'hello world'")
+    assert "exit=0" in result
+    assert "hello world" in result
+
+
+def test_exec_command_background_binary_output_not_silently_dropped():
+    """Background mode must also handle non-UTF-8 output without silent loss (#752)."""
+    import re, time as _time
+    res = fn(command="printf '\\x80\\xFF'", background=True)
+    assert "Command started in background" in res
+    sid = re.search(r'\[session: ([^\]]+)\]', res).group(1)
+    _time.sleep(0.5)
+    poll = fn(session_id=sid)
+    # Output must contain content beyond just the header
+    assert "�" in poll or len(poll.split("\n", 1)[-1].strip()) > 0, (
+        f"Background binary output was silently dropped: {poll!r}"
+    )
