@@ -2582,3 +2582,31 @@ def test_limit_bool_uses_colon_format():
     assert "'bool'" in result, f"Type name must be quoted: {result!r}"
     assert "False" in result, f"Value must appear in error: {result!r}"
     assert "(False)" not in result, f"Old parenthesis format must be gone: {result!r}"
+
+
+# ── _Corrupted detail !r quoting (#927) ───────────────────────────────────────
+
+def test_corrupted_dict_detail_type_name_is_quoted():
+    """tasks.json containing a dict must report 'dict' with quotes in Detail: (#927)."""
+    import json
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"tasks": []}), encoding="utf-8")
+
+    result = fn(action="list")
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
+    assert "'dict'" in result, f"Type name must be quoted as 'dict': {result!r}"
+
+
+def test_corrupted_non_dict_element_type_name_is_quoted():
+    """tasks.json with a non-dict element must report 'str' with quotes in Detail: (#927)."""
+    import json
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(["not_a_dict"]), encoding="utf-8")
+
+    result = fn(action="list")
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
+    assert "'str'" in result, f"Type name must be quoted as 'str': {result!r}"
