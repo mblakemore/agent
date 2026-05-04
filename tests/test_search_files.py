@@ -718,3 +718,43 @@ class TestSearchFilesIncludeHidden(unittest.TestCase):
         self.assertEqual(props["include_hidden"]["type"], "boolean")
         self.assertFalse(props["include_hidden"]["default"])
         self.assertIn(".git", props["include_hidden"]["description"])
+
+
+# ── wrong-type context tests (#680) ───────────────────────────────────────────
+
+class TestSearchFilesContextTypeCoercion(unittest.TestCase):
+    """search_files must not raise TypeError when context is a non-int (#680)."""
+
+    def test_string_integer_context_coerced_single_file(self):
+        """context='3' (stringified int) must be coerced and produce results, not crash."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "f.py")
+            p.write_text("def foo():\n    pass\ndef bar():\n    pass\n")
+            result = search_files.fn("def", path=str(p), context='2')
+            self.assertNotIn("Error", result)
+            self.assertIn("def", result)
+
+    def test_string_integer_context_coerced_directory(self):
+        """context='0' over a directory must work exactly like context=0."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("def alpha():\n    pass\n")
+            result_int = search_files.fn("def", path=d, context=0)
+            result_str = search_files.fn("def", path=d, context='0')
+            self.assertEqual(result_int, result_str)
+
+    def test_non_numeric_string_context_returns_error(self):
+        """context='bad' must return a clean Error string, not raise TypeError."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("x = 1\n")
+            result = search_files.fn("x", path=d, context='bad')
+            self.assertTrue(result.startswith("Error: context must be an integer"))
+            self.assertIn("'str'", result)
+
+    def test_bool_context_coerced_to_int(self):
+        """context=True (bool) is coerced to int(True)==1 rather than crashing (#680)."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("x = 1\n")
+            # True coerces to 1 — should work the same as context=1
+            result_bool = search_files.fn("x", path=d, context=True)
+            result_int = search_files.fn("x", path=d, context=1)
+            self.assertEqual(result_bool, result_int)

@@ -86,6 +86,10 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
         status: New status string (for update). Common: "in_progress", "blocked", "deferred".
     """
     # Ensure description is always a string even if the model omits the field
+    # or passes a non-string (e.g. integer) — coerce to str to prevent AttributeError
+    # from .strip() calls further down.
+    if not isinstance(description, str):
+        description = str(description) if description is not None else ""
     description = description or ""
 
     # Validate task_id type — must be an integer (or the default 0).
