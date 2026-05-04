@@ -6,12 +6,14 @@ Per plan § 6.5 / task 2.4. Exercises:
   ``BedrockBudgetExceeded``)
 - env override (BEDROCK_DAILY_CAP_USD)
 - unknown model → WARN log + cost 0, no crash
+- concurrent _record_spend calls don't lose increments (issue #834)
 """
 
 import json
 import logging
 import os
 import stat
+import threading
 from datetime import date
 from unittest.mock import patch
 
@@ -181,4 +183,41 @@ def test_cost_tick_logged(monkeypatch, tmp_path, caplog):
     assert any(
         "bedrock.cost.tick" in r.message and "role=main" in r.message
         for r in caplog.records
+    )
+
+
+# ── Thread-safety: concurrent _record_spend calls (issue #834) ──
+
+
+def test_record_spend_concurrent_no_lost_increments(monkeypatch, tmp_path):
+    """Concurrent _record_spend calls must not lose increments.
+
+    Before the fix, two threads could read the same stale file, each add
+    their amount, then one os.replace() would silently overwrite the
+    other's write.  With _spend_lock, the read-modify-write is serialised
+    so every increment is preserved.
+    """
+    monkeypatch.setattr("llm_backend._SPEND_FILE", str(tmp_path / "spend.json"))
+
+    N = 50
+    amount = 0.01
+    errors: list[Exception] = []
+
+    def worker():
+        try:
+            _record_spend("main", amount)
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(N)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"Unexpected errors in worker threads: {errors}"
+    total = _load_today_spend("main")
+    expected = pytest.approx(N * amount, rel=1e-5)
+    assert total == expected, (
+        f"Lost increments detected: expected {N * amount:.6f}, got {total:.6f}"
     )

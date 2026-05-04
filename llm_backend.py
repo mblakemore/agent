@@ -40,6 +40,7 @@ import logging
 import os
 import random
 import tempfile
+import threading
 import time
 from datetime import date
 from pathlib import Path
@@ -404,6 +405,14 @@ _SPEND_FILE = "/droid/repos/agent/CICD/bedrock_spend.json"
 # Default daily caps (USD). See plan § 24 S5 decision.
 _DEFAULT_DAILY_CAPS = {"main": 60.00, "summary": 3.00}
 
+# Module-level lock serialising the read-modify-write cycle in _record_spend
+# and _load_today_spend.  Without this, concurrent calls from the main loop
+# and the async SummaryThread both read the same stale file, each add their
+# own increment, and one os.replace() silently discards the other's write —
+# causing daily spend to be underreported and the budget cap to be bypassed.
+# (Issue #834)
+_spend_lock = threading.Lock()
+
 
 def _spend_file_path() -> Path:
     """Return the spend-file Path. Exposed so tests can monkeypatch."""
@@ -418,52 +427,58 @@ def _load_today_spend(role: str) -> float:
     better than a hard failure at startup.
     """
     path = _spend_file_path()
-    try:
-        raw = path.read_text()
-        data = json.loads(raw)
-        today = date.today().isoformat()
-        return float(data.get(today, {}).get(role, 0.0))
-    except (OSError, ValueError, TypeError):
-        return 0.0
+    with _spend_lock:
+        try:
+            raw = path.read_text()
+            data = json.loads(raw)
+            today = date.today().isoformat()
+            return float(data.get(today, {}).get(role, 0.0))
+        except (OSError, ValueError, TypeError):
+            return 0.0
 
 
 def _record_spend(role: str, cost_usd: float) -> float:
     """Increment today's counter for ``role`` by ``cost_usd``. Atomic
     write (tempfile + ``os.replace``) with mode ``0o600``. Returns the
     new daily total for this role.
+
+    Thread-safe: the entire read-modify-write cycle is serialised under
+    ``_spend_lock`` so concurrent calls from the main loop and the async
+    SummaryThread never lose each other's increments (issue #834).
     """
     path = _spend_file_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        data = json.loads(path.read_text()) if path.exists() else {}
-        if not isinstance(data, dict):
-            data = {}
-    except (OSError, ValueError):
-        data = {}
-
-    today = date.today().isoformat()
-    day_entry = data.setdefault(today, {})
-    if not isinstance(day_entry, dict):
-        day_entry = {}
-        data[today] = day_entry
-    new_total = float(day_entry.get(role, 0.0)) + float(cost_usd)
-    day_entry[role] = round(new_total, 6)
-
-    # Atomic write: tempfile in same directory, then os.replace.
-    fd, tmp_path = tempfile.mkstemp(prefix=".bedrock_spend.", dir=str(path.parent))
-    try:
-        with os.fdopen(fd, "w") as f:
-            json.dump(data, f)
-        os.chmod(tmp_path, 0o600)
-        os.replace(tmp_path, path)
-    except Exception:
-        # If anything fails, make a best effort to clean up.
+    with _spend_lock:
         try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-    return new_total
+            data = json.loads(path.read_text()) if path.exists() else {}
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+
+        today = date.today().isoformat()
+        day_entry = data.setdefault(today, {})
+        if not isinstance(day_entry, dict):
+            day_entry = {}
+            data[today] = day_entry
+        new_total = float(day_entry.get(role, 0.0)) + float(cost_usd)
+        day_entry[role] = round(new_total, 6)
+
+        # Atomic write: tempfile in same directory, then os.replace.
+        fd, tmp_path = tempfile.mkstemp(prefix=".bedrock_spend.", dir=str(path.parent))
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f)
+            os.chmod(tmp_path, 0o600)
+            os.replace(tmp_path, path)
+        except Exception:
+            # If anything fails, make a best effort to clean up.
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        return new_total
 
 
 def _estimate_cost(role: str, in_tokens: int, out_tokens: int, model: str) -> float:
