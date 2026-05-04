@@ -1966,3 +1966,42 @@ def test_list_limit_whole_float_is_accepted():
     assert not result.startswith("Error:"), f"Whole-number float limit must not error: {result!r}"
     task_lines = [l for l in result.splitlines() if l.startswith("[")]
     assert len(task_lines) == 2, f"Expected 2 tasks with limit=2.0, got {len(task_lines)}: {result!r}"
+
+
+# ── Issue #792: probe-confirmed behaviour regressions ─────────────────────────
+
+
+def test_add_tab_only_description_returns_error():
+    """A description that collapses to empty after whitespace normalisation must
+    return the same 'description required' error as a truly empty string (#792)."""
+    # Tab characters are collapsed by the whitespace-normalisation logic;
+    # the resulting empty string must trigger the 'description required' guard.
+    result = fn(action="add", description="\t\t\t")
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "description required" in result.lower(), (
+        f"Error must mention 'description required', got: {result!r}"
+    )
+
+
+def test_add_mixed_whitespace_only_description_returns_error():
+    """A description made entirely of spaces, tabs, and newlines returns an error (#792)."""
+    result = fn(action="add", description="   \t  \n  \t  ")
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "description required" in result.lower()
+
+
+def test_add_description_with_embedded_tabs_collapsed_to_spaces():
+    """Tabs embedded in an otherwise non-empty description are collapsed to
+    single spaces and the task is stored with the normalised description (#792)."""
+    result = fn(action="add", description="step\tone\ttwo")
+    # Must succeed, not error
+    assert not result.startswith("Error:"), f"Expected success, got: {result!r}"
+    assert "Added task" in result
+    # The stored description must not contain raw tabs
+    import json as _json
+    from pathlib import Path as _Path
+    with open(_TASKS_FILE) as f:
+        tasks = _json.load(f)
+    assert "\t" not in tasks[-1]["description"], (
+        f"Tabs must be collapsed in stored description, got: {tasks[-1]['description']!r}"
+    )

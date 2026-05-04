@@ -968,3 +968,98 @@ class TestFileWriteStartLineWithoutEndLine(unittest.TestCase):
             self.target.read_text(encoding="utf-8"),
             "line1\nline3\nline4\nline5\n",
         )
+
+
+# ── Probe-confirmed edge-case regression tests (#792) ─────────────────────────
+
+
+class TestFileInsertNoTrailingNewline(unittest.TestCase):
+    """insert auto-adds a trailing newline when content lacks one, so lines
+    don't merge in the resulting file (#792 probe confirmation)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._target = Path(self._tmpdir) / "lines.txt"
+        self._target.write_text("line1\nline2\nline3\n", encoding="utf-8")
+        file_tool.fn(action="read", path=str(self._target))
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_insert_without_trailing_newline_succeeds(self):
+        """insert with content lacking a trailing newline must succeed (auto-adds newline)."""
+        result = file_tool.fn(
+            action="insert", path=str(self._target), content="no newline here", start_line=2
+        )
+        self.assertFalse(result.startswith("Error:"),
+                         msg=f"insert without trailing newline must succeed, got: {result!r}")
+        self.assertIn("Inserted", result)
+
+    def test_insert_without_trailing_newline_preserves_surrounding_lines(self):
+        """insert with no trailing newline must not merge the new line with an existing line."""
+        file_tool.fn(
+            action="insert", path=str(self._target), content="inserted", start_line=2
+        )
+        content = self._target.read_text(encoding="utf-8")
+        # "inserted" must be on its own line — not merged with "line2"
+        lines = content.splitlines()
+        self.assertIn("inserted", lines, "Inserted text must appear as a separate line")
+        self.assertIn("line2", lines, "line2 must still be a separate line")
+        # Verify they are not on the same line
+        self.assertNotIn("insertedline2", content,
+                         "insert must not merge new content with the following line")
+
+
+class TestFileWriteEmptyContent(unittest.TestCase):
+    """write with empty-string content clears the file — documented intentional
+    behaviour confirmed by probe (#792)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._target = Path(self._tmpdir) / "file.txt"
+        self._target.write_text("line1\nline2\nline3\n", encoding="utf-8")
+        file_tool.fn(action="read", path=str(self._target))
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_write_empty_content_clears_file(self):
+        """write with content='' must clear the file to empty (not return an error)."""
+        result = file_tool.fn(action="write", path=str(self._target), content="")
+        self.assertFalse(result.startswith("Error:"),
+                         msg=f"write with empty content must succeed, got: {result!r}")
+        self.assertIn("Wrote", result)
+        self.assertEqual(self._target.read_text(encoding="utf-8"), "",
+                         "File must be empty after write with empty content")
+
+    def test_write_empty_content_returns_zero_chars(self):
+        """The success message for an empty write must report 0 chars."""
+        result = file_tool.fn(action="write", path=str(self._target), content="")
+        self.assertIn("0 chars", result,
+                      msg=f"Write of empty string must report 0 chars, got: {result!r}")
+
+
+class TestFileAppendEmptyContent(unittest.TestCase):
+    """append with empty content returns an error — documented intentional
+    behaviour confirmed by probe (#792)."""
+
+    def test_append_empty_content_returns_error(self):
+        """append with content='' must return a clear error."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "file.txt"
+            target.write_text("original\n", encoding="utf-8")
+            result = file_tool.fn(action="append", path=str(target), content="")
+            self.assertTrue(result.startswith("Error:"),
+                            msg=f"append with empty content must return Error:, got: {result!r}")
+            self.assertIn("no content to append", result)
+
+    def test_append_empty_content_does_not_modify_file(self):
+        """A rejected append (empty content) must not modify the file."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "file.txt"
+            target.write_text("original\n", encoding="utf-8")
+            file_tool.fn(action="append", path=str(target), content="")
+            self.assertEqual(target.read_text(encoding="utf-8"), "original\n",
+                             "File must be unchanged after rejected append")

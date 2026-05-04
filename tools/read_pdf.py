@@ -35,8 +35,25 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
         doc.close()
         return "Error: PDF has no pages"
 
+    # Booleans are a subclass of int in Python; True==1 and False==0, so
+    # start_page=True would silently read page 1 and start_page=False would
+    # trigger a confusing "< 1" error rather than a clear type error.
+    # Reject them explicitly, consistent with the file tool's line-number guards.
+    if isinstance(start_page, bool):
+        doc.close()
+        return (
+            f"Error: start_page must be a plain integer, got bool ({start_page!r}). "
+            "Pass a plain integer page number (e.g. start_page=1)."
+        )
+    if isinstance(end_page, bool):
+        doc.close()
+        return (
+            f"Error: end_page must be a plain integer, got bool ({end_page!r}). "
+            "Pass a plain integer page number, or 0 for last page."
+        )
+
     # Validate start_page type before numeric comparisons
-    if not isinstance(start_page, int) or isinstance(start_page, bool):
+    if not isinstance(start_page, int):
         try:
             start_page = int(start_page)
         except (TypeError, ValueError):
@@ -44,7 +61,7 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
             return f"Error: start_page must be an integer, got {type(start_page).__name__!r}"
 
     # Validate end_page type before numeric comparisons
-    if not isinstance(end_page, int) or isinstance(end_page, bool):
+    if not isinstance(end_page, int):
         try:
             end_page = int(end_page)
         except (TypeError, ValueError):
