@@ -91,7 +91,7 @@ def fn(prompt: str, depth: str = "brief", context: str = "") -> str:
         )
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
-        return f"Error calling server: {e}"
+        return f"Error: calling server: {e}"
 
     # Accumulate full content — parse thinking block at end
     content_parts = []

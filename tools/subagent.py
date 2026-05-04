@@ -49,22 +49,22 @@ def subagent(
 
         # Check if the process failed
         if process.returncode != 0:
-            return f"The sub-agent process failed with exit code {process.returncode}. Error: {process.stderr}"
+            return f"Error: sub-agent process failed with exit code {process.returncode}: {process.stderr}"
 
         # Read the result from the file
         if os.path.exists(result_file_path):
             with open(result_file_path, "r", encoding="utf-8") as f:
                 result = f.read().strip()
-            
+
             if result:
                 return result
             else:
-                return "The sub-agent completed but returned no final answer."
+                return "Error: sub-agent completed but returned no final answer"
         else:
-            return "The sub-agent completed successfully but no result file was created."
+            return "Error: sub-agent completed but no result file was created"
 
     except Exception as e:
-        return f"An error occurred while running the sub-agent: {str(e)}"
+        return f"Error: running sub-agent: {str(e)}"
     
     finally:
         # Clean up the temporary file
