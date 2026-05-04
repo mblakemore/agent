@@ -83,8 +83,14 @@ def _find_definitions_with_scope(tree: ast.AST, name: str, kind: Optional[str], 
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.ClassDef):
                 if child.name == name and kind in (None, "class"):
-                    args_str = ""
-                    context = f"class {child.name}:"
+                    if child.bases:
+                        try:
+                            bases_str = ", ".join(ast.unparse(b) for b in child.bases)
+                        except Exception:
+                            bases_str = "..."
+                        context = f"class {child.name}({bases_str}):"
+                    else:
+                        context = f"class {child.name}:"
                     matches.append({
                         "path": src_path,
                         "line": child.lineno,

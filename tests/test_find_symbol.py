@@ -486,6 +486,67 @@ class TestFindSymbolUnit(unittest.TestCase):
             f"sync function context must not start with 'async', got: {context!r}",
         )
 
+    def test_class_with_single_base_includes_base_in_context(self):
+        """context for a class with one base class must include the base.
+
+        Regression test for #708: _find_definitions_with_scope built the context
+        string as f"class {name}:" for all classes, silently dropping base classes.
+        """
+        self._write("subclass.py", """\
+            class Child(Parent):
+                pass
+        """)
+        results = find_symbol("Child", path=self.tmp, mode="definition")
+        self.assertEqual(len(results), 1)
+        context = results[0]["context"]
+        self.assertEqual(
+            context,
+            "class Child(Parent):",
+            f"class context should include base class, got: {context!r}",
+        )
+
+    def test_class_with_multiple_bases_includes_all_in_context(self):
+        """context for a class with multiple bases must list all of them."""
+        self._write("multi_base.py", """\
+            class Foo(Bar, Baz):
+                pass
+        """)
+        results = find_symbol("Foo", path=self.tmp, mode="definition")
+        self.assertEqual(len(results), 1)
+        context = results[0]["context"]
+        self.assertEqual(
+            context,
+            "class Foo(Bar, Baz):",
+            f"class context should include all base classes, got: {context!r}",
+        )
+
+    def test_class_without_bases_context_unchanged(self):
+        """context for a class with no bases must remain 'class Name:' (no regression)."""
+        self._write("no_base.py", """\
+            class Simple:
+                pass
+        """)
+        results = find_symbol("Simple", path=self.tmp, mode="definition")
+        self.assertEqual(len(results), 1)
+        context = results[0]["context"]
+        self.assertEqual(
+            context,
+            "class Simple:",
+            f"class with no bases should keep plain context, got: {context!r}",
+        )
+
+    def test_class_with_dotted_base_includes_full_dotted_name(self):
+        """context for a class inheriting from a dotted name (e.g. module.Base) is correct."""
+        self._write("dotted_base.py", """\
+            class MyView(views.View):
+                pass
+        """)
+        results = find_symbol("MyView", path=self.tmp, mode="definition")
+        self.assertEqual(len(results), 1)
+        context = results[0]["context"]
+        self.assertIn("views.View", context)
+        self.assertTrue(context.startswith("class MyView("))
+
 
 class TestFindSymbolRegistered(unittest.TestCase):
     """AC5: Tool is registered in the MAP_FN dispatch."""
