@@ -528,7 +528,7 @@ class TestFileCoverageGaps(unittest.TestCase):
             os.chmod(d, 0o555)
             try:
                 result = file_tool.fn(action="write", path=str(target), content="hi", start_line=1, end_line=1)
-                self.assertIn("Permission denied", result)
+                self.assertIn("permission denied", result.lower())
             finally:
                 os.chmod(d, 0o755)
 
@@ -811,3 +811,82 @@ class TestFileAppendNonexistent(unittest.TestCase):
             result = file_tool.fn(action="append", path=str(target), content="")
         self.assertIsInstance(result, str)
         self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+
+
+class TestFilePermissionDenied(unittest.TestCase):
+    """Write and append to a read-only file must return a clear 'permission denied' error,
+    not leak an opaque PermissionError traceback or raw [Errno 13] message (#781)."""
+
+    def test_write_to_read_only_file_returns_clear_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "readonly.txt"
+            target.write_text("original\n", encoding="utf-8")
+            # Prime the session so the write-guard doesn't block us.
+            file_tool.fn(action="read", path=str(target))
+            os.chmod(str(target), 0o444)
+            try:
+                result = file_tool.fn(action="write", path=str(target), content="new\n")
+            finally:
+                os.chmod(str(target), 0o644)
+            self.assertIsInstance(result, str)
+            self.assertTrue(
+                result.startswith("Error:"),
+                msg=f"Expected 'Error:' prefix, got: {result!r}",
+            )
+            self.assertIn("permission denied", result.lower(),
+                          msg=f"Expected 'permission denied' in message, got: {result!r}")
+            self.assertNotIn("[Errno 13]", result,
+                             msg=f"Must not expose raw errno, got: {result!r}")
+
+    def test_append_to_read_only_file_returns_clear_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "readonly.txt"
+            target.write_text("original\n", encoding="utf-8")
+            os.chmod(str(target), 0o444)
+            try:
+                result = file_tool.fn(action="append", path=str(target), content="extra\n")
+            finally:
+                os.chmod(str(target), 0o644)
+            self.assertIsInstance(result, str)
+            self.assertTrue(
+                result.startswith("Error:"),
+                msg=f"Expected 'Error:' prefix, got: {result!r}",
+            )
+            self.assertIn("permission denied", result.lower(),
+                          msg=f"Expected 'permission denied' in message, got: {result!r}")
+            self.assertNotIn("[Errno 13]", result,
+                             msg=f"Must not expose raw errno, got: {result!r}")
+
+    def test_write_range_to_read_only_dir_returns_clear_error(self):
+        """Line-range write when the directory is read-only must return a clear error.
+
+        Note: on Linux, os.replace() can overwrite a read-only *file* if the
+        *directory* is writable (POSIX semantics).  To reliably trigger a
+        PermissionError we make the parent directory read-only instead, which
+        prevents mkstemp() from creating the temp file.
+        """
+        outer = tempfile.mkdtemp()
+        try:
+            ro_dir = Path(outer) / "ro_subdir"
+            ro_dir.mkdir()
+            target = ro_dir / "data.txt"
+            target.write_text("line1\nline2\nline3\n", encoding="utf-8")
+            file_tool.fn(action="read", path=str(target))
+            os.chmod(str(ro_dir), 0o555)  # no write in the dir → mkstemp fails
+            try:
+                result = file_tool.fn(
+                    action="write", path=str(target),
+                    content="replaced\n", start_line=2, end_line=2,
+                )
+            finally:
+                os.chmod(str(ro_dir), 0o755)
+        finally:
+            import shutil as _shutil
+            _shutil.rmtree(outer, ignore_errors=True)
+        self.assertIsInstance(result, str)
+        self.assertTrue(
+            result.startswith("Error:"),
+            msg=f"Expected 'Error:' prefix for range write to read-only dir, got: {result!r}",
+        )
+        self.assertIn("permission denied", result.lower(),
+                      msg=f"Expected 'permission denied' in message, got: {result!r}")

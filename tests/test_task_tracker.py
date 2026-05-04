@@ -1,6 +1,10 @@
+import os
+import shutil
+import tempfile
 import pytest
 import json
 from pathlib import Path
+import tools.task_tracker as _tt_mod
 from tools.task_tracker import fn, _TASKS_FILE
 
 def setup_function(function):
@@ -1831,3 +1835,45 @@ def test_new_task_after_drop_gets_next_max_id():
     assert "Added task #4" in result, (
         f"New task after drop must get ID 4 (not reuse 2), got: {result!r}"
     )
+
+
+# ── Permission-denied regression tests (#781) ────────────────────────────────
+
+def test_add_to_read_only_parent_dir_returns_clear_error():
+    """Adding a task when the tasks-file parent directory is read-only must return
+    a clear 'permission denied' error string, not raise an uncaught PermissionError."""
+    orig = _tt_mod._TASKS_FILE
+    tmpdir = tempfile.mkdtemp()
+    try:
+        os.chmod(tmpdir, 0o444)  # read-only directory — cannot create files inside
+        _tt_mod._TASKS_FILE = os.path.join(tmpdir, "tasks.json")
+        result = _tt_mod.fn(action="add", description="should fail")
+        assert isinstance(result, str), "fn() must always return a string"
+        assert "Error" in result, f"Expected error string, got: {result!r}"
+        assert "permission denied" in result.lower() or "Permission denied" in result, (
+            f"Expected 'permission denied' in message, got: {result!r}"
+        )
+        assert "[Errno 13]" not in result, (
+            f"Must not expose raw errno format, got: {result!r}"
+        )
+    finally:
+        os.chmod(tmpdir, 0o755)
+        shutil.rmtree(tmpdir)
+        _tt_mod._TASKS_FILE = orig
+
+
+def test_load_tasks_from_restricted_dir_returns_clear_error():
+    """_load_tasks() on a completely inaccessible directory must return a _Corrupted
+    sentinel with a clear message, not raise an uncaught PermissionError (#781)."""
+    orig = _tt_mod._TASKS_FILE
+    tmpdir = tempfile.mkdtemp()
+    try:
+        os.chmod(tmpdir, 0o000)  # completely inaccessible
+        _tt_mod._TASKS_FILE = os.path.join(tmpdir, "subdir", "tasks.json")
+        result = _tt_mod.fn(action="add", description="should fail")
+        assert isinstance(result, str), "fn() must always return a string"
+        assert "Error" in result, f"Expected error string, got: {result!r}"
+    finally:
+        os.chmod(tmpdir, 0o755)
+        shutil.rmtree(tmpdir)
+        _tt_mod._TASKS_FILE = orig

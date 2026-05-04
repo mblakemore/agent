@@ -216,7 +216,10 @@ def _write(path, content, start_line, end_line):
                 new_lines[-1] += "\n"
 
         # Streaming replace
-        temp_fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
+        try:
+            temp_fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
+        except PermissionError:
+            return f"Error: permission denied: {path}"
         try:
             with os.fdopen(temp_fd, 'w', encoding='utf-8') as temp_f:
                 with open(p, 'r', encoding='utf-8', errors='replace') as src_f:
@@ -228,6 +231,10 @@ def _write(path, content, start_line, end_line):
                         elif i > end_line:
                             temp_f.write(line)
             os.replace(temp_path, p)
+        except PermissionError:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            return f"Error: permission denied: {path}"
         except Exception as e:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
@@ -263,10 +270,13 @@ def _write(path, content, start_line, end_line):
     if p.exists():
         with open(p, 'r', encoding='utf-8', errors='replace') as f:
             old_content = f.read()
-            
-    p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, 'w', encoding='utf-8') as f:
-        f.write(content)
+
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, 'w', encoding='utf-8') as f:
+            f.write(content)
+    except PermissionError:
+        return f"Error: permission denied: {path}"
     _accessed_files.add(str(p.resolve()))
 
     if old_content:
@@ -370,18 +380,24 @@ def _append(path, content):
             insert_block = content if content.endswith('\n') else content + '\n'
             new_lines = lines[:guard_idx] + [insert_block] + lines[guard_idx:]
             new_content = ''.join(new_lines)
-            with open(p, 'w', encoding='utf-8') as f:
-                f.write(new_content)
+            try:
+                with open(p, 'w', encoding='utf-8') as f:
+                    f.write(new_content)
+            except PermissionError:
+                return f"Error: permission denied: {path}"
             diff_text = _get_diff(old_content, new_content)
             return f"Appended to '{path}' ({len(content)} chars, inserted before __main__ guard)\n\nDiff:\n{diff_text}"
 
-    with open(p, 'a', encoding='utf-8') as f:
-        # If the existing file doesn't end with a newline, insert one first so
-        # the appended content starts on a new line instead of being fused onto
-        # the last character of the existing content.
-        if old_content and not old_content.endswith('\n'):
-            f.write('\n')
-        f.write(content)
+    try:
+        with open(p, 'a', encoding='utf-8') as f:
+            # If the existing file doesn't end with a newline, insert one first so
+            # the appended content starts on a new line instead of being fused onto
+            # the last character of the existing content.
+            if old_content and not old_content.endswith('\n'):
+                f.write('\n')
+            f.write(content)
+    except PermissionError:
+        return f"Error: permission denied: {path}"
 
     with open(p, 'r', encoding='utf-8', errors='replace') as f:
         new_content = f.read()
