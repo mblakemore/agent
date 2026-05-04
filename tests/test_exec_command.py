@@ -916,3 +916,39 @@ def test_exec_command_env_value_without_newline_still_works():
     result = fn(command="echo $NORMAL_VAR", env={"NORMAL_VAR": "clean_value"})
     assert "exit=0" in result
     assert "clean_value" in result
+
+
+# ── newline in command string (#792) ─────────────────────────────────────────
+
+
+def test_exec_command_newline_in_command_runs_both_lines():
+    """A literal newline in the command string must run as a multi-line shell script.
+
+    bash -c treats newlines as command separators, so both lines must execute
+    and their output must appear in the result.
+    """
+    result = fn(command='echo "first line"\necho "second line"')
+    assert "exit=0" in result
+    assert "first line" in result
+    assert "second line" in result
+
+
+def test_exec_command_newline_in_command_exit_code_from_last():
+    """When commands are separated by newlines, the exit code must reflect the last command."""
+    result = fn(command='echo ok\ntrue')
+    assert "exit=0" in result
+
+
+def test_exec_command_semicolon_runs_multiple_commands():
+    """Semicolon-separated commands must all run in sequence."""
+    result = fn(command='echo "one"; echo "two"')
+    assert "exit=0" in result
+    assert "one" in result
+    assert "two" in result
+
+
+def test_exec_command_shell_substitution_works():
+    """Command substitution $(...) must be evaluated by the shell."""
+    result = fn(command='echo $(echo nested)')
+    assert "exit=0" in result
+    assert "nested" in result
