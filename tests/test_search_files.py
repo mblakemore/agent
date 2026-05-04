@@ -341,6 +341,24 @@ class TestSearchFilesEdgeCases(unittest.TestCase):
         result = search_files.fn("def ", glob="   ", path=".")
         self.assertIn("Error: glob filter cannot be empty", result)
 
+    def test_glob_with_path_separator_returns_error(self):
+        """A glob like 'tools/*.py' silently matched 0 files because fnmatch
+        only sees the bare filename, never the path prefix.  It must now return
+        an actionable error instead of a silent zero-result response."""
+        result = search_files.fn("def fn", glob="tools/*.py", path=".")
+        self.assertIn("Error:", result)
+        self.assertIn("path separator", result)
+        # Deeply nested separator also rejected
+        result = search_files.fn("def fn", glob="a/b/c/*.py", path=".")
+        self.assertIn("Error:", result)
+        self.assertIn("path separator", result)
+        # Plain glob without separator must still work (not caught by this guard)
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "hello.py").write_text("def fn(): pass\n")
+            result = search_files.fn("def fn", glob="*.py", path=d)
+            self.assertNotIn("Error:", result)
+            self.assertIn("def fn", result)
+
     def test_invalid_regex(self):
         result = search_files.fn("[", path=".")
         self.assertIn("Error: invalid regex pattern", result)

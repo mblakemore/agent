@@ -177,6 +177,13 @@ def fn(
     if glob is not None and not glob.strip():
         return "Error: glob filter cannot be empty — omit the argument or pass '*' to match all files."
 
+    if glob is not None and ("/" in glob or os.sep in glob):
+        return (
+            f"Error: glob pattern {glob!r} contains a path separator. "
+            "Use a plain filename pattern (e.g. '*.py') and set path= to the "
+            "desired subdirectory to restrict the search."
+        )
+
     try:
         flags = re.IGNORECASE if ignore_case else 0
         regex = re.compile(pattern, flags)
