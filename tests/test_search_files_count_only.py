@@ -123,5 +123,63 @@ class TestCountOnlyContextBypass(unittest.TestCase):
                          "Context separator '--' must not appear in count_only output")
 
 
+class TestContextTruncationOffByOne(unittest.TestCase):
+    """Regression tests for the context>0 truncation off-by-one bug.
+
+    When context > 0 and total_matches reaches _MAX_RESULTS, the last matching
+    line was previously counted in the header but never added to context_groups,
+    so the output showed _MAX_RESULTS-1 lines while the header claimed _MAX_RESULTS.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def test_single_file_context_truncation_shows_all_100(self):
+        """With context>0 and exactly 100 matches, all 100 must appear in output."""
+        lines = [f"def test_{i}(): pass\n" for i in range(100)]
+        Path(self.tmpdir, "big.py").write_text("".join(lines))
+
+        result = fn(pattern="def test_", path=self.tmpdir,
+                    count_only=False, context=3)
+
+        self.assertIn("(truncated)", result)
+        self.assertIn("100 results", result,
+                      f"Header should report 100 results: {result[:200]}")
+        # Count actual match lines (colon-separated, not context lines which use dash)
+        actual_shown = result.count(": def test_")
+        self.assertEqual(actual_shown, 100,
+                         f"Expected 100 match lines in output, got {actual_shown}")
+
+    def test_multi_file_context_truncation_shows_all_100(self):
+        """With context>0 across files and 110 total matches, output must show 100."""
+        for i in range(110):
+            Path(self.tmpdir, f"file_{i:03d}.py").write_text(
+                f"def test_case_{i}(): pass\n"
+            )
+
+        result = fn(pattern="def test_", path=self.tmpdir,
+                    count_only=False, context=3)
+
+        self.assertIn("(truncated)", result)
+        self.assertIn("100 results", result,
+                      f"Header should report 100 results: {result[:200]}")
+        actual_shown = result.count(": def test_")
+        self.assertEqual(actual_shown, 100,
+                         f"Expected 100 match lines in output, got {actual_shown}")
+
+    def test_context_zero_unaffected(self):
+        """context=0 branch must still produce 100 match lines (no regression)."""
+        lines = [f"def test_{i}(): pass\n" for i in range(100)]
+        Path(self.tmpdir, "big.py").write_text("".join(lines))
+
+        result = fn(pattern="def test_", path=self.tmpdir,
+                    count_only=False, context=0)
+
+        self.assertIn("100 results", result)
+        actual_shown = result.count(": def test_")
+        self.assertEqual(actual_shown, 100,
+                         f"context=0: expected 100 match lines, got {actual_shown}")
+
+
 if __name__ == "__main__":
     unittest.main()
