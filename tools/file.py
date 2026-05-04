@@ -103,6 +103,19 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
             f"Error: 'end_line' must be a plain integer, got bool ({end_line!r}). "
             f"Pass a plain integer line number."
         )
+    # Floats are not valid line numbers — reject them so that start_line=1.5 or
+    # end_line=2.9 don't silently truncate to wrong values or produce corrupt
+    # output like "2.5 lines remain".
+    if isinstance(start_line, float):
+        return (
+            f"Error: 'start_line' must be a plain integer, got float ({start_line!r}). "
+            f"Pass a plain integer line number."
+        )
+    if isinstance(end_line, float):
+        return (
+            f"Error: 'end_line' must be a plain integer, got float ({end_line!r}). "
+            f"Pass a plain integer line number."
+        )
     try:
         resolved = str(_resolve_path(path.strip()))
         if action == "read":
