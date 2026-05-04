@@ -68,6 +68,10 @@ def _extract_write_target(command):
 # Max temporary sessions per agent
 _MAX_TEMP_SESSIONS = 4
 
+# Maximum bytes of stdout returned to the LLM.  Beyond this the output is
+# truncated and a notice is appended so the model knows the cap was hit.
+_MAX_OUTPUT_BYTES = 32_768
+
 # Background sessions: {session_id: {"bg_proc": Popen|None, "bg_output": str}}
 _sessions = {}
 _main_session_id = None
@@ -390,7 +394,14 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         stdout = "".join(output_parts)
 
     result = _Result()
-    output = result.stdout.rstrip('\n')
+    raw = result.stdout.rstrip('\n')
+    if len(raw) > _MAX_OUTPUT_BYTES:
+        output = (
+            raw[:_MAX_OUTPUT_BYTES]
+            + f"\n[output truncated: {len(raw)} bytes total, showing first {_MAX_OUTPUT_BYTES}]"
+        )
+    else:
+        output = raw
 
     # Post-write sanitizer: strip trailing EOF/heredoc junk from written files.
     # Qwen generates heredocs like: cat > file << 'EOF'\n...\nEOF 2>&1
