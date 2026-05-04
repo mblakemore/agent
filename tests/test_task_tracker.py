@@ -2460,3 +2460,36 @@ def test_get_task_id_nan_returns_clear_error():
     import math
     result = fn(action="get", task_id=math.nan)
     assert result.startswith("Error:"), f"Expected error for task_id=nan: {result!r}"
+
+
+# ── !r quoting on type names (#915) ──────────────────────────────────────────
+
+def test_status_non_string_type_name_is_quoted():
+    """Non-string status error must include quoted type name 'int', not bare int (#915)."""
+    result = fn(action="list", status=42)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "'int'" in result, f"Type name must be quoted: {result!r}"
+
+
+def test_status_none_type_name_is_quoted():
+    """None is a special case (it's allowed and converted to empty string), so skip."""
+    # None is treated as "no filter" — status=None is valid per task_tracker logic
+    pass
+
+
+def test_status_list_type_name_is_quoted():
+    """List status error must include quoted type name 'list', not bare list (#915)."""
+    result = fn(action="list", status=["open"])
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "'list'" in result, f"Type name must be quoted: {result!r}"
+
+
+def test_status_non_string_error_includes_value():
+    """Non-string status error must include the actual value after a colon (#915).
+
+    Before the fix, the format was 'got int (42)'; after the fix it is 'got 'int': 42'.
+    The value must still appear in the message.
+    """
+    result = fn(action="list", status=42)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "42" in result, f"Error must include the bad value: {result!r}"
