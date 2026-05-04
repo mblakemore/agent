@@ -173,8 +173,10 @@ def _write(path, content, start_line, end_line):
     if start_line > 0 or end_line > 0:
         if not p.exists():
             return f"Error: cannot replace lines — '{path}' does not exist"
-        if start_line <= 0:
-            start_line = 1
+        if start_line < 0:
+            return f"Error: start_line must be >= 1 (got {start_line})"
+        if start_line == 0 and end_line > 0:
+            return f"Error: start_line must be >= 1 (got 0). Line numbers are 1-indexed."
         if end_line <= 0:
             end_line = start_line
         if start_line > end_line:
@@ -442,8 +444,10 @@ def _delete(path, start_line=0, end_line=0):
             return (f"Error: '{path}' exists but has not been read this session. "
                     f"You must read the file first (action='read') before deleting lines from it, "
                     f"so you can verify you are removing the correct content.")
-        if start_line <= 0:
-            start_line = 1
+        if start_line < 0:
+            return f"Error: start_line must be >= 1 (got {start_line})"
+        if start_line == 0 and end_line > 0:
+            return f"Error: start_line must be >= 1 (got 0). Line numbers are 1-indexed."
         if end_line <= 0:
             end_line = start_line
         if start_line > end_line:
