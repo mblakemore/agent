@@ -383,6 +383,50 @@ class TestFindSymbolUnit(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["kind"], "method")
 
+    def test_nested_function_inside_method_is_function_not_method(self):
+        """A closure defined inside a method must be classified as 'function', not 'method'.
+
+        Regression test for #700: _find_definitions_with_scope was passing the
+        class_stack unchanged when recursing into FunctionDef nodes, so any function
+        nested inside a method inherited the class context and was misclassified as
+        a method.
+        """
+        self._write("nested.py", """\
+            class MyClass:
+                def outer_method(self):
+                    def inner_helper():
+                        pass
+                    return inner_helper
+        """)
+        # inner_helper is a closure, not a method
+        results = find_symbol("inner_helper", path=self.tmp, mode="definition")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["kind"], "function",
+                         "nested function inside a method should be kind='function'")
+
+        # kind='function' filter must find it
+        results_fn = find_symbol("inner_helper", path=self.tmp, kind="function", mode="definition")
+        self.assertEqual(len(results_fn), 1)
+
+        # kind='method' filter must NOT find it
+        results_method = find_symbol("inner_helper", path=self.tmp, kind="method", mode="definition")
+        self.assertEqual(results_method, [])
+
+    def test_nested_function_inside_top_level_function_is_function(self):
+        """A closure inside a plain function must also be classified as 'function'."""
+        self._write("nested2.py", """\
+            def outer():
+                def inner():
+                    pass
+                return inner
+        """)
+        results = find_symbol("inner", path=self.tmp, mode="definition")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["kind"], "function")
+
+        results_method = find_symbol("inner", path=self.tmp, kind="method", mode="definition")
+        self.assertEqual(results_method, [])
+
 
 class TestFindSymbolRegistered(unittest.TestCase):
     """AC5: Tool is registered in the MAP_FN dispatch."""
