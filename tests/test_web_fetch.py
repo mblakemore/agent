@@ -764,3 +764,74 @@ class TestIsPrivateAddressNumericFormats(unittest.TestCase):
     def test_hex_public_ip_allowed(self):
         """0x08080808 resolves to 8.8.8.8 — must be allowed through."""
         self.assertFalse(self.check("http://0x08080808/"), "hex 0x08080808 (8.8.8.8) must not be private")
+
+
+# ── URL type validation (#893) ────────────────────────────────────────────────
+
+
+class TestWebFetchUrlTypeValidation(unittest.TestCase):
+    """Non-string url values must return a clear type error, not 'must not be empty' (#893).
+
+    Before the fix, the guard was:
+        if not isinstance(url, str) or not url.strip():
+            return "Error: url must not be empty"
+    so passing an integer, None, or a list would produce a misleading
+    'must not be empty' error.  The fix splits the check into two guards.
+    """
+
+    def test_integer_url_returns_type_error(self):
+        """fn(42) must return a 'must be a string' error, not 'must not be empty' (#893)."""
+        result = fn(42)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertNotIn("empty", result, f"Error must NOT say 'empty': {result!r}")
+        self.assertIn("int", result, f"Error must name the bad type: {result!r}")
+
+    def test_none_url_returns_type_error(self):
+        """fn(None) must return a 'must be a string' error, not 'must not be empty' (#893)."""
+        result = fn(None)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertNotIn("empty", result, f"Error must NOT say 'empty': {result!r}")
+        self.assertIn("NoneType", result, f"Error must name the bad type: {result!r}")
+
+    def test_list_url_returns_type_error(self):
+        """fn([...]) must return a 'must be a string' error (#893)."""
+        result = fn(["http://example.com"])
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertIn("list", result, f"Error must name the bad type: {result!r}")
+
+    def test_float_url_returns_type_error(self):
+        """fn(3.14) must return a 'must be a string' error (#893)."""
+        result = fn(3.14)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertIn("float", result, f"Error must name the bad type: {result!r}")
+
+    def test_non_string_url_does_not_reach_network(self):
+        """Non-string url must be rejected before any network call (#893)."""
+        with patch("requests.get") as mock_get:
+            fn(42)
+        mock_get.assert_not_called()
+
+    def test_empty_string_url_still_returns_empty_error(self):
+        """An actual empty string must still return the 'must not be empty' message (#893)."""
+        result = fn("")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("empty", result, f"Empty string should say 'empty': {result!r}")
+
+    def test_valid_string_url_unaffected(self):
+        """A valid URL string must still be accepted normally (#893)."""
+        mock_resp = MagicMock()
+        mock_resp.url = "http://example.com/"
+        mock_resp.headers = {"content-type": "text/plain"}
+        mock_resp.status_code = 200
+        mock_resp.encoding = "utf-8"
+        mock_resp.iter_content.return_value = iter([b"hello"])
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch("requests.get", return_value=mock_resp):
+            result = fn("http://example.com/")
+        self.assertFalse(result.startswith("Error:"), f"Valid URL should not return error: {result!r}")
