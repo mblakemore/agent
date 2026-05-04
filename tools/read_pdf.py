@@ -4,6 +4,7 @@ NOTE: This tool is for PDF files ONLY. Do NOT use it to read .log, .py, .json, o
 Use the file tool (action='read') for text files.
 """
 
+import math
 import os
 from pathlib import Path
 
@@ -88,6 +89,9 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
     # rather than silently truncated — int(1.5) == 1, which would read the wrong page.
     # Whole-number floats (e.g. 2.0) are safe to coerce, consistent with task_tracker.
     if not isinstance(start_page, int):
+        if isinstance(start_page, float) and not math.isfinite(start_page):
+            doc.close()
+            return f"Error: start_page must be a finite integer, got {start_page!r}"
         try:
             coerced = int(start_page)
             if isinstance(start_page, float) and start_page != coerced:
@@ -104,6 +108,9 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
     # Validate end_page type before numeric comparisons.
     # Same fractional-float guard as start_page.
     if not isinstance(end_page, int):
+        if isinstance(end_page, float) and not math.isfinite(end_page):
+            doc.close()
+            return f"Error: end_page must be a finite integer, got {end_page!r}"
         try:
             coerced = int(end_page)
             if isinstance(end_page, float) and end_page != coerced:

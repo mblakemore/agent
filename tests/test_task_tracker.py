@@ -2411,3 +2411,44 @@ def test_valid_action_unaffected_by_null_byte_check():
     res = fn(action="list")
     assert "Guard test task" in res
     assert "Error" not in res
+
+
+# ── NaN / Inf guards for limit and task_id (#903) ─────────────────────────────
+
+
+def test_list_limit_inf_returns_clear_error():
+    """limit=float('inf') must return a clear error, not OverflowError (#903).
+
+    Before the fix, int(inf) raised OverflowError which was not caught by
+    except (TypeError, ValueError) and propagated as an unhandled exception.
+    """
+    import math
+    result = fn(action="list", limit=math.inf)
+    assert result.startswith("Error:"), f"Expected error for limit=inf: {result!r}"
+    assert "finite" in result or "inf" in result.lower(), (
+        f"Error should mention finite or inf: {result!r}"
+    )
+
+
+def test_list_limit_nan_returns_clear_error():
+    """limit=float('nan') must return a clear error (#903)."""
+    import math
+    result = fn(action="list", limit=math.nan)
+    assert result.startswith("Error:"), f"Expected error for limit=nan: {result!r}"
+
+
+def test_get_task_id_inf_returns_clear_error():
+    """task_id=float('inf') must return a clear error, not OverflowError (#903)."""
+    import math
+    result = fn(action="get", task_id=math.inf)
+    assert result.startswith("Error:"), f"Expected error for task_id=inf: {result!r}"
+    assert "finite" in result or "inf" in result.lower(), (
+        f"Error should mention finite or inf: {result!r}"
+    )
+
+
+def test_get_task_id_nan_returns_clear_error():
+    """task_id=float('nan') must return a clear error (#903)."""
+    import math
+    result = fn(action="get", task_id=math.nan)
+    assert result.startswith("Error:"), f"Expected error for task_id=nan: {result!r}"

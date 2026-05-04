@@ -622,3 +622,52 @@ class TestReadPdfPathConfinement:
         inside = str(self._project / "doc.pdf")
         result = fn(path=inside)
         assert not result.startswith("Error:"), f"Expected success for cwd path, got: {result!r}"
+
+
+# ── NaN / Inf page guards (#903) ──────────────────────────────────────────────
+
+
+@patch("fitz.open")
+def test_read_pdf_inf_start_page_returns_clear_error(mock_open):
+    """start_page=float('inf') must return a clear error, not OverflowError (#903).
+
+    Before the fix, int(inf) raised OverflowError which was not caught by
+    except (TypeError, ValueError) and propagated as an unhandled exception.
+    """
+    import math
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=math.inf)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "finite" in result or "inf" in result.lower(), (
+        f"Error should mention finite or inf: {result!r}"
+    )
+
+
+@patch("fitz.open")
+def test_read_pdf_nan_start_page_returns_clear_error(mock_open):
+    """start_page=float('nan') must return a clear error (#903)."""
+    import math
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=math.nan)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+
+
+@patch("fitz.open")
+def test_read_pdf_inf_end_page_returns_clear_error(mock_open):
+    """end_page=float('inf') must return a clear error, not OverflowError (#903)."""
+    import math
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=1, end_page=math.inf)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "finite" in result or "inf" in result.lower(), (
+        f"Error should mention finite or inf: {result!r}"
+    )
+
+
+@patch("fitz.open")
+def test_read_pdf_nan_end_page_returns_clear_error(mock_open):
+    """end_page=float('nan') must return a clear error (#903)."""
+    import math
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=1, end_page=math.nan)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
