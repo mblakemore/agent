@@ -121,3 +121,43 @@ def test_web_fetch_none_url_returns_error():
     result = fn(url=None)
     assert isinstance(result, str)
     assert "Error" in result
+
+
+# ── URL validation edge cases (#770) ──────────────────────────────────────────
+
+def test_web_fetch_bare_hostname_returns_error():
+    """A bare hostname without scheme (e.g. 'example.com/page') must be rejected
+    with a clear error before reaching the requests library (#770)."""
+    result = fn(url="example.com/page")
+    assert isinstance(result, str), "fn() must return a string, not raise"
+    assert result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}"
+    # Must mention that http:// or https:// is required
+    assert "http" in result, f"Error must mention http/https requirement: {result!r}"
+    # Must NOT fall through to requests and leak a library error
+    assert "Perhaps you meant" not in result
+
+
+def test_web_fetch_ftp_scheme_mentions_supported_schemes():
+    """ftp:// must be rejected with a message that names http/https as supported (#770)."""
+    result = fn(url="ftp://example.com")
+    assert isinstance(result, str)
+    assert result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}"
+    assert "https" in result or "http" in result, (
+        f"Error must mention supported schemes: {result!r}"
+    )
+
+
+def test_web_fetch_http_url_passes_scheme_check():
+    """http:// URL must pass the scheme check (network call is mocked to avoid real I/O)."""
+    import requests
+    from unittest.mock import patch, MagicMock
+    mock = MagicMock()
+    mock.headers = {"content-type": "text/plain"}
+    mock.status_code = 200
+    mock.encoding = "utf-8"
+    mock.iter_content.side_effect = lambda chunk_size=None: [b"ok"]
+    mock.__enter__.return_value = mock
+    with patch("requests.get", return_value=mock):
+        result = fn(url="http://example.com/test")
+    # Must not be a scheme-validation error
+    assert "must begin with" not in result, f"Valid http:// URL failed scheme check: {result!r}"
