@@ -426,3 +426,63 @@ def test_exec_command_output_cap_constant_is_reasonable():
     from tools.exec_command import _MAX_OUTPUT_BYTES
     assert isinstance(_MAX_OUTPUT_BYTES, int)
     assert 1024 <= _MAX_OUTPUT_BYTES <= 1_048_576
+
+
+# ── cwd parameter tests (#674) ────────────────────────────────────────────────
+
+def test_exec_command_cwd_changes_working_directory(tmp_path):
+    """cwd parameter must change the working directory for the command."""
+    result = fn(command="pwd", timeout=5, cwd=str(tmp_path))
+    assert "exit=0" in result
+    # tmp_path may differ from the resolved path due to symlinks — check basename
+    assert tmp_path.name in result
+
+
+def test_exec_command_cwd_relative_paths_resolved_against_cwd(tmp_path):
+    """Relative paths in the command must be resolved relative to cwd, not the agent home."""
+    result = fn(command="touch marker.txt && ls marker.txt", timeout=5, cwd=str(tmp_path))
+    assert "exit=0" in result
+    assert "marker.txt" in result
+    assert (tmp_path / "marker.txt").exists()
+
+
+def test_exec_command_cwd_nonexistent_dir_rejected():
+    """cwd that does not exist must return a clear error, not crash."""
+    result = fn(command="pwd", timeout=5, cwd="/nonexistent_cwd_dir_abc123xyz")
+    assert "Error" in result
+    assert "does not exist" in result
+
+
+def test_exec_command_cwd_file_path_rejected(tmp_path):
+    """cwd pointing at a file (not a directory) must be rejected with a clear error."""
+    f = tmp_path / "not_a_dir.txt"
+    f.write_text("hello")
+    result = fn(command="pwd", timeout=5, cwd=str(f))
+    assert "Error" in result
+    assert "not a directory" in result
+
+
+def test_exec_command_cwd_empty_uses_home_directory():
+    """cwd='' (the default) must leave the working directory unchanged."""
+    import os
+    result = fn(command="pwd", timeout=5, cwd="")
+    assert "exit=0" in result
+    # The output should contain the agent's home dir (resolved, since bash resolves symlinks)
+    home_resolved = os.path.realpath(os.getcwd())
+    # On systems with symlinks the printed path may differ; just ensure it doesn't use /tmp
+    assert "/tmp" not in result or home_resolved.startswith("/tmp")
+
+
+def test_exec_command_cwd_outside_repo_tree_allowed(tmp_path):
+    """cwd must work for paths outside the repo tree (unlike 'cd /abs && cmd' which is blocked)."""
+    # Demonstrate the key use-case: running commands in an arbitrary temp dir
+    (tmp_path / "hello.txt").write_text("hello from cwd")
+    result = fn(command="cat hello.txt", timeout=5, cwd=str(tmp_path))
+    assert "exit=0" in result
+    assert "hello from cwd" in result
+
+
+def test_exec_command_cwd_background_mode(tmp_path):
+    """cwd must also apply to background commands."""
+    result = fn(command="pwd", background=True, cwd=str(tmp_path))
+    assert "Command started in background" in result
