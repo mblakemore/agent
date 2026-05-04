@@ -434,6 +434,7 @@ definition = {
             "Commands that call the LLM or do heavy computation may take minutes — "
             "the default timeout is 120s. For long-running commands, use "
             "background=true and poll with session_id to check output. "
+            "To write a file, use `file(action=\"write\", ...)` instead of echo redirects or heredocs — it handles special characters correctly. "
             "You can write files via shell (cat >, heredocs). "
               "For existing files, you must read them first (cat or file tool) in this session. "
               "Worktrees must be created under WORKTREE_ROOT. "
