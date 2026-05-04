@@ -142,6 +142,20 @@ class TestThinkCoverage(unittest.TestCase):
         result = think_mod.fn("test", depth="brief")
         self.assertEqual(result, "Error: empty response from model")
 
+    def test_empty_prompt_returns_error_without_http_call(self):
+        """think.fn with an empty prompt must return an error immediately, no HTTP call."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("", depth="brief")
+        self.assertIn("Error: prompt must not be empty", result)
+        mock_post.assert_not_called()
+
+    def test_whitespace_only_prompt_returns_error_without_http_call(self):
+        """think.fn with a whitespace-only prompt must return an error immediately, no HTTP call."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("   ", depth="brief")
+        self.assertIn("Error: prompt must not be empty", result)
+        mock_post.assert_not_called()
+
     def test_invalid_depth_returns_error_without_http_call(self):
         """think.fn with an invalid depth must return an error immediately, no HTTP call."""
         with patch("requests.post") as mock_post:
