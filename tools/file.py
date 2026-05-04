@@ -101,10 +101,14 @@ def _read(path, start_line, end_line):
     if p.is_dir():
         return f"Error: '{path}' is a directory. Use action='list' instead."
 
+    # Validate start_line/end_line combination before opening the file
+    if end_line > 0 and start_line > 0 and start_line > end_line:
+        return f"Error: start_line ({start_line}) > end_line ({end_line})"
+
     with open(p, 'r', encoding='utf-8', errors='replace') as f:
         s = max(1, start_line) if start_line > 0 else 1
         full_read = (start_line <= 0 and end_line <= 0)
-        
+
         if end_line > 0:
             e = end_line
         elif full_read:
