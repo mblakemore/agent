@@ -195,10 +195,15 @@ def _write(path, content, start_line, end_line):
         if start_line == 0 and end_line > 0:
             return f"Error: start_line must be >= 1 (got 0). Line numbers are 1-indexed."
         if end_line <= 0:
-            end_line = start_line
+            return (
+                f"Error: end_line is required when start_line is set "
+                f"(got start_line={start_line}, end_line=0). "
+                f"To replace a single line, pass end_line={start_line}. "
+                f"To replace a range, pass end_line=<last line to replace>."
+            )
         if start_line > end_line:
             return f"Error: start_line ({start_line}) > end_line ({end_line})"
-        
+
         # Capture old content for diff
         with open(p, 'r', encoding='utf-8', errors='replace') as f:
             old_content = f.read()

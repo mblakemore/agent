@@ -890,3 +890,81 @@ class TestFilePermissionDenied(unittest.TestCase):
         )
         self.assertIn("permission denied", result.lower(),
                       msg=f"Expected 'permission denied' in message, got: {result!r}")
+
+
+class TestFileWriteStartLineWithoutEndLine(unittest.TestCase):
+    """write with start_line set but end_line omitted must return a clear error.
+
+    Previously the code silently defaulted end_line=start_line, which replaced
+    only the single specified line.  The tool description says end_line is
+    REQUIRED when start_line is set, so the code must enforce that. (#788)
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.target = Path(self.tmp) / "test.txt"
+        self.target.write_text("line1\nline2\nline3\nline4\nline5\n", encoding="utf-8")
+        file_tool.fn(action="read", path=str(self.target))
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_write_start_line_only_returns_error(self):
+        """start_line without end_line must return Error, not silently replace line."""
+        result = file_tool.fn(
+            action="write", path=str(self.target), content="NEW\n", start_line=3
+        )
+        self.assertTrue(
+            result.startswith("Error:"),
+            msg=f"Expected Error:, got: {result!r}",
+        )
+        self.assertIn("end_line", result,
+                      msg="Error must mention end_line so caller knows what to fix")
+
+    def test_write_start_line_only_does_not_modify_file(self):
+        """A rejected write must leave the file unchanged."""
+        original = self.target.read_text(encoding="utf-8")
+        file_tool.fn(
+            action="write", path=str(self.target), content="NEW\n", start_line=3
+        )
+        self.assertEqual(
+            self.target.read_text(encoding="utf-8"), original,
+            "File must not be modified when end_line is missing",
+        )
+
+    def test_write_start_line_only_error_suggests_end_line(self):
+        """Error message must suggest passing end_line=start_line for single-line replace."""
+        result = file_tool.fn(
+            action="write", path=str(self.target), content="NEW\n", start_line=4
+        )
+        self.assertIn("end_line=4", result,
+                      msg="Error should suggest end_line=start_line for a single-line replace")
+
+    def test_write_start_line_and_end_line_still_works(self):
+        """write with both start_line and end_line must still succeed."""
+        result = file_tool.fn(
+            action="write", path=str(self.target), content="NEW\n",
+            start_line=3, end_line=3,
+        )
+        self.assertIn("Replaced lines 3-3", result,
+                      msg=f"Expected successful replace, got: {result!r}")
+        self.assertEqual(
+            self.target.read_text(encoding="utf-8"),
+            "line1\nline2\nNEW\nline4\nline5\n",
+        )
+
+    def test_delete_start_line_only_still_works(self):
+        """delete with only start_line (no end_line) must still work — it deletes a single line.
+
+        The end_line=start_line default is intentional for delete (unlike write).
+        """
+        result = file_tool.fn(
+            action="delete", path=str(self.target), start_line=2
+        )
+        self.assertIn("Deleted lines 2-2", result,
+                      msg=f"delete start_line-only should still work, got: {result!r}")
+        self.assertEqual(
+            self.target.read_text(encoding="utf-8"),
+            "line1\nline3\nline4\nline5\n",
+        )
