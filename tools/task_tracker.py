@@ -176,6 +176,14 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
             if len(exact) == 1:
                 task_id = exact[0]["id"]
                 _description_used_for_resolution = True
+            elif len(exact) > 1:
+                # Multiple exact matches (should not happen due to duplicate guard on add,
+                # but handle defensively).
+                match_list = ", ".join(f"#{t['id']} {t.get('description', '')!r}" for t in exact)
+                return (
+                    f"Error: {len(exact)} tasks match {description!r} exactly — "
+                    f"use task_id to specify: {match_list}"
+                )
             else:
                 # Fall back to fuzzy/substring match
                 matches = [t for t in open_tasks if desc_lower in t.get("description", "").lower()
@@ -183,6 +191,14 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
                 if len(matches) == 1:
                     task_id = matches[0]["id"]
                     _description_used_for_resolution = True
+                elif len(matches) > 1:
+                    match_list = ", ".join(
+                        f"#{t['id']} {t.get('description', '')!r}" for t in matches
+                    )
+                    return (
+                        f"Error: {len(matches)} tasks match {description!r} — "
+                        f"use task_id to specify: {match_list}"
+                    )
 
     if action == "add":
         if not description:
@@ -193,6 +209,24 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
                 return (f"Error: 'add' requires description. To set status on an "
                         f"existing task, use action='update' with task_id=<N>, status='{status}'.")
             return "Error: description required for 'add'"
+        # Reject status= on add — new tasks always start as 'open'.
+        # Valid mutable statuses for reference; 'open' is the only allowed initial state.
+        _ADD_VALID_INITIAL = {"open"}
+        _ALL_MUTABLE_STATUSES = {"open", "in_progress", "blocked", "deferred"}
+        if status:
+            if status not in _ADD_VALID_INITIAL:
+                if status in _ALL_MUTABLE_STATUSES:
+                    return (
+                        f"Error: new tasks always start as 'open'. "
+                        f"To add a task and immediately set status='{status}', "
+                        f"use action='add' first, then action='update' with status='{status}'."
+                    )
+                else:
+                    return (
+                        f"Error: invalid status '{status}' for 'add'. "
+                        f"New tasks always start as 'open'. "
+                        f"Use action='update' after adding to change status."
+                    )
         existing = next((t for t in tasks if t["status"] not in ("done", "completed")
                          and t.get("description", "").strip() == description.strip()), None)
         if existing:

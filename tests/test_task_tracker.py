@@ -1585,3 +1585,135 @@ def test_drop_on_open_task_still_works():
     assert "Dropped task #1" in res, f"Expected drop success, got: {res!r}"
     result = fn(action="list")
     assert "open task to drop" not in result, "Dropped task must be gone"
+
+
+# ── Issue #776: auto-resolve ambiguity must return a helpful error ────────────
+
+def test_done_auto_resolve_ambiguous_match_returns_error():
+    """done with description matching multiple tasks must return an error listing
+    the matches, not silently pick one or return a generic 'task_id required' message. (#776)"""
+    fn(action="add", description="fix login bug")
+    fn(action="add", description="fix signup bug")
+    fn(action="add", description="fix logout bug")
+    result = fn(action="done", task_id=0, description="fix")
+    assert result.startswith("Error:"), f"Expected Error, got: {result!r}"
+    # Must mention the ambiguity — how many tasks matched
+    assert "3 tasks match" in result or "3 task" in result, (
+        f"Error must mention how many tasks matched, got: {result!r}"
+    )
+    # Must list the matching task IDs so the caller can resolve manually
+    assert "#1" in result, f"Match list must include #1, got: {result!r}"
+    assert "#2" in result, f"Match list must include #2, got: {result!r}"
+    assert "#3" in result, f"Match list must include #3, got: {result!r}"
+    # Must mention 'task_id' so the caller knows how to fix it
+    assert "task_id" in result, f"Error must mention task_id, got: {result!r}"
+
+
+def test_update_auto_resolve_ambiguous_match_returns_error():
+    """update with description matching multiple tasks must return a clear ambiguity error. (#776)"""
+    fn(action="add", description="fix login bug")
+    fn(action="add", description="fix signup bug")
+    result = fn(action="update", task_id=0, description="fix", status="in_progress")
+    assert result.startswith("Error:"), f"Expected Error, got: {result!r}"
+    assert "2 tasks match" in result or "2 task" in result, (
+        f"Error must mention 2 matching tasks, got: {result!r}"
+    )
+    assert "#1" in result and "#2" in result, f"Both task IDs must appear in error, got: {result!r}"
+
+
+def test_drop_auto_resolve_ambiguous_match_returns_error():
+    """drop with description matching multiple tasks must return a clear ambiguity error. (#776)"""
+    fn(action="add", description="cleanup old logs")
+    fn(action="add", description="cleanup old caches")
+    result = fn(action="drop", task_id=0, description="cleanup")
+    assert result.startswith("Error:"), f"Expected Error, got: {result!r}"
+    assert "2 tasks match" in result or "2 task" in result, (
+        f"Error must mention 2 matching tasks, got: {result!r}"
+    )
+    # Neither task must have been dropped
+    listing = fn(action="list")
+    assert "cleanup old logs" in listing, "task #1 must still exist after ambiguous drop"
+    assert "cleanup old caches" in listing, "task #2 must still exist after ambiguous drop"
+
+
+def test_auto_resolve_unique_match_still_works_after_ambiguity_fix():
+    """Auto-resolve on a unique description match must still succeed after the ambiguity guard. (#776)"""
+    fn(action="add", description="fix login bug")
+    fn(action="add", description="update docs")
+    # 'login' matches only task #1 — should auto-resolve successfully
+    result = fn(action="done", task_id=0, description="login")
+    assert "Completed task #1" in result, f"Expected completion, got: {result!r}"
+
+
+def test_auto_resolve_no_match_falls_through_to_task_id_required():
+    """When description matches no open tasks (and there are multiple open tasks),
+    the existing 'task_id required' error must be returned (not a match-count error). (#776)"""
+    fn(action="add", description="fix login bug")
+    fn(action="add", description="update docs")
+    # Description doesn't match either task
+    result = fn(action="done", task_id=0, description="deploy hotfix")
+    # Falls through to generic error — not an ambiguity error, just missing task_id
+    assert "Error:" in result, f"Expected an Error, got: {result!r}"
+    # Neither task must have been completed
+    listing = fn(action="list")
+    assert "fix login bug" in listing
+    assert "update docs" in listing
+
+
+# ── Issue #777: add action must reject non-open initial status values ──────────
+
+def test_add_with_status_blocked_returns_error():
+    """add with status='blocked' must return an error — new tasks always start as 'open'. (#777)"""
+    result = fn(action="add", description="test task", status="blocked")
+    assert result.startswith("Error:"), f"Expected Error, got: {result!r}"
+    assert "open" in result, f"Error must mention 'open' as the required initial status, got: {result!r}"
+
+
+def test_add_with_status_in_progress_returns_error():
+    """add with status='in_progress' must return an error. (#777)"""
+    result = fn(action="add", description="task x", status="in_progress")
+    assert result.startswith("Error:"), f"Expected Error, got: {result!r}"
+    assert "open" in result
+
+
+def test_add_with_status_deferred_returns_error():
+    """add with status='deferred' must return an error. (#777)"""
+    result = fn(action="add", description="task x", status="deferred")
+    assert result.startswith("Error:"), f"Expected Error, got: {result!r}"
+    assert "open" in result
+
+
+def test_add_with_invalid_status_returns_error():
+    """add with an unrecognised status must return an error, not silently ignore it. (#777)"""
+    result = fn(action="add", description="task x", status="invalid_status")
+    assert result.startswith("Error:"), f"Expected Error, got: {result!r}"
+    assert "invalid_status" in result or "invalid" in result.lower()
+
+
+def test_add_with_status_open_succeeds():
+    """add with status='open' must succeed (it is the default initial status). (#777)"""
+    result = fn(action="add", description="normal task", status="open")
+    assert "Added task #1" in result, f"Expected success for status='open', got: {result!r}"
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["status"] == "open"
+
+
+def test_add_without_status_still_creates_open_task():
+    """add without status must still work and default to 'open'. (#777)"""
+    result = fn(action="add", description="plain task")
+    assert "Added task #1" in result, f"Expected success, got: {result!r}"
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["status"] == "open"
+
+
+def test_add_status_rejected_task_not_stored():
+    """When add is rejected due to invalid status, no task must be written to disk. (#777)"""
+    result = fn(action="add", description="rejected task", status="blocked")
+    assert result.startswith("Error:")
+    # Either no file exists, or it contains zero tasks
+    p = Path(_TASKS_FILE)
+    if p.exists():
+        tasks = json.loads(p.read_text())
+        assert len(tasks) == 0, f"No task should be stored after rejection, got: {tasks!r}"
+    else:
+        pass  # File not created — also correct
