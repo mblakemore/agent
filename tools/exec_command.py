@@ -404,6 +404,14 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         reader_thread.join(timeout=2.0)
 
     if timed_out:
+        partial = "".join(output_parts).rstrip('\n')
+        if partial:
+            return (
+                f"[session: {sid}] (timed out after {timeout}s — partial output below)\n"
+                f"{partial}\n"
+                f"The command is no longer running. Try a shorter operation or "
+                f"use background=true for long-running commands."
+            )
         return (
             f"[session: {sid}] (timed out after {timeout}s)\n"
             f"The command is no longer running. Try a shorter operation or "
