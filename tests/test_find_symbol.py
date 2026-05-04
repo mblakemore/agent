@@ -427,6 +427,65 @@ class TestFindSymbolUnit(unittest.TestCase):
         results_method = find_symbol("inner", path=self.tmp, kind="method", mode="definition")
         self.assertEqual(results_method, [])
 
+    def test_async_def_context_includes_async_prefix(self):
+        """context for an async def function must start with 'async def', not 'def'.
+
+        Regression test for #702: _find_definitions_with_scope built the context
+        string as f"def {name}(...)" for both ast.FunctionDef and
+        ast.AsyncFunctionDef, silently dropping the 'async' keyword.
+        """
+        self._write("async_fn.py", """\
+            async def my_async_fn(x, y):
+                return x + y
+
+            async def another_async():
+                pass
+        """)
+        results = find_symbol("my_async_fn", path=self.tmp, mode="definition")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["kind"], "function")
+        self.assertEqual(results[0]["line"], 1)
+        context = results[0]["context"]
+        self.assertTrue(
+            context.startswith("async def"),
+            f"context should start with 'async def', got: {context!r}",
+        )
+        self.assertIn("my_async_fn", context)
+
+    def test_async_method_context_includes_async_prefix(self):
+        """async def inside a class must also include the 'async' prefix in context."""
+        self._write("async_method.py", """\
+            class MyClass:
+                async def fetch(self, url):
+                    pass
+        """)
+        results = find_symbol("fetch", path=self.tmp, mode="definition")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["kind"], "method")
+        context = results[0]["context"]
+        self.assertTrue(
+            context.startswith("async def"),
+            f"async method context should start with 'async def', got: {context!r}",
+        )
+
+    def test_sync_def_context_unchanged(self):
+        """Sync functions must still show 'def', not 'async def' (no regression)."""
+        self._write("sync_fn.py", """\
+            def sync_fn(a, b):
+                return a - b
+        """)
+        results = find_symbol("sync_fn", path=self.tmp, mode="definition")
+        self.assertEqual(len(results), 1)
+        context = results[0]["context"]
+        self.assertTrue(
+            context.startswith("def "),
+            f"sync function context should start with 'def ', got: {context!r}",
+        )
+        self.assertFalse(
+            context.startswith("async"),
+            f"sync function context must not start with 'async', got: {context!r}",
+        )
+
 
 class TestFindSymbolRegistered(unittest.TestCase):
     """AC5: Tool is registered in the MAP_FN dispatch."""

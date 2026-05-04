@@ -101,7 +101,8 @@ def _find_definitions_with_scope(tree: ast.AST, name: str, kind: Optional[str], 
                             args_str = ast.unparse(child.args)
                         except Exception:
                             args_str = "..."
-                        context = f"def {child.name}({args_str}):"
+                        prefix = "async def" if isinstance(child, ast.AsyncFunctionDef) else "def"
+                        context = f"{prefix} {child.name}({args_str}):"
                         matches.append({
                             "path": src_path,
                             "line": child.lineno,
