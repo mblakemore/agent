@@ -1439,3 +1439,105 @@ def test_unknown_action_with_no_tasks_returns_error():
     result = fn(action="bogus")
     assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
     assert "unknown action" in result.lower()
+
+
+# ── Issue #772: corrupted JSON — wrong structure (not a list) ─────────────────
+
+def test_json_dict_structure_returns_corrupted_error():
+    """tasks.json containing a dict (not a list) must return a clear corruption error (#772)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"tasks": []}), encoding="utf-8")
+    res = fn(action="list")
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    assert "corrupted" in res.lower(), f"Expected 'corrupted' mention, got: {res!r}"
+
+
+def test_json_null_structure_returns_corrupted_error():
+    """tasks.json containing JSON null must return a clear corruption error, not 'No tasks.' (#772)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("null", encoding="utf-8")
+    res = fn(action="list")
+    assert res.startswith("Error:"), f"Expected Error for null JSON, got: {res!r}"
+    assert "corrupted" in res.lower(), f"Expected 'corrupted' mention, got: {res!r}"
+
+
+def test_json_list_of_non_dicts_returns_corrupted_error():
+    """tasks.json containing a list of non-dict elements must return a corruption error (#772)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(["string", 42]), encoding="utf-8")
+    res = fn(action="list")
+    assert res.startswith("Error:"), f"Expected Error for list of non-dicts, got: {res!r}"
+    assert "corrupted" in res.lower(), f"Expected 'corrupted' mention, got: {res!r}"
+
+
+def test_json_wrong_structure_add_returns_error():
+    """add must not overwrite a file with wrong JSON structure (dict instead of list) (#772)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    original = json.dumps({"not": "a list"})
+    p.write_text(original, encoding="utf-8")
+    res = fn(action="add", description="new task")
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    # File must not be overwritten
+    assert p.read_text(encoding="utf-8") == original
+
+
+def test_json_wrong_structure_all_actions_return_error():
+    """Every action must return Error when the file has wrong JSON structure (#772)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"tasks": []}), encoding="utf-8")
+    for action_kwargs in [
+        {"action": "list"},
+        {"action": "add", "description": "x"},
+        {"action": "done", "task_id": 1},
+        {"action": "update", "task_id": 1, "status": "in_progress"},
+        {"action": "drop", "task_id": 1},
+    ]:
+        res = fn(**action_kwargs)
+        assert res.startswith("Error:"), (
+            f"action={action_kwargs!r}: expected Error, got: {res!r}"
+        )
+        assert "corrupted" in res.lower(), (
+            f"action={action_kwargs!r}: 'corrupted' not in response: {res!r}"
+        )
+
+
+# ── Issue #773: list unknown status filter must return an error, not silently empty ──
+
+def test_list_unknown_status_filter_returns_error():
+    """list with a completely unknown status filter must return Error, not a silent empty message (#773)."""
+    fn(action="add", description="some task")
+    res = fn(action="list", status="nonexistent_status")
+    assert res.startswith("Error:"), f"Expected Error for unknown status filter, got: {res!r}"
+    assert "nonexistent_status" in res, f"Error must mention the bad value, got: {res!r}"
+
+
+def test_list_unknown_status_filter_mentions_valid_values():
+    """Error for unknown status filter must list the valid status values (#773)."""
+    res = fn(action="list", status="bogus_status")
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    for valid in ("open", "in_progress", "blocked", "deferred", "done", "completed"):
+        assert valid in res, f"Valid status '{valid}' missing from error, got: {res!r}"
+
+
+def test_list_valid_status_filter_still_works_after_validation():
+    """Adding unknown-status validation must not break valid status filters (#773)."""
+    fn(action="add", description="open task")
+    fn(action="add", description="blocked task")
+    fn(action="update", task_id=2, status="blocked")
+    res = fn(action="list", status="blocked")
+    assert "blocked task" in res, f"Expected 'blocked task', got: {res!r}"
+    assert res.startswith("Error:") is False, f"Must not error for valid status filter: {res!r}"
+
+
+def test_list_no_status_filter_unaffected_by_validation():
+    """list without status filter must still return all tasks after the validation is added (#773)."""
+    fn(action="add", description="task a")
+    fn(action="add", description="task b")
+    res = fn(action="list")
+    assert "task a" in res
+    assert "task b" in res

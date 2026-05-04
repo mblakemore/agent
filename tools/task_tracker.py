@@ -37,7 +37,25 @@ def _load_tasks():
         # the same as a missing file rather than raising JSONDecodeError.
         if not raw.strip():
             return []
-        return json.loads(raw)
+        data = json.loads(raw)
+        # The file must contain a JSON array, not a dict, null, or scalar.
+        # A null value (JSON `null` → Python `None`) or a non-list type means the
+        # file has wrong structure — treat it as corrupted so we surface a clear
+        # error rather than crashing on iteration or silently returning "No tasks."
+        if not isinstance(data, list):
+            return _Corrupted(
+                str(p.resolve()),
+                f"expected a JSON array at top level, got {type(data).__name__}",
+            )
+        # Each element must be a dict.  Non-dict elements (strings, ints, etc.)
+        # would cause AttributeError / TypeError when the code does t["status"].
+        for i, item in enumerate(data):
+            if not isinstance(item, dict):
+                return _Corrupted(
+                    str(p.resolve()),
+                    f"element {i} is not an object (got {type(item).__name__})",
+                )
+        return data
     except json.JSONDecodeError as exc:
         return _Corrupted(str(p.resolve()), str(exc))
     except IOError as exc:
@@ -246,13 +264,22 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
         return f"Error: task #{task_id} not found"
 
     elif action == "list":
+        # Validate the status filter before anything else so that an unknown
+        # status value returns an error even when the task list is empty.
+        status_filter = status.strip().lower() if status else ""
+        # Valid status values: the four mutable statuses plus the two terminal ones.
+        _ALL_VALID_STATUSES = {"open", "in_progress", "blocked", "deferred", "done", "completed"}
+        if status_filter and status_filter not in _ALL_VALID_STATUSES:
+            return (
+                f"Error: unknown status filter '{status_filter}'. "
+                f"Valid values: open, in_progress, blocked, deferred, done, completed."
+            )
         if not tasks:
             return "No tasks."
         # Apply optional status filter (case-insensitive).
         # When status is provided, only include tasks whose status matches.
-        status_filter = status.strip().lower() if status else ""
         if status_filter:
-            filtered = [t for t in tasks if t["status"].lower() == status_filter]
+            filtered = [t for t in tasks if t.get("status", "").lower() == status_filter]
             if not filtered:
                 return f"No tasks with status '{status_filter}'."
         else:

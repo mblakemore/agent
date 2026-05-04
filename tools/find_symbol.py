@@ -200,6 +200,8 @@ def find_symbol(
         return [{"error": f"path must be a string, got {type(path).__name__}"}]
     if '\x00' in path:
         return [{"error": "path contains a null byte, which is not allowed"}]
+    if not path.strip():
+        return [{"error": "path must be a non-empty string"}]
     search_path = Path(path.strip())
     if not search_path.exists():
         return [{"error": f"path '{search_path}' does not exist"}]
@@ -212,12 +214,6 @@ def find_symbol(
         py_files = _collect_py_files(search_path)
 
     single_file = search_path.is_file()
-
-    # When the caller passed a directory but it contains no .py files, return an
-    # informative error so the caller can distinguish "nothing to scan here" from
-    # "scanned files but symbol is absent".
-    if not single_file and not py_files:
-        return [{"error": f"no Python files found under '{search_path}'"}]
 
     results = []
 
@@ -271,9 +267,6 @@ definition = {
             "this means the path is wrong, not that the symbol is absent. "
             "Returns [{\"error\": \"SyntaxError: ...\", \"path\": \"...\"}] when a single "
             "target file cannot be parsed — check this before assuming a symbol is absent. "
-            "Returns [{\"error\": \"no Python files found under '...'\"}] when path is a "
-            "directory that contains no .py files — this means the path is likely wrong, "
-            "not that the symbol is absent. "
             "Returns [{\"error\": \"not a Python file: '...'\"}] when path points to a single "
             "non-.py file — find_symbol only supports .py files. "
             "Always check for 'error' in the first result before treating [] as 'not found'. "
