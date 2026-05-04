@@ -332,7 +332,17 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     # ── Merge caller-supplied env vars on top of the base environment ──
     if env:
         base = _auto_env if _auto_env is not None else os.environ.copy()
-        _auto_env = {**base, **env}
+        # Special-case PYTHONPATH: if the caller supplies their own PYTHONPATH *and*
+        # the base env already contains an auto-injected git-root PYTHONPATH, prepend
+        # the caller's value so both paths are available.  Without this, a caller
+        # that passes env={'PYTHONPATH': '/extra'} would silently clobber the auto-
+        # injected repo root, breaking project-local imports inside the subprocess.
+        merged_env = dict(env)
+        caller_pp = merged_env.get("PYTHONPATH", "")
+        base_pp = base.get("PYTHONPATH", "")
+        if caller_pp and base_pp and base_pp not in caller_pp:
+            merged_env["PYTHONPATH"] = caller_pp + os.pathsep + base_pp
+        _auto_env = {**base, **merged_env}
 
     # ── Background execution ──────────────────────────────────────────
     if background:
