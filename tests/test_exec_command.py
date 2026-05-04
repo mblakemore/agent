@@ -374,3 +374,55 @@ def test_exec_command_none_command_returns_error():
     result = fn(command=None, timeout=5)
     assert isinstance(result, str)
     assert "Error" in result
+
+
+# ── output cap tests (#668) ───────────────────────────────────────────────────
+
+def test_exec_command_output_cap_truncates_large_output():
+    """Output beyond _MAX_OUTPUT_BYTES must be truncated with a clear notice."""
+    from tools.exec_command import _MAX_OUTPUT_BYTES
+    # Generate output larger than the cap
+    big_output_bytes = _MAX_OUTPUT_BYTES + 1000
+    result = fn(
+        command=f'python3 -c "print(\'A\' * {big_output_bytes})"',
+        timeout=10,
+    )
+    assert "output truncated" in result
+    assert str(big_output_bytes + 1) in result or str(big_output_bytes) in result  # total byte count in notice
+    # Result must be shorter than the raw output
+    assert len(result) < big_output_bytes
+
+
+def test_exec_command_output_cap_notice_includes_total_size():
+    """The truncation notice must include the total byte count so the agent knows what was cut."""
+    from tools.exec_command import _MAX_OUTPUT_BYTES
+    big = _MAX_OUTPUT_BYTES + 5000
+    result = fn(command=f'python3 -c "print(\'X\' * {big})"', timeout=10)
+    assert "bytes total" in result
+    assert f"{_MAX_OUTPUT_BYTES}" in result
+
+
+def test_exec_command_output_cap_small_output_not_truncated():
+    """Output below the cap must be returned in full with no truncation notice."""
+    result = fn(command="echo 'hello world'", timeout=5)
+    assert "output truncated" not in result
+    assert "hello world" in result
+    assert "exit=0" in result
+
+
+def test_exec_command_output_cap_exact_boundary_not_truncated():
+    """Output of exactly _MAX_OUTPUT_BYTES bytes must NOT be truncated."""
+    from tools.exec_command import _MAX_OUTPUT_BYTES
+    # 'A' * N plus a newline — rstrip('\n') removes the newline so exactly N bytes remain
+    result = fn(
+        command=f'python3 -c "import sys; sys.stdout.write(\'A\' * {_MAX_OUTPUT_BYTES})"',
+        timeout=10,
+    )
+    assert "output truncated" not in result
+
+
+def test_exec_command_output_cap_constant_is_reasonable():
+    """_MAX_OUTPUT_BYTES must be a positive integer in a sane range (1 KB – 1 MB)."""
+    from tools.exec_command import _MAX_OUTPUT_BYTES
+    assert isinstance(_MAX_OUTPUT_BYTES, int)
+    assert 1024 <= _MAX_OUTPUT_BYTES <= 1_048_576
