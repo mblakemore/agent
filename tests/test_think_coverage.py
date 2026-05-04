@@ -146,14 +146,35 @@ class TestThinkCoverage(unittest.TestCase):
         """think.fn with an empty prompt must return an error immediately, no HTTP call."""
         with patch("requests.post") as mock_post:
             result = think_mod.fn("", depth="brief")
-        self.assertIn("Error: prompt must not be empty", result)
+        self.assertIn("Error: prompt must be a non-empty string", result)
         mock_post.assert_not_called()
 
     def test_whitespace_only_prompt_returns_error_without_http_call(self):
         """think.fn with a whitespace-only prompt must return an error immediately, no HTTP call."""
         with patch("requests.post") as mock_post:
             result = think_mod.fn("   ", depth="brief")
-        self.assertIn("Error: prompt must not be empty", result)
+        self.assertIn("Error: prompt must be a non-empty string", result)
+        mock_post.assert_not_called()
+
+    def test_non_string_prompt_int_returns_error_without_http_call(self):
+        """think.fn with an integer prompt must return an error, not raise AttributeError."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn(42, depth="brief")  # type: ignore[arg-type]
+        self.assertIn("Error: prompt must be a non-empty string", result)
+        mock_post.assert_not_called()
+
+    def test_non_string_prompt_none_returns_error_without_http_call(self):
+        """think.fn with None prompt must return an error, not raise AttributeError."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn(None, depth="brief")  # type: ignore[arg-type]
+        self.assertIn("Error: prompt must be a non-empty string", result)
+        mock_post.assert_not_called()
+
+    def test_non_string_prompt_list_returns_error_without_http_call(self):
+        """think.fn with a list prompt must return an error, not raise AttributeError."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn(["a", "b"], depth="brief")  # type: ignore[arg-type]
+        self.assertIn("Error: prompt must be a non-empty string", result)
         mock_post.assert_not_called()
 
     def test_invalid_depth_returns_error_without_http_call(self):
