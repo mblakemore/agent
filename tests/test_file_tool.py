@@ -683,3 +683,68 @@ class TestFileNullByteInContent(unittest.TestCase):
         """The null-byte guard must not interfere with normal writes. (#762)"""
         result = file_tool.fn(action="write", path=str(self.txt), content="clean content\n")
         self.assertIn("Wrote", result)
+
+
+class TestFileNullByteInPath(unittest.TestCase):
+    """Null bytes in `path` must return a clear Error, not a misleading
+    'does not exist' or a wrapped 'embedded null byte' exception. (#766)"""
+
+    def test_read_null_byte_in_path_returns_explicit_error(self):
+        """read with a null byte in path must return a clear null-byte error. (#766)"""
+        result = file_tool.fn(action="read", path="/tmp/test\x00.txt")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("null byte", result)
+        self.assertNotIn("does not exist", result,
+                         "Must not report misleading 'does not exist' for null-byte path")
+
+    def test_write_null_byte_in_path_returns_explicit_error(self):
+        """write with a null byte in path must return a clear null-byte error. (#766)"""
+        result = file_tool.fn(action="write", path="/tmp/test\x00.txt", content="hello")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("null byte", result)
+        self.assertNotIn("embedded null byte", result,
+                         "Must not leak raw OS exception text")
+
+    def test_append_null_byte_in_path_returns_explicit_error(self):
+        """append with a null byte in path must return a clear null-byte error. (#766)"""
+        result = file_tool.fn(action="append", path="/tmp/test\x00.txt", content="hello")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("null byte", result)
+
+    def test_delete_null_byte_in_path_returns_explicit_error(self):
+        """delete with a null byte in path must return a clear null-byte error. (#766)"""
+        result = file_tool.fn(action="delete", path="/tmp/test\x00.txt")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("null byte", result)
+        self.assertNotIn("does not exist", result,
+                         "Must not report misleading 'does not exist' for null-byte path")
+
+    def test_list_null_byte_in_path_returns_explicit_error(self):
+        """list with a null byte in path must return a clear null-byte error. (#766)"""
+        result = file_tool.fn(action="list", path="/tmp/test\x00dir")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("null byte", result)
+
+    def test_all_actions_reject_null_byte_in_path(self):
+        """Every action must return a clear Error when path contains a null byte. (#766)"""
+        for action in ("read", "write", "insert", "append", "delete", "list"):
+            with self.subTest(action=action):
+                result = file_tool.fn(
+                    action=action, path="/tmp/bad\x00path.txt", content="x", start_line=1
+                )
+                self.assertIsInstance(result, str)
+                self.assertTrue(result.startswith("Error:"),
+                                f"action={action}: Expected Error:, got: {result!r}")
+                self.assertIn("null byte", result)
+
+    def test_valid_path_unaffected_by_null_byte_guard(self):
+        """A valid path must still work after the null-byte guard is added. (#766)"""
+        with tempfile.TemporaryDirectory() as d:
+            target = str(Path(d) / "ok.txt")
+            result = file_tool.fn(action="write", path=target, content="hi")
+            self.assertTrue(result.startswith("Wrote '"), f"Normal write broke: {result!r}")

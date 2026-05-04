@@ -1022,5 +1022,55 @@ class TestFindSymbolNullByteInName(unittest.TestCase):
         self.assertTrue(any("error" not in r for r in result))
 
 
+class TestFindSymbolNullByteInPath(unittest.TestCase):
+    """Null bytes in `path` must return a clear error dict, not a misleading
+    'does not exist' or an unhandled ValueError. (#766)"""
+
+    def setUp(self):
+        import tempfile
+        self.tmp_dir = tempfile.mkdtemp()
+        self.tmp_py = Path(self.tmp_dir) / "sample.py"
+        self.tmp_py.write_text("def my_func(): pass\n", encoding="utf-8")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_null_byte_in_path_returns_error_not_does_not_exist(self):
+        """path with null byte must return a null-byte error, not 'does not exist'. (#766)
+
+        Before the fix, Path('/tmp/x\\x00.py').exists() raises ValueError which the
+        code converts to 'path does not exist' — misleading because the path wasn't
+        actually tested for existence, the null byte made it invalid.
+        """
+        result = find_symbol(name='my_func', path='/tmp/valid\x00path.py', mode='definition')
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0, "Expected non-empty result with error dict")
+        self.assertIn("error", result[0])
+        self.assertIn("null byte", result[0]["error"])
+        self.assertNotIn("does not exist", result[0]["error"],
+                         "Must not report misleading 'does not exist' for null-byte path")
+
+    def test_null_byte_in_path_error_mentions_null_byte(self):
+        """The error message must explicitly call out the null byte. (#766)"""
+        result = find_symbol(name='fn', path='/droid/repos/agent/tools/file\x00.py',
+                             mode='definition')
+        self.assertIn("null byte", result[0]["error"])
+
+    def test_null_byte_only_in_path_returns_error(self):
+        """A path that is just \\x00 must return an error, not crash. (#766)"""
+        result = find_symbol(name='fn', path='\x00', mode='definition')
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+        self.assertIn("null byte", result[0]["error"])
+
+    def test_valid_path_unaffected_by_null_byte_guard(self):
+        """A valid path must still be searched correctly after the null-byte guard. (#766)"""
+        result = find_symbol(name='my_func', path=str(self.tmp_py), mode='definition')
+        self.assertIsInstance(result, list)
+        self.assertTrue(any("error" not in r for r in result),
+                        f"Expected at least one non-error result, got: {result!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
