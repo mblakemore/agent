@@ -32,6 +32,17 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
             "Use the 'file' tool with action='read' for text files."
         )
 
+    # fitz.open() succeeds on encrypted PDFs but leaves the document in a
+    # locked state (needs_pass=1).  Accessing pages then raises
+    # ValueError: document closed or encrypted.  Detect this early and
+    # return a clear error rather than letting the page loop crash.
+    if doc.needs_pass:
+        doc.close()
+        return (
+            f"Error: '{path}' is encrypted/password-protected. "
+            "A password is required to read this file."
+        )
+
     total = len(doc)
     if total == 0:
         doc.close()
@@ -127,10 +138,14 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
     if end < total:
         parts.append(f"[Use read_pdf with start_page={end + 1} to continue reading]")
 
-    for page_num in range(start - 1, end):
-        page = doc[page_num]
-        text = page.get_text().strip()
-        parts.append(f"\n--- Page {page_num + 1} ---\n{text}")
+    try:
+        for page_num in range(start - 1, end):
+            page = doc[page_num]
+            text = page.get_text().strip()
+            parts.append(f"\n--- Page {page_num + 1} ---\n{text}")
+    except Exception as e:
+        doc.close()
+        return f"Error: reading PDF page: {e}"
 
     doc.close()
     return "\n".join(parts)
