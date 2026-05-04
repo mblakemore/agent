@@ -77,3 +77,33 @@ def test_web_fetch_generic_exception_uses_error_prefix():
         result = fn("http://example.com/boom")
         assert result.startswith("Error:")
         assert not result.startswith("Unexpected error:")
+
+
+def test_web_fetch_empty_url_returns_error():
+    """Empty url must be rejected immediately with a clear error, not forwarded to requests."""
+    result = fn(url="")
+    assert result.startswith("Error:")
+    assert "empty" in result.lower()
+
+
+def test_web_fetch_whitespace_only_url_returns_error():
+    """Whitespace-only url must also be rejected with a clear error."""
+    result = fn(url="   ")
+    assert result.startswith("Error:")
+    assert "empty" in result.lower()
+
+
+def test_web_fetch_no_scheme_url_returns_error():
+    """URLs without http:// or https:// scheme must be rejected with a clear, library-free error."""
+    result = fn(url="not-a-url")
+    assert result.startswith("Error:")
+    assert "http" in result
+    # Must NOT leak requests' internal suggestion
+    assert "Perhaps you meant" not in result
+
+
+def test_web_fetch_ftp_url_returns_error():
+    """Non-HTTP schemes (e.g. ftp://) must be rejected before reaching requests."""
+    result = fn(url="ftp://example.com/file.txt")
+    assert result.startswith("Error:")
+    assert "http" in result
