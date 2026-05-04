@@ -678,3 +678,19 @@ def test_read_pdf_nan_end_page_returns_clear_error(mock_open):
     mock_open.return_value = _mock_pdf_doc()
     result = fn("dummy.pdf", start_page=1, end_page=math.nan)
     assert result.startswith("Error:"), f"Expected error: {result!r}"
+
+
+# ── !r quoting on type names (#915) ──────────────────────────────────────────
+
+def test_read_pdf_non_string_path_type_name_is_quoted():
+    """Non-string path error must include quoted type name 'int', not bare int (#915)."""
+    result = fn(42)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "'int'" in result, f"Type name must be quoted as 'int', got: {result!r}"
+
+
+def test_read_pdf_none_path_type_name_is_quoted():
+    """None path error must include quoted type name 'NoneType' (#915)."""
+    result = fn(None)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "'NoneType'" in result, f"Type name must be quoted as 'NoneType', got: {result!r}"

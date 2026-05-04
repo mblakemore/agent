@@ -13,9 +13,9 @@ def fn(seconds: float) -> str:
         seconds: Number of seconds to sleep. Must be between 0 and 3600.
     """
     if isinstance(seconds, bool):
-        return f"Error: 'seconds' must be a number, got {type(seconds).__name__}"
+        return f"Error: 'seconds' must be a number, got {type(seconds).__name__!r}"
     if not isinstance(seconds, (int, float)):
-        return f"Error: 'seconds' must be a number, got {type(seconds).__name__}"
+        return f"Error: 'seconds' must be a number, got {type(seconds).__name__!r}"
     if not math.isfinite(seconds):
         return f"Error: 'seconds' must be a finite number, got {seconds!r}"
     if seconds < 0:

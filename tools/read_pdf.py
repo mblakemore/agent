@@ -23,7 +23,7 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
         end_page: Last page to extract (1-indexed, inclusive). 0 = last page.
     """
     if not isinstance(path, str):
-        return f"Error: 'path' must be a string, got {type(path).__name__}"
+        return f"Error: 'path' must be a string, got {type(path).__name__!r}"
     if '\x00' in path:
         return "Error: path contains a null byte, which is not allowed"
     # Confinement: reject paths that resolve outside the working directory (#872)

@@ -78,14 +78,14 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
         )
     if not isinstance(content, str):
         return (
-            f"Error: 'content' must be a string, got {type(content).__name__}. "
+            f"Error: 'content' must be a string, got {type(content).__name__!r}. "
             f"Pass a plain string value for write/append/insert actions."
         )
     if '\x00' in content and action in ("write", "append", "insert"):
         return "Error: content contains a null byte, which is not allowed"
     if not isinstance(path, str):
         return (
-            f"Error: 'path' must be a string, got {type(path).__name__}: {path!r}. "
+            f"Error: 'path' must be a string, got {type(path).__name__!r}: {path!r}. "
             f"Pass a plain string file path."
         )
     if '\x00' in path:

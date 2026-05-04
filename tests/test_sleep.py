@@ -173,3 +173,26 @@ def test_sleep_inf_returns_clear_error():
     import math
     result = fn(math.inf)
     assert result.startswith("Error:"), f"Expected error, got: {result!r}"
+
+
+# ── !r quoting on type names (#915) ──────────────────────────────────────────
+
+def test_sleep_string_arg_type_name_is_quoted():
+    """String passed to seconds must include the quoted type name 'str', not bare str (#915)."""
+    result = fn("five")
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "'str'" in result, f"Type name must be quoted as 'str', got: {result!r}"
+
+
+def test_sleep_bool_type_name_is_quoted():
+    """Boolean passed to seconds must include the quoted type name 'bool', not bare bool (#915)."""
+    result = fn(True)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "'bool'" in result, f"Type name must be quoted as 'bool', got: {result!r}"
+
+
+def test_sleep_list_type_name_is_quoted():
+    """List passed to seconds must include the quoted type name 'list', not bare list (#915)."""
+    result = fn([1])
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "'list'" in result, f"Type name must be quoted as 'list', got: {result!r}"

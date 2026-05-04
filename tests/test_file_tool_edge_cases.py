@@ -775,5 +775,33 @@ class TestFileLineStringNoneRejection(unittest.TestCase):
         self.assertIn("line4", result)
 
 
+class TestFileTypeNameQuoting(unittest.TestCase):
+    """Type names in error messages must be single-quoted ('str', not str) (#915)."""
+
+    def test_content_type_error_includes_quoted_type_name(self):
+        """Non-string content error must include quoted type name, e.g. 'int' not int (#915)."""
+        result = file_tool.fn(action="write", path="x.txt", content=42)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'int'", result, f"Type name must be quoted: {result!r}")
+
+    def test_path_type_error_includes_quoted_type_name(self):
+        """Non-string path error must include quoted type name, e.g. 'int' not int (#915)."""
+        result = file_tool.fn(action="read", path=99)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'int'", result, f"Type name must be quoted: {result!r}")
+
+    def test_content_none_type_name_quoted(self):
+        """None content must report 'NoneType' with quotes (#915)."""
+        result = file_tool.fn(action="write", path="x.txt", content=None)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'NoneType'", result, f"Type name must be quoted: {result!r}")
+
+    def test_path_none_type_name_quoted(self):
+        """None path must report 'NoneType' with quotes (#915)."""
+        result = file_tool.fn(action="read", path=None)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'NoneType'", result, f"Type name must be quoted: {result!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
