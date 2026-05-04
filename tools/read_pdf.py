@@ -52,18 +52,36 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
             "Pass a plain integer page number, or 0 for last page."
         )
 
-    # Validate start_page type before numeric comparisons
+    # Validate start_page type before numeric comparisons.
+    # Float page numbers with a fractional part (e.g. 1.5, 6.9) must be rejected
+    # rather than silently truncated — int(1.5) == 1, which would read the wrong page.
+    # Whole-number floats (e.g. 2.0) are safe to coerce, consistent with task_tracker.
     if not isinstance(start_page, int):
         try:
-            start_page = int(start_page)
+            coerced = int(start_page)
+            if isinstance(start_page, float) and start_page != coerced:
+                doc.close()
+                return (
+                    f"Error: start_page must be an integer, got non-integer float: {start_page!r}. "
+                    f"Did you mean {coerced} or {coerced + 1}?"
+                )
+            start_page = coerced
         except (TypeError, ValueError):
             doc.close()
             return f"Error: start_page must be an integer, got {type(start_page).__name__!r}"
 
-    # Validate end_page type before numeric comparisons
+    # Validate end_page type before numeric comparisons.
+    # Same fractional-float guard as start_page.
     if not isinstance(end_page, int):
         try:
-            end_page = int(end_page)
+            coerced = int(end_page)
+            if isinstance(end_page, float) and end_page != coerced:
+                doc.close()
+                return (
+                    f"Error: end_page must be an integer, got non-integer float: {end_page!r}. "
+                    f"Did you mean {coerced} or {coerced + 1}?"
+                )
+            end_page = coerced
         except (TypeError, ValueError):
             doc.close()
             return f"Error: end_page must be an integer, got {type(end_page).__name__!r}"
