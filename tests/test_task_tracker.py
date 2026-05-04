@@ -497,18 +497,20 @@ def test_float_task_id_coerced():
 
 # ── wrong-type description tests (#680) ───────────────────────────────────────
 
-def test_add_integer_description_coerced():
-    """description=42 (int) must be coerced to '42' and succeed, not raise AttributeError (#680)."""
+def test_add_integer_description_rejected():
+    """description=42 (int) must be rejected with a type error, not silently coerced (#919)."""
     res = fn(action="add", description=42)
-    assert "Added task" in res
-    assert "42" in res
+    assert res.startswith("Error:"), f"Expected error for int description: {res!r}"
+    assert "string" in res, f"Error must mention 'string': {res!r}"
+    assert "'int'" in res, f"Error must name the type: {res!r}"
 
 
-def test_add_float_description_coerced():
-    """description=3.14 (float) must be coerced to '3.14' and succeed (#680)."""
+def test_add_float_description_rejected():
+    """description=3.14 (float) must be rejected with a type error, not silently coerced (#919)."""
     res = fn(action="add", description=3.14)
-    assert "Added task" in res
-    assert "3.14" in res
+    assert res.startswith("Error:"), f"Expected error for float description: {res!r}"
+    assert "string" in res, f"Error must mention 'string': {res!r}"
+    assert "'float'" in res, f"Error must name the type: {res!r}"
 
 
 def test_add_none_description_treated_as_empty():
@@ -517,10 +519,12 @@ def test_add_none_description_treated_as_empty():
     assert "Error" in res
 
 
-def test_add_list_description_coerced():
-    """description=['a', 'b'] (list) must be coerced to string and succeed (#680)."""
+def test_add_list_description_rejected():
+    """description=['a', 'b'] (list) must be rejected with a type error, not silently coerced (#919)."""
     res = fn(action="add", description=['a', 'b'])
-    assert "Added task" in res
+    assert res.startswith("Error:"), f"Expected error for list description: {res!r}"
+    assert "string" in res, f"Error must mention 'string': {res!r}"
+    assert "'list'" in res, f"Error must name the type: {res!r}"
 
 
 # ── Issue #692: whitespace-only description must be rejected like empty ──────
@@ -2493,3 +2497,59 @@ def test_status_non_string_error_includes_value():
     result = fn(action="list", status=42)
     assert result.startswith("Error:"), f"Expected error: {result!r}"
     assert "42" in result, f"Error must include the bad value: {result!r}"
+
+
+# ── description type validation (#919) ────────────────────────────────────────
+
+def test_description_integer_silently_coerced_was_bug():
+    """Integer description must now return an error instead of silently coercing (#919)."""
+    result = fn(action="add", description=42)
+    assert result.startswith("Error:"), f"Expected error for description=42: {result!r}"
+    assert "string" in result, f"Error must mention 'string': {result!r}"
+    assert "'int'" in result, f"Error must name the bad type: {result!r}"
+
+
+def test_description_list_returns_error():
+    """List description must return an error with type name (#919)."""
+    result = fn(action="add", description=["do thing"])
+    assert result.startswith("Error:"), f"Expected error for description=list: {result!r}"
+    assert "string" in result, f"Error must mention 'string': {result!r}"
+    assert "'list'" in result, f"Error must name the bad type: {result!r}"
+
+
+def test_description_bool_returns_error():
+    """Boolean description must return an error with type name (#919)."""
+    result = fn(action="add", description=True)
+    assert result.startswith("Error:"), f"Expected error for description=True: {result!r}"
+    assert "string" in result, f"Error must mention 'string': {result!r}"
+    assert "'bool'" in result, f"Error must name the bad type: {result!r}"
+
+
+def test_description_float_returns_error():
+    """Float description must return an error with type name (#919)."""
+    result = fn(action="add", description=3.14)
+    assert result.startswith("Error:"), f"Expected error for description=3.14: {result!r}"
+    assert "string" in result, f"Error must mention 'string': {result!r}"
+    assert "'float'" in result, f"Error must name the bad type: {result!r}"
+
+
+def test_description_none_treated_as_missing():
+    """description=None must be treated the same as omitting description (#919).
+
+    None means 'not provided' — it becomes empty string and triggers the
+    'description required for add' guard, not a type error.
+    """
+    result = fn(action="add", description=None)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "description required" in result or "description" in result.lower(), (
+        f"Error must relate to missing description: {result!r}"
+    )
+    assert "must be a string" not in result, (
+        f"None must NOT trigger the type-error path: {result!r}"
+    )
+
+
+def test_description_string_still_works():
+    """Plain string description must still succeed (#919)."""
+    result = fn(action="add", description="Write tests for the new feature")
+    assert not result.startswith("Error:"), f"Valid description broke: {result!r}"
