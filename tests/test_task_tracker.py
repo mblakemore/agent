@@ -1717,3 +1717,117 @@ def test_add_status_rejected_task_not_stored():
         assert len(tasks) == 0, f"No task should be stored after rejection, got: {tasks!r}"
     else:
         pass  # File not created — also correct
+
+
+# ── Issue #778: update guard regression tests ─────────────────────────────────
+
+def test_update_empty_description_with_no_status_returns_error():
+    """update with empty description and no status must return Error, not silently no-op (#778).
+
+    The top-of-fn strip() reduces '' to '', and _effective_description='' triggers
+    the 'requires at least one of: status or description' guard.
+    """
+    fn(action="add", description="task to guard")
+    result = fn(action="update", task_id=1, description="")
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "status" in result or "description" in result, (
+        f"Error must mention what's missing, got: {result!r}"
+    )
+    # Task must not be modified
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["status"] == "open"
+    assert "note" not in tasks[0]
+
+
+def test_update_whitespace_only_description_with_no_status_returns_error():
+    """update with whitespace-only description (stripped to empty) must return Error (#778).
+
+    '   ' strips to '' which is treated as absent — same guard triggers.
+    """
+    fn(action="add", description="task to guard")
+    result = fn(action="update", task_id=1, description="   ")
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "status" in result or "description" in result, (
+        f"Error must mention what's missing, got: {result!r}"
+    )
+    # Task must not be modified
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["status"] == "open"
+    assert "note" not in tasks[0]
+
+
+def test_update_tab_only_description_with_no_status_returns_error():
+    """update with tab-only description must also be rejected (#778)."""
+    fn(action="add", description="task for tab test")
+    result = fn(action="update", task_id=1, description="\t\t")
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+
+
+def test_update_whitespace_description_with_status_succeeds():
+    """update with whitespace-only description but valid status must succeed (#778).
+
+    The whitespace description is treated as absent; status alone is enough.
+    """
+    fn(action="add", description="task to progress")
+    result = fn(action="update", task_id=1, description="   ", status="in_progress")
+    assert "Updated task #1" in result, f"Expected success, got: {result!r}"
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["status"] == "in_progress"
+    # No note must be stored — the whitespace description was discarded
+    assert "note" not in tasks[0], (
+        f"Whitespace-only description must not be stored as a note, got: {tasks[0]!r}"
+    )
+
+
+# ── Issue #778: task ID stability after drop ──────────────────────────────────
+
+def test_task_ids_stable_after_drop():
+    """Task IDs must remain stable after a drop — dropped gaps are not backfilled (#778).
+
+    Dropping #2 from [1,2,3] must leave IDs [1,3], not renumber to [1,2].
+    """
+    fn(action="add", description="task one")
+    fn(action="add", description="task two")
+    fn(action="add", description="task three")
+    fn(action="drop", task_id=2)
+    result = fn(action="list")
+    assert "#1" in result, f"Task #1 must still exist, got: {result!r}"
+    assert "#3" in result, f"Task #3 must still exist, got: {result!r}"
+    assert "#2" not in result, f"Dropped task #2 must not appear, got: {result!r}"
+    # Verify the IDs are stored correctly
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    ids = [t["id"] for t in tasks]
+    assert ids == [1, 3], f"Expected IDs [1, 3] after dropping #2, got: {ids!r}"
+
+
+def test_done_on_original_id_after_drop():
+    """done on a task whose ID was NOT dropped must work correctly after a drop (#778).
+
+    After dropping #2 from [1,2,3], completing #3 by its original ID must succeed.
+    """
+    fn(action="add", description="task one")
+    fn(action="add", description="task two")
+    fn(action="add", description="task three")
+    fn(action="drop", task_id=2)
+    result = fn(action="done", task_id=3)
+    assert "Completed task #3" in result, (
+        f"Expected done on original #3 to succeed after dropping #2, got: {result!r}"
+    )
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    task3 = next(t for t in tasks if t["id"] == 3)
+    assert task3["status"] == "done", f"Task #3 must be done, got: {task3!r}"
+
+
+def test_new_task_after_drop_gets_next_max_id():
+    """A new task added after a drop must get the next ID above the current max, not reuse a gap (#778).
+
+    After [1,2,3] drop #2 → [1,3], the next add must assign ID 4, not reuse 2.
+    """
+    fn(action="add", description="task one")
+    fn(action="add", description="task two")
+    fn(action="add", description="task three")
+    fn(action="drop", task_id=2)
+    result = fn(action="add", description="task four")
+    assert "Added task #4" in result, (
+        f"New task after drop must get ID 4 (not reuse 2), got: {result!r}"
+    )
