@@ -39,7 +39,7 @@ class TestSubagent(unittest.TestCase):
         mock_run.side_effect = side_effect
 
         result = subagent("Test prompt")
-        self.assertEqual(result, "The sub-agent completed but returned no final answer.")
+        self.assertEqual(result, "Error: sub-agent completed but returned no final answer")
 
     @patch('subprocess.run')
     @patch('os.path.exists')
@@ -50,7 +50,7 @@ class TestSubagent(unittest.TestCase):
         mock_exists.return_value = False
 
         result = subagent("Test prompt")
-        self.assertEqual(result, "The sub-agent completed successfully but no result file was created.")
+        self.assertEqual(result, "Error: sub-agent completed but no result file was created")
 
     @patch('subprocess.run')
     def test_subagent_process_failure(self, mock_run):
@@ -58,7 +58,8 @@ class TestSubagent(unittest.TestCase):
         mock_run.return_value = MagicMock(returncode=1, stderr="Something went wrong")
 
         result = subagent("Test prompt")
-        self.assertIn("The sub-agent process failed with exit code 1", result)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+        self.assertIn("exit code 1", result)
         self.assertIn("Something went wrong", result)
 
     @patch('subprocess.run')
@@ -67,7 +68,8 @@ class TestSubagent(unittest.TestCase):
         mock_run.side_effect = Exception("Unexpected process error")
 
         result = subagent("Test prompt")
-        self.assertIn("An error occurred while running the sub-agent: Unexpected process error", result)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+        self.assertIn("Unexpected process error", result)
 
     def test_subagent_empty_prompt(self):
         """Empty string prompt must fail fast without launching subprocess."""
@@ -101,6 +103,44 @@ class TestSubagent(unittest.TestCase):
         self.assertIn("Error", result)
         self.assertIn("null byte", result)
         mock_run.assert_not_called()
+
+    # ── Regression tests: error message format (must start with "Error: ") ──
+
+    @patch('subprocess.run')
+    def test_subagent_process_failure_error_prefix(self, mock_run):
+        """Non-zero exit code must return a string starting with 'Error: '."""
+        mock_run.return_value = MagicMock(returncode=2, stderr="crash")
+        result = subagent("Test prompt")
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+
+    @patch('subprocess.run')
+    def test_subagent_empty_result_error_prefix(self, mock_run):
+        """Empty result file must return a string starting with 'Error: '."""
+        def side_effect(args, **kwargs):
+            idx = args.index("--result-file")
+            with open(args[idx + 1], "w") as f:
+                f.write("")
+            return MagicMock(returncode=0)
+        mock_run.side_effect = side_effect
+        result = subagent("Test prompt")
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+
+    @patch('subprocess.run')
+    @patch('os.path.exists')
+    def test_subagent_missing_file_error_prefix(self, mock_exists, mock_run):
+        """Missing result file must return a string starting with 'Error: '."""
+        mock_run.return_value = MagicMock(returncode=0)
+        mock_exists.return_value = False
+        result = subagent("Test prompt")
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+
+    @patch('subprocess.run')
+    def test_subagent_exception_error_prefix(self, mock_run):
+        """Unexpected exception must return a string starting with 'Error: '."""
+        mock_run.side_effect = RuntimeError("kaboom")
+        result = subagent("Test prompt")
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+        self.assertIn("kaboom", result)
 
 if __name__ == '__main__':
     unittest.main()

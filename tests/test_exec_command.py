@@ -212,7 +212,7 @@ def test_exec_command_popen_failure():
     # Test line 252-253: Exception handler for subprocess.Popen
     with patch('subprocess.Popen', side_effect=Exception("Popen failed")):
         result = fn(command="echo 1", background=True)
-        assert "Error starting background command: Popen failed" in result
+        assert "Error: starting background command: Popen failed" in result
 
 def test_exec_command_resolve_failure():
     # Test line 231-232: Exception handler for target_path.resolve()
@@ -952,3 +952,21 @@ def test_exec_command_shell_substitution_works():
     result = fn(command='echo $(echo nested)')
     assert "exit=0" in result
     assert "nested" in result
+
+
+def test_exec_command_popen_error_format():
+    """Exception from foreground Popen must start with 'Error: ' (not 'Error running command:')."""
+    with patch('subprocess.Popen', side_effect=OSError("spawn failed")):
+        result = fn(command="echo hi")
+    assert isinstance(result, str)
+    assert result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}"
+    assert "spawn failed" in result
+
+
+def test_exec_command_bg_popen_error_format():
+    """Exception from background Popen must start with 'Error: ' (not 'Error starting background command:')."""
+    with patch('subprocess.Popen', side_effect=OSError("bg spawn failed")):
+        result = fn(command="sleep 10", background=True)
+    assert isinstance(result, str)
+    assert result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}"
+    assert "bg spawn failed" in result

@@ -82,7 +82,7 @@ class TestThinkCoverage(unittest.TestCase):
         mock_post.side_effect = requests.exceptions.ConnectionError("Connection failed")
         
         result = think_mod.fn("test", depth="brief")
-        self.assertIn("Error calling server", result)
+        self.assertIn("Error: calling server", result)
 
     @patch("tools.think._get_base_url")
     @patch("requests.post")
@@ -92,9 +92,9 @@ class TestThinkCoverage(unittest.TestCase):
         mock_response = MagicMock()
         mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError("404 Not Found")
         mock_post.return_value = mock_response
-        
+
         result = think_mod.fn("test", depth="brief")
-        self.assertIn("Error calling server", result)
+        self.assertIn("Error: calling server", result)
 
     @patch("tools.think._get_base_url")
     @patch("requests.post")
@@ -245,6 +245,19 @@ class TestThinkCoverage(unittest.TestCase):
         self.assertIn("Error", result)
         self.assertIn("null byte", result)
         mock_post.assert_not_called()
+
+    # ── Regression: error message format ──────────────────────────────────────
+
+    @patch("tools.think._get_base_url")
+    @patch("requests.post")
+    def test_fn_server_error_has_error_prefix(self, mock_post, mock_url):
+        """Server error must return 'Error: calling server: ...' (not 'Error calling server: ...')."""
+        mock_url.return_value = "http://127.0.0.1:8080"
+        mock_post.side_effect = requests.exceptions.ConnectionError("refused")
+        result = think_mod.fn("test prompt", depth="brief")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+        self.assertIn("calling server", result)
 
 if __name__ == "__main__":
     unittest.main()

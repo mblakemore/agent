@@ -44,7 +44,7 @@ def test_web_fetch_html(mock_resp):
 def test_web_fetch_error():
     with patch("requests.get", side_effect=requests.exceptions.HTTPError("404 Client Error")):
         result = fn("http://example.com/404")
-        assert "Error fetching URL" in result
+        assert "Error: fetching URL" in result
 
 def test_web_fetch_truncated(mock_resp):
     mock_resp.headers = {"content-type": "text/plain"}
@@ -249,3 +249,12 @@ def test_web_fetch_null_byte_in_https_url_rejected_before_network():
     assert result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}"
     assert "null" in result.lower(), f"Error must mention null byte: {result!r}"
     mock_get.assert_not_called()
+
+
+def test_web_fetch_request_exception_error_format():
+    """RequestException must produce 'Error: fetching URL: ...' (not 'Error fetching URL: ...')."""
+    with patch("requests.get", side_effect=requests.exceptions.ConnectionError("refused")):
+        result = fn("http://example.com/test")
+    assert isinstance(result, str)
+    assert result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}"
+    assert "fetching URL" in result, f"Expected 'fetching URL' in message, got: {result!r}"

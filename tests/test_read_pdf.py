@@ -9,7 +9,7 @@ def test_read_pdf_open_error():
     with patch('fitz.open') as mock_open:
         mock_open.side_effect = Exception("Permission denied")
         result = fn("dummy.pdf")
-        assert "Error opening PDF: Permission denied" in result
+        assert "Error: opening PDF: Permission denied" in result
 
 def test_read_pdf_empty():
     with patch('fitz.open') as mock_open:
@@ -482,3 +482,13 @@ def test_read_pdf_none_path_does_not_call_fitz(mock_open):
     """fitz.open must not be called when path is None. (#809)"""
     fn(path=None)
     mock_open.assert_not_called()
+
+
+def test_read_pdf_open_exception_error_format():
+    """fitz.open exception must produce 'Error: opening PDF: ...' (not 'Error opening PDF: ...')."""
+    with patch("fitz.open", side_effect=Exception("disk I/O error")):
+        result = fn("dummy.pdf")
+    assert isinstance(result, str)
+    assert result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}"
+    assert "opening PDF" in result, f"Expected 'opening PDF' in message, got: {result!r}"
+    assert "disk I/O error" in result

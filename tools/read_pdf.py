@@ -23,7 +23,7 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
     try:
         doc = fitz.open(path)
     except Exception as e:
-        return f"Error opening PDF: {e}"
+        return f"Error: opening PDF: {e}"
 
     if not doc.is_pdf:
         doc.close()
