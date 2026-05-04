@@ -29,7 +29,11 @@ class _Corrupted:
 def _load_tasks():
     """Return list-of-task-dicts, or a _Corrupted sentinel if the file is unreadable."""
     p = Path(_TASKS_FILE)
-    if not p.exists():
+    try:
+        exists = p.exists()
+    except PermissionError:
+        return _Corrupted(str(p), "permission denied reading task file directory")
+    if not exists:
         return []
     try:
         raw = p.read_text(encoding='utf-8', errors='replace')
@@ -58,7 +62,7 @@ def _load_tasks():
         return data
     except json.JSONDecodeError as exc:
         return _Corrupted(str(p.resolve()), str(exc))
-    except IOError as exc:
+    except (IOError, OSError) as exc:
         return _Corrupted(str(p.resolve()), str(exc))
 
 
@@ -76,16 +80,30 @@ def _save_tasks(tasks):
     This prevents a killed/interrupted write from leaving a partial (corrupted)
     JSON file behind — the old file is only replaced once the new one is fully
     flushed to disk.
+
+    Returns None on success, or an error string if the write fails.
     """
     p = Path(_TASKS_FILE)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        return f"Error: cannot write to task file: permission denied: {_TASKS_FILE}"
     # Write to a sibling temp file in the same directory so os.replace() is
     # guaranteed to be atomic on POSIX (same filesystem, single syscall).
-    fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
+    except PermissionError:
+        return f"Error: cannot write to task file: permission denied: {_TASKS_FILE}"
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as fh:
             fh.write(json.dumps(tasks, indent=2) + "\n")
         os.replace(tmp_path, str(p))
+    except PermissionError:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return f"Error: cannot write to task file: permission denied: {_TASKS_FILE}"
     except Exception:
         # Clean up the temp file if anything goes wrong before the rename.
         try:
@@ -93,6 +111,7 @@ def _save_tasks(tasks):
         except OSError:
             pass
         raise
+    return None
 
 
 def _next_id(tasks):
@@ -238,7 +257,9 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
             "created": datetime.now().isoformat(timespec="seconds"),
         }
         tasks.append(task)
-        _save_tasks(tasks)
+        err = _save_tasks(tasks)
+        if err:
+            return err
         return f"Added task #{task['id']}: {description}"
 
     elif action == "done":
@@ -253,7 +274,9 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
                 t["completed"] = datetime.now().isoformat(timespec="seconds")
                 if description and not _description_used_for_resolution:
                     t["note"] = description
-                _save_tasks(tasks)
+                err = _save_tasks(tasks)
+                if err:
+                    return err
                 return f"Completed task #{task_id}: {t.get('description', '')}"
         return f"Error: task #{task_id} not found"
 
@@ -279,7 +302,9 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
                     t["status"] = status
                 if _effective_description:
                     t["note"] = _effective_description
-                _save_tasks(tasks)
+                err = _save_tasks(tasks)
+                if err:
+                    return err
                 msg = f"Updated task #{task_id}: status={t['status']}"
                 if _effective_description:
                     msg += f", note={_effective_description!r}"
@@ -295,7 +320,9 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
                 if t["status"] in ("done", "completed"):
                     return f"Error: task #{task_id} is already done; use action='list' to review or leave as-is to preserve history"
                 removed = tasks.pop(i)
-                _save_tasks(tasks)
+                err = _save_tasks(tasks)
+                if err:
+                    return err
                 return f"Dropped task #{task_id}: {removed.get('description', '')}"
         return f"Error: task #{task_id} not found"
 
