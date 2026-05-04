@@ -92,14 +92,14 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
                     if is_match:
                         files_matched = 1
                         total_matches += 1
-                        if total_matches >= _MAX_RESULTS:
-                            truncated = True
-                            break
                         if not current_group:
                             for b_num, b_text in buffer:
                                 current_group.append(f"{abs_path}:{b_num}- {b_text}")
                         current_group.append(f"{abs_path}:{line_num}: {text_line}")
                         lines_to_emit = context
+                        if total_matches >= _MAX_RESULTS:
+                            truncated = True
+                            break
                     else:
                         if current_group:
                             if lines_to_emit > 0:
@@ -367,14 +367,14 @@ def fn(
                             if is_match:
                                 file_has_match = True
                                 total_matches += 1
-                                if total_matches >= _MAX_RESULTS:
-                                    truncated = True
-                                    break
                                 if not current_group:
                                     for b_num, b_text in buffer:
                                         current_group.append(f"{abs_path}:{b_num}- {b_text}")
                                 current_group.append(f"{abs_path}:{line_num}: {text_line}")
                                 lines_to_emit = context
+                                if total_matches >= _MAX_RESULTS:
+                                    truncated = True
+                                    break
                             else:
                                 if current_group:
                                     if lines_to_emit > 0:
