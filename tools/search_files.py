@@ -244,6 +244,20 @@ def fn(
         return "Error: path contains a null byte, which is not allowed"
     path = path.strip()
     search_path = Path(path).resolve()
+
+    # Confinement check: reject paths outside the working directory (#863).
+    try:
+        cwd_resolved = Path.cwd().resolve()
+        cwd_prefix = str(cwd_resolved) + os.sep
+        if search_path != cwd_resolved and not str(search_path).startswith(cwd_prefix):
+            return (
+                f"Error: path '{path}' resolves to '{search_path}' which is outside "
+                f"the working directory '{cwd_resolved}'. "
+                f"search_files only searches within the working directory."
+            )
+    except (OSError, ValueError):
+        pass  # let the existing existence check handle OS errors
+
     if not search_path.exists():
         return f"Error: path '{path}' does not exist"
 

@@ -357,10 +357,18 @@ class TestSearchFilesPathIsFile(unittest.TestCase):
         agent_py = Path(__file__).parent.parent / "agent.py"
         if not agent_py.exists():
             self.skipTest("agent.py not found; skipping reproduction test")
-        result = search_files.fn(
-            pattern="def _classify_turn_complexity",
-            path=str(agent_py),
-        )
+        # Temporarily set cwd to the repo root so the agent.py path is inside cwd
+        # (path confinement #863 requires path to be within cwd).
+        orig_cwd = os.getcwd()
+        repo_root = str(Path(__file__).parent.parent)
+        try:
+            os.chdir(repo_root)
+            result = search_files.fn(
+                pattern="def _classify_turn_complexity",
+                path=str(agent_py),
+            )
+        finally:
+            os.chdir(orig_cwd)
         self.assertNotIn("0 results", result)
         body = _body(result)
         self.assertNotEqual(body.strip(), "No matches found.")
@@ -1287,3 +1295,50 @@ class TestSearchFilesMultiGlob(unittest.TestCase):
             result = search_files.fn("hello", path=d, glob="*.py", context=0)
             self.assertIn("a.py", result)
             self.assertNotIn("b.txt", result)
+
+
+class TestSearchFilesPathConfinement(unittest.TestCase):
+    """search_files must refuse to search paths outside the working directory (#863).
+
+    The conftest search_files_cwd fixture sets cwd=/droid/repos/agent for this class
+    so relative paths like '.' and 'tools/' resolve inside cwd, while absolute paths
+    to /etc, /home, and parent-traversal paths are correctly rejected.
+    """
+
+    def test_etc_path_returns_error(self):
+        """search_files('foo', path='/etc') must return an error string."""
+        result = search_files.fn("foo", path="/etc")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error: prefix, got: {result!r}")
+
+    def test_home_path_returns_error(self):
+        """search_files('foo', path='/home') must return an error string."""
+        result = search_files.fn("foo", path="/home")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error: prefix, got: {result!r}")
+
+    def test_parent_traversal_returns_error(self):
+        """search_files('foo', path='../other') must return an error when it resolves outside cwd."""
+        result = search_files.fn("foo", path="../other")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error: prefix, got: {result!r}")
+
+    def test_error_message_mentions_outside_working_directory(self):
+        """The error message must mention 'outside the working directory'."""
+        result = search_files.fn("foo", path="/etc")
+        self.assertIn("outside the working directory", result)
+
+    def test_dot_path_works(self):
+        """search_files('def', path='.') must still work (happy path, cwd=repo)."""
+        result = search_files.fn("def", path=".", glob="*.py", context=0)
+        self.assertNotIn("outside the working directory", result)
+        # Should find at least one 'def' in .py files in the repo
+        self.assertNotIn("Error: path", result)
+
+    def test_relative_subdir_inside_cwd_works(self):
+        """search_files('def', path='tools/') must still work (relative path inside cwd)."""
+        result = search_files.fn("def", path="tools/", glob="*.py", context=0)
+        self.assertNotIn("outside the working directory", result)
+        self.assertNotIn("Error: path", result)
+        # tools/ has Python files with 'def' in them
+        self.assertIn("def", result)
