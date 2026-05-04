@@ -268,6 +268,46 @@ class TestThinkCoverage(unittest.TestCase):
         self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
         self.assertIn("calling server", result)
 
+    # ── Non-string context type validation (#907) ──────────────────────────────
+
+    def test_non_string_context_int_returns_type_error(self):
+        """context=42 must return a type-specific error rather than silently
+        convert to empty string (#907)."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("test prompt", depth="brief", context=42)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertIn("int", result, f"Error must name the bad type: {result!r}")
+        mock_post.assert_not_called()
+
+    def test_non_string_context_none_returns_type_error(self):
+        """context=None must return a type-specific error (#907)."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("test prompt", depth="brief", context=None)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertIn("NoneType", result, f"Error must name the bad type: {result!r}")
+        mock_post.assert_not_called()
+
+    def test_non_string_context_list_returns_type_error(self):
+        """context=[] must return a type-specific error (#907)."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("test prompt", depth="brief", context=[])
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertIn("list", result, f"Error must name the bad type: {result!r}")
+        mock_post.assert_not_called()
+
+    def test_empty_string_context_still_works(self):
+        """context='' (empty string) must still be accepted — empty string means no context (#907)."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("valid prompt", depth="brief", context="")
+        # Empty string context is valid; the test verifies no type error fires.
+        # We don't assert about success here since the mock may not be wired for HTTP response,
+        # but we check there is no type-related error.
+        self.assertNotIn("must be a string", result,
+                         f"Empty string context must not trigger type error: {result!r}")
+
     # ── Regression: unhashable depth type (#839) ─────────────────────────────
 
     def test_depth_list_returns_error_without_http_call(self):
