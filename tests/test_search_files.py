@@ -1010,3 +1010,39 @@ class TestSearchFilesContext0VsContextN(unittest.TestCase):
             count3 = int(_re.search(r"(\d+) results", result3).group(1))
             self.assertEqual(count0, count3,
                 f"context=0 found {count0} but context=3 found {count3}")
+
+
+class TestSearchFilesNullByteValidation(unittest.TestCase):
+    """Null bytes in path or pattern must return a clear error, not crash (#760)."""
+
+    def test_null_byte_in_path_returns_error_not_exception(self):
+        """path containing a null byte must return a descriptive error string.
+
+        Before the fix, Path(path).resolve() raised ValueError: embedded null byte,
+        which propagated out of fn() as an unhandled exception.
+        """
+        result = search_files.fn(pattern="hello", path="/tmp/valid\x00dir")
+        self.assertIsInstance(result, str, "fn() must return a string, not raise")
+        self.assertIn("null byte", result)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+
+    def test_null_byte_in_pattern_returns_error_not_silent_failure(self):
+        """pattern containing a null byte must return a descriptive error string.
+
+        Before the fix, re.compile() silently accepted the null byte and the
+        search returned zero matches with no indication of the bad input.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "test.py").write_text("hello\n")
+            result = search_files.fn(pattern="hel\x00lo", path=d)
+        self.assertIsInstance(result, str, "fn() must return a string, not raise")
+        self.assertIn("null byte", result)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+
+    def test_valid_path_and_pattern_still_work_after_null_checks(self):
+        """Regression guard: normal searches must be unaffected by the new checks."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("hello world\n")
+            result = search_files.fn(pattern="hello", path=d, context=0)
+        self.assertIn("hello world", result)
+        self.assertNotIn("Error:", result)
