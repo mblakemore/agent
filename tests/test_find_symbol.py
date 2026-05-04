@@ -494,11 +494,8 @@ class TestFindSymbolUnit(unittest.TestCase):
         (pycache_dir / "hidden.py").write_text("def my_func(): pass")
         results = find_symbol("my_func", path=self.tmp, mode="definition")
         # The only .py file is inside __pycache__ which is excluded, so no
-        # scannable Python files remain. The tool now returns an informative
-        # error dict rather than a silent [].
-        self.assertEqual(len(results), 1)
-        self.assertIn("error", results[0])
-        self.assertIn("no Python files found", results[0]["error"])
+        # scannable Python files remain — returns [] (same as "symbol not found").
+        self.assertEqual(results, [])
 
     def test_result_keys(self):
         self._write("g.py", """\
@@ -759,33 +756,22 @@ class TestFindSymbolNoPyFiles(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_empty_dir_returns_error_dict(self):
-        """Completely empty directory -> error dict, not []."""
+    def test_empty_dir_returns_empty_list(self):
+        """Completely empty directory -> [] (no files to scan, no results)."""
         results = find_symbol("my_func", path=self.tmp)
-        self.assertEqual(len(results), 1, f"Expected 1 error dict, got: {results}")
-        self.assertIn("error", results[0])
-        self.assertIn("no Python files found", results[0]["error"])
+        self.assertEqual(results, [])
 
-    def test_dir_with_only_non_py_files_returns_error_dict(self):
-        """Directory containing only .txt/.json files -> error dict."""
+    def test_dir_with_only_non_py_files_returns_empty_list(self):
+        """Directory containing only .txt/.json files -> []."""
         (Path(self.tmp) / "notes.txt").write_text("def my_func(): pass\n")
         (Path(self.tmp) / "data.json").write_text('{"key": 1}')
         results = find_symbol("my_func", path=self.tmp)
-        self.assertEqual(len(results), 1, f"Expected 1 error dict, got: {results}")
-        self.assertIn("error", results[0])
-        self.assertIn("no Python files found", results[0]["error"])
+        self.assertEqual(results, [])
 
-    def test_error_dict_mentions_path(self):
-        """Error message must include the searched path to help diagnosis."""
+    def test_no_py_files_same_as_symbol_not_found(self):
+        """No Python files -> [] (same as symbol not found — caller checks path)."""
         results = find_symbol("anything", path=self.tmp)
-        self.assertIn(self.tmp, results[0]["error"],
-                      f"Error should mention the path; got: {results[0]['error']!r}")
-
-    def test_no_py_files_not_confused_with_not_found(self):
-        """Error dict must be distinguishable from an empty 'not found' result."""
-        results = find_symbol("anything", path=self.tmp)
-        self.assertNotEqual(results, [],
-                            "Should return error dict, not [], for dir with no .py files")
+        self.assertEqual(results, [])
 
     def test_dir_with_py_files_symbol_absent_still_returns_empty(self):
         """Regression: a dir that HAS .py files but lacks the symbol still returns []."""
@@ -1070,6 +1056,68 @@ class TestFindSymbolNullByteInPath(unittest.TestCase):
         self.assertIsInstance(result, list)
         self.assertTrue(any("error" not in r for r in result),
                         f"Expected at least one non-error result, got: {result!r}")
+
+
+class TestFindSymbolEmptyPath(unittest.TestCase):
+    """Empty or whitespace-only path must return an error dict, not silently scan
+    the process working directory. (#774)"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_empty_string_path_returns_error(self):
+        """path='' must return an error dict, not scan cwd (#774)."""
+        result = find_symbol("fn", path="", mode="definition")
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0, "Expected non-empty result with error dict")
+        self.assertIn("error", result[0])
+
+    def test_empty_string_path_error_mentions_non_empty(self):
+        """Error message for empty path must indicate a non-empty path is required (#774)."""
+        result = find_symbol("fn", path="", mode="definition")
+        self.assertIn("non-empty", result[0]["error"],
+                      f"Expected 'non-empty' in error, got: {result[0]['error']!r}")
+
+    def test_whitespace_only_path_returns_error(self):
+        """path='   ' (spaces only) must return an error dict, not scan cwd (#774)."""
+        result = find_symbol("fn", path="   ", mode="definition")
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0, "Expected non-empty result with error dict")
+        self.assertIn("error", result[0])
+
+    def test_whitespace_only_path_error_mentions_non_empty(self):
+        """Error for whitespace-only path must indicate a non-empty path is required (#774)."""
+        result = find_symbol("fn", path="   ", mode="definition")
+        self.assertIn("non-empty", result[0]["error"],
+                      f"Expected 'non-empty' in error, got: {result[0]['error']!r}")
+
+    def test_empty_path_not_confused_with_not_found(self):
+        """Error dict for empty path must be distinguishable from 'symbol not found' []."""
+        result = find_symbol("fn", path="")
+        self.assertNotEqual(result, [], "Should return error dict, not [], for empty path")
+
+    def test_empty_path_does_not_scan_cwd(self):
+        """Empty path must not silently scan and return results from cwd (#774)."""
+        result = find_symbol("fn", path="")
+        # Must be an error, not a non-empty list of real matches
+        self.assertTrue(
+            len(result) == 1 and "error" in result[0],
+            f"empty path must return exactly one error dict, got: {result!r}",
+        )
+
+    def test_valid_path_unaffected_by_empty_path_guard(self):
+        """A valid explicit path must still work after the empty-path guard is added (#774)."""
+        p = Path(self.tmp) / "mod.py"
+        p.write_text("def my_func(): pass\n", encoding="utf-8")
+        result = find_symbol("my_func", path=str(p), mode="definition")
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0, f"Expected >=1 match, got: {result!r}")
+        self.assertNotIn("error", result[0])
+        self.assertEqual(result[0]["scope"], "my_func")
 
 
 if __name__ == "__main__":
