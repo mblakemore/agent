@@ -419,10 +419,26 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     output_parts: list = []
     _reader_done = threading.Event()
 
+    # _COLLECT_CAP is slightly larger than _MAX_OUTPUT_BYTES so we can still
+    # detect truncation and append a notice.  Reading stops as soon as the
+    # accumulated byte count exceeds this limit, preventing OOM on commands
+    # that produce many megabytes of output (e.g. `yes`, `python -c "print('x'*10_000_000)"`).
+    _COLLECT_CAP = _MAX_OUTPUT_BYTES * 4  # 128 KB hard read limit
+
     def _collect_stdout():
+        bytes_collected = 0
         try:
             for chunk in iter(proc.stdout.readline, ''):
                 output_parts.append(chunk)
+                bytes_collected += len(chunk.encode('utf-8', errors='replace'))
+                if bytes_collected > _COLLECT_CAP:
+                    # Drain the pipe to prevent the child process from blocking
+                    # on a full pipe buffer, then stop collecting.
+                    try:
+                        proc.stdout.read()
+                    except Exception:
+                        pass
+                    break
         except Exception:
             pass
         finally:

@@ -970,3 +970,53 @@ def test_exec_command_bg_popen_error_format():
     assert isinstance(result, str)
     assert result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}"
     assert "bg spawn failed" in result
+
+
+# ── Output reader OOM cap (#822) ──────────────────────────────────────────────
+
+
+def test_exec_command_reader_stops_collecting_beyond_cap():
+    """_collect_stdout must stop accumulating output after _COLLECT_CAP bytes to avoid OOM.
+
+    Before the fix, all output was accumulated in output_parts before
+    truncation was applied — a 10MB command output loaded 10MB into RAM.
+    After the fix, collection halts as soon as _COLLECT_CAP is exceeded,
+    so total memory usage stays bounded.
+    """
+    from tools.exec_command import _MAX_OUTPUT_BYTES
+    # Ask for 10x the collect cap to ensure the reader stops early.
+    # 4 * _MAX_OUTPUT_BYTES is the cap; 40x forces many stops.
+    huge = _MAX_OUTPUT_BYTES * 40  # well beyond _COLLECT_CAP
+    result = fn(
+        command=f'python3 -c "import sys; sys.stdout.write(\'A\' * {huge}); sys.stdout.flush()"',
+        timeout=30,
+    )
+    # The result string itself must be far smaller than the raw output
+    assert len(result) < huge, (
+        f"Result ({len(result)} bytes) should be much smaller than raw output ({huge} bytes)"
+    )
+    # Truncation notice must be present
+    assert "output truncated" in result or "truncated" in result.lower(), (
+        f"Expected truncation notice in result: {result[:200]!r}"
+    )
+
+
+def test_exec_command_reader_cap_includes_truncation_notice():
+    """After the reader stops, the truncation notice from _MAX_OUTPUT_BYTES check must appear."""
+    from tools.exec_command import _MAX_OUTPUT_BYTES
+    big = _MAX_OUTPUT_BYTES * 10
+    result = fn(
+        command=f'python3 -c "print(\'B\' * {big})"',
+        timeout=30,
+    )
+    assert "output truncated" in result, (
+        f"Truncation notice missing from result: {result[:200]!r}"
+    )
+
+
+def test_exec_command_small_output_unaffected_by_cap():
+    """Normal small commands must return full output unaffected by the reader cap."""
+    result = fn(command="echo 'small output'", timeout=5)
+    assert "exit=0" in result
+    assert "small output" in result
+    assert "truncated" not in result
