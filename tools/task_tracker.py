@@ -186,6 +186,11 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
             f"Pass an integer task ID (e.g. task_id=1)."
         )
     if not isinstance(task_id, int):
+        if isinstance(task_id, str):
+            return (
+                f"Error: task_id must be an integer, got 'str': {task_id!r}. "
+                f"Pass an integer without quotes (e.g. task_id=1)."
+            )
         if isinstance(task_id, float) and not math.isfinite(task_id):
             return f"Error: task_id must be a finite integer, got {task_id!r}"
         try:
