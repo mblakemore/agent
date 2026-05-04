@@ -5,7 +5,7 @@ import json
 import pytest
 from unittest.mock import MagicMock, patch
 
-from bedrock_api import BedrockChatAPI
+from bedrock_api import BedrockChatAPI, _validate_conversation_ids
 
 # ── Fixtures ──
 
@@ -324,3 +324,109 @@ def test_list_models_failure(api):
     with patch.object(api.session, "get", side_effect=Exception("Boom")):
         models = api.list_models()
     assert models == []
+
+
+# ── ID validation (#851) ──
+
+class TestValidateConversationIds:
+    """Unit tests for the _validate_conversation_ids helper."""
+
+    def test_valid_ids_pass(self):
+        # Should not raise for normal string IDs.
+        _validate_conversation_ids("conv-abc", "msg-xyz", {})
+
+    def test_none_conv_id_raises(self):
+        with pytest.raises(ValueError, match="conversationId"):
+            _validate_conversation_ids(None, "msg-xyz", {})
+
+    def test_none_msg_id_raises(self):
+        with pytest.raises(ValueError, match="messageId"):
+            _validate_conversation_ids("conv-abc", None, {})
+
+    def test_integer_conv_id_raises(self):
+        with pytest.raises(ValueError, match="conversationId"):
+            _validate_conversation_ids(12345, "msg-xyz", {})
+
+    def test_integer_msg_id_raises(self):
+        with pytest.raises(ValueError, match="messageId"):
+            _validate_conversation_ids("conv-abc", 67890, {})
+
+    def test_empty_string_conv_id_raises(self):
+        with pytest.raises(ValueError, match="conversationId"):
+            _validate_conversation_ids("", "msg-xyz", {})
+
+    def test_empty_string_msg_id_raises(self):
+        with pytest.raises(ValueError, match="messageId"):
+            _validate_conversation_ids("conv-abc", "", {})
+
+    def test_error_message_includes_value(self):
+        with pytest.raises(ValueError, match=r"None"):
+            _validate_conversation_ids(None, "msg-xyz", {"conversationId": None})
+
+    def test_error_message_includes_response(self):
+        body = {"conversationId": None, "messageId": "msg-xyz"}
+        with pytest.raises(ValueError, match="Full response"):
+            _validate_conversation_ids(None, "msg-xyz", body)
+
+
+class TestSendValidatesIds:
+    """Integration: send() raises ValueError instead of returning bad IDs."""
+
+    def test_send_raises_on_none_conv_id(self, api):
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.json.return_value = {"conversationId": None, "messageId": "msg-xyz"}
+        with patch.object(api.session, "post", return_value=resp):
+            with pytest.raises(ValueError, match="conversationId"):
+                api.send("Hello")
+
+    def test_send_raises_on_none_msg_id(self, api):
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.json.return_value = {"conversationId": "conv-abc", "messageId": None}
+        with patch.object(api.session, "post", return_value=resp):
+            with pytest.raises(ValueError, match="messageId"):
+                api.send("Hello")
+
+    def test_send_raises_on_integer_conv_id(self, api):
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.json.return_value = {"conversationId": 42, "messageId": "msg-xyz"}
+        with patch.object(api.session, "post", return_value=resp):
+            with pytest.raises(ValueError, match="conversationId"):
+                api.send("Hello")
+
+    def test_send_raises_on_missing_conv_id(self, api):
+        # Key absent from response dict → data.get() returns None
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.json.return_value = {"messageId": "msg-xyz"}
+        with patch.object(api.session, "post", return_value=resp):
+            with pytest.raises(ValueError, match="conversationId"):
+                api.send("Hello")
+
+    def test_send_raises_on_missing_msg_id(self, api):
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.json.return_value = {"conversationId": "conv-abc"}
+        with patch.object(api.session, "post", return_value=resp):
+            with pytest.raises(ValueError, match="messageId"):
+                api.send("Hello")
+
+    def test_send_raises_on_empty_string_ids(self, api):
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.json.return_value = {"conversationId": "", "messageId": ""}
+        with patch.object(api.session, "post", return_value=resp):
+            with pytest.raises(ValueError, match="conversationId"):
+                api.send("Hello")
+
+    def test_send_valid_ids_still_returned(self, api):
+        # Sanity-check: valid IDs still work after the guard is added.
+        resp = MagicMock()
+        resp.status_code = 201
+        resp.json.return_value = {"conversationId": "conv-ok", "messageId": "msg-ok"}
+        with patch.object(api.session, "post", return_value=resp):
+            conv_id, msg_id = api.send("Hello")
+        assert conv_id == "conv-ok"
+        assert msg_id == "msg-ok"
