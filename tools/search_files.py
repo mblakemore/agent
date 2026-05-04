@@ -179,7 +179,9 @@ def fn(
     """
     import fnmatch as _fnmatch
 
-    if not isinstance(pattern, str) or not pattern.strip():
+    if not isinstance(pattern, str):
+        return f"Error: pattern must be a string, got {type(pattern).__name__!r}"
+    if not pattern.strip():
         return "Error: Search pattern cannot be empty."
 
     if isinstance(pattern, str) and '\x00' in pattern:
@@ -288,6 +290,11 @@ def fn(
     # context=True (silently 1) or context=False (silently 0) don't sneak through.
     if isinstance(context, bool):
         return f"Error: context must be an integer, got bool. Pass a plain integer (e.g. context=3)."
+    if isinstance(context, str):
+        return (
+            f"Error: context must be an integer, got 'str': {context!r}. "
+            f"Pass an integer without quotes (e.g. context=3)."
+        )
     if not isinstance(context, int):
         try:
             context = int(context)

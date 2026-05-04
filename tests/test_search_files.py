@@ -792,24 +792,28 @@ class TestSearchFilesIncludeHidden(unittest.TestCase):
 # ── wrong-type context tests (#680) ───────────────────────────────────────────
 
 class TestSearchFilesContextTypeCoercion(unittest.TestCase):
-    """search_files must not raise TypeError when context is a non-int (#680)."""
+    """search_files must not raise TypeError when context is a non-int (#680).
 
-    def test_string_integer_context_coerced_single_file(self):
-        """context='3' (stringified int) must be coerced and produce results, not crash."""
+    Note: #901 tightened the contract so that numeric strings are now rejected
+    with a clear error rather than silently coerced.
+    """
+
+    def test_string_integer_context_rejected_single_file(self):
+        """context='2' must now return a clear error rather than silently coerce (#901)."""
         with tempfile.TemporaryDirectory() as d:
             p = Path(d, "f.py")
             p.write_text("def foo():\n    pass\ndef bar():\n    pass\n")
             result = search_files.fn("def", path=str(p), context='2')
-            self.assertNotIn("Error", result)
-            self.assertIn("def", result)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("str", result, f"Error must mention 'str': {result!r}")
 
-    def test_string_integer_context_coerced_directory(self):
-        """context='0' over a directory must work exactly like context=0."""
+    def test_string_integer_context_rejected_directory(self):
+        """context='0' must now return a clear error rather than silently coerce (#901)."""
         with tempfile.TemporaryDirectory() as d:
             Path(d, "a.py").write_text("def alpha():\n    pass\n")
-            result_int = search_files.fn("def", path=d, context=0)
-            result_str = search_files.fn("def", path=d, context='0')
-            self.assertEqual(result_int, result_str)
+            result = search_files.fn("def", path=d, context='0')
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("str", result, f"Error must mention 'str': {result!r}")
 
     def test_non_numeric_string_context_returns_error(self):
         """context='bad' must return a clean Error string, not raise TypeError."""
@@ -1433,3 +1437,96 @@ class TestSearchFilesBoolParamCoercion(unittest.TestCase):
         result = search_files.fn("hello", path=self._f, include_hidden="false")
         self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
         self.assertIn("include_hidden", result)
+
+
+# ── Non-string pattern type validation (#901) ─────────────────────────────────
+
+
+class TestSearchFilesPatternTypeValidation(unittest.TestCase):
+    """Non-string pattern values must return a type-specific error, not the
+    misleading 'Search pattern cannot be empty' message (#901).
+
+    Before the fix, the combined isinstance+empty check fired for non-strings
+    and produced a confusing 'cannot be empty' error.
+    """
+
+    def test_integer_pattern_returns_type_error(self):
+        """fn(42) must say 'must be a string' not 'cannot be empty' (#901)."""
+        result = search_files.fn(42)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertNotIn("empty", result, f"Error must NOT say 'empty': {result!r}")
+        self.assertIn("int", result, f"Error must name the bad type: {result!r}")
+
+    def test_none_pattern_returns_type_error(self):
+        """fn(None) must say 'must be a string' not 'cannot be empty' (#901)."""
+        result = search_files.fn(None)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertNotIn("empty", result, f"Error must NOT say 'empty': {result!r}")
+        self.assertIn("NoneType", result, f"Error must name the bad type: {result!r}")
+
+    def test_list_pattern_returns_type_error(self):
+        """fn(['test']) must return a type-specific error (#901)."""
+        result = search_files.fn(["test"])
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertIn("list", result, f"Error must name the bad type: {result!r}")
+
+    def test_empty_string_still_returns_empty_error(self):
+        """An actual empty string must still give 'cannot be empty' (#901)."""
+        result = search_files.fn("")
+        self.assertIn("empty", result, f"Empty string should say 'empty': {result!r}")
+
+    def test_valid_string_pattern_unaffected(self):
+        """A valid string pattern must still work after the fix (#901)."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("hello world\n")
+            result = search_files.fn("hello", path=d)
+        self.assertFalse(result.startswith("Error:"), f"Valid pattern must not error: {result!r}")
+
+
+# ── String context rejects instead of silently coercing (#901) ────────────────
+
+
+class TestSearchFilesContextStringRejection(unittest.TestCase):
+    """String context must be rejected with a clear error rather than silently
+    coercing via int() — consistent with task_tracker limit fix (#894) (#901).
+
+    Before the fix, int(context) succeeded for numeric strings, so
+    fn('test', context='2') silently ran as fn('test', context=2).
+    """
+
+    def test_numeric_string_context_returns_error(self):
+        """context='2' must return an error, not silently use 2 lines of context (#901)."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("l1\nHIT\nl3\n")
+            result = search_files.fn("HIT", path=d, context="2")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("str", result, f"Error must mention 'str': {result!r}")
+        self.assertIn("context", result, f"Error must mention 'context': {result!r}")
+
+    def test_zero_string_context_returns_error(self):
+        """context='0' must be rejected even though int('0') == 0 (#901)."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("HIT\n")
+            result = search_files.fn("HIT", path=d, context="0")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+
+    def test_string_context_error_hints_at_removing_quotes(self):
+        """The error for string context must hint about removing quotes (#901)."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("HIT\n")
+            result = search_files.fn("HIT", path=d, context="3")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertTrue(
+            "quote" in result.lower() or "without" in result.lower(),
+            f"Error should hint about removing quotes: {result!r}",
+        )
+
+    def test_integer_context_unaffected_by_string_guard(self):
+        """A plain integer context must still work after the string guard (#901)."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("before\nHIT\nafter\n")
+            result = search_files.fn("HIT", path=d, context=1)
+        self.assertFalse(result.startswith("Error:"), f"Integer context must not error: {result!r}")
