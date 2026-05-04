@@ -5,6 +5,18 @@ import sys
 
 class TestAgentInteractive(unittest.TestCase):
     def setUp(self):
+        # Save originals so tearDown can restore them — prevents global state
+        # leaking to subsequent test modules and causing KeyError / type errors.
+        self._orig_config = agent._config
+        self._orig_main_backend = agent._main_backend
+        self._orig_summary_backend = agent._summary_backend
+        self._orig_emit = agent._emit
+        self._orig_setup_logger = agent._setup_logger
+        self._orig_load_checkpoint = agent._load_checkpoint
+        self._orig_delete_checkpoint = agent._delete_checkpoint
+        self._orig_auto_increment_cycle = agent._auto_increment_cycle
+        self._orig_telemetry = agent.telemetry
+
         # Mock the global configuration and backends in the agent module
         agent._config = {
             "context": {"ctx_size": 4096, "max_tokens": 4096},
@@ -12,7 +24,7 @@ class TestAgentInteractive(unittest.TestCase):
             "llm": {"model": "test-model"},
             "summary": {"enabled": True, "ctx_size": 1024}
         }
-        
+
         # Mock the main backend
         self.mock_main_backend = MagicMock()
         self.mock_main_backend.model = "test-model"
@@ -21,7 +33,7 @@ class TestAgentInteractive(unittest.TestCase):
         self.mock_main_backend.health.return_value = (True, "ok")
         self.mock_main_backend.detect_ctx_size.return_value = 8192
         agent._main_backend = self.mock_main_backend
-        
+
         # Mock the summary backend
         self.mock_summary_backend = MagicMock()
         self.mock_summary_backend.model = "summary-model"
@@ -36,17 +48,28 @@ class TestAgentInteractive(unittest.TestCase):
         agent._setup_logger = MagicMock()
         self.mock_log = MagicMock()
         agent._setup_logger.return_value = (self.mock_log, "/tmp/log", "/tmp/error_log")
-        
+
         agent._load_checkpoint = MagicMock(return_value=None)
         agent._delete_checkpoint = MagicMock()
         agent._auto_increment_cycle = MagicMock()
-        
+
         # Mock telemetry
         import telemetry
         agent.telemetry = MagicMock()
         agent.telemetry.init.return_value = False
         agent.telemetry.record_cycle = MagicMock()
         agent.telemetry.shutdown = MagicMock()
+
+    def tearDown(self):
+        agent._config = self._orig_config
+        agent._main_backend = self._orig_main_backend
+        agent._summary_backend = self._orig_summary_backend
+        agent._emit = self._orig_emit
+        agent._setup_logger = self._orig_setup_logger
+        agent._load_checkpoint = self._orig_load_checkpoint
+        agent._delete_checkpoint = self._orig_delete_checkpoint
+        agent._auto_increment_cycle = self._orig_auto_increment_cycle
+        agent.telemetry = self._orig_telemetry
 
     @patch('agent.run_agent_single')
     @patch('builtins.input')
