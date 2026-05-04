@@ -382,6 +382,24 @@ class TestFileDeleteLineRange(unittest.TestCase):
             self.assertIn("Diff:", result)
             self.assertIn("remove", result)
 
+    def test_delete_lines_requires_prior_read(self):
+        """Line-range delete on an unread file must return the 'must read first' error,
+        consistent with write (line-range) and insert (#712)."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "unread.txt"
+            # Write the file directly (bypassing the tool) so it is NOT in _accessed_files.
+            target.write_text("line1\nline2\nline3\n", encoding="utf-8")
+            # Ensure the file is not registered as accessed
+            file_tool._accessed_files.discard(str(target.resolve()))
+
+            result = file_tool.fn(action="delete", path=str(target), start_line=2, end_line=2)
+            self.assertIn("Error", result, msg=f"Expected error, got: {result!r}")
+            self.assertIn("has not been read this session", result,
+                          msg=f"Expected 'has not been read' message, got: {result!r}")
+            # The file must be unmodified
+            self.assertEqual(target.read_text(), "line1\nline2\nline3\n",
+                             "File must not be modified when guard fires")
+
 
 class TestFileList(unittest.TestCase):
     def test_list_basic(self):
