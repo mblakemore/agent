@@ -77,12 +77,38 @@ class TestSearchFilesContextBasic(unittest.TestCase):
         lines[49] = "HIT"
         with tempfile.TemporaryDirectory() as d:
             Path(d, "a.txt").write_text("\n".join(lines) + "\n")
-            body = _body(search_files.fn("HIT", path=d, context=9999))
+            result = search_files.fn("HIT", path=d, context=9999)
+            body = _body(result)
             emitted = body.split("\n")
             # With cap = 20, window is [30..70] = 41 lines.
             self.assertEqual(len(emitted), 2 * search_files._MAX_CONTEXT + 1)
             self.assertTrue(emitted[0].startswith("a.txt-30- "))
             self.assertTrue(emitted[-1].startswith("a.txt-70- "))
+
+    def test_over_max_context_note_in_header_dir_search(self):
+        """Header must say 'context capped to N' when context > _MAX_CONTEXT."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("l1\nHIT\nl3\n")
+            result = search_files.fn("HIT", path=d, context=9999)
+            header, _, _ = result.partition("]\n")
+            self.assertIn(f"context capped to {search_files._MAX_CONTEXT}", header)
+
+    def test_over_max_context_note_in_header_single_file(self):
+        """Single-file path also emits the cap note in the header."""
+        with tempfile.TemporaryDirectory() as d:
+            fpath = Path(d, "a.txt")
+            fpath.write_text("l1\nHIT\nl3\n")
+            result = search_files.fn("HIT", path=str(fpath), context=50)
+            header, _, _ = result.partition("]\n")
+            self.assertIn(f"context capped to {search_files._MAX_CONTEXT}", header)
+
+    def test_within_max_context_no_cap_note(self):
+        """Header must NOT include the cap note when context <= _MAX_CONTEXT."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("l1\nHIT\nl3\n")
+            result = search_files.fn("HIT", path=d, context=search_files._MAX_CONTEXT)
+            header, _, _ = result.partition("]\n")
+            self.assertNotIn("context capped", header)
 
 
 class TestSearchFilesContextGrouping(unittest.TestCase):

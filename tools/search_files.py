@@ -42,10 +42,12 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
     match_lines = []
     context_groups = []
 
+    context_capped = False
     if context < 0:
         context = 0
     elif context > _MAX_CONTEXT:
         context = _MAX_CONTEXT
+        context_capped = True
 
     try:
         with file_path.open(encoding='utf-8', errors='ignore') as f:
@@ -108,6 +110,8 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
     )
     if truncated:
         header += " (truncated)"
+    if context_capped:
+        header += f" (context capped to {_MAX_CONTEXT})"
     if read_error:
         header += f" ({read_error})"
     header += "]\n"
@@ -176,10 +180,12 @@ def fn(
     # Since search_path is now already resolved, we can use it directly for os.walk
     resolved = search_path
 
+    context_capped = False
     if context < 0:
         context = 0
     elif context > _MAX_CONTEXT:
         context = _MAX_CONTEXT
+        context_capped = True
 
     match_lines: list[str] = []
     context_groups: list[list[str]] = []
@@ -303,6 +309,8 @@ def fn(
     )
     if truncated:
         header += " (truncated)"
+    if context_capped:
+        header += f" (context capped to {_MAX_CONTEXT})"
     if permission_errors > 0:
         header += f" (Warning: {permission_errors} directories skipped due to permissions)"
     header += "]\n"
