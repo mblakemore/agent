@@ -87,10 +87,11 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
     """
     # Ensure description is always a string even if the model omits the field
     # or passes a non-string (e.g. integer) — coerce to str to prevent AttributeError
-    # from .strip() calls further down.
+    # from .strip() calls further down.  Strip whitespace so that a
+    # whitespace-only string ("   ") is treated the same as an empty string.
     if not isinstance(description, str):
         description = str(description) if description is not None else ""
-    description = description or ""
+    description = description.strip()
 
     # Validate task_id type — must be an integer (or the default 0).
     # Non-integer values (e.g. strings passed by a model) would cause

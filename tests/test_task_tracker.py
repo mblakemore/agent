@@ -415,3 +415,35 @@ def test_add_list_description_coerced():
     """description=['a', 'b'] (list) must be coerced to string and succeed (#680)."""
     res = fn(action="add", description=['a', 'b'])
     assert "Added task" in res
+
+
+# ── Issue #692: whitespace-only description must be rejected like empty ──────
+
+def test_add_whitespace_only_description_rejected():
+    """description='   ' (spaces only) must return Error, not create a blank task (#692)."""
+    res = fn(action="add", description="   ")
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    assert "description required" in res
+
+
+def test_add_tab_only_description_rejected():
+    """description='\t\t' (tabs only) must return Error, not create a blank task (#692)."""
+    res = fn(action="add", description="\t\t")
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    assert "description required" in res
+
+
+def test_add_newline_only_description_rejected():
+    """description='\n' (newline only) must return Error, not create a blank task (#692)."""
+    res = fn(action="add", description="\n")
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    assert "description required" in res
+
+
+def test_add_description_stripped_of_surrounding_whitespace():
+    """description with surrounding whitespace is stripped before storage (#692)."""
+    res = fn(action="add", description="  real task  ")
+    assert "Added task #1: real task" == res, f"Unexpected: {res!r}"
+    # Verify stored description is stripped
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["description"] == "real task"
