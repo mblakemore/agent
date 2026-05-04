@@ -97,7 +97,7 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
         elif action == "append":
             return _append(resolved, content)
         elif action == "delete":
-            return _delete(resolved)
+            return _delete(resolved, start_line, end_line)
         elif action == "list":
             return _list(resolved)
         else:
@@ -422,17 +422,63 @@ def _insert(path, content, start_line):
             f"File now has {total_lines + len(new_lines)} lines.\n\nDiff:\n{diff_text}")
 
 
-def _delete(path):
+def _delete(path, start_line=0, end_line=0):
     p = Path(path)
     if p.name in _BLOCKED_FILENAMES:
         return f"Error: '{p.name}' is an internal runtime file and cannot be deleted."
     if not p.exists():
         return f"Error: '{path}' does not exist"
     if p.is_dir():
+        if start_line > 0 or end_line > 0:
+            return f"Error: start_line/end_line cannot be used with a directory path"
         if any(p.iterdir()):
             return f"Error: directory '{path}' is not empty"
         p.rmdir()
         return f"Deleted empty directory '{path}'"
+
+    # Line-range deletion: remove specific lines, keep the file.
+    if start_line > 0 or end_line > 0:
+        if start_line <= 0:
+            start_line = 1
+        if end_line <= 0:
+            end_line = start_line
+        if start_line > end_line:
+            return f"Error: start_line ({start_line}) > end_line ({end_line})"
+
+        with open(p, 'r', encoding='utf-8', errors='replace') as f:
+            old_content = f.read()
+        total_lines = len(old_content.splitlines(True))
+
+        if start_line > total_lines:
+            return f"Error: start_line ({start_line}) exceeds file length ({total_lines} lines)"
+        if end_line > total_lines:
+            return f"Error: end_line ({end_line}) exceeds file length ({total_lines} lines)"
+
+        temp_fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
+        try:
+            with os.fdopen(temp_fd, 'w', encoding='utf-8') as temp_f:
+                with open(p, 'r', encoding='utf-8', errors='replace') as src_f:
+                    for i, line in enumerate(src_f, 1):
+                        if i < start_line or i > end_line:
+                            temp_f.write(line)
+            os.replace(temp_path, p)
+        except Exception as e:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            return f"Error during line deletion: {e}"
+
+        with open(p, 'r', encoding='utf-8', errors='replace') as f:
+            new_content = f.read()
+
+        diff_text = _get_diff(old_content, new_content)
+        deleted_count = end_line - start_line + 1
+        new_total = total_lines - deleted_count
+        _accessed_files.add(str(p.resolve()))
+        return (
+            f"Deleted lines {start_line}-{end_line} from '{path}' "
+            f"({deleted_count} line(s) removed, {new_total} lines remain).\n\nDiff:\n{diff_text}"
+        )
+
     p.unlink()
     return f"Deleted '{path}'"
 

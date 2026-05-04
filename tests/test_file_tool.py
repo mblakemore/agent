@@ -300,6 +300,89 @@ class TestFileDelete(unittest.TestCase):
             self.assertIn("not empty", result)
 
 
+class TestFileDeleteLineRange(unittest.TestCase):
+    """Tests for action='delete' with start_line/end_line (line-range deletion)."""
+
+    def _write(self, path, content):
+        """Write via the tool so the file is registered in _accessed_files."""
+        file_tool.fn(action="write", path=str(path), content=content)
+
+    def test_delete_middle_lines(self):
+        """Deleting lines 2-3 from a 5-line file removes those lines and keeps the rest."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "file.txt"
+            self._write(target, "line1\nline2\nline3\nline4\nline5\n")
+            result = file_tool.fn(action="delete", path=str(target), start_line=2, end_line=3)
+            self.assertIn("Deleted lines 2-3", result)
+            self.assertIn("2 line(s) removed", result)
+            self.assertTrue(target.exists(), "file must still exist after line deletion")
+            self.assertEqual(target.read_text(), "line1\nline4\nline5\n")
+
+    def test_delete_single_line_via_start_line_only(self):
+        """When only start_line is given, end_line defaults to start_line (single-line delete)."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "file.txt"
+            self._write(target, "a\nb\nc\n")
+            result = file_tool.fn(action="delete", path=str(target), start_line=2)
+            self.assertIn("Deleted lines 2-2", result)
+            self.assertEqual(target.read_text(), "a\nc\n")
+
+    def test_delete_first_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "file.txt"
+            self._write(target, "first\nsecond\nthird\n")
+            file_tool.fn(action="delete", path=str(target), start_line=1, end_line=1)
+            self.assertEqual(target.read_text(), "second\nthird\n")
+
+    def test_delete_last_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "file.txt"
+            self._write(target, "a\nb\nc\n")
+            file_tool.fn(action="delete", path=str(target), start_line=3, end_line=3)
+            self.assertEqual(target.read_text(), "a\nb\n")
+
+    def test_delete_all_lines_leaves_empty_file(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "file.txt"
+            self._write(target, "a\nb\nc\n")
+            file_tool.fn(action="delete", path=str(target), start_line=1, end_line=3)
+            self.assertTrue(target.exists(), "file should still exist (just empty)")
+            self.assertEqual(target.read_text(), "")
+
+    def test_delete_no_line_args_still_deletes_whole_file(self):
+        """Without start_line/end_line, delete behaviour is unchanged (removes file)."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "file.txt"
+            self._write(target, "hello\n")
+            result = file_tool.fn(action="delete", path=str(target))
+            self.assertIn("Deleted", result)
+            self.assertFalse(target.exists())
+
+    def test_delete_lines_error_start_exceeds_length(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "file.txt"
+            self._write(target, "a\nb\n")
+            result = file_tool.fn(action="delete", path=str(target), start_line=5, end_line=6)
+            self.assertIn("Error", result)
+            self.assertIn("exceeds file length", result)
+
+    def test_delete_lines_error_start_greater_than_end(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "file.txt"
+            self._write(target, "a\nb\nc\n")
+            result = file_tool.fn(action="delete", path=str(target), start_line=3, end_line=1)
+            self.assertIn("Error", result)
+            self.assertIn("start_line", result)
+
+    def test_delete_lines_result_includes_diff(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "file.txt"
+            self._write(target, "keep\nremove\nkeep2\n")
+            result = file_tool.fn(action="delete", path=str(target), start_line=2, end_line=2)
+            self.assertIn("Diff:", result)
+            self.assertIn("remove", result)
+
+
 class TestFileList(unittest.TestCase):
     def test_list_basic(self):
         with tempfile.TemporaryDirectory() as d:
