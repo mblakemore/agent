@@ -1030,9 +1030,13 @@ def test_list_status_filter_summary_counts_reflect_full_list():
     fn(action="update", task_id=2, status="blocked")
 
     result = fn(action="list", status="blocked")
-    # Total: 2 open (blocked counts as open), 0 done
-    assert "2 open" in result, (
+    # Total: 1 open, 1 blocked, 0 done — summary reflects the full list, not just the filter.
+    # (#748: blocked is no longer lumped into the 'open' count)
+    assert "1 open" in result, (
         f"Summary counts must be for full list, not just filter match. Got: {result!r}"
+    )
+    assert "1 blocked" in result, (
+        f"Summary must show separate blocked count. Got: {result!r}"
     )
 
 
@@ -1226,4 +1230,88 @@ def test_update_missing_task_id_hint_empty_when_only_completed_tasks():
     )
     assert "#1" not in result, (
         f"completed task #1 must not appear in hint, got: {result!r}"
+    )
+
+
+# ── Issue #748: list summary must not conflate in_progress/blocked/deferred with open ──
+
+def test_list_summary_counts_only_open_status_as_open():
+    """Summary 'open' count must only include tasks with status='open', not in_progress/blocked/deferred (#748)."""
+    Path(_TASKS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    tasks = [
+        {"id": 1, "description": "open task", "status": "open", "created": "2024-01-01T00:00:00"},
+        {"id": 2, "description": "in_progress task", "status": "in_progress", "created": "2024-01-01T00:00:00"},
+        {"id": 3, "description": "blocked task", "status": "blocked", "created": "2024-01-01T00:00:00"},
+        {"id": 4, "description": "deferred task", "status": "deferred", "created": "2024-01-01T00:00:00"},
+        {"id": 5, "description": "done task", "status": "done", "created": "2024-01-01T00:00:00"},
+    ]
+    Path(_TASKS_FILE).write_text(json.dumps(tasks))
+    result = fn(action="list")
+    # open count must be exactly 1 (only the task with status="open")
+    assert "1 open" in result, (
+        f"Expected '1 open' (only status=open counts), got: {result!r}"
+    )
+    # in_progress, blocked, deferred each appear in summary
+    assert "1 in_progress" in result, (
+        f"Expected '1 in_progress' in summary, got: {result!r}"
+    )
+    assert "1 blocked" in result, (
+        f"Expected '1 blocked' in summary, got: {result!r}"
+    )
+    assert "1 deferred" in result, (
+        f"Expected '1 deferred' in summary, got: {result!r}"
+    )
+    assert "1 done" in result, (
+        f"Expected '1 done' in summary, got: {result!r}"
+    )
+    # The old wrong count ("5 open") must not appear
+    assert "5 open" not in result, (
+        f"Must not report non-done tasks as '5 open', got: {result!r}"
+    )
+    assert "4 open" not in result, (
+        f"Must not count in_progress/blocked/deferred as open, got: {result!r}"
+    )
+
+
+def test_list_summary_omits_zero_active_statuses():
+    """Summary must not include in_progress/blocked/deferred parts when their count is 0 (#748)."""
+    Path(_TASKS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    tasks = [
+        {"id": 1, "description": "task one", "status": "open", "created": "2024-01-01T00:00:00"},
+        {"id": 2, "description": "task two", "status": "done", "created": "2024-01-01T00:00:00"},
+    ]
+    Path(_TASKS_FILE).write_text(json.dumps(tasks))
+    result = fn(action="list")
+    # Plain summary: no in_progress/blocked/deferred parts present
+    assert "1 open, 1 done" in result, (
+        f"Expected plain '1 open, 1 done' when no active statuses, got: {result!r}"
+    )
+    assert "in_progress" not in result, (
+        f"Must not mention in_progress when count is 0, got: {result!r}"
+    )
+    assert "blocked" not in result, (
+        f"Must not mention blocked when count is 0, got: {result!r}"
+    )
+    assert "deferred" not in result, (
+        f"Must not mention deferred when count is 0, got: {result!r}"
+    )
+
+
+def test_list_summary_active_statuses_partial_mix():
+    """Summary includes only the active status buckets that are non-zero (#748)."""
+    Path(_TASKS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    tasks = [
+        {"id": 1, "description": "task a", "status": "open", "created": "2024-01-01T00:00:00"},
+        {"id": 2, "description": "task b", "status": "open", "created": "2024-01-01T00:00:00"},
+        {"id": 3, "description": "task c", "status": "blocked", "created": "2024-01-01T00:00:00"},
+    ]
+    Path(_TASKS_FILE).write_text(json.dumps(tasks))
+    result = fn(action="list")
+    assert "2 open" in result, f"Expected '2 open', got: {result!r}"
+    assert "1 blocked" in result, f"Expected '1 blocked', got: {result!r}"
+    assert "0 done" in result, f"Expected '0 done', got: {result!r}"
+    assert "in_progress" not in result, f"Must not mention in_progress when count is 0, got: {result!r}"
+    assert "deferred" not in result, f"Must not mention deferred when count is 0, got: {result!r}"
+    assert "3 open" not in result, (
+        f"Must not lump blocked into open count, got: {result!r}"
     )
