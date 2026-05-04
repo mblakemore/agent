@@ -867,3 +867,52 @@ def test_exec_command_env_value_without_null_byte_still_works():
     result = fn(command="echo $SAFE_VAR", env={"SAFE_VAR": "all_good"})
     assert "exit=0" in result
     assert "all_good" in result
+
+
+# ── Newline in env values (#769) ──────────────────────────────────────────────
+
+
+def test_exec_command_env_value_with_newline_returns_clear_error():
+    """env value containing a newline must return a descriptive error, not silently
+    pass the embedded newline to the subprocess (#769).
+
+    Before the fix, 'bar\\nbaz' was accepted and the subprocess received a
+    multi-line env var, producing inconsistent behavior across platforms.
+    """
+    result = fn(command="echo $FOO", env={"FOO": "bar\nbaz"})
+    assert result.startswith("Error:"), f"Expected error, got: {result!r}"
+    assert "newline" in result, f"Error message should mention newline: {result!r}"
+    assert "'FOO'" in result, f"Error message should name the offending key: {result!r}"
+
+
+def test_exec_command_env_value_with_carriage_return_returns_clear_error():
+    """env value containing a carriage return must also be rejected (#769)."""
+    result = fn(command="echo $BAR", env={"BAR": "foo\rbar"})
+    assert result.startswith("Error:"), f"Expected error, got: {result!r}"
+    assert "newline" in result, f"Error message should mention newline: {result!r}"
+    assert "'BAR'" in result, f"Error message should name the offending key: {result!r}"
+
+
+def test_exec_command_env_value_newline_names_offending_key():
+    """The newline error for an env value must include the key name so the caller
+    can identify which variable is malformed (#769)."""
+    result = fn(command="echo test", env={"MULTI_LINE": "line1\nline2"})
+    assert "'MULTI_LINE'" in result or "MULTI_LINE" in result, (
+        f"Expected key name in error message, got: {result!r}"
+    )
+
+
+def test_exec_command_env_value_newline_does_not_run_command():
+    """With a newline in an env value the command must NOT run at all — error
+    returned immediately (#769)."""
+    result = fn(command="echo ran", env={"KEY": "val\ninjected"})
+    assert result.startswith("Error:"), f"Expected error, got: {result!r}"
+    assert "ran" not in result, "Command ran despite invalid env value"
+
+
+def test_exec_command_env_value_without_newline_still_works():
+    """Normal env values without newlines must continue to work after the newline
+    check is added (#769)."""
+    result = fn(command="echo $NORMAL_VAR", env={"NORMAL_VAR": "clean_value"})
+    assert "exit=0" in result
+    assert "clean_value" in result
