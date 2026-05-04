@@ -157,24 +157,33 @@ class TestThinkCoverage(unittest.TestCase):
         mock_post.assert_not_called()
 
     def test_non_string_prompt_int_returns_error_without_http_call(self):
-        """think.fn with an integer prompt must return an error, not raise AttributeError."""
+        """think.fn with an integer prompt must return a type-specific error (#897)."""
         with patch("requests.post") as mock_post:
             result = think_mod.fn(42, depth="brief")  # type: ignore[arg-type]
-        self.assertIn("Error: prompt must be a non-empty string", result)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertIn("int", result, f"Error must name the bad type: {result!r}")
+        self.assertNotIn("non-empty", result, f"'non-empty' is misleading for wrong-type inputs: {result!r}")
         mock_post.assert_not_called()
 
     def test_non_string_prompt_none_returns_error_without_http_call(self):
-        """think.fn with None prompt must return an error, not raise AttributeError."""
+        """think.fn with None prompt must return a type-specific error (#897)."""
         with patch("requests.post") as mock_post:
             result = think_mod.fn(None, depth="brief")  # type: ignore[arg-type]
-        self.assertIn("Error: prompt must be a non-empty string", result)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertIn("NoneType", result, f"Error must name the bad type: {result!r}")
+        self.assertNotIn("non-empty", result, f"'non-empty' is misleading for wrong-type inputs: {result!r}")
         mock_post.assert_not_called()
 
     def test_non_string_prompt_list_returns_error_without_http_call(self):
-        """think.fn with a list prompt must return an error, not raise AttributeError."""
+        """think.fn with a list prompt must return a type-specific error (#897)."""
         with patch("requests.post") as mock_post:
             result = think_mod.fn(["a", "b"], depth="brief")  # type: ignore[arg-type]
-        self.assertIn("Error: prompt must be a non-empty string", result)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertIn("list", result, f"Error must name the bad type: {result!r}")
+        self.assertNotIn("non-empty", result, f"'non-empty' is misleading for wrong-type inputs: {result!r}")
         mock_post.assert_not_called()
 
     def test_invalid_depth_returns_error_without_http_call(self):

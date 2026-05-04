@@ -47,7 +47,9 @@ def fn(prompt: str, depth: str = "brief", context: str = "") -> str:
         depth: Reasoning depth — "brief", "normal", or "deep".
         context: Optional conversation context to include.
     """
-    if not isinstance(prompt, str) or not prompt.strip():
+    if not isinstance(prompt, str):
+        return f"Error: prompt must be a string, got {type(prompt).__name__!r}"
+    if not prompt.strip():
         return "Error: prompt must be a non-empty string"
     if "\x00" in prompt:
         return "Error: prompt must not contain null bytes"
