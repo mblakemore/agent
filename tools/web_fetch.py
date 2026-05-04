@@ -20,6 +20,21 @@ _HEADERS = {
 # Max chars to include inline in the tool result (keeps context small)
 _INLINE_PREVIEW = 2000
 
+# Prefixes blocked after redirect resolution — prevents SSRF via open redirect
+# to internal/private addresses even when the original URL was external.
+_BLOCKED_URL_PREFIXES = (
+    "http://localhost", "https://localhost",
+    "http://127.", "https://127.",
+    "http://169.254.", "https://169.254.",    # link-local / AWS IMDSv1
+    "http://10.", "https://10.",               # RFC 1918
+    "http://172.16.", "https://172.16.",       # RFC 1918 (partial — covers 172.16.0.0/12 first octet only)
+    "http://192.168.", "https://192.168.",     # RFC 1918
+    "http://0.", "https://0.",                 # 0.0.0.0/8
+    "http://[::1]", "https://[::1]",           # IPv6 loopback
+    "http://[fc", "https://[fc",               # IPv6 ULA
+    "http://[fd", "https://[fd",               # IPv6 ULA
+)
+
 
 def fn(url: str) -> str:
     """Fetch a URL and save its content to a file.
@@ -39,7 +54,15 @@ def fn(url: str) -> str:
     try:
         with requests.get(url, headers=_HEADERS, timeout=_TIMEOUT, stream=True) as resp:
             resp.raise_for_status()
-            
+
+            # Validate the final URL after redirects — a server could redirect to an
+            # internal address even though the original URL was external.
+            final_url = resp.url
+            if not final_url.startswith(("http://", "https://")):
+                return f"Error: redirect led to non-HTTP URL '{final_url}'"
+            if final_url.lower().startswith(tuple(p.lower() for p in _BLOCKED_URL_PREFIXES)):
+                return f"Error: redirect to private/internal address is not allowed: '{final_url}'"
+
             content_type = resp.headers.get("content-type", "").lower()
             
             # 1. Fast-fail if Content-Length is obviously too large
