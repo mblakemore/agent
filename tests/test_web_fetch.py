@@ -70,3 +70,10 @@ def test_web_fetch_max_chars(mock_resp):
     with patch("requests.get", return_value=mock_resp):
         result = fn("http://example.com/huge.txt")
         assert "50000 chars total" in result
+
+def test_web_fetch_generic_exception_uses_error_prefix():
+    """Non-RequestException errors must return 'Error: ...' not 'Unexpected error: ...'."""
+    with patch("requests.get", side_effect=ValueError("something went wrong")):
+        result = fn("http://example.com/boom")
+        assert result.startswith("Error:")
+        assert not result.startswith("Unexpected error:")
