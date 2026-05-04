@@ -692,6 +692,43 @@ def test_done_auto_resolve_by_description_does_not_add_note():
     )
 
 
+def test_done_single_open_task_matching_description_does_not_add_note():
+    """done with single open task + description matching that task must NOT store it as a note.
+
+    When there is exactly one open task and the caller passes description=<matching text>,
+    the description is identifying the task (not annotating it) — same intent as the
+    multi-task case resolved by description match.  The note must not be stored.
+    Regression for the bug where the len(open_tasks)==1 branch did not set
+    _description_used_for_resolution=True even when description matched (#816).
+    """
+    fn(action="add", description="deploy the hotfix")
+    # Single open task; description matches exactly → used for identification only
+    res = fn(action="done", task_id=0, description="deploy the hotfix")
+    assert "Completed task #1" in res
+
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert "note" not in tasks[0], (
+        f"note must not be stored when description matched the single open task, got: {tasks[0]!r}"
+    )
+
+
+def test_done_single_open_task_non_matching_description_stored_as_note():
+    """done with single open task + description NOT matching that task stores it as a note.
+
+    When there is exactly one open task and the caller passes a description that does
+    NOT match that task's description, the description is a genuine annotation and
+    must be stored as a note.
+    """
+    fn(action="add", description="deploy the hotfix")
+    res = fn(action="done", task_id=0, description="rolled back — tests failed")
+    assert "Completed task #1" in res
+
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0].get("note") == "rolled back — tests failed", (
+        f"note must be stored when description is a genuine annotation, got: {tasks[0]!r}"
+    )
+
+
 def test_update_auto_resolve_by_description_does_not_add_note():
     """update auto-resolved via description substring must NOT store the description as a note (#716)."""
     fn(action="add", description="Task A")
