@@ -43,9 +43,20 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
             "pages are 1-indexed (minimum value: 1)"
         )
 
+    # Validate end_page — must be 0 (last page sentinel) or a valid 1-indexed page number
+    if end_page < 0:
+        doc.close()
+        return (
+            f"Error: end_page ({end_page}) is invalid — "
+            "use 0 to mean last page, or a positive page number (1-indexed)"
+        )
+    if end_page > total:
+        doc.close()
+        return f"Error: end_page ({end_page}) exceeds page count ({total})"
+
     # Resolve page range
     start = start_page
-    end = min(total, end_page) if end_page > 0 else total
+    end = end_page if end_page > 0 else total
 
     if start > total:
         doc.close()
