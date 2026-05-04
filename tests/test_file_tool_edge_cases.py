@@ -574,5 +574,118 @@ class TestFileLineBoolRejection(unittest.TestCase):
         self.assertIn("bool", result)
 
 
+class TestFileLineFloatRejection(unittest.TestCase):
+    """start_line and end_line must reject float values — floats would either
+    silently truncate (write/delete arithmetic produces '2.5 lines remain') or
+    cause insert to write nothing while falsely reporting success (#817)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._target = str(Path(self._tmpdir.name) / "lines.txt")
+        Path(self._target).write_text("line1\nline2\nline3\nline4\nline5\n")
+        # Prime session so reads/writes are allowed
+        file_tool.fn(action="read", path=self._target)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _assert_float_error(self, result, param_name):
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("float", result)
+        self.assertIn(param_name, result)
+
+    # --- read ---
+
+    def test_read_start_line_float_returns_error(self):
+        result = file_tool.fn(action="read", path=self._target, start_line=1.5)
+        self._assert_float_error(result, "start_line")
+
+    def test_read_end_line_float_returns_error(self):
+        result = file_tool.fn(action="read", path=self._target, start_line=1, end_line=2.9)
+        self._assert_float_error(result, "end_line")
+
+    def test_read_start_line_zero_point_five_returns_error(self):
+        result = file_tool.fn(action="read", path=self._target, start_line=0.5)
+        self._assert_float_error(result, "start_line")
+
+    # --- write (line-range replacement) ---
+
+    def test_write_start_line_float_returns_error(self):
+        result = file_tool.fn(action="write", path=self._target, content="new\n",
+                              start_line=1.5, end_line=2)
+        self._assert_float_error(result, "start_line")
+
+    def test_write_end_line_float_returns_error(self):
+        result = file_tool.fn(action="write", path=self._target, content="new\n",
+                              start_line=1, end_line=2.5)
+        self._assert_float_error(result, "end_line")
+
+    def test_write_float_does_not_corrupt_file(self):
+        """A float line number must not modify the file at all."""
+        original = Path(self._target).read_text()
+        file_tool.fn(action="write", path=self._target, content="CORRUPT\n",
+                     start_line=1.0, end_line=2)
+        self.assertEqual(Path(self._target).read_text(), original,
+                         "File must be unchanged after rejected float line number")
+
+    # --- insert ---
+
+    def test_insert_start_line_float_returns_error(self):
+        result = file_tool.fn(action="insert", path=self._target, content="new\n",
+                              start_line=2.5)
+        self._assert_float_error(result, "start_line")
+
+    def test_insert_float_does_not_silently_skip(self):
+        """insert with float start_line must not silently do nothing and report success."""
+        original = Path(self._target).read_text()
+        result = file_tool.fn(action="insert", path=self._target, content="GHOST\n",
+                              start_line=1.5)
+        # Must return an error, not a success message
+        self.assertTrue(result.startswith("Error:"),
+                        f"Float insert must return Error:, got: {result!r}")
+        # File must be unchanged
+        self.assertEqual(Path(self._target).read_text(), original,
+                         "File must be unchanged after rejected float start_line")
+
+    # --- delete ---
+
+    def test_delete_start_line_float_returns_error(self):
+        result = file_tool.fn(action="delete", path=self._target, start_line=1.5, end_line=2)
+        self._assert_float_error(result, "start_line")
+
+    def test_delete_end_line_float_returns_error(self):
+        result = file_tool.fn(action="delete", path=self._target, start_line=1, end_line=2.5)
+        self._assert_float_error(result, "end_line")
+
+    def test_delete_float_does_not_corrupt_file(self):
+        """A float line number must not delete any content from the file."""
+        original = Path(self._target).read_text()
+        file_tool.fn(action="delete", path=self._target, start_line=1.5, end_line=2)
+        self.assertEqual(Path(self._target).read_text(), original,
+                         "File must be unchanged after rejected float line number")
+
+    # --- normal ints still work ---
+
+    def test_read_normal_float_equivalent_int_still_works(self):
+        """Plain integer 2 must not be broken by the float guard."""
+        result = file_tool.fn(action="read", path=self._target, start_line=2, end_line=3)
+        self.assertIn("line2", result)
+        self.assertIn("line3", result)
+
+    def test_insert_normal_int_still_works(self):
+        """Plain integer start_line must not be affected by the float guard."""
+        result = file_tool.fn(action="insert", path=self._target, content="NEW\n",
+                              start_line=3)
+        self.assertTrue(result.startswith("Inserted"),
+                        f"Normal insert broke: {result!r}")
+
+    def test_error_message_shows_float_value(self):
+        """The error message must include the offending float value for self-correction."""
+        result = file_tool.fn(action="read", path=self._target, start_line=3.7)
+        self.assertIn("3.7", result,
+                      f"Error must show the bad value 3.7, got: {result!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
