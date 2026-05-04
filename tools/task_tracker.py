@@ -258,6 +258,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
             return f"Error: task_id required for 'drop'. Example: task_tracker(action=\"drop\", task_id=1)\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
         for i, t in enumerate(tasks):
             if t["id"] == task_id:
+                if t["status"] in ("done", "completed"):
+                    return f"Error: task #{task_id} is already done; use action='list' to review or leave as-is to preserve history"
                 removed = tasks.pop(i)
                 _save_tasks(tasks)
                 return f"Dropped task #{task_id}: {removed.get('description', '')}"
