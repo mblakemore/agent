@@ -16,13 +16,17 @@ def test_llm_request_max_retries_exhausted():
     """Test that _llm_request raises the error after max retries."""
     with patch('requests.post') as mock_post:
         mock_post.side_effect = requests.exceptions.ConnectionError("Connection failed")
-        
-        # Patch max retries to 1 to speed up test
+
+        # Patch max retries to 1 to speed up test.
+        # Patch _trigger_failover to False so a live local server doesn't cause
+        # failover to succeed and permanently replace agent._main_backend,
+        # which would break subsequent tests that patch the old backend object.
         with patch('agent._LLM_MAX_RETRIES', 1), \
+             patch('agent._trigger_failover', return_value=False), \
              patch('agent._emit'), \
              patch('logging.Logger.warning'), \
              patch('time.sleep'):
-            
+
             with pytest.raises(requests.exceptions.ConnectionError):
                 # Use a dummy log object
                 _llm_request(MagicMock(), kwargs={})

@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 import agent
-from agent import run_agent_single, MAP_FN, _main_backend
+from agent import run_agent_single, MAP_FN
 from cancel import CancelledError
 
 def test_agent_tool_execution_cancelled_error():
@@ -50,7 +50,7 @@ def test_agent_tool_execution_cancelled_error():
             ]
         }
         
-        with patch.object(_main_backend, 'stream_chat', return_value=[chunk1, chunk2]):
+        with patch.object(agent._main_backend, 'stream_chat', return_value=[chunk1, chunk2]):
             mock_log = MagicMock()
             summary_state = {"text": "", "up_to": 0}
             
