@@ -36,7 +36,7 @@ def _load_tasks():
     if not exists:
         return []
     try:
-        raw = p.read_text(encoding='utf-8', errors='replace')
+        raw = p.read_text(encoding='utf-8-sig', errors='replace')
         # An empty file (or whitespace-only) is a valid initial state — treat it
         # the same as a missing file rather than raising JSONDecodeError.
         if not raw.strip():
