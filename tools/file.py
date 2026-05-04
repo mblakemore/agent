@@ -268,6 +268,8 @@ def _append(path, content):
     if p.suffix.lower() == '.json':
         return (f"Error: cannot append to JSON file '{path}' — breaks structure. "
                f"Use action='write' with full contents instead.")
+    if not content:
+        return f"Error: no content to append"
 
     old_content = ""
     if p.exists():
