@@ -38,6 +38,7 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
     files_searched = 1
     files_matched = 0
     truncated = False
+    read_error = None
     match_lines = []
     context_groups = []
 
@@ -92,8 +93,10 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
                         buffer.append((line_num, text_line))
                 if current_group:
                     context_groups.append(current_group)
-    except Exception:
-        pass
+    except PermissionError as e:
+        read_error = f"Warning: could not read '{file_path}': {e}"
+    except Exception as e:
+        read_error = f"Warning: error reading '{file_path}': {e}"
 
     display_count = total_matches
     if not count_only and truncated:
@@ -105,6 +108,8 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
     )
     if truncated:
         header += " (truncated)"
+    if read_error:
+        header += f" ({read_error})"
     header += "]\n"
 
     if count_only:
