@@ -79,5 +79,20 @@ class TestSubagent(unittest.TestCase):
         result = subagent("   ")
         self.assertEqual(result, "Error: prompt must not be empty")
 
+    def test_subagent_integer_prompt(self):
+        """Integer prompt must return an error string, not raise AttributeError."""
+        result = subagent(42)
+        self.assertEqual(result, "Error: prompt must be a non-empty string")
+
+    def test_subagent_none_prompt(self):
+        """None prompt must return an error string, not raise AttributeError."""
+        result = subagent(None)
+        self.assertEqual(result, "Error: prompt must be a non-empty string")
+
+    def test_subagent_list_prompt(self):
+        """List prompt must return an error string, not raise AttributeError."""
+        result = subagent(["do something"])
+        self.assertEqual(result, "Error: prompt must be a non-empty string")
+
 if __name__ == '__main__':
     unittest.main()
