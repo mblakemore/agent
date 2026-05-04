@@ -357,6 +357,11 @@ def _append(path, content):
             return f"Appended to '{path}' ({len(content)} chars, inserted before __main__ guard)\n\nDiff:\n{diff_text}"
 
     with open(p, 'a', encoding='utf-8') as f:
+        # If the existing file doesn't end with a newline, insert one first so
+        # the appended content starts on a new line instead of being fused onto
+        # the last character of the existing content.
+        if old_content and not old_content.endswith('\n'):
+            f.write('\n')
         f.write(content)
 
     with open(p, 'r', encoding='utf-8', errors='replace') as f:

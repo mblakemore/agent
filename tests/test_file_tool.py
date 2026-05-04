@@ -245,6 +245,35 @@ class TestFileAppend(unittest.TestCase):
             result = file_tool.fn(action="append", path=str(target), content="extra")
             self.assertIn("Error: cannot append to JSON file", result)
 
+    def test_append_no_trailing_newline_inserts_separator(self):
+        """When the existing file lacks a trailing newline, append must add one
+        so the new content starts on its own line instead of being fused to the
+        last character of the existing content (#684)."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("existing line", encoding="utf-8")  # no trailing \n
+            result = file_tool.fn(action="append", path=str(target), content="appended line")
+            self.assertIn("Appended to", result)
+            self.assertEqual(target.read_text(encoding="utf-8"), "existing line\nappended line")
+
+    def test_append_with_trailing_newline_does_not_add_extra_blank_line(self):
+        """When the existing file already ends with \\n, no extra newline is added."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("existing line\n", encoding="utf-8")
+            result = file_tool.fn(action="append", path=str(target), content="appended line")
+            self.assertIn("Appended to", result)
+            self.assertEqual(target.read_text(encoding="utf-8"), "existing line\nappended line")
+
+    def test_append_to_empty_file_does_not_add_leading_newline(self):
+        """Appending to an empty file must not prepend a newline."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("", encoding="utf-8")
+            result = file_tool.fn(action="append", path=str(target), content="first line")
+            self.assertIn("Appended to", result)
+            self.assertEqual(target.read_text(encoding="utf-8"), "first line")
+
 
 class TestFileDelete(unittest.TestCase):
     def test_delete_file(self):
