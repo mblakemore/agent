@@ -2120,3 +2120,123 @@ def test_add_description_length_error_mentions_char_count():
     assert "3000" in result, (
         f"Error must mention actual length (3000), got: {result!r}"
     )
+
+
+# ── Concurrent write safety (#811) ────────────────────────────────────────────
+
+def test_concurrent_add_no_data_loss():
+    """Two threads calling add() simultaneously must both persist their tasks (#811).
+
+    Before the fix, each thread loaded the stale (empty) snapshot and whichever
+    write landed last silently overwarded the other — leaving only 1 task.
+    With _write_lock the load-mutate-save cycle is serialised, so both tasks
+    survive.
+    """
+    import threading
+
+    barrier = threading.Barrier(2)
+    results = []
+
+    def add_task(desc):
+        barrier.wait()  # release both threads at the same instant
+        r = fn("add", desc)
+        results.append(r)
+
+    t1 = threading.Thread(target=add_task, args=("concurrent task A",))
+    t2 = threading.Thread(target=add_task, args=("concurrent task B",))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    # Both threads must have received an "Added" confirmation (not an error)
+    assert all("Added task" in r for r in results), (
+        f"Both threads must succeed, got: {results}"
+    )
+
+    # Both tasks must be persisted on disk
+    with open(_TASKS_FILE) as f:
+        tasks = json.load(f)
+    descriptions = {t["description"] for t in tasks}
+    assert "concurrent task A" in descriptions, (
+        f"task A was lost — only found: {descriptions}"
+    )
+    assert "concurrent task B" in descriptions, (
+        f"task B was lost — only found: {descriptions}"
+    )
+    assert len(tasks) == 2, (
+        f"Expected 2 tasks, got {len(tasks)}: {tasks}"
+    )
+
+
+def test_concurrent_add_unique_ids():
+    """Tasks added concurrently must receive distinct IDs (#811).
+
+    Without the lock, both threads call _next_id() on the same empty list and
+    both get id=1 — creating duplicate IDs that break done/update/drop lookups.
+    """
+    import threading
+
+    barrier = threading.Barrier(2)
+
+    def add_task(desc):
+        barrier.wait()
+        fn("add", desc)
+
+    threads = [threading.Thread(target=add_task, args=(f"id-test task {i}",)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    with open(_TASKS_FILE) as f:
+        tasks = json.load(f)
+
+    ids = [t["id"] for t in tasks]
+    assert len(ids) == len(set(ids)), (
+        f"Duplicate task IDs detected after concurrent add: {ids}"
+    )
+
+
+def test_concurrent_done_no_double_complete():
+    """Two threads racing to complete the same task must not both succeed (#811).
+
+    The second thread should see 'already done' because the first thread's write
+    is committed before the second thread re-reads the file under the lock.
+    """
+    import threading
+
+    fn("add", "shared task")  # task #1
+
+    barrier = threading.Barrier(2)
+    results = []
+
+    def complete_task():
+        barrier.wait()
+        r = fn("done", task_id=1)
+        results.append(r)
+
+    t1 = threading.Thread(target=complete_task)
+    t2 = threading.Thread(target=complete_task)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    # Exactly one thread should succeed; the other should see "already done"
+    success = [r for r in results if r.startswith("Completed")]
+    already_done = [r for r in results if "already done" in r]
+    assert len(success) == 1, (
+        f"Expected exactly one success, got: {results}"
+    )
+    assert len(already_done) == 1, (
+        f"Expected exactly one 'already done' error, got: {results}"
+    )
+
+    # Task must appear exactly once in done state
+    with open(_TASKS_FILE) as f:
+        tasks = json.load(f)
+    done_tasks = [t for t in tasks if t["status"] == "done"]
+    assert len(done_tasks) == 1, (
+        f"Expected 1 done task, got {len(done_tasks)}: {tasks}"
+    )

@@ -4,11 +4,21 @@ import json
 import os
 import re
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 
 
 _TASKS_FILE = ".agent/state/tasks.json"
+
+# Module-level lock that serialises the load → mutate → save cycle for all
+# write actions (add, done, update, drop).  Without this lock two concurrent
+# callers can each load a stale snapshot and the last writer silently
+# overwrites the other's changes — a TOCTOU / lost-update data-loss bug.
+# A threading.Lock is sufficient for in-process concurrency; cross-process
+# safety would require an advisory fcntl lock, but the agent runs as a single
+# process so a threading.Lock covers the real use-case.
+_write_lock = threading.Lock()
 
 # Sentinel returned by _load_tasks when the file exists but contains invalid JSON.
 # Using a named class (rather than None / [] / a string) lets fn() detect it
@@ -200,175 +210,14 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
     if limit < 0:
         return f"Error: limit must be >= 0 (got {limit}). Pass 0 for no limit."
 
-    tasks = _load_tasks()
-    if isinstance(tasks, _Corrupted):
-        return tasks.error_msg()
-
-    # Treat update with completed/done status as the "done" action
-    if action == "update" and status in ("completed", "done"):
-        action = "done"
-
-    # Auto-resolve task_id: if missing, try to find a unique open task.
-    # Track whether description was consumed solely as a selector so it is NOT
-    # also stored as a note — the caller used it to identify the task, not annotate it.
-    _description_used_for_resolution = False
-    if action in ("done", "update", "drop") and task_id <= 0:
-        open_tasks = [t for t in tasks if t["status"] not in ("done", "completed")]
-        if len(open_tasks) == 1:
-            task_id = open_tasks[0]["id"]
-            # If the caller passed a description that exactly matches the resolved
-            # task's own description, they were identifying it — not annotating it.
-            # Mark it consumed-for-resolution so the note is NOT stored.
-            if description and description.strip().lower() == open_tasks[0].get("description", "").strip().lower():
-                _description_used_for_resolution = True
-        elif description:
-            desc_lower = description.lower()
-            # Prefer exact match first — resolves unambiguously even when the
-            # description is a substring of another task's description.
-            exact = [t for t in open_tasks if t.get("description", "").lower() == desc_lower]
-            if len(exact) == 1:
-                task_id = exact[0]["id"]
-                _description_used_for_resolution = True
-            elif len(exact) > 1:
-                # Multiple exact matches (should not happen due to duplicate guard on add,
-                # but handle defensively).
-                match_list = ", ".join(f"#{t['id']} {t.get('description', '')!r}" for t in exact)
-                return (
-                    f"Error: {len(exact)} tasks match {description!r} exactly — "
-                    f"use task_id to specify: {match_list}"
-                )
-            else:
-                # Fall back to fuzzy/substring match
-                matches = [t for t in open_tasks if desc_lower in t.get("description", "").lower()
-                           or t.get("description", "").lower() in desc_lower]
-                if len(matches) == 1:
-                    task_id = matches[0]["id"]
-                    _description_used_for_resolution = True
-                elif len(matches) > 1:
-                    match_list = ", ".join(
-                        f"#{t['id']} {t.get('description', '')!r}" for t in matches
-                    )
-                    return (
-                        f"Error: {len(matches)} tasks match {description!r} — "
-                        f"use task_id to specify: {match_list}"
-                    )
-
-    if action == "add":
-        # task_id is not a valid parameter for 'add' — IDs are assigned automatically.
-        # Return an error rather than silently ignoring it.
-        if task_id > 0:
-            return (
-                f"Error: task_id={task_id} is not valid for 'add'. "
-                f"Task IDs are assigned automatically. "
-                f"To update an existing task, use action='update' with task_id={task_id}."
-            )
-        if not description:
-            if status and task_id > 0:
-                return (f"Error: 'add' requires description. To change status of an "
-                        f"existing task, use action='update' with task_id={task_id}, status='{status}'.")
-            if status:
-                return (f"Error: 'add' requires description. To set status on an "
-                        f"existing task, use action='update' with task_id=<N>, status='{status}'.")
-            return "Error: description required for 'add'"
-        # Reject status= on add — new tasks always start as 'open'.
-        # Valid mutable statuses for reference; 'open' is the only allowed initial state.
-        _ADD_VALID_INITIAL = {"open"}
-        _ALL_MUTABLE_STATUSES = {"open", "in_progress", "blocked", "deferred"}
-        if status:
-            if status not in _ADD_VALID_INITIAL:
-                if status in _ALL_MUTABLE_STATUSES:
-                    return (
-                        f"Error: new tasks always start as 'open'. "
-                        f"To add a task and immediately set status='{status}', "
-                        f"use action='add' first, then action='update' with status='{status}'."
-                    )
-                else:
-                    return (
-                        f"Error: invalid status '{status}' for 'add'. "
-                        f"New tasks always start as 'open'. "
-                        f"Use action='update' after adding to change status."
-                    )
-        existing = next((t for t in tasks if t["status"] not in ("done", "completed")
-                         and t.get("description", "").strip() == description.strip()), None)
-        if existing:
-            return f"Task #{existing['id']} already exists (open): {description}"
-        task = {
-            "id": _next_id(tasks),
-            "description": description,
-            "status": "open",
-            "created": datetime.now().isoformat(timespec="seconds"),
-        }
-        tasks.append(task)
-        err = _save_tasks(tasks)
-        if err:
-            return err
-        return f"Added task #{task['id']}: {description}"
-
-    elif action == "done":
-        if task_id <= 0:
-            available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] not in ("done", "completed")]
-            return f"Error: task_id required for 'done'. Example: task_tracker(action=\"done\", task_id=1)\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
-        for t in tasks:
-            if t["id"] == task_id:
-                if t["status"] in ("done", "completed"):
-                    return f"Error: task #{task_id} is already done"
-                t["status"] = "done"
-                t["completed"] = datetime.now().isoformat(timespec="seconds")
-                if description and not _description_used_for_resolution:
-                    t["note"] = description
-                err = _save_tasks(tasks)
-                if err:
-                    return err
-                return f"Completed task #{task_id}: {t.get('description', '')}"
-        return f"Error: task #{task_id} not found"
-
-    elif action == "update":
-        if task_id <= 0:
-            available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] not in ("done", "completed")]
-            return f"Error: task_id required for 'update'. Example: task_tracker(action=\"update\", task_id=1, status=\"in_progress\")\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
-        # When description was used only to resolve task_id, it carries no note
-        # intent — treat it as absent for validation and note-writing purposes.
-        _effective_description = "" if _description_used_for_resolution else description
-        if not status and not _effective_description:
-            return "Error: 'update' requires at least one of: status or description"
-        _VALID_STATUSES = {"open", "in_progress", "blocked", "deferred"}
-        if status and status not in _VALID_STATUSES:
-            return (f"Error: invalid status '{status}'. "
-                    f"Use one of: open, in_progress, blocked, deferred "
-                    f"(or action='done' to mark complete).")
-        for t in tasks:
-            if t["id"] == task_id:
-                if t["status"] in ("done", "completed"):
-                    return f"Error: task #{task_id} is already done"
-                if status:
-                    t["status"] = status
-                if _effective_description:
-                    t["note"] = _effective_description
-                err = _save_tasks(tasks)
-                if err:
-                    return err
-                msg = f"Updated task #{task_id}: status={t['status']}"
-                if _effective_description:
-                    msg += f", note={_effective_description!r}"
-                return msg
-        return f"Error: task #{task_id} not found"
-
-    elif action == "drop":
-        if task_id <= 0:
-            available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] not in ("done", "completed")]
-            return f"Error: task_id required for 'drop'. Example: task_tracker(action=\"drop\", task_id=1)\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
-        for i, t in enumerate(tasks):
-            if t["id"] == task_id:
-                if t["status"] in ("done", "completed"):
-                    return f"Error: task #{task_id} is already done; use action='list' to review or leave as-is to preserve history"
-                removed = tasks.pop(i)
-                err = _save_tasks(tasks)
-                if err:
-                    return err
-                return f"Dropped task #{task_id}: {removed.get('description', '')}"
-        return f"Error: task #{task_id} not found"
-
-    elif action == "list":
+    # list is read-only — load without holding the lock.
+    # All write actions (add, done, update, drop) must hold _write_lock for
+    # the entire load → mutate → save sequence to prevent lost-update races
+    # when two callers run concurrently (#811).
+    if action == "list":
+        tasks = _load_tasks()
+        if isinstance(tasks, _Corrupted):
+            return tasks.error_msg()
         # Validate the status filter before anything else so that an unknown
         # status value returns an error even when the task list is empty.
         status_filter = status.strip().lower() if status else ""
@@ -417,8 +266,182 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
         lines.append("\n" + ", ".join(parts))
         return "\n".join(lines)
 
-    else:
+    elif action not in ("add", "done", "update", "drop"):
         return f"Error: unknown action '{action}'. Use: add, done, update, drop, list."
+
+    # ── Write actions — serialised under _write_lock ──────────────────────────
+    # Acquire the lock before _load_tasks() so the entire read-modify-write
+    # sequence is atomic with respect to other threads.  Without the lock two
+    # concurrent "add" calls each load a stale snapshot and the last writer
+    # silently overwrites the first's task (TOCTOU / lost-update, #811).
+    with _write_lock:
+        tasks = _load_tasks()
+        if isinstance(tasks, _Corrupted):
+            return tasks.error_msg()
+
+        # Treat update with completed/done status as the "done" action
+        if action == "update" and status in ("completed", "done"):
+            action = "done"
+
+        # Auto-resolve task_id: if missing, try to find a unique open task.
+        # Track whether description was consumed solely as a selector so it is NOT
+        # also stored as a note — the caller used it to identify the task, not annotate it.
+        _description_used_for_resolution = False
+        if action in ("done", "update", "drop") and task_id <= 0:
+            open_tasks = [t for t in tasks if t["status"] not in ("done", "completed")]
+            if len(open_tasks) == 1:
+                task_id = open_tasks[0]["id"]
+                # If the caller passed a description that exactly matches the resolved
+                # task's own description, they were identifying it — not annotating it.
+                # Mark it consumed-for-resolution so the note is NOT stored.
+                if description and description.strip().lower() == open_tasks[0].get("description", "").strip().lower():
+                    _description_used_for_resolution = True
+            elif description:
+                desc_lower = description.lower()
+                # Prefer exact match first — resolves unambiguously even when the
+                # description is a substring of another task's description.
+                exact = [t for t in open_tasks if t.get("description", "").lower() == desc_lower]
+                if len(exact) == 1:
+                    task_id = exact[0]["id"]
+                    _description_used_for_resolution = True
+                elif len(exact) > 1:
+                    # Multiple exact matches (should not happen due to duplicate guard on add,
+                    # but handle defensively).
+                    match_list = ", ".join(f"#{t['id']} {t.get('description', '')!r}" for t in exact)
+                    return (
+                        f"Error: {len(exact)} tasks match {description!r} exactly — "
+                        f"use task_id to specify: {match_list}"
+                    )
+                else:
+                    # Fall back to fuzzy/substring match
+                    matches = [t for t in open_tasks if desc_lower in t.get("description", "").lower()
+                               or t.get("description", "").lower() in desc_lower]
+                    if len(matches) == 1:
+                        task_id = matches[0]["id"]
+                        _description_used_for_resolution = True
+                    elif len(matches) > 1:
+                        match_list = ", ".join(
+                            f"#{t['id']} {t.get('description', '')!r}" for t in matches
+                        )
+                        return (
+                            f"Error: {len(matches)} tasks match {description!r} — "
+                            f"use task_id to specify: {match_list}"
+                        )
+
+        if action == "add":
+            # task_id is not a valid parameter for 'add' — IDs are assigned automatically.
+            # Return an error rather than silently ignoring it.
+            if task_id > 0:
+                return (
+                    f"Error: task_id={task_id} is not valid for 'add'. "
+                    f"Task IDs are assigned automatically. "
+                    f"To update an existing task, use action='update' with task_id={task_id}."
+                )
+            if not description:
+                if status and task_id > 0:
+                    return (f"Error: 'add' requires description. To change status of an "
+                            f"existing task, use action='update' with task_id={task_id}, status='{status}'.")
+                if status:
+                    return (f"Error: 'add' requires description. To set status on an "
+                            f"existing task, use action='update' with task_id=<N>, status='{status}'.")
+                return "Error: description required for 'add'"
+            # Reject status= on add — new tasks always start as 'open'.
+            # Valid mutable statuses for reference; 'open' is the only allowed initial state.
+            _ADD_VALID_INITIAL = {"open"}
+            _ALL_MUTABLE_STATUSES = {"open", "in_progress", "blocked", "deferred"}
+            if status:
+                if status not in _ADD_VALID_INITIAL:
+                    if status in _ALL_MUTABLE_STATUSES:
+                        return (
+                            f"Error: new tasks always start as 'open'. "
+                            f"To add a task and immediately set status='{status}', "
+                            f"use action='add' first, then action='update' with status='{status}'."
+                        )
+                    else:
+                        return (
+                            f"Error: invalid status '{status}' for 'add'. "
+                            f"New tasks always start as 'open'. "
+                            f"Use action='update' after adding to change status."
+                        )
+            existing = next((t for t in tasks if t["status"] not in ("done", "completed")
+                             and t.get("description", "").strip() == description.strip()), None)
+            if existing:
+                return f"Task #{existing['id']} already exists (open): {description}"
+            task = {
+                "id": _next_id(tasks),
+                "description": description,
+                "status": "open",
+                "created": datetime.now().isoformat(timespec="seconds"),
+            }
+            tasks.append(task)
+            err = _save_tasks(tasks)
+            if err:
+                return err
+            return f"Added task #{task['id']}: {description}"
+
+        elif action == "done":
+            if task_id <= 0:
+                available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] not in ("done", "completed")]
+                return f"Error: task_id required for 'done'. Example: task_tracker(action=\"done\", task_id=1)\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
+            for t in tasks:
+                if t["id"] == task_id:
+                    if t["status"] in ("done", "completed"):
+                        return f"Error: task #{task_id} is already done"
+                    t["status"] = "done"
+                    t["completed"] = datetime.now().isoformat(timespec="seconds")
+                    if description and not _description_used_for_resolution:
+                        t["note"] = description
+                    err = _save_tasks(tasks)
+                    if err:
+                        return err
+                    return f"Completed task #{task_id}: {t.get('description', '')}"
+            return f"Error: task #{task_id} not found"
+
+        elif action == "update":
+            if task_id <= 0:
+                available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] not in ("done", "completed")]
+                return f"Error: task_id required for 'update'. Example: task_tracker(action=\"update\", task_id=1, status=\"in_progress\")\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
+            # When description was used only to resolve task_id, it carries no note
+            # intent — treat it as absent for validation and note-writing purposes.
+            _effective_description = "" if _description_used_for_resolution else description
+            if not status and not _effective_description:
+                return "Error: 'update' requires at least one of: status or description"
+            _VALID_STATUSES = {"open", "in_progress", "blocked", "deferred"}
+            if status and status not in _VALID_STATUSES:
+                return (f"Error: invalid status '{status}'. "
+                        f"Use one of: open, in_progress, blocked, deferred "
+                        f"(or action='done' to mark complete).")
+            for t in tasks:
+                if t["id"] == task_id:
+                    if t["status"] in ("done", "completed"):
+                        return f"Error: task #{task_id} is already done"
+                    if status:
+                        t["status"] = status
+                    if _effective_description:
+                        t["note"] = _effective_description
+                    err = _save_tasks(tasks)
+                    if err:
+                        return err
+                    msg = f"Updated task #{task_id}: status={t['status']}"
+                    if _effective_description:
+                        msg += f", note={_effective_description!r}"
+                    return msg
+            return f"Error: task #{task_id} not found"
+
+        elif action == "drop":
+            if task_id <= 0:
+                available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] not in ("done", "completed")]
+                return f"Error: task_id required for 'drop'. Example: task_tracker(action=\"drop\", task_id=1)\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
+            for i, t in enumerate(tasks):
+                if t["id"] == task_id:
+                    if t["status"] in ("done", "completed"):
+                        return f"Error: task #{task_id} is already done; use action='list' to review or leave as-is to preserve history"
+                    removed = tasks.pop(i)
+                    err = _save_tasks(tasks)
+                    if err:
+                        return err
+                    return f"Dropped task #{task_id}: {removed.get('description', '')}"
+            return f"Error: task #{task_id} not found"
 
 
 definition = {
