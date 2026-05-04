@@ -195,6 +195,55 @@ class TestAppendMainGuard(unittest.TestCase):
                 self.assertTrue(final.endswith(extra),
                                 f"Content must be at EOF for {ext} file, got: {final!r}")
 
+    def test_append_empty_content_to_py_with_main_guard_returns_error(self):
+        """Appending empty content to a .py file with an __main__ guard must not modify the file."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.py"
+            original = "def foo(): pass\nif __name__ == \"__main__\":\n    foo()\n"
+            target.write_text(original, encoding="utf-8")
+
+            result = file_tool.fn(action="append", path=str(target), content="")
+
+            self.assertIn("Error", result, f"Empty append should return an error, got: {result!r}")
+            self.assertEqual(target.read_text(encoding="utf-8"), original,
+                             "File must not be modified when appending empty content")
+
+    def test_append_empty_content_to_py_without_guard_returns_error(self):
+        """Appending empty content to a .py file without an __main__ guard must also return an error."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "module.py"
+            original = "def foo(): pass\n"
+            target.write_text(original, encoding="utf-8")
+
+            result = file_tool.fn(action="append", path=str(target), content="")
+
+            self.assertIn("Error", result, f"Empty append should return an error, got: {result!r}")
+            self.assertEqual(target.read_text(encoding="utf-8"), original,
+                             "File must not be modified when appending empty content")
+
+    def test_append_indented_main_guard_not_treated_as_guard(self):
+        """An indented __main__ guard (inside a function/class) must not trigger smart-insert."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "nested.py"
+            # The guard here is inside a function — not a top-level guard
+            original = (
+                "def run():\n"
+                "    if __name__ == '__main__':\n"
+                "        pass\n"
+                "\n"
+                "def other(): pass\n"
+            )
+            target.write_text(original, encoding="utf-8")
+
+            new_code = "def new_func(): pass\n"
+            result = file_tool.fn(action="append", path=str(target), content=new_code)
+
+            self.assertIn("Appended to", result)
+            final = target.read_text(encoding="utf-8")
+            # Content must appear at the end, not before the indented guard
+            self.assertTrue(final.endswith(new_code),
+                            f"Content must be at EOF for indented guard, got: {final!r}")
+
 
 if __name__ == "__main__":
     unittest.main()
