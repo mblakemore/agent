@@ -6,9 +6,11 @@ file tool if it needs the full content.
 """
 
 import hashlib
+import ipaddress
 import os
 import requests
 from markdownify import markdownify
+from urllib.parse import urlparse
 
 
 _MAX_CHARS = 50000
@@ -20,20 +22,46 @@ _HEADERS = {
 # Max chars to include inline in the tool result (keeps context small)
 _INLINE_PREVIEW = 2000
 
-# Prefixes blocked after redirect resolution — prevents SSRF via open redirect
-# to internal/private addresses even when the original URL was external.
-_BLOCKED_URL_PREFIXES = (
-    "http://localhost", "https://localhost",
-    "http://127.", "https://127.",
-    "http://169.254.", "https://169.254.",    # link-local / AWS IMDSv1
-    "http://10.", "https://10.",               # RFC 1918
-    "http://172.16.", "https://172.16.",       # RFC 1918 (partial — covers 172.16.0.0/12 first octet only)
-    "http://192.168.", "https://192.168.",     # RFC 1918
-    "http://0.", "https://0.",                 # 0.0.0.0/8
-    "http://[::1]", "https://[::1]",           # IPv6 loopback
-    "http://[fc", "https://[fc",               # IPv6 ULA
-    "http://[fd", "https://[fd",               # IPv6 ULA
-)
+# Private/reserved networks — used to block SSRF redirects to internal addresses.
+# This covers all RFC 1918 ranges, loopback, link-local, and IPv6 private space
+# using the ipaddress module for accurate subnet matching (e.g. the full
+# 172.16.0.0/12 range, not just 172.16.x.x).
+_PRIVATE_NETWORKS = [
+    ipaddress.ip_network(cidr) for cidr in (
+        "127.0.0.0/8",      # loopback
+        "10.0.0.0/8",       # RFC 1918
+        "172.16.0.0/12",    # RFC 1918 — covers 172.16.x.x through 172.31.x.x
+        "192.168.0.0/16",   # RFC 1918
+        "169.254.0.0/16",   # link-local / AWS IMDSv1
+        "0.0.0.0/8",        # reserved
+        "::1/128",          # IPv6 loopback
+        "fc00::/7",         # IPv6 ULA (fc00:: and fd00::)
+    )
+]
+
+
+def _is_private_address(url: str) -> bool:
+    """Return True if the URL's host is a private/reserved IP or the loopback hostname.
+
+    Numeric IP addresses are checked against all private/reserved CIDR ranges.
+    The 'localhost' hostname is also blocked since it always resolves to loopback.
+    Other hostnames are allowed through — DNS resolution happens server-side and
+    we cannot resolve arbitrary names here.
+    """
+    try:
+        host = urlparse(url).hostname
+        if not host:
+            return False
+        # Block localhost by name (always resolves to loopback)
+        if host.lower() == "localhost":
+            return True
+        # Strip brackets for IPv6 literals (e.g. "[::1]" → "::1")
+        host = host.strip("[]")
+        addr = ipaddress.ip_address(host)
+        return any(addr in net for net in _PRIVATE_NETWORKS)
+    except ValueError:
+        # Not a numeric IP address or localhost — allow (could be an external hostname)
+        return False
 
 
 def fn(url: str) -> str:
@@ -60,7 +88,7 @@ def fn(url: str) -> str:
             final_url = resp.url
             if not final_url.startswith(("http://", "https://")):
                 return f"Error: redirect led to non-HTTP URL '{final_url}'"
-            if final_url.lower().startswith(tuple(p.lower() for p in _BLOCKED_URL_PREFIXES)):
+            if _is_private_address(final_url):
                 return f"Error: redirect to private/internal address is not allowed: '{final_url}'"
 
             content_type = resp.headers.get("content-type", "").lower()
