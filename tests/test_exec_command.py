@@ -290,3 +290,39 @@ def test_exec_command_auto_pythonpath():
     with patch.dict(os.environ, env_without, clear=True):
         result = fn(command="python3 -c 'import sys; print(sys.path)'")
     assert "exit=0" in result
+
+
+# ── timeout validation tests ──────────────────────────────────────────────────
+
+def test_exec_command_negative_timeout_rejected():
+    """A negative timeout must be rejected with a clear error, not silently kill the command."""
+    result = fn(command="echo hello", timeout=-1)
+    assert result == "Error: timeout must be a positive number"
+
+
+def test_exec_command_negative_timeout_large():
+    """Very negative timeout values must also be rejected."""
+    result = fn(command="echo hello", timeout=-9999)
+    assert result == "Error: timeout must be a positive number"
+
+
+def test_exec_command_zero_timeout_rejected():
+    """timeout=0 is physically impossible (no time to run anything) and must be rejected."""
+    result = fn(command="echo hello", timeout=0)
+    assert result == "Error: timeout must be a positive number"
+
+
+def test_exec_command_positive_timeout_still_works():
+    """Regression: a normal positive timeout continues to work correctly."""
+    result = fn(command="echo hello", timeout=10)
+    assert "exit=0" in result
+    assert "hello" in result
+
+
+def test_exec_command_negative_timeout_does_not_kill_command():
+    """With a negative timeout the command must NOT run at all — error returned immediately."""
+    result = fn(command="sleep 0.1 && echo ran", timeout=-5)
+    # Must be the validation error, not a timed-out or successful execution result
+    assert result == "Error: timeout must be a positive number"
+    assert "ran" not in result
+    assert "timed out" not in result
