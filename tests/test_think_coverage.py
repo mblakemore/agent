@@ -259,5 +259,57 @@ class TestThinkCoverage(unittest.TestCase):
         self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
         self.assertIn("calling server", result)
 
+    # ── Regression: unhashable depth type (#839) ─────────────────────────────
+
+    def test_depth_list_returns_error_without_http_call(self):
+        """think.fn with a list depth must return a clean error, not raise TypeError (#839).
+
+        Before the fix, `depth not in DEPTH_MAX_TOKENS` raised
+        `TypeError: unhashable type: 'list'` because dict.__contains__
+        requires a hashable key.
+        """
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("test prompt", depth=["brief"])
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+        self.assertIn("invalid depth", result)
+        mock_post.assert_not_called()
+
+    def test_depth_dict_returns_error_without_http_call(self):
+        """think.fn with a dict depth must return a clean error, not raise TypeError (#839)."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("test prompt", depth={})
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+        self.assertIn("invalid depth", result)
+        mock_post.assert_not_called()
+
+    def test_depth_integer_returns_error_without_http_call(self):
+        """think.fn with an integer depth must return a clean error, not raise TypeError (#839)."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("test prompt", depth=1)
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+        self.assertIn("invalid depth", result)
+        mock_post.assert_not_called()
+
+    def test_depth_none_returns_error_without_http_call(self):
+        """think.fn with None depth must return a clean error (#839)."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("test prompt", depth=None)
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+        self.assertIn("invalid depth", result)
+        mock_post.assert_not_called()
+
+    def test_depth_error_message_lists_valid_depths(self):
+        """Error message for invalid depth must list the valid options (#839)."""
+        with patch("requests.post"):
+            result = think_mod.fn("test prompt", depth=["brief"])
+        self.assertIn("brief", result)
+        self.assertIn("normal", result)
+        self.assertIn("deep", result)
+
+
 if __name__ == "__main__":
     unittest.main()
