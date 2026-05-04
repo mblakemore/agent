@@ -1,4 +1,5 @@
 import os
+import unittest
 import requests
 import pytest
 from unittest.mock import patch, MagicMock
@@ -8,6 +9,7 @@ from tools.web_fetch import fn
 def mock_resp():
     mock = MagicMock()
     mock.text = "Hello World"
+    mock.url = "http://example.com/text.txt"  # needed so the redirect guard passes
     mock.headers = {"content-type": "text/plain"}
     mock.status_code = 200
     mock.encoding = 'utf-8'
@@ -152,6 +154,7 @@ def test_web_fetch_http_url_passes_scheme_check():
     import requests
     from unittest.mock import patch, MagicMock
     mock = MagicMock()
+    mock.url = "http://example.com/test"
     mock.headers = {"content-type": "text/plain"}
     mock.status_code = 200
     mock.encoding = "utf-8"
@@ -169,6 +172,7 @@ def test_web_fetch_binary_image_returns_error():
     """A binary image response (JPEG magic bytes with null bytes) must return an
     error string, not mojibake binary content (#784)."""
     mock = MagicMock()
+    mock.url = "https://example.com/photo.jpg"
     mock.headers = {"content-type": "image/jpeg"}
     mock.status_code = 200
     mock.encoding = "utf-8"
@@ -186,6 +190,7 @@ def test_web_fetch_binary_image_returns_error():
 def test_web_fetch_binary_unknown_content_type_returns_error():
     """A binary response with no content-type header must still return an error (#784)."""
     mock = MagicMock()
+    mock.url = "https://example.com/data.bin"
     mock.headers = {}
     mock.status_code = 200
     mock.encoding = "utf-8"
@@ -202,6 +207,7 @@ def test_web_fetch_binary_unknown_content_type_returns_error():
 def test_web_fetch_text_with_no_null_bytes_is_not_rejected():
     """A plain text response must not be falsely classified as binary (#784)."""
     mock = MagicMock()
+    mock.url = "https://example.com/hello.txt"
     mock.headers = {"content-type": "text/plain"}
     mock.status_code = 200
     mock.encoding = "utf-8"
@@ -258,3 +264,74 @@ def test_web_fetch_request_exception_error_format():
     assert isinstance(result, str)
     assert result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}"
     assert "fetching URL" in result, f"Expected 'fetching URL' in message, got: {result!r}"
+
+
+# ── Redirect guard / SSRF prevention (#812) ──────────────────────────────────
+
+def _make_mock_response(final_url, content=b"hello world", content_type="text/plain", status_code=200):
+    mock_resp = MagicMock()
+    mock_resp.url = final_url
+    mock_resp.raise_for_status = MagicMock()  # no-op
+    mock_resp.headers = {"content-type": content_type}
+    mock_resp.encoding = "utf-8"
+    mock_resp.iter_content = MagicMock(return_value=iter([content]))
+    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+class TestWebFetchRedirectGuard(unittest.TestCase):
+    """Redirect-based SSRF: the final URL after redirects must be validated (#812)."""
+
+    def test_redirect_to_localhost_blocked(self):
+        """A redirect to localhost must be blocked with an error."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response("http://localhost:8080/admin")
+            result = fn("http://example.com/redirect-me")
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertTrue(
+            "private" in result.lower() or "internal" in result.lower(),
+            f"Error must mention 'private' or 'internal': {result!r}",
+        )
+
+    def test_redirect_to_link_local_blocked(self):
+        """A redirect to a link-local (AWS IMDSv1) address must be blocked."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response("http://169.254.169.254/latest/meta-data/")
+            result = fn("http://example.com/redirect-me")
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertTrue(
+            "private" in result.lower() or "internal" in result.lower(),
+            f"Error must mention 'private' or 'internal': {result!r}",
+        )
+
+    def test_redirect_to_rfc1918_blocked(self):
+        """A redirect to an RFC 1918 private address must be blocked."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response("http://10.0.0.1/")
+            result = fn("http://example.com/redirect-me")
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertTrue(
+            "private" in result.lower() or "internal" in result.lower(),
+            f"Error must mention 'private' or 'internal': {result!r}",
+        )
+
+    def test_no_redirect_passes_through(self):
+        """When the final URL is the same as the input (no redirect), the request must succeed."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response("https://example.com/page")
+            result = fn("https://example.com/page")
+        self.assertFalse(
+            result.startswith("Error:"),
+            f"Non-redirected external URL must not return an error: {result!r}",
+        )
+
+    def test_redirect_to_external_passes_through(self):
+        """A redirect to a different external site must be allowed through."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response("https://other-external-site.com/")
+            result = fn("http://example.com/redirect-me")
+        self.assertFalse(
+            result.startswith("Error:"),
+            f"Redirect to external site must not return an error: {result!r}",
+        )
