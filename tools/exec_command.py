@@ -443,7 +443,9 @@ definition = {
               "e.g. `PYTHONPATH=/droid/repos/agent python3 -c 'import tools; ...'`. "
               "Without this, imports of project modules will fail with ModuleNotFoundError. "
               "Note: PYTHONPATH is auto-injected when a .git directory is found in an ancestor "
-              "of the working directory and PYTHONPATH is not already set."
+              "of the working directory and PYTHONPATH is not already set. "
+              "For listing directory contents, use `file(action=\"list\", ...)` instead of `ls` — "
+              "it returns structured, filtered output. Reserve `exec_command` for operations that have no dedicated tool."
         ),
         "parameters": {
             "type": "object",
