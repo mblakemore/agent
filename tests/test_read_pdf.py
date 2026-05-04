@@ -450,3 +450,35 @@ def test_read_pdf_fractional_float_end_page_doc_closed(mock_open):
     mock_open.return_value = mock_doc
     fn("dummy.pdf", start_page=1, end_page=2.9)
     mock_doc.close.assert_called_once()
+
+
+# ── None path guard (#809) ─────────────────────────────────────────────────────
+# fitz.open(None) silently opens an empty in-memory document (is_pdf=True, 0 pages).
+# Without a type guard, fn(path=None) returns the misleading "Error: PDF has no pages"
+# instead of a clear type error. The guard must fire before fitz.open() is called so
+# that fitz is never invoked with a non-string path.
+
+
+def test_read_pdf_none_path_returns_type_error():
+    """path=None must return a clear Error string without calling fitz.open. (#809)"""
+    result = fn(path=None)
+    assert isinstance(result, str), "Must return a string, not raise"
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "path" in result
+    assert "NoneType" in result
+
+
+def test_read_pdf_integer_path_returns_type_error():
+    """path=123 (non-string) must return a clear Error string without calling fitz.open. (#809)"""
+    result = fn(path=123)
+    assert isinstance(result, str), "Must return a string, not raise"
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "path" in result
+    assert "int" in result
+
+
+@patch("fitz.open")
+def test_read_pdf_none_path_does_not_call_fitz(mock_open):
+    """fitz.open must not be called when path is None. (#809)"""
+    fn(path=None)
+    mock_open.assert_not_called()
