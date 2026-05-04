@@ -55,8 +55,16 @@ def fn(url: str) -> str:
                     if bytes_read > _MAX_BYTES:
                         break
             
-            # Join bytes and decode to string
+            # Join bytes and detect binary content before decoding.
+            # Binary responses (images, PDFs, executables, etc.) contain null
+            # bytes and are useless as text — return a clear error rather than
+            # returning mojibake to the caller.
             full_content = b"".join(chunks)
+            if b"\x00" in full_content[:8192]:
+                return (
+                    f"Error: response body is binary (content-type: {content_type or 'unknown'}). "
+                    f"web_fetch only supports text content."
+                )
             text = full_content.decode(resp.encoding or 'utf-8', errors='replace')
             
             # Trim to _MAX_CHARS if we exceeded it during streaming

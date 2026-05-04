@@ -161,3 +161,53 @@ def test_web_fetch_http_url_passes_scheme_check():
         result = fn(url="http://example.com/test")
     # Must not be a scheme-validation error
     assert "must begin with" not in result, f"Valid http:// URL failed scheme check: {result!r}"
+
+
+# ── Binary response detection (#784) ─────────────────────────────────────────
+
+def test_web_fetch_binary_image_returns_error():
+    """A binary image response (JPEG magic bytes with null bytes) must return an
+    error string, not mojibake binary content (#784)."""
+    mock = MagicMock()
+    mock.headers = {"content-type": "image/jpeg"}
+    mock.status_code = 200
+    mock.encoding = "utf-8"
+    # JPEG starts with FF D8 FF E0 00 (contains null byte)
+    jpeg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01" + b"\x00" * 50 + b"data"
+    mock.iter_content.side_effect = lambda chunk_size=None: [jpeg_bytes]
+    mock.__enter__.return_value = mock
+    with patch("requests.get", return_value=mock):
+        result = fn(url="https://example.com/photo.jpg")
+    assert result.startswith("Error:"), f"Expected 'Error:' prefix for binary response: {result!r}"
+    assert "binary" in result.lower(), f"Error must mention 'binary': {result!r}"
+    assert "image/jpeg" in result, f"Error must include content-type: {result!r}"
+
+
+def test_web_fetch_binary_unknown_content_type_returns_error():
+    """A binary response with no content-type header must still return an error (#784)."""
+    mock = MagicMock()
+    mock.headers = {}
+    mock.status_code = 200
+    mock.encoding = "utf-8"
+    # Any bytes with a null byte in the first 8192
+    binary_bytes = b"some data\x00more data"
+    mock.iter_content.side_effect = lambda chunk_size=None: [binary_bytes]
+    mock.__enter__.return_value = mock
+    with patch("requests.get", return_value=mock):
+        result = fn(url="https://example.com/data.bin")
+    assert result.startswith("Error:"), f"Expected 'Error:' for binary with no content-type: {result!r}"
+    assert "binary" in result.lower(), f"Error must mention 'binary': {result!r}"
+
+
+def test_web_fetch_text_with_no_null_bytes_is_not_rejected():
+    """A plain text response must not be falsely classified as binary (#784)."""
+    mock = MagicMock()
+    mock.headers = {"content-type": "text/plain"}
+    mock.status_code = 200
+    mock.encoding = "utf-8"
+    mock.iter_content.side_effect = lambda chunk_size=None: [b"Hello, world!"]
+    mock.__enter__.return_value = mock
+    with patch("requests.get", return_value=mock):
+        result = fn(url="https://example.com/hello.txt")
+    assert not result.startswith("Error:"), f"Text response must not be rejected as binary: {result!r}"
+    assert "Hello, world!" in result
