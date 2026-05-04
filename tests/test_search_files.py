@@ -19,23 +19,25 @@ class TestSearchFilesContextZero(unittest.TestCase):
 
     def test_context_zero_match_lines_only(self):
         with tempfile.TemporaryDirectory() as d:
+            abs_d = str(Path(d).resolve())
             Path(d, "a.txt").write_text("alpha\nbeta\ngamma\n")
             result = search_files.fn("beta", path=d, context=0)
             body = _body(result)
-            self.assertEqual(body, "a.txt:2: beta")
+            self.assertEqual(body, f"{abs_d}/a.txt:2: beta")
             self.assertNotIn("--", body)
             # context=0 must not emit any context lines at all
-            self.assertNotIn("a.txt:1-", body)
-            self.assertNotIn("a.txt:3-", body)
+            self.assertNotIn(f"{abs_d}/a.txt:1-", body)
+            self.assertNotIn(f"{abs_d}/a.txt:3-", body)
 
     def test_context_zero_two_files_no_separator(self):
         with tempfile.TemporaryDirectory() as d:
+            abs_d = str(Path(d).resolve())
             Path(d, "a.txt").write_text("hit\n")
             Path(d, "b.txt").write_text("hit\n")
             body = _body(search_files.fn("hit", path=d, context=0))
             self.assertNotIn("--", body)
-            self.assertIn("a.txt:1: hit", body)
-            self.assertIn("b.txt:1: hit", body)
+            self.assertIn(f"{abs_d}/a.txt:1: hit", body)
+            self.assertIn(f"{abs_d}/b.txt:1: hit", body)
 
     def test_no_matches_still_returns_header(self):
         with tempfile.TemporaryDirectory() as d:
@@ -49,43 +51,47 @@ class TestSearchFilesContextBasic(unittest.TestCase):
 
     def test_context_one_emits_before_and_after_lines(self):
         with tempfile.TemporaryDirectory() as d:
+            abs_d = str(Path(d).resolve())
             Path(d, "a.txt").write_text("l1\nl2\nHIT\nl4\nl5\n")
             body = _body(search_files.fn("HIT", path=d, context=1))
             lines = body.split("\n")
             self.assertEqual(lines, [
-                "a.txt:2- l2",
-                "a.txt:3: HIT",
-                "a.txt:4- l4",
+                f"{abs_d}/a.txt:2- l2",
+                f"{abs_d}/a.txt:3: HIT",
+                f"{abs_d}/a.txt:4- l4",
             ])
 
     def test_context_clamps_at_file_boundaries(self):
         with tempfile.TemporaryDirectory() as d:
+            abs_d = str(Path(d).resolve())
             Path(d, "a.txt").write_text("HIT\nl2\nl3\n")
             body = _body(search_files.fn("HIT", path=d, context=5))
             lines = body.split("\n")
-            self.assertEqual(lines[0], "a.txt:1: HIT")
-            self.assertNotIn("a.txt:0-", body)
-            self.assertNotIn("a.txt:4-", body)
+            self.assertEqual(lines[0], f"{abs_d}/a.txt:1: HIT")
+            self.assertNotIn(f"{abs_d}/a.txt:0-", body)
+            self.assertNotIn(f"{abs_d}/a.txt:4-", body)
             self.assertEqual(len(lines), 3)
 
     def test_negative_context_clamped_to_zero(self):
         with tempfile.TemporaryDirectory() as d:
+            abs_d = str(Path(d).resolve())
             Path(d, "a.txt").write_text("l1\nHIT\nl3\n")
             body = _body(search_files.fn("HIT", path=d, context=-5))
-            self.assertEqual(body, "a.txt:2: HIT")
+            self.assertEqual(body, f"{abs_d}/a.txt:2: HIT")
 
     def test_absurd_context_clamped_to_max(self):
         lines = [f"line{i}" for i in range(1, 101)]
         lines[49] = "HIT"
         with tempfile.TemporaryDirectory() as d:
+            abs_d = str(Path(d).resolve())
             Path(d, "a.txt").write_text("\n".join(lines) + "\n")
             result = search_files.fn("HIT", path=d, context=9999)
             body = _body(result)
             emitted = body.split("\n")
             # With cap = 20, window is [30..70] = 41 lines.
             self.assertEqual(len(emitted), 2 * search_files._MAX_CONTEXT + 1)
-            self.assertTrue(emitted[0].startswith("a.txt:30- "))
-            self.assertTrue(emitted[-1].startswith("a.txt:70- "))
+            self.assertTrue(emitted[0].startswith(f"{abs_d}/a.txt:30- "))
+            self.assertTrue(emitted[-1].startswith(f"{abs_d}/a.txt:70- "))
 
     def test_over_max_context_note_in_header_dir_search(self):
         """Header must say 'context capped to N' when context > _MAX_CONTEXT."""
@@ -117,43 +123,46 @@ class TestSearchFilesContextGrouping(unittest.TestCase):
 
     def test_context_merges_adjacent_windows(self):
         with tempfile.TemporaryDirectory() as d:
+            abs_d = str(Path(d).resolve())
             Path(d, "a.txt").write_text(
                 "l1\nl2\nHIT3\nl4\nHIT5\nl6\nl7\nl8\nl9\nl10\n"
             )
             body = _body(search_files.fn("HIT", path=d, context=2))
             self.assertNotIn("\n--\n", body)
-            self.assertIn("a.txt:3: HIT3", body)
-            self.assertIn("a.txt:5: HIT5", body)
-            self.assertIn("a.txt:4- l4", body)
+            self.assertIn(f"{abs_d}/a.txt:3: HIT3", body)
+            self.assertIn(f"{abs_d}/a.txt:5: HIT5", body)
+            self.assertIn(f"{abs_d}/a.txt:4- l4", body)
             lines = body.split("\n")
-            self.assertEqual(lines[0], "a.txt:1- l1")
-            self.assertEqual(lines[-1], "a.txt:7- l7")
+            self.assertEqual(lines[0], f"{abs_d}/a.txt:1- l1")
+            self.assertEqual(lines[-1], f"{abs_d}/a.txt:7- l7")
 
     def test_context_separates_disjoint_windows(self):
         content = "\n".join([f"l{i}" if i not in (3, 15) else "HIT" for i in range(1, 21)]) + "\n"
         with tempfile.TemporaryDirectory() as d:
+            abs_d = str(Path(d).resolve())
             Path(d, "a.txt").write_text(content)
             body = _body(search_files.fn("HIT", path=d, context=1))
             self.assertIn("\n--\n", body)
             groups = body.split("\n--\n")
             self.assertEqual(len(groups), 2)
-            self.assertIn("a.txt:3: HIT", groups[0])
-            self.assertIn("a.txt:2- l2", groups[0])
-            self.assertIn("a.txt:4- l4", groups[0])
-            self.assertIn("a.txt:15: HIT", groups[1])
-            self.assertIn("a.txt:14- l14", groups[1])
-            self.assertIn("a.txt:16- l16", groups[1])
+            self.assertIn(f"{abs_d}/a.txt:3: HIT", groups[0])
+            self.assertIn(f"{abs_d}/a.txt:2- l2", groups[0])
+            self.assertIn(f"{abs_d}/a.txt:4- l4", groups[0])
+            self.assertIn(f"{abs_d}/a.txt:15: HIT", groups[1])
+            self.assertIn(f"{abs_d}/a.txt:14- l14", groups[1])
+            self.assertIn(f"{abs_d}/a.txt:16- l16", groups[1])
 
     def test_context_separates_between_files(self):
         with tempfile.TemporaryDirectory() as d:
+            abs_d = str(Path(d).resolve())
             Path(d, "a.txt").write_text("pre\nHIT\npost\n")
             Path(d, "b.txt").write_text("pre\nHIT\npost\n")
             body = _body(search_files.fn("HIT", path=d, context=1))
             self.assertIn("\n--\n", body)
             groups = body.split("\n--\n")
             self.assertEqual(len(groups), 2)
-            self.assertIn("a.txt:2: HIT", groups[0])
-            self.assertIn("b.txt:2: HIT", groups[1])
+            self.assertIn(f"{abs_d}/a.txt:2: HIT", groups[0])
+            self.assertIn(f"{abs_d}/b.txt:2: HIT", groups[1])
 
 
 class TestSearchFilesHeaderIdentity(unittest.TestCase):
@@ -257,7 +266,7 @@ class TestSearchFilesPathIsFile(unittest.TestCase):
             result = search_files.fn("def hello", path=str(p))
             self.assertIn("1 matched", result)
             body = _body(result)
-            self.assertIn("sample.py:1:", body)
+            self.assertIn(f"{p.resolve()}:1:", body)
             self.assertIn("def hello", body)
 
     def test_file_path_no_match(self):
@@ -275,7 +284,7 @@ class TestSearchFilesPathIsFile(unittest.TestCase):
             p.write_text("line1\nHIT\nline3\n")
             result = search_files.fn("HIT", path=str(p), context=0)
             body = _body(result)
-            self.assertEqual(body, "sample.py:2: HIT")
+            self.assertEqual(body, f"{p.resolve()}:2: HIT")
 
     def test_file_path_with_context(self):
         with tempfile.TemporaryDirectory() as d:
@@ -283,9 +292,10 @@ class TestSearchFilesPathIsFile(unittest.TestCase):
             p.write_text("before\nHIT\nafter\n")
             result = search_files.fn("HIT", path=str(p), context=1)
             body = _body(result)
-            self.assertIn("sample.py:2: HIT", body)
-            self.assertIn("sample.py:1- before", body)
-            self.assertIn("sample.py:3- after", body)
+            abs_p = str(p.resolve())
+            self.assertIn(f"{abs_p}:2: HIT", body)
+            self.assertIn(f"{abs_p}:1- before", body)
+            self.assertIn(f"{abs_p}:3- after", body)
 
     def test_file_path_count_only(self):
         with tempfile.TemporaryDirectory() as d:
@@ -426,7 +436,8 @@ class TestDefaultExcludes(unittest.TestCase):
             body = _body(result)
             lines = [l for l in body.split("\n") if l.strip()]
             self.assertEqual(len(lines), 1, f"Expected 1 match, got: {lines}")
-            self.assertIn("agent.py:1:", lines[0])
+            abs_d = str(Path(d).resolve())
+            self.assertIn(f"{abs_d}/agent.py:1:", lines[0])
             self.assertNotIn("temp", lines[0])
 
     def test_include_temp_shows_all_matches(self):
@@ -603,13 +614,14 @@ class TestSearchFilesContextFormatUnambiguous(unittest.TestCase):
     def test_context_lines_use_colon_separator(self):
         """Context lines must use 'file:linenum-' not 'file-linenum-'."""
         with tempfile.TemporaryDirectory() as d:
+            abs_d = str(Path(d).resolve())
             Path(d, "a.txt").write_text("before\nHIT\nafter\n")
             body = _body(search_files.fn("HIT", path=d, context=1))
             # match line: colon on both sides of linenum
-            self.assertIn("a.txt:2: HIT", body)
+            self.assertIn(f"{abs_d}/a.txt:2: HIT", body)
             # context lines: colon before linenum, dash after
-            self.assertIn("a.txt:1- before", body)
-            self.assertIn("a.txt:3- after", body)
+            self.assertIn(f"{abs_d}/a.txt:1- before", body)
+            self.assertIn(f"{abs_d}/a.txt:3- after", body)
             # old format must not appear
             self.assertNotIn("a.txt-1-", body)
             self.assertNotIn("a.txt-3-", body)
@@ -619,32 +631,34 @@ class TestSearchFilesContextFormatUnambiguous(unittest.TestCase):
         parseable — the colon always separates filename from line number."""
         with tempfile.TemporaryDirectory() as d:
             fpath = Path(d, "my-mod-utils.py")
+            abs_fpath = str(fpath.resolve())
             fpath.write_text("setup\nconfig\nHIT_LINE\ncleanup\ndone\n")
             body = _body(search_files.fn("HIT_LINE", path=d, context=2))
-            # Each line must start with the full filename followed by a colon
+            # Each line must start with the full absolute path followed by a colon
             for line in body.split("\n"):
                 self.assertTrue(
-                    line.startswith("my-mod-utils.py:"),
-                    f"Line does not start with 'my-mod-utils.py:': {line!r}",
+                    line.startswith(f"{abs_fpath}:"),
+                    f"Line does not start with '{abs_fpath}:': {line!r}",
                 )
             # Match line uses double-colon (file:linenum: text)
-            self.assertIn("my-mod-utils.py:3: HIT_LINE", body)
+            self.assertIn(f"{abs_fpath}:3: HIT_LINE", body)
             # Context lines use colon-dash (file:linenum- text)
-            self.assertIn("my-mod-utils.py:1- setup", body)
-            self.assertIn("my-mod-utils.py:2- config", body)
-            self.assertIn("my-mod-utils.py:4- cleanup", body)
-            self.assertIn("my-mod-utils.py:5- done", body)
+            self.assertIn(f"{abs_fpath}:1- setup", body)
+            self.assertIn(f"{abs_fpath}:2- config", body)
+            self.assertIn(f"{abs_fpath}:4- cleanup", body)
+            self.assertIn(f"{abs_fpath}:5- done", body)
 
     def test_single_file_context_lines_use_colon_separator(self):
         """Single-file searches (path points directly to a file) must also use
         the new unambiguous format."""
         with tempfile.TemporaryDirectory() as d:
             fpath = Path(d, "data-pipeline-utils.py")
+            abs_fpath = str(fpath.resolve())
             fpath.write_text("import os\nimport sys\ndef main():\n    pass\n")
             body = _body(search_files.fn("def main", path=str(fpath), context=1))
-            self.assertIn("data-pipeline-utils.py:3: def main", body)
-            self.assertIn("data-pipeline-utils.py:2- import sys", body)
-            self.assertIn("data-pipeline-utils.py:4- ", body)
+            self.assertIn(f"{abs_fpath}:3: def main", body)
+            self.assertIn(f"{abs_fpath}:2- import sys", body)
+            self.assertIn(f"{abs_fpath}:4- ", body)
             # old format must not appear
             self.assertNotIn("data-pipeline-utils.py-2-", body)
             self.assertNotIn("data-pipeline-utils.py-4-", body)
@@ -758,3 +772,71 @@ class TestSearchFilesContextTypeCoercion(unittest.TestCase):
             result_bool = search_files.fn("x", path=d, context=True)
             result_int = search_files.fn("x", path=d, context=1)
             self.assertEqual(result_bool, result_int)
+
+
+class TestSearchFilesAbsolutePaths(unittest.TestCase):
+    """Match lines must always use absolute paths — issue #690."""
+
+    def test_directory_search_match_lines_are_absolute(self):
+        """Match lines from a directory search must use absolute paths."""
+        with tempfile.TemporaryDirectory() as d:
+            abs_d = str(Path(d).resolve())
+            Path(d, "foo.py").write_text("TARGET = 1\n")
+            result = search_files.fn("TARGET", path=d, context=0)
+            body = _body(result)
+            lines = [l for l in body.split("\n") if l.strip()]
+            self.assertEqual(len(lines), 1)
+            path_part = lines[0].split(":")[0]
+            self.assertTrue(
+                path_part.startswith("/"),
+                f"Expected absolute path in match line, got: {lines[0]!r}",
+            )
+            self.assertEqual(path_part, f"{abs_d}/foo.py")
+
+    def test_single_file_match_lines_are_absolute(self):
+        """Match lines from a single-file search must use the absolute path."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "bar.py")
+            p.write_text("TARGET = 1\n")
+            result = search_files.fn("TARGET", path=str(p), context=0)
+            body = _body(result)
+            path_part = body.split(":")[0]
+            self.assertTrue(
+                path_part.startswith("/"),
+                f"Expected absolute path in match line, got: {body!r}",
+            )
+            self.assertEqual(path_part, str(p.resolve()))
+
+    def test_match_lines_absolute_from_different_cwd(self):
+        """Match lines must be absolute even when cwd differs from search path."""
+        import os
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir("/tmp")
+            with tempfile.TemporaryDirectory() as d:
+                abs_d = str(Path(d).resolve())
+                Path(d, "mod.py").write_text("def hit(): pass\n")
+                result = search_files.fn("def hit", path=d, context=0)
+                body = _body(result)
+                path_part = body.split(":")[0]
+                self.assertTrue(
+                    path_part.startswith("/"),
+                    f"Expected absolute path when cwd=/tmp, got: {body!r}",
+                )
+                self.assertEqual(path_part, f"{abs_d}/mod.py")
+        finally:
+            os.chdir(orig_cwd)
+
+    def test_context_lines_are_absolute(self):
+        """Context lines (before/after match) must also use absolute paths."""
+        with tempfile.TemporaryDirectory() as d:
+            abs_d = str(Path(d).resolve())
+            Path(d, "ctx.py").write_text("before\nHIT\nafter\n")
+            result = search_files.fn("HIT", path=d, context=1)
+            body = _body(result)
+            for line in body.split("\n"):
+                if line.strip():
+                    self.assertTrue(
+                        line.startswith(abs_d),
+                        f"Expected line to start with abs path, got: {line!r}",
+                    )
