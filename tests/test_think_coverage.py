@@ -142,6 +142,17 @@ class TestThinkCoverage(unittest.TestCase):
         result = think_mod.fn("test", depth="brief")
         self.assertEqual(result, "Error: empty response from model")
 
+    def test_invalid_depth_returns_error_without_http_call(self):
+        """think.fn with an invalid depth must return an error immediately, no HTTP call."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("x", depth="turbo")
+        self.assertIn("Error: invalid depth", result)
+        self.assertIn("turbo", result)
+        self.assertIn("brief", result)
+        self.assertIn("normal", result)
+        self.assertIn("deep", result)
+        mock_post.assert_not_called()
+
     def test_get_base_url_default(self):
         """Test _get_base_url when config.json is missing."""
         with patch("os.path.exists", return_value=False):
