@@ -131,3 +131,66 @@ def test_read_pdf_start_page_negative_returns_error():
         assert "start_page" in result
         assert "1-indexed" in result
         mock_doc.close.assert_called_once()
+
+
+def test_read_pdf_end_page_negative_returns_error():
+    """read_pdf must reject negative end_page values (not silently treat as last page)."""
+    with patch('fitz.open') as mock_open:
+        mock_doc = MagicMock()
+        mock_doc.is_pdf = True
+        mock_doc.__len__.return_value = 3
+        mock_open.return_value = mock_doc
+
+        result = fn("dummy.pdf", start_page=1, end_page=-5)
+        assert result.startswith("Error:")
+        assert "end_page" in result
+        assert "-5" in result
+        mock_doc.close.assert_called_once()
+
+
+def test_read_pdf_end_page_exceeds_page_count_returns_error():
+    """read_pdf must reject end_page beyond the document length (not silently clamp)."""
+    with patch('fitz.open') as mock_open:
+        mock_doc = MagicMock()
+        mock_doc.is_pdf = True
+        mock_doc.__len__.return_value = 3
+        mock_open.return_value = mock_doc
+
+        result = fn("dummy.pdf", start_page=1, end_page=999)
+        assert result.startswith("Error:")
+        assert "end_page" in result
+        assert "999" in result
+        assert "3" in result  # mentions actual page count
+        mock_doc.close.assert_called_once()
+
+
+def test_read_pdf_end_page_zero_means_last_page():
+    """end_page=0 (the default sentinel) must still return all pages successfully."""
+    with patch('fitz.open') as mock_open:
+        mock_doc = MagicMock()
+        mock_doc.is_pdf = True
+        mock_doc.__len__.return_value = 2
+        mock_page = MagicMock()
+        mock_page.get_text.return_value = "content"
+        mock_doc.__getitem__.return_value = mock_page
+        mock_open.return_value = mock_doc
+
+        result = fn("dummy.pdf", start_page=1, end_page=0)
+        assert "Pages 1-2 of 2" in result
+        assert "Error" not in result
+
+
+def test_read_pdf_end_page_exact_last_page():
+    """end_page equal to the exact page count must succeed."""
+    with patch('fitz.open') as mock_open:
+        mock_doc = MagicMock()
+        mock_doc.is_pdf = True
+        mock_doc.__len__.return_value = 5
+        mock_page = MagicMock()
+        mock_page.get_text.return_value = "content"
+        mock_doc.__getitem__.return_value = mock_page
+        mock_open.return_value = mock_doc
+
+        result = fn("dummy.pdf", start_page=1, end_page=5)
+        assert "Pages 1-5 of 5" in result
+        assert "Error" not in result
