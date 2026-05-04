@@ -308,6 +308,16 @@ class TestFileCoverageGaps(unittest.TestCase):
             result = file_tool.fn(action="read", path=str(target), start_line=5)
             self.assertIn("Error: start_line (5) exceeds file length", result)
 
+    def test_read_negative_start_line_returns_error(self):
+        """read with a negative start_line must return a clear error, not silently read from line 1."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("line1\nline2\nline3\n", encoding="utf-8")
+            for bad in (-1, -5, -100):
+                result = file_tool.fn(action="read", path=str(target), start_line=bad)
+                self.assertIn(f"Error: start_line must be >= 1 (got {bad})", result,
+                              msg=f"Expected error for start_line={bad}, got: {result!r}")
+
     def test_read_start_line_greater_than_end_line(self):
         """read with start_line > end_line must return a clear error, not empty content."""
         with tempfile.TemporaryDirectory() as d:
