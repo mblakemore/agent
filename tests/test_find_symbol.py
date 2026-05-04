@@ -157,6 +157,46 @@ class TestFindSymbolInvalidMode(unittest.TestCase):
             )
 
 
+class TestFindSymbolInvalidKind(unittest.TestCase):
+    """AC: find_symbol with an invalid kind returns an error dict, not []."""
+
+    def test_invalid_kind_returns_error_dict(self):
+        results = find_symbol("foo", kind="invalid")
+        self.assertEqual(len(results), 1)
+        self.assertIn("error", results[0])
+        self.assertIn("invalid", results[0]["error"].lower())
+
+    def test_invalid_kind_error_mentions_valid_values(self):
+        results = find_symbol("foo", kind="bogus")
+        self.assertIn("error", results[0])
+        error_msg = results[0]["error"]
+        self.assertIn("function", error_msg)
+        self.assertIn("class", error_msg)
+        self.assertIn("method", error_msg)
+
+    def test_invalid_kind_not_confused_with_not_found(self):
+        """Error dict is distinguishable from an empty 'not found' result."""
+        results = find_symbol("foo", kind="typo")
+        self.assertNotEqual(results, [])
+        self.assertIn("error", results[0])
+
+    def test_valid_kinds_still_work(self):
+        """Regression: the three valid kind values continue to work."""
+        for kind in ("function", "class", "method"):
+            results = find_symbol("missing_xyz_zzz", path=_REPO_ROOT, kind=kind)
+            self.assertIsInstance(results, list)
+            self.assertFalse(
+                any("error" in r for r in results),
+                f"kind={kind!r} returned an unexpected error: {results}",
+            )
+
+    def test_none_kind_still_works(self):
+        """kind=None (default) continues to work without error."""
+        results = find_symbol("missing_xyz_zzz", path=_REPO_ROOT, kind=None)
+        self.assertIsInstance(results, list)
+        self.assertFalse(any("error" in r for r in results))
+
+
 class TestFindSymbolUnit(unittest.TestCase):
     """Unit tests using temporary files."""
 

@@ -148,6 +148,7 @@ def _find_callers(tree: ast.AST, name: str, src_path: str) -> list[dict]:
 
 
 _VALID_MODES = {"definition", "callers", "both"}
+_VALID_KINDS = {"function", "class", "method"}
 
 
 def find_symbol(
@@ -171,6 +172,8 @@ def find_symbol(
     """
     if mode not in _VALID_MODES:
         return [{"error": f"Invalid mode {mode!r}. Must be one of: {sorted(_VALID_MODES)}"}]
+    if kind is not None and kind not in _VALID_KINDS:
+        return [{"error": f"Invalid kind {kind!r}. Must be one of: {sorted(_VALID_KINDS)}"}]
 
     search_path = Path(path)
     if not search_path.exists():
