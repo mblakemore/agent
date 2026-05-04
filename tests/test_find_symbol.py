@@ -477,5 +477,84 @@ class TestFindSymbolNoPyFiles(unittest.TestCase):
         self.assertNotIn("error", results[0])
 
 
+class TestFindSymbolNonPyFile(unittest.TestCase):
+    """find_symbol on a single non-.py file must return an error dict,
+    not [], so callers can distinguish 'wrong file type' from 'symbol absent'."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_txt_file_returns_error_dict(self):
+        """A .txt file target returns an error dict, not []."""
+        target = Path(self.tmp) / "notes.txt"
+        target.write_text("def my_func(): pass\n")
+        results = find_symbol("my_func", path=str(target))
+        self.assertEqual(len(results), 1, f"Expected 1 error dict, got: {results}")
+        self.assertIn("error", results[0])
+        self.assertIn("not a Python file", results[0]["error"])
+
+    def test_json_file_returns_error_dict(self):
+        """A .json file target returns an error dict, not []."""
+        target = Path(self.tmp) / "config.json"
+        target.write_text('{"key": "value"}\n')
+        results = find_symbol("key", path=str(target))
+        self.assertEqual(len(results), 1, f"Expected 1 error dict, got: {results}")
+        self.assertIn("error", results[0])
+        self.assertIn("not a Python file", results[0]["error"])
+
+    def test_md_file_returns_error_dict(self):
+        """A .md file target returns an error dict, not []."""
+        target = Path(self.tmp) / "README.md"
+        target.write_text("# My project\n\ndef foo(): pass\n")
+        results = find_symbol("foo", path=str(target))
+        self.assertEqual(len(results), 1, f"Expected 1 error dict, got: {results}")
+        self.assertIn("error", results[0])
+
+    def test_error_mentions_path(self):
+        """Error message must include the file path for diagnosis."""
+        target = Path(self.tmp) / "data.txt"
+        target.write_text("content\n")
+        results = find_symbol("anything", path=str(target))
+        self.assertIn(str(target), results[0]["error"],
+                      f"Error should mention the path; got: {results[0]['error']!r}")
+
+    def test_error_not_confused_with_not_found(self):
+        """Error dict must be distinguishable from an empty 'not found' result."""
+        target = Path(self.tmp) / "notes.txt"
+        target.write_text("content\n")
+        results = find_symbol("anything", path=str(target))
+        self.assertNotEqual(results, [],
+                            "Should return error dict, not [], for a non-.py single file")
+
+    def test_py_file_still_works(self):
+        """Regression: a .py single file still works after the non-.py guard."""
+        target = Path(self.tmp) / "module.py"
+        target.write_text("def my_func(): pass\n")
+        results = find_symbol("my_func", path=str(target))
+        self.assertEqual(len(results), 1, f"Expected 1 result, got: {results}")
+        self.assertNotIn("error", results[0])
+        self.assertEqual(results[0]["scope"], "my_func")
+
+    def test_py_file_symbol_absent_still_returns_empty(self):
+        """Regression: a .py file where the symbol is absent still returns []."""
+        target = Path(self.tmp) / "module.py"
+        target.write_text("def other(): pass\n")
+        results = find_symbol("nonexistent_xyz", path=str(target))
+        self.assertEqual(results, [],
+                         "Symbol absent in .py file must return [], not an error dict")
+
+    def test_error_mentions_only_py_files_supported(self):
+        """Error message must mention that only .py files are supported."""
+        target = Path(self.tmp) / "script.sh"
+        target.write_text("#!/bin/bash\necho hello\n")
+        results = find_symbol("echo", path=str(target))
+        self.assertIn(".py", results[0]["error"],
+                      f"Error should mention .py support; got: {results[0]['error']!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
