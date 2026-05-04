@@ -15,6 +15,8 @@ def subagent(
         return "Error: prompt must be a non-empty string"
     if not prompt.strip():
         return "Error: prompt must not be empty"
+    if "\x00" in prompt:
+        return "Error: prompt must not contain null bytes"
 
     # Determine the absolute path to agent.py
     # tools/subagent.py -> ../agent.py
