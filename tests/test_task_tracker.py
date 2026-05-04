@@ -1024,3 +1024,51 @@ def test_fractional_float_does_not_modify_wrong_task():
     assert "[x] #1" not in listing, (
         f"Task #1 must not be marked done. Listing: {listing!r}"
     )
+
+
+# ── Issue #738: list must treat 'completed' as a terminal status ──────────────
+
+def test_list_completed_task_shows_checked_marker():
+    """list must display [x] for a task with status='completed' (#738)."""
+    Path(_TASKS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    tasks = [{"id": 1, "description": "legacy task", "status": "completed", "created": "2024-01-01T00:00:00"}]
+    Path(_TASKS_FILE).write_text(json.dumps(tasks))
+    result = fn(action="list")
+    assert "[x] #1" in result, (
+        f"Expected [x] marker for completed task, got: {result!r}"
+    )
+    assert "[ ] #1" not in result, (
+        f"completed task must not show as unchecked: {result!r}"
+    )
+
+
+def test_list_completed_task_counted_as_done_not_open():
+    """list summary must count 'completed' tasks as done, not open (#738)."""
+    Path(_TASKS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    tasks = [
+        {"id": 1, "description": "legacy task", "status": "completed", "created": "2024-01-01T00:00:00"},
+        {"id": 2, "description": "open task", "status": "open", "created": "2024-01-01T00:00:00"},
+    ]
+    Path(_TASKS_FILE).write_text(json.dumps(tasks))
+    result = fn(action="list")
+    assert "1 open, 1 done" in result, (
+        f"Expected '1 open, 1 done' (completed counts as done), got: {result!r}"
+    )
+
+
+def test_list_completed_and_done_both_counted_as_done():
+    """list summary must count both 'done' and 'completed' tasks in done total (#738)."""
+    Path(_TASKS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    tasks = [
+        {"id": 1, "description": "completed task", "status": "completed", "created": "2024-01-01T00:00:00"},
+        {"id": 2, "description": "done task", "status": "done", "created": "2024-01-01T00:00:00"},
+        {"id": 3, "description": "open task", "status": "open", "created": "2024-01-01T00:00:00"},
+    ]
+    Path(_TASKS_FILE).write_text(json.dumps(tasks))
+    result = fn(action="list")
+    assert "1 open, 2 done" in result, (
+        f"Expected '1 open, 2 done' (both done and completed count as done), got: {result!r}"
+    )
+    assert "[x] #1" in result, "completed task must show [x]"
+    assert "[x] #2" in result, "done task must show [x]"
+    assert "[ ] #3" in result, "open task must show [ ]"

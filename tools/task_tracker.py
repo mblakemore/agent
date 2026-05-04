@@ -246,16 +246,18 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
                 return f"No tasks with status '{status_filter}'."
         else:
             filtered = tasks
+        _DONE_STATUSES = {"done", "completed"}
         lines = []
         for t in filtered:
-            marker = "x" if t["status"] == "done" else " "
+            marker = "x" if t["status"] in _DONE_STATUSES else " "
             line = f"[{marker}] #{t['id']} ({t['status']}): {t.get('description', '')}"
             if t.get("note"):
                 line += f" — {t['note']}"
             lines.append(line)
         # Summary counts always reflect the full task list, not just the filtered view.
-        open_count = sum(1 for t in tasks if t["status"] != "done")
-        done_count = sum(1 for t in tasks if t["status"] == "done")
+        # Both 'done' and 'completed' are terminal statuses (#738).
+        open_count = sum(1 for t in tasks if t["status"] not in _DONE_STATUSES)
+        done_count = sum(1 for t in tasks if t["status"] in _DONE_STATUSES)
         lines.append(f"\n{open_count} open, {done_count} done")
         return "\n".join(lines)
 
