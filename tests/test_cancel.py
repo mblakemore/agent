@@ -145,22 +145,22 @@ class CancelLowLevelTests(unittest.TestCase):
         def side_effect(timeout):
             nonlocal count
             count += 1
-            seq = [b'\x1b', None, b'\x1b', None]
+            seq = ['\x1b', None, '\x1b', None]
             if count <= len(seq):
                 return seq[count-1]
             raise BreakLoop()
 
         count = 0
         mock_read.side_effect = side_effect
-        
+
         cancel._monitor_active.set()
         cancel.reset()
-        
+
         try:
             cancel._monitor_loop()
         except BreakLoop:
             pass
-            
+
         self.assertTrue(cancel.is_cancelled())
 
     @patch('cancel._read_byte')
@@ -170,7 +170,7 @@ class CancelLowLevelTests(unittest.TestCase):
         def side_effect(timeout):
             nonlocal count
             count += 1
-            seq = [b'\x1b', b'[', b'A']
+            seq = ['\x1b', '[', 'A']
             if count <= len(seq):
                 return seq[count-1]
             raise BreakLoop()
@@ -195,14 +195,14 @@ class CancelLowLevelTests(unittest.TestCase):
         def side_effect(timeout):
             nonlocal count
             count += 1
-            seq = [b'\x1b', None, b'\x1b', None]
+            seq = ['\x1b', None, '\x1b', None]
             if count <= len(seq):
                 return seq[count-1]
             raise BreakLoop()
 
         count = 0
         mock_read.side_effect = side_effect
-        
+
         with patch('time.monotonic') as mock_time:
             # First call: 0.0, Second call: 0.5 ( > 0.4)
             mock_time.side_effect = [0.0, 0.5]
@@ -263,7 +263,7 @@ class CoverageEdgeCaseTests(unittest.TestCase):
         def side_effect(timeout):
             nonlocal count
             count += 1
-            seq = [b'\x1b', b'O', None]
+            seq = ['\x1b', 'O', None]
             if count <= len(seq):
                 return seq[count-1]
             raise BreakLoop()
@@ -281,7 +281,7 @@ class CoverageEdgeCaseTests(unittest.TestCase):
         def side_effect(timeout):
             nonlocal count
             count += 1
-            seq = [b'a', None]
+            seq = ['a', None]
             if count <= len(seq):
                 return seq[count-1]
             raise BreakLoop()
@@ -297,7 +297,7 @@ class CoverageEdgeCaseTests(unittest.TestCase):
     def test_consume_ansi_internals(self, mock_read):
         # Sequence: b'[', then some chars, then a letter
         # \x1b [ 1 2 m
-        mock_read.side_effect = [b'[', b'1', b'2', b'm', None]
+        mock_read.side_effect = ['[', '1', '2', 'm', None]
         cancel._consume_ansi_sequence()
 
     @patch('termios.tcsetattr')
