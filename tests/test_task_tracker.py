@@ -1877,3 +1877,68 @@ def test_load_tasks_from_restricted_dir_returns_clear_error():
         os.chmod(tmpdir, 0o755)
         shutil.rmtree(tmpdir)
         _tt_mod._TASKS_FILE = orig
+
+
+# ── Regression: add with explicit task_id (#fix-misc-edges) ──
+
+def test_add_with_explicit_task_id_returns_error():
+    """task_id is not valid for 'add' — must return an error, not silently ignore."""
+    result = fn(action="add", description="some task", task_id=99)
+    assert "Error" in result
+    assert "task_id=99" in result
+    assert "not valid for 'add'" in result
+
+
+def test_add_without_task_id_still_works():
+    """Normal add (no task_id) must still work after the task_id guard."""
+    result = fn(action="add", description="normal task")
+    assert "Added task #1" in result
+
+
+# ── Regression: list with limit parameter (#fix-misc-edges) ──
+
+def test_list_with_limit_returns_subset():
+    """list with limit=3 must return at most 3 task lines."""
+    for i in range(10):
+        fn(action="add", description=f"task {i+1}")
+    result = fn(action="list", limit=3)
+    # Should show 3 tasks and a "showing N of M" note
+    task_lines = [l for l in result.splitlines() if l.startswith("[")]
+    assert len(task_lines) == 3, f"Expected 3 task lines, got {len(task_lines)}: {result!r}"
+    assert "showing 3 of 10" in result
+
+
+def test_list_with_limit_zero_returns_all():
+    """list with limit=0 (default) must return all tasks."""
+    for i in range(5):
+        fn(action="add", description=f"task {i+1}")
+    result = fn(action="list", limit=0)
+    task_lines = [l for l in result.splitlines() if l.startswith("[")]
+    assert len(task_lines) == 5
+    assert "showing" not in result
+
+
+def test_list_with_limit_larger_than_total_returns_all():
+    """list with limit > total tasks must return all tasks without truncation note."""
+    for i in range(3):
+        fn(action="add", description=f"task {i+1}")
+    result = fn(action="list", limit=10)
+    task_lines = [l for l in result.splitlines() if l.startswith("[")]
+    assert len(task_lines) == 3
+    assert "showing" not in result
+
+
+def test_list_limit_negative_returns_error():
+    """A negative limit must return an error."""
+    fn(action="add", description="task")
+    result = fn(action="list", limit=-1)
+    assert "Error" in result
+    assert "limit" in result
+
+
+def test_list_limit_bool_returns_error():
+    """limit=True must be rejected (bool is subclass of int but not a valid limit)."""
+    fn(action="add", description="task")
+    result = fn(action="list", limit=True)
+    assert "Error" in result
+    assert "bool" in result
