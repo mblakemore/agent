@@ -1602,3 +1602,25 @@ class TestSearchFilesTypeNameQuoting(unittest.TestCase):
         result = search_files.fn("HIT", path=None)
         self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
         self.assertIn("'NoneType'", result, f"Type name must be quoted: {result!r}")
+
+
+class TestSearchFilesBoolContextFormat(unittest.TestCase):
+    """Bool context error must use 'got \\'bool\\': value' format and include the value (#921)."""
+
+    def test_bool_true_context_uses_colon_format(self):
+        """context=True error must say got 'bool': True and include the value (#921)."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("HIT\n")
+            result = search_files.fn("HIT", path=d, context=True)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'bool'", result, f"Type name must be quoted: {result!r}")
+        self.assertIn("True", result, f"Value must appear in error: {result!r}")
+
+    def test_bool_false_context_uses_colon_format(self):
+        """context=False error must say got 'bool': False and include the value (#921)."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("HIT\n")
+            result = search_files.fn("HIT", path=d, context=False)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'bool'", result, f"Type name must be quoted: {result!r}")
+        self.assertIn("False", result, f"Value must appear in error: {result!r}")

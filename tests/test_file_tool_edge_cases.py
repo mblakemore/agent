@@ -803,5 +803,36 @@ class TestFileTypeNameQuoting(unittest.TestCase):
         self.assertIn("'NoneType'", result, f"Type name must be quoted: {result!r}")
 
 
+class TestFileBoolLineNumberFormat(unittest.TestCase):
+    """Bool start_line/end_line errors must use 'got \\'bool\\': value' format, not 'got bool (value)' (#921)."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        target = Path(self._tmp) / "sample.txt"
+        target.write_text("line1\nline2\nline3\n")
+        file_tool.fn(action="read", path=str(target))
+        self._target = str(target)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmp)
+
+    def test_bool_start_line_uses_colon_format(self):
+        """Bool start_line error must say got 'bool': True, not got bool (True) (#921)."""
+        result = file_tool.fn(action="read", path=self._target, start_line=True)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'bool'", result, f"Type name must be quoted: {result!r}")
+        self.assertIn("True", result, f"Value must appear in error: {result!r}")
+        self.assertNotIn("(True)", result, f"Old parenthesis format must be gone: {result!r}")
+
+    def test_bool_end_line_uses_colon_format(self):
+        """Bool end_line error must say got 'bool': False, not got bool (False) (#921)."""
+        result = file_tool.fn(action="read", path=self._target, end_line=False)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'bool'", result, f"Type name must be quoted: {result!r}")
+        self.assertIn("False", result, f"Value must appear in error: {result!r}")
+        self.assertNotIn("(False)", result, f"Old parenthesis format must be gone: {result!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
