@@ -726,3 +726,75 @@ def test_substring_match_still_works_when_no_exact_match():
     assert "Completed task #1" in res, (
         f"Expected task #1 to be completed via substring match, got: {res!r}"
     )
+
+
+# ── Issue #726: embedded newlines in description/note must be collapsed ────────
+
+def test_add_description_with_embedded_newline_collapsed():
+    """description with embedded newlines must be collapsed to a single-line string (#726)."""
+    res = fn(action="add", description="line1\nline2\nline3")
+    assert "Added task #1" in res
+    # Stored description must contain no newlines
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert "\n" not in tasks[0]["description"], (
+        f"description must not contain newlines, got: {tasks[0]['description']!r}"
+    )
+    assert tasks[0]["description"] == "line1 line2 line3"
+
+
+def test_add_description_with_carriage_return_collapsed():
+    """description with \\r\\n line endings must also be collapsed (#726)."""
+    res = fn(action="add", description="part1\r\npart2")
+    assert "Added task #1" in res
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert "\r" not in tasks[0]["description"]
+    assert "\n" not in tasks[0]["description"]
+    assert tasks[0]["description"] == "part1 part2"
+
+
+def test_list_output_not_broken_by_multiline_description():
+    """list output must be one task per line even when description contained newlines (#726)."""
+    fn(action="add", description="first\nsecond\nthird")
+    result = fn(action="list")
+    # Every line in the output that contains '#1' must be a well-formed task entry
+    task_lines = [line for line in result.splitlines() if "#1" in line]
+    assert len(task_lines) == 1, (
+        f"Expected exactly one line mentioning #1 in list output, got: {result!r}"
+    )
+    assert "[ ] #1 (open): first second third" in result
+
+
+def test_update_note_with_embedded_newline_collapsed():
+    """note passed to update with embedded newlines must be collapsed (#726)."""
+    fn(action="add", description="Task to annotate")
+    res = fn(action="update", task_id=1, description="note line1\nnote line2")
+    assert "Updated task #1" in res
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    note = tasks[0].get("note", "")
+    assert "\n" not in note, f"note must not contain newlines, got: {note!r}"
+    assert note == "note line1 note line2"
+
+
+def test_done_note_with_embedded_newline_collapsed():
+    """note passed to done with embedded newlines must be collapsed (#726)."""
+    fn(action="add", description="Task to finish")
+    res = fn(action="done", task_id=1, description="finished\nwith note")
+    assert "Completed task #1" in res
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    note = tasks[0].get("note", "")
+    assert "\n" not in note, f"note must not contain newlines, got: {note!r}"
+    assert note == "finished with note"
+
+
+def test_add_newline_only_description_still_rejected():
+    """description='\\n' (newline only) must still return Error after the collapse fix (#726)."""
+    res = fn(action="add", description="\n")
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    assert "description required" in res
+
+
+def test_add_multiline_whitespace_description_still_rejected():
+    """description='  \\n  ' (whitespace + newlines only) must still return Error (#726)."""
+    res = fn(action="add", description="  \n  \n  ")
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    assert "description required" in res
