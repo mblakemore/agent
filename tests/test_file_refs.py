@@ -86,6 +86,73 @@ class TestExpandFileRefs(unittest.TestCase):
         self.assertIn("SYSTEM CONTEXT", files)
         self.assertIn("AGENT IDENTITY FILE", files)
 
+    # ── Path-traversal confinement tests ──────────────────────────────
+
+    def test_absolute_path_outside_cwd_blocked(self):
+        """@/abs/path to a file outside the working dir must be rejected."""
+        outside = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+        outside.write(b"SECRET\n")
+        outside.close()
+        try:
+            text, files, err = agent._expand_file_refs(f"@{outside.name}")
+            self.assertIsNone(text)
+            self.assertIsNone(files)
+            self.assertIsNotNone(err)
+            self.assertIn("outside", err)
+            self.assertIn("working directory", err)
+        finally:
+            os.unlink(outside.name)
+
+    def test_relative_traversal_blocked(self):
+        """@../sibling/secret.txt must be rejected when it escapes the cwd."""
+        # Create a secret file in a sibling temp dir
+        sibling = tempfile.TemporaryDirectory()
+        secret = Path(sibling.name) / "secret.txt"
+        secret.write_text("SIBLING_SECRET")
+        try:
+            rel = os.path.relpath(str(secret), self.root)
+            text, files, err = agent._expand_file_refs(f"@{rel}")
+            self.assertIsNone(text)
+            self.assertIsNone(files)
+            self.assertIsNotNone(err)
+            self.assertIn("outside", err)
+        finally:
+            sibling.cleanup()
+
+    def test_symlink_to_outside_blocked(self):
+        """A symlink inside cwd that points outside must be rejected."""
+        outside = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
+        outside.write(b"SYMLINK_SECRET\n")
+        outside.close()
+        link = self.root / "link.txt"
+        link.symlink_to(outside.name)
+        try:
+            text, files, err = agent._expand_file_refs("@link.txt")
+            self.assertIsNone(text)
+            self.assertIsNone(files)
+            self.assertIsNotNone(err)
+            self.assertIn("outside", err)
+        finally:
+            os.unlink(outside.name)
+
+    def test_file_inside_cwd_allowed(self):
+        """A legitimate @ref to a file inside the cwd must succeed."""
+        self._write("subdir/notes.txt", "allowed content\n")
+        buf = StringIO()
+        with redirect_stdout(buf):
+            text, files, err = agent._expand_file_refs("@subdir/notes.txt")
+        self.assertIsNone(err)
+        self.assertIn("allowed content", files)
+
+    def test_deeply_nested_file_inside_cwd_allowed(self):
+        """A deeply nested file that stays inside the cwd is allowed."""
+        self._write("a/b/c/deep.txt", "deep content\n")
+        buf = StringIO()
+        with redirect_stdout(buf):
+            text, files, err = agent._expand_file_refs("@a/b/c/deep.txt")
+        self.assertIsNone(err)
+        self.assertIn("deep content", files)
+
 
 if __name__ == "__main__":
     unittest.main()
