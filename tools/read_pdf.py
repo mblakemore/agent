@@ -23,6 +23,13 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
     except Exception as e:
         return f"Error opening PDF: {e}"
 
+    if not doc.is_pdf:
+        doc.close()
+        return (
+            f"Error: '{path}' is not a PDF file. "
+            "Use the 'file' tool with action='read' for text files."
+        )
+
     total = len(doc)
     if total == 0:
         doc.close()
