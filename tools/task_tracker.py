@@ -114,7 +114,10 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
     if action == "update" and status in ("completed", "done"):
         action = "done"
 
-    # Auto-resolve task_id: if missing, try to find a unique open task
+    # Auto-resolve task_id: if missing, try to find a unique open task.
+    # Track whether description was consumed solely as a selector so it is NOT
+    # also stored as a note — the caller used it to identify the task, not annotate it.
+    _description_used_for_resolution = False
     if action in ("done", "update", "drop") and task_id <= 0:
         open_tasks = [t for t in tasks if t["status"] not in ("done", "completed")]
         if len(open_tasks) == 1:
@@ -126,6 +129,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
                        or t.get("description", "").lower() in desc_lower]
             if len(matches) == 1:
                 task_id = matches[0]["id"]
+                _description_used_for_resolution = True
 
     if action == "add":
         if not description:
@@ -160,7 +164,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
                     return f"Error: task #{task_id} is already done"
                 t["status"] = "done"
                 t["completed"] = datetime.now().isoformat(timespec="seconds")
-                if description:
+                if description and not _description_used_for_resolution:
                     t["note"] = description
                 _save_tasks(tasks)
                 return f"Completed task #{task_id}: {t.get('description', '')}"
@@ -170,7 +174,10 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
         if task_id <= 0:
             available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] != "done"]
             return f"Error: task_id required for 'update'. Example: task_tracker(action=\"update\", task_id=1, status=\"in_progress\")\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
-        if not status and not description:
+        # When description was used only to resolve task_id, it carries no note
+        # intent — treat it as absent for validation and note-writing purposes.
+        _effective_description = "" if _description_used_for_resolution else description
+        if not status and not _effective_description:
             return "Error: 'update' requires at least one of: status or description"
         _VALID_STATUSES = {"open", "in_progress", "blocked", "deferred"}
         if status and status not in _VALID_STATUSES:
@@ -183,12 +190,12 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
                     return f"Error: task #{task_id} is already done"
                 if status:
                     t["status"] = status
-                if description:
-                    t["note"] = description
+                if _effective_description:
+                    t["note"] = _effective_description
                 _save_tasks(tasks)
                 msg = f"Updated task #{task_id}: status={t['status']}"
-                if description:
-                    msg += f", note={description!r}"
+                if _effective_description:
+                    msg += f", note={_effective_description!r}"
                 return msg
         return f"Error: task #{task_id} not found"
 
