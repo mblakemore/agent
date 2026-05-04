@@ -290,6 +290,14 @@ class TestSearchFilesEdgeCases(unittest.TestCase):
         result = search_files.fn("   ", path=".")
         self.assertIn("Error: Search pattern cannot be empty.", result)
 
+    def test_empty_glob_returns_error(self):
+        """An empty glob string silently matched 0 files; now it must return an error."""
+        result = search_files.fn("def ", glob="", path=".")
+        self.assertIn("Error: glob filter cannot be empty", result)
+        # Whitespace-only glob should also be rejected
+        result = search_files.fn("def ", glob="   ", path=".")
+        self.assertIn("Error: glob filter cannot be empty", result)
+
     def test_invalid_regex(self):
         result = search_files.fn("[", path=".")
         self.assertIn("Error: invalid regex pattern", result)
