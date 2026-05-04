@@ -930,3 +930,83 @@ class TestSearchFilesCaseSensitiveDefault(unittest.TestCase):
         def_default = search_files.definition["function"]["parameters"]["properties"]["ignore_case"]["default"]
         self.assertEqual(sig_default, def_default,
             f"Signature default {sig_default!r} does not match definition default {def_default!r}")
+
+
+class TestSearchFilesContext0VsContextN(unittest.TestCase):
+    """Regression tests for #750: context=0 and context>0 must agree on which
+    lines match when the pattern can match the trailing newline.
+
+    Before the fix, context=0 called ``regex.search(line)`` on the raw line
+    (which ends with ``\\n``), while context>0 rstripped first.  Any pattern
+    containing ``\\s``, ``\\s+``, ``\\s*`` or similar could match the trailing
+    newline in context=0 but not in context>0, producing different hit counts.
+    """
+
+    def test_trailing_newline_not_matched_in_context0(self):
+        r"""Pattern 'hello\s' must NOT match a line containing only 'hello\n'
+        (the trailing newline is not part of the meaningful line content)."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "test.py").write_text("hello world\nhello\nworld\n")
+            result = search_files.fn(r"hello\s", path=d, context=0)
+            body = _body(result)
+            lines = [l for l in body.split("\n") if l.strip()]
+            # Only 'hello world' (has a real space after 'hello') should match.
+            self.assertEqual(len(lines), 1, f"Expected 1 match, got {len(lines)}: {lines}")
+            self.assertIn("hello world", lines[0])
+            self.assertNotIn("test.py:2:", body)
+
+    def test_context0_and_context3_agree_on_match_count(self):
+        r"""context=0 and context=3 must find the same number of matches for
+        a pattern that would previously match the trailing newline."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "test.py").write_text("hello world\nhello\nworld\n")
+            result0 = search_files.fn(r"hello\s", path=d, context=0)
+            result3 = search_files.fn(r"hello\s", path=d, context=3)
+            # Extract match count from header
+            import re as _re
+            count0 = int(_re.search(r"(\d+) results", result0).group(1))
+            count3 = int(_re.search(r"(\d+) results", result3).group(1))
+            self.assertEqual(count0, count3,
+                f"context=0 found {count0} matches but context=3 found {count3}")
+
+    def test_single_file_context0_and_context1_agree(self):
+        r"""Single-file path: context=0 and context=1 must agree on match count
+        for a pattern containing \s."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "test.py")
+            p.write_text("word here\nword\nother\n")
+            result0 = search_files.fn(r"word\s", path=str(p), context=0)
+            result1 = search_files.fn(r"word\s", path=str(p), context=1)
+            import re as _re
+            count0 = int(_re.search(r"(\d+) results", result0).group(1))
+            count1 = int(_re.search(r"(\d+) results", result1).group(1))
+            self.assertEqual(count0, count1,
+                f"Single-file: context=0 found {count0} but context=1 found {count1}")
+
+    def test_count_only_consistent_with_context0(self):
+        r"""count_only=True must also agree with context=0 on match count."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "test.py").write_text("hello world\nhello\nworld\n")
+            result0 = search_files.fn(r"hello\s", path=d, context=0)
+            result_count = search_files.fn(r"hello\s", path=d, count_only=True)
+            import re as _re
+            count0 = int(_re.search(r"(\d+) results", result0).group(1))
+            count_only_val = int(_re.search(r"(\d+) results", result_count).group(1))
+            self.assertEqual(count0, count_only_val,
+                f"context=0 found {count0} but count_only found {count_only_val}")
+
+    def test_pattern_with_whitespace_anchor_consistent(self):
+        r"""Pattern '\bword\b\s*$' (end-of-word possibly with trailing space)
+        must give the same results in context=0 and context>0."""
+        with tempfile.TemporaryDirectory() as d:
+            # Line 1: 'end of line' — does NOT end with 'word'
+            # Line 2: 'last word' — ends with 'word'
+            # Line 3: 'word   ' — trailing spaces then nothing else
+            Path(d, "test.py").write_text("end of line\nlast word\nword   \n")
+            result0 = search_files.fn(r"word\s*$", path=d, context=0)
+            result3 = search_files.fn(r"word\s*$", path=d, context=3)
+            import re as _re
+            count0 = int(_re.search(r"(\d+) results", result0).group(1))
+            count3 = int(_re.search(r"(\d+) results", result3).group(1))
+            self.assertEqual(count0, count3,
+                f"context=0 found {count0} but context=3 found {count3}")
