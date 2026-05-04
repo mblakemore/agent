@@ -316,6 +316,34 @@ class TestFileList(unittest.TestCase):
             result = file_tool.fn(action="list", path=str(Path(d) / "none"))
             self.assertTrue(result.startswith("Error"), "Should return error for nonexistent directory")
 
+    def test_list_returns_absolute_paths_when_cwd_differs(self):
+        """list action must return absolute paths so the agent can use them as-is
+        regardless of where the process cwd happens to be (#688)."""
+        orig_cwd = os.getcwd()
+        try:
+            with tempfile.TemporaryDirectory() as d:
+                target_dir = Path(d) / "mydir"
+                target_dir.mkdir()
+                (target_dir / "alpha.py").write_text("x")
+                (target_dir / "beta").mkdir()
+                # Change cwd to /tmp so it differs from the listed directory
+                os.chdir("/tmp")
+                result = file_tool.fn(action="list", path=str(target_dir))
+                lines = result.strip().split("\n")
+                for line in lines:
+                    bare = line.rstrip("/")
+                    self.assertTrue(
+                        bare.startswith("/"),
+                        msg=f"Expected absolute path in list output, got bare name: {line!r}",
+                    )
+                # Entries must contain the full parent path, not just the name
+                self.assertTrue(
+                    any(str(target_dir) in line for line in lines),
+                    msg=f"Expected target_dir prefix in list output; got:\n{result}",
+                )
+        finally:
+            os.chdir(orig_cwd)
+
 
 if __name__ == "__main__":
     unittest.main()

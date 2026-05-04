@@ -449,7 +449,7 @@ def _list(path):
     parts = []
     for e in entries:
         suffix = "/" if e.is_dir() else ""
-        parts.append(f"{e.name}{suffix}")
+        parts.append(f"{e}{suffix}")
     return "\n".join(parts)
 
 
