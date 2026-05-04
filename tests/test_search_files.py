@@ -1121,3 +1121,64 @@ class TestSearchFilesInvalidRegex(unittest.TestCase):
         self.assertIn("alpha", result)
         self.assertNotIn("Error", result)
         self.assertNotIn("Error:", result)
+
+
+class TestCountOnlyProbeRegression(unittest.TestCase):
+    """Regression tests for probed count_only behaviors (#778).
+
+    These verify the behaviors identified during the CICD probe session —
+    all were already correct; these tests pin them so future refactors cannot
+    silently regress them.
+    """
+
+    def test_count_only_zero_matches_returns_string_not_none(self):
+        """count_only with no matches must return a non-empty string, not None or empty (#778)."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("hello world\n")
+            result = search_files.fn(pattern="ZZZNOMATCHXYZ", path=d, count_only=True)
+        self.assertIsInstance(result, str, "count_only must return a string")
+        self.assertTrue(result.strip(), "count_only must not return an empty string")
+        self.assertIn("Searched", result, "result must contain the Searched header")
+
+    def test_count_only_zero_matches_contains_zero_count(self):
+        """count_only with no matches must report 0 matched files and 0 results (#778)."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("hello world\n")
+            result = search_files.fn(pattern="ZZZNOMATCHXYZ", path=d, count_only=True)
+        self.assertIn("0 matched", result, f"Expected '0 matched' in: {result!r}")
+        self.assertIn("0 results", result, f"Expected '0 results' in: {result!r}")
+        # Must NOT contain match content prose — just the header
+        self.assertNotIn("No matches found", result,
+                         "count_only must not emit 'No matches found' prose")
+
+    def test_count_only_with_context_arg_ignores_context(self):
+        """count_only=True must return header-only even when context > 0 is passed (#778).
+
+        The context argument is irrelevant when only counting — must not cause
+        extra output or build context windows.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("def foo(): pass\ndef bar(): pass\n")
+            result_plain = search_files.fn(pattern="def ", path=d, count_only=True)
+            result_ctx = search_files.fn(pattern="def ", path=d, count_only=True, context=5)
+        # Both must return the same counts
+        self.assertEqual(result_plain, result_ctx,
+                         f"count_only with and without context must match:\n"
+                         f"  plain: {result_plain!r}\n  ctx=5: {result_ctx!r}")
+        # Neither must contain match content
+        self.assertNotIn("def foo", result_ctx)
+        self.assertNotIn("def bar", result_ctx)
+        self.assertNotIn("--", result_ctx, "Context separator must not appear with count_only")
+
+    def test_count_only_with_matches_returns_correct_counts(self):
+        """count_only with matches must return the correct file and result counts (#778)."""
+        with tempfile.TemporaryDirectory() as d:
+            # 2 files, 3 matches total
+            Path(d, "a.py").write_text("def alpha(): pass\ndef beta(): pass\n")
+            Path(d, "b.py").write_text("def gamma(): pass\n")
+            result = search_files.fn(pattern="def ", path=d, count_only=True, glob="*.py")
+        self.assertIn("2 matched", result, f"Expected 2 matched files, got: {result!r}")
+        self.assertIn("3 results", result, f"Expected 3 results, got: {result!r}")
+        # No match lines
+        self.assertNotIn("def alpha", result)
+        self.assertNotIn("def gamma", result)
