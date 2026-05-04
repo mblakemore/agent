@@ -203,12 +203,20 @@ def test_extract_pinned():
     assert pinned == "Important stuff"
 
 def test_apply_backend_overrides():
-    with patch('agent._build_backend') as mock_build:
-        agent._config["backends"] = {"main": {"kind": "llamacpp"}, "summary": {"kind": "llamacpp"}, "model": "some-model"}
-        agent._apply_backend_overrides(main_kind="bedrock", summary_kind=None)
-        assert agent._config["backends"]["main"]["kind"] == "bedrock"
-        assert "claude-" in agent._config["backends"]["main"]["model"]
-        mock_build.assert_called()
+    # Save globals that _apply_backend_overrides mutates so the test is isolated.
+    original_backend = agent._main_backend
+    original_config_backends = agent._config.get("backends")
+    try:
+        with patch('agent._build_backend') as mock_build:
+            agent._config["backends"] = {"main": {"kind": "llamacpp"}, "summary": {"kind": "llamacpp"}, "model": "some-model"}
+            agent._apply_backend_overrides(main_kind="bedrock", summary_kind=None)
+            assert agent._config["backends"]["main"]["kind"] == "bedrock"
+            assert "claude-" in agent._config["backends"]["main"]["model"]
+            mock_build.assert_called()
+    finally:
+        agent._main_backend = original_backend
+        if original_config_backends is not None:
+            agent._config["backends"] = original_config_backends
 
 def test_summary_backend_unreachable():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
