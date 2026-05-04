@@ -470,6 +470,12 @@ def _append(path, content):
 def _insert(path, content, start_line):
     """Insert content BEFORE the given line number. Existing lines shift down."""
     p = Path(path)
+
+    # Confinement: reject inserts to paths outside the working directory (#861)
+    err = _check_write_confinement(path, p)
+    if err:
+        return err
+
     if not p.exists():
         return f"Error: cannot insert — '{path}' does not exist"
     if not content:
@@ -522,6 +528,12 @@ def _delete(path, start_line=0, end_line=0):
     p = Path(path)
     if p.name in _BLOCKED_FILENAMES:
         return f"Error: '{p.name}' is an internal runtime file and cannot be deleted."
+
+    # Confinement: reject deletes to paths outside the working directory (#861)
+    err = _check_write_confinement(path, p)
+    if err:
+        return err
+
     if not p.exists():
         return f"Error: '{path}' does not exist"
     if p.is_dir():
