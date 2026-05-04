@@ -436,3 +436,40 @@ class TestFileCoverageGaps(unittest.TestCase):
             result = file_tool.fn(action="list", path=str(target))
             self.assertIn("Error: '", result)
             self.assertIn("not a directory", result)
+
+
+class TestFilePathWhitespace(unittest.TestCase):
+    """Path strings with leading/trailing whitespace must be treated the same
+    as trimmed paths — the tool should strip them rather than failing with a
+    misleading 'does not exist' error."""
+
+    def test_read_path_with_leading_trailing_spaces_succeeds(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "hello.txt"
+            target.write_text("world\n", encoding="utf-8")
+            file_tool._accessed_files.add(str(target.resolve()))
+            result = file_tool.fn(action="read", path="  " + str(target) + "  ")
+            self.assertNotIn("does not exist", result)
+            self.assertIn("world", result)
+
+    def test_write_path_with_leading_trailing_spaces_succeeds(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "new.txt"
+            result = file_tool.fn(action="write", path=" " + str(target) + " ", content="hi\n")
+            self.assertNotIn("does not exist", result)
+            self.assertIn("Wrote", result)
+            self.assertTrue(target.exists())
+
+    def test_delete_path_with_leading_trailing_spaces_succeeds(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "bye.txt"
+            target.write_text("bye", encoding="utf-8")
+            result = file_tool.fn(action="delete", path=" " + str(target) + " ")
+            self.assertNotIn("does not exist", result)
+            self.assertIn("Deleted", result)
+            self.assertFalse(target.exists())
+
+    def test_list_path_with_leading_trailing_spaces_succeeds(self):
+        with tempfile.TemporaryDirectory() as d:
+            result = file_tool.fn(action="list", path="\t" + d + "\t")
+            self.assertNotIn("does not exist", result)
