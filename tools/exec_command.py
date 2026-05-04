@@ -149,7 +149,8 @@ atexit.register(cleanup_temp_sessions)
 
 
 def fn(command: str = "", session_id: str = "", timeout: float = 120,
-       background: bool = False, new_session: bool = False) -> str:
+       background: bool = False, new_session: bool = False,
+       cwd: str = "") -> str:
     """Execute a shell command in the agent's working directory.
 
     Args:
@@ -158,6 +159,9 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         timeout: Max seconds to wait (default 120). LLM-calling scripts may need 300+.
         background: If true, start the command and return immediately.
         new_session: If true, create a new temporary session for parallel work.
+        cwd: Working directory for this invocation. If empty, uses the agent's home
+             directory. Must be an existing directory. This is the clean alternative
+             to 'cd /abs/path && cmd' for running commands outside the repo tree.
     """
     if not isinstance(command, str):
         return "Error: command must be a string"
@@ -166,6 +170,15 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
 
     if not math.isfinite(timeout) or timeout <= 0:
         return "Error: timeout must be a positive number"
+
+    if cwd:
+        if not isinstance(cwd, str):
+            return "Error: cwd must be a string"
+        cwd_path = Path(cwd)
+        if not cwd_path.exists():
+            return f"Error: cwd '{cwd}' does not exist"
+        if not cwd_path.is_dir():
+            return f"Error: cwd '{cwd}' is not a directory"
 
     sid, err = _get_or_create_session(session_id, new_session)
     if err:
@@ -189,8 +202,9 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
 
     # ── Guards ────────────────────────────────────────────────────────
 
-    # Every command runs from the agent's home directory
+    # Every command runs from the agent's home directory, unless cwd overrides it
     home_cwd = os.getcwd()
+    run_cwd = str(Path(cwd).resolve()) if cwd else home_cwd
 
     # Block cd to paths outside the repo tree.
     # Relative cd (cd ../shared && ...) is fine — only block absolute paths and ~ expansion
@@ -283,7 +297,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     if write_target:
         target_path = Path(write_target)
         if not target_path.is_absolute():
-            target_path = Path(home_cwd) / target_path
+            target_path = Path(run_cwd) / target_path
         try:
             resolved = str(target_path.resolve())
         except (OSError, ValueError):
@@ -298,14 +312,14 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         _accessed_files.add(resolved)
 
     # ── Auto-inject PYTHONPATH if a git root is found and PYTHONPATH not set ──
-    _auto_env = _build_env_with_pythonpath(home_cwd)
+    _auto_env = _build_env_with_pythonpath(run_cwd)
 
     # ── Background execution ──────────────────────────────────────────
     if background:
         try:
             proc = subprocess.Popen(
                 ['bash', '-c', f'{command} 2>&1'],
-                cwd=home_cwd,
+                cwd=run_cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -335,7 +349,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     try:
         proc = subprocess.Popen(
             ['bash', '-c', f'{command} 2>&1'],
-            cwd=home_cwd,
+            cwd=run_cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -410,7 +424,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         try:
             wt = Path(write_target)
             if not wt.is_absolute():
-                wt = Path(home_cwd) / wt
+                wt = Path(run_cwd) / wt
             if wt.exists() and wt.is_file():
                 text = wt.read_text(encoding='utf-8', errors='replace')
                 # Strip trailing heredoc terminators: EOF, EOF 2>&1, JSONEOF 2>&1, etc.
@@ -428,7 +442,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
             if not read_target.startswith('-'):  # skip flags like -n
                 rp = Path(read_target)
                 if not rp.is_absolute():
-                    rp = Path(home_cwd) / rp
+                    rp = Path(run_cwd) / rp
                 try:
                     _accessed_files.add(str(rp.resolve()))
                 except (OSError, ValueError):
@@ -443,8 +457,8 @@ definition = {
         "name": "exec_command",
         "description": (
             "Execute a shell command. "
-            "Every command starts from the agent's home directory — "
-            "use 'cd ../e1 && cmd' for one-off commands in other directories. "
+            "Every command starts from the agent's home directory by default — "
+            "pass cwd='/abs/path' to run in a different directory. "
             "Set new_session=true to create a temporary session for background work "
             "(e.g., running a server). "
             "Temp sessions are cleaned up at end of cycle. "
@@ -491,6 +505,17 @@ definition = {
                     "type": "boolean",
                     "description": "If true, create a new temporary session instead of using the main one. Use for parallel tasks like running a server.",
                     "default": False,
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": (
+                        "Working directory for this command. Must be an absolute path to an existing directory. "
+                        "Use this instead of 'cd /abs/path && cmd' when you need to run a command outside the "
+                        "agent's home directory — the cd-guard blocks absolute 'cd X && cmd' for paths outside "
+                        "the repo tree, but cwd has no such restriction. "
+                        "If omitted, the command runs from the agent's home directory."
+                    ),
+                    "default": "",
                 },
             },
             "required": [],
