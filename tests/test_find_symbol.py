@@ -118,9 +118,20 @@ class TestFindSymbolAC4(unittest.TestCase):
         results = find_symbol("missing_xyz_zzz", path=_AGENT_PY)
         self.assertEqual(results, [])
 
-    def test_nonexistent_path_returns_empty_list(self):
+    def test_nonexistent_path_returns_error_dict(self):
         results = find_symbol("anything", path="/nonexistent/path/xyz")
-        self.assertEqual(results, [])
+        self.assertEqual(len(results), 1)
+        self.assertIn("error", results[0])
+        self.assertIn("does not exist", results[0]["error"])
+
+    def test_nonexistent_path_error_mentions_path(self):
+        results = find_symbol("anything", path="/nonexistent/path/xyz")
+        self.assertIn("/nonexistent/path/xyz", results[0]["error"])
+
+    def test_nonexistent_path_not_confused_with_not_found(self):
+        """Error dict for missing path is distinguishable from empty 'not found' result."""
+        results = find_symbol("anything", path="/nonexistent/path/xyz")
+        self.assertNotEqual(results, [])
 
 
 class TestFindSymbolInvalidMode(unittest.TestCase):
