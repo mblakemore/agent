@@ -185,8 +185,10 @@ def find_symbol(
         a directory with no .py files, a single non-.py file, or a single file
         with a SyntaxError.
     """
-    if not isinstance(name, str) or not name.strip():
-        return [{"error": "name must be a non-empty string"}]
+    if not isinstance(name, str):
+        return [{"error": f"name must be a string, got {type(name).__name__!r}"}]
+    if not name.strip():
+        return [{"error": "name must not be empty"}]
     if '\x00' in name:
         return [{"error": "name contains a null byte, which is not allowed"}]
     # Normalize mode and kind to lowercase so callers can pass 'Definition',
@@ -201,7 +203,7 @@ def find_symbol(
         return [{"error": f"Invalid kind {kind!r}. Must be one of: {sorted(_VALID_KINDS)}"}]
 
     if not isinstance(path, str):
-        return [{"error": f"path must be a string, got {type(path).__name__}"}]
+        return [{"error": f"path must be a string, got {type(path).__name__!r}"}]
     if '\x00' in path:
         return [{"error": "path contains a null byte, which is not allowed"}]
     if not path.strip():
