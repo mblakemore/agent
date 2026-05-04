@@ -3196,7 +3196,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         def _get_tc_args(tc):
             raw = tc.function.arguments if hasattr(tc, 'function') else tc["function"]["arguments"]
             try:
-                return json.loads(raw) if isinstance(raw, str) else raw
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+                return parsed if isinstance(parsed, dict) else {}
             except (json.JSONDecodeError, TypeError):
                 return {}
 
@@ -3412,13 +3413,13 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
                     # Track file edits (file tool with action=write/create)
                     # Track file edits (file tool with action=write/create)
-                    if func_name == "file" and func_args.get("action") in ("write", "create"):
+                    if func_name == "file" and isinstance(func_args, dict) and func_args.get("action") in ("write", "create"):
                         _has_edited, _has_reviewer_persisted = _handle_cicd_file_edit(
                             func_args, conversation_history, _cicd_worktree_path, _cicd_phase_state, 
                             _cicd_edited_files, _has_edited, _has_reviewer_persisted, turn, log
                         )
                     # Track commits and pushes through exec_command
-                    if func_name == "exec_command":
+                    if func_name == "exec_command" and isinstance(func_args, dict):
                         _cmd = func_args.get("command", "")
                         _cmd_normalized = re.sub(r"\\\n", " ", _cmd)  # Cycle 36: collapse shell line-continuations before all checks
                         if "git commit" in _cmd:
