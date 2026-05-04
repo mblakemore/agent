@@ -138,6 +138,12 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
         status: New status string (for update). Common: "in_progress", "blocked", "deferred".
         limit: For "list": maximum number of tasks to return (0 = no limit).
     """
+    # Validate action type and content before anything else.
+    if not isinstance(action, str):
+        return f"Error: action must be a string, got {type(action).__name__!r}"
+    if '\x00' in action:
+        return "Error: action contains a null byte, which is not allowed"
+
     # Ensure description is always a string even if the model omits the field
     # or passes a non-string (e.g. integer) — coerce to str to prevent AttributeError
     # from .strip() calls further down.  Strip whitespace so that a
@@ -207,6 +213,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
             f"Error: status must be a string, got {type(status).__name__} ({status!r}). "
             f"Pass a status string such as 'open', 'in_progress', 'blocked', 'deferred'."
         )
+    if '\x00' in status:
+        return "Error: status contains a null byte, which is not allowed"
 
     # Validate limit
     if isinstance(limit, bool):
