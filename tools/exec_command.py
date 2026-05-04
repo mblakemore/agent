@@ -157,7 +157,7 @@ atexit.register(cleanup_temp_sessions)
 
 def fn(command: str = "", session_id: str = "", timeout: float = 120,
        background: bool = False, new_session: bool = False,
-       cwd: str = "") -> str:
+       cwd: str = "", env: dict | None = None) -> str:
     """Execute a shell command in the agent's working directory.
 
     Args:
@@ -169,6 +169,9 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         cwd: Working directory for this invocation. If empty, uses the agent's home
              directory. Must be an existing directory. This is the clean alternative
              to 'cd /abs/path && cmd' for running commands outside the repo tree.
+        env: Optional dict of extra environment variables to set for this command.
+             Merged on top of the inherited process environment (including any
+             auto-injected PYTHONPATH). Does not replace the full environment.
     """
     if not isinstance(command, str):
         return "Error: command must be a string"
@@ -179,6 +182,9 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         return f"Error: timeout must be a number, got {type(timeout).__name__!r}"
     if not math.isfinite(timeout) or timeout <= 0:
         return "Error: timeout must be a positive number"
+
+    if env is not None and not isinstance(env, dict):
+        return f"Error: env must be a dict or None, got {type(env).__name__!r}"
 
     if cwd:
         if not isinstance(cwd, str):
@@ -322,6 +328,11 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
 
     # ── Auto-inject PYTHONPATH if a git root is found and PYTHONPATH not set ──
     _auto_env = _build_env_with_pythonpath(run_cwd)
+
+    # ── Merge caller-supplied env vars on top of the base environment ──
+    if env:
+        base = _auto_env if _auto_env is not None else os.environ.copy()
+        _auto_env = {**base, **env}
 
     # ── Background execution ──────────────────────────────────────────
     if background:
@@ -533,6 +544,17 @@ definition = {
                         "If omitted, the command runs from the agent's home directory."
                     ),
                     "default": "",
+                },
+                "env": {
+                    "type": "object",
+                    "description": (
+                        "Optional dict of extra environment variables to inject for this command. "
+                        "Merged on top of the inherited process environment (including auto-injected PYTHONPATH) — "
+                        "does not replace the full environment. "
+                        "Example: {\"MY_VAR\": \"value\", \"DEBUG\": \"1\"}."
+                    ),
+                    "additionalProperties": {"type": "string"},
+                    "default": None,
                 },
             },
             "required": [],
