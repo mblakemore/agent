@@ -123,6 +123,40 @@ class TestFindSymbolAC4(unittest.TestCase):
         self.assertEqual(results, [])
 
 
+class TestFindSymbolInvalidMode(unittest.TestCase):
+    """AC: find_symbol with an invalid mode returns an error dict, not []."""
+
+    def test_invalid_mode_returns_error_dict(self):
+        results = find_symbol("foo", mode="invalid")
+        self.assertEqual(len(results), 1)
+        self.assertIn("error", results[0])
+        self.assertIn("invalid", results[0]["error"].lower())
+
+    def test_invalid_mode_error_mentions_valid_values(self):
+        results = find_symbol("foo", mode="bogus")
+        self.assertIn("error", results[0])
+        error_msg = results[0]["error"]
+        self.assertIn("definition", error_msg)
+        self.assertIn("callers", error_msg)
+        self.assertIn("both", error_msg)
+
+    def test_invalid_mode_not_confused_with_not_found(self):
+        """Error dict is distinguishable from an empty 'not found' result."""
+        results = find_symbol("foo", mode="typo")
+        self.assertNotEqual(results, [])
+        self.assertIn("error", results[0])
+
+    def test_valid_modes_still_work(self):
+        """Regression: the three valid mode values continue to work."""
+        for mode in ("definition", "callers", "both"):
+            results = find_symbol("missing_xyz_zzz", path=_REPO_ROOT, mode=mode)
+            self.assertIsInstance(results, list)
+            self.assertFalse(
+                any("error" in r for r in results),
+                f"mode={mode!r} returned an unexpected error: {results}",
+            )
+
+
 class TestFindSymbolUnit(unittest.TestCase):
     """Unit tests using temporary files."""
 
