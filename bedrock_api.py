@@ -34,6 +34,25 @@ _DEFAULT_CONFIG = {
 }
 
 
+def _validate_conversation_ids(conv_id, msg_id, response_body: dict) -> None:
+    """Raise ValueError if conversationId or messageId are not non-empty strings.
+
+    The server is expected to return non-empty string IDs on every successful
+    POST /conversation response.  If either value is absent, None, an integer,
+    or an empty string the subsequent URL construction silently produces a
+    malformed path such as ``/conversation/None/None``, causing all polls to
+    return 404 indefinitely until the timeout fires with no useful diagnostic.
+    Failing fast here surfaces the problem at the call site with a clear message.
+    """
+    for name, val in (("conversationId", conv_id), ("messageId", msg_id)):
+        if not isinstance(val, str) or not val:
+            raise ValueError(
+                f"Server returned invalid {name!r}: {val!r} "
+                f"(expected a non-empty string). "
+                f"Full response: {response_body}"
+            )
+
+
 class BedrockChatAPI:
     """Client for the Bedrock Chat Published API."""
 
@@ -98,7 +117,10 @@ class BedrockChatAPI:
         resp = self.session.post(f"{self.api_url}/conversation", json=payload, timeout=30)
         resp.raise_for_status()
         data = resp.json()
-        return data["conversationId"], data["messageId"]
+        conv_id = data.get("conversationId")
+        msg_id = data.get("messageId")
+        _validate_conversation_ids(conv_id, msg_id, data)
+        return conv_id, msg_id
 
     def poll(self, conversation_id: str, cancel_check=None) -> dict:
         """Poll until assistant response is ready. Uses adaptive exponential backoff."""
