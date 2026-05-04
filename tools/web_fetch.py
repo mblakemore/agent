@@ -10,7 +10,7 @@ import ipaddress
 import os
 import requests
 from markdownify import markdownify
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 
 _MAX_CHARS = 50000
@@ -38,6 +38,25 @@ _PRIVATE_NETWORKS = [
         "fc00::/7",         # IPv6 ULA (fc00:: and fd00::)
     )
 ]
+
+
+def _strip_credentials(url: str) -> str:
+    """Return the URL with any embedded user:password credentials removed.
+
+    ``http://user:pass@host/path`` → ``http://host/path``
+    ``https://token@host/path``  → ``https://host/path``
+    URLs without credentials are returned unchanged.
+    """
+    try:
+        parsed = urlparse(url)
+        # Build a netloc that contains only host[:port], no userinfo.
+        host = parsed.hostname or ""
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        clean = urlunparse(parsed._replace(netloc=host))
+        return clean
+    except Exception:
+        return url
 
 
 def _is_private_address(url: str) -> bool:
@@ -153,13 +172,17 @@ def fn(url: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
-    # Save to file so the full content survives context compression
+    # Save to file so the full content survives context compression.
+    # Strip any embedded credentials from the URL before writing it to disk
+    # or returning it to the caller — credentials must not appear in saved files
+    # or tool output.
+    display_url = _strip_credentials(url)
     url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
     save_dir = os.path.join(os.getcwd(), ".agent", "state", "fetched")
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, f"{url_hash}.md")
     with open(save_path, "w", encoding="utf-8") as f:
-        f.write(f"# Fetched: {url}\n\n{text}")
+        f.write(f"# Fetched: {display_url}\n\n{text}")
 
     total_chars = len(text)
     total_lines = text.count("\n") + 1
@@ -168,7 +191,7 @@ def fn(url: str) -> str:
         preview += f"\n\n[... truncated — {total_chars} chars total, {total_lines} lines]"
 
     return (
-        f"[Fetched: {url} — saved to {save_path} ({total_chars} chars, {total_lines} lines)]\n"
+        f"[Fetched: {display_url} — saved to {save_path} ({total_chars} chars, {total_lines} lines)]\n"
         f"[Use file tool to read full content if needed]\n\n"
         f"{preview}"
     )
