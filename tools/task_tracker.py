@@ -1,6 +1,7 @@
 """Task tracker tool — persistent task management via .agent/state/tasks.json."""
 
 import json
+import math
 import os
 import re
 import tempfile
@@ -185,6 +186,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
             f"Pass an integer task ID (e.g. task_id=1)."
         )
     if not isinstance(task_id, int):
+        if isinstance(task_id, float) and not math.isfinite(task_id):
+            return f"Error: task_id must be a finite integer, got {task_id!r}"
         try:
             coerced = int(task_id)
             if isinstance(task_id, float) and task_id != coerced:
@@ -228,6 +231,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
             f"Pass an integer without quotes (e.g. limit=10)."
         )
     if not isinstance(limit, int):
+        if isinstance(limit, float) and not math.isfinite(limit):
+            return f"Error: limit must be a finite integer, got {limit!r}"
         try:
             coerced = int(limit)
             if isinstance(limit, float) and limit != coerced:
