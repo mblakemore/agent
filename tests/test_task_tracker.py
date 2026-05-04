@@ -1315,3 +1315,45 @@ def test_list_summary_active_statuses_partial_mix():
     assert "3 open" not in result, (
         f"Must not lump blocked into open count, got: {result!r}"
     )
+
+
+# ── Null-byte validation tests (#762) ──────────────────────────────────────────
+
+def test_add_null_byte_in_description_returns_error():
+    """Null byte in description must be rejected, not silently stored. (#762)"""
+    result = fn(action="add", description="hello\x00world")
+    assert "null byte" in result, f"Expected null byte error, got: {result!r}"
+    assert "Error" in result
+
+def test_add_null_byte_only_description_returns_error():
+    """A description that is just \\x00 must also be rejected."""
+    result = fn(action="add", description="\x00")
+    assert "null byte" in result, f"Expected null byte error, got: {result!r}"
+
+def test_done_null_byte_in_note_returns_error():
+    """Null byte in the note (description arg to done) must be rejected. (#762)"""
+    fn(action="add", description="a real task")
+    result = fn(action="done", task_id=1, description="note\x00with null")
+    assert "null byte" in result, f"Expected null byte error, got: {result!r}"
+
+def test_update_null_byte_in_note_returns_error():
+    """Null byte in note (description arg to update) must be rejected. (#762)"""
+    fn(action="add", description="task to update")
+    result = fn(action="update", task_id=1, description="note\x00bad")
+    assert "null byte" in result, f"Expected null byte error, got: {result!r}"
+
+def test_null_byte_rejected_before_storage():
+    """After a rejected null-byte add, the tasks file must remain clean. (#762)"""
+    fn(action="add", description="hello\x00world")
+    # No tasks should have been written
+    p = Path(_TASKS_FILE)
+    if p.exists():
+        tasks = json.loads(p.read_text())
+        for t in tasks:
+            assert "\x00" not in t.get("description", ""), \
+                f"Null byte found in stored task: {t!r}"
+
+def test_valid_description_still_works_after_null_check():
+    """The null-byte guard must not break normal adds. (#762)"""
+    result = fn(action="add", description="a normal task description")
+    assert "Added task" in result, f"Expected success, got: {result!r}"

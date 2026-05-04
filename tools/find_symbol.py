@@ -183,6 +183,8 @@ def find_symbol(
     """
     if not isinstance(name, str) or not name.strip():
         return [{"error": "name must be a non-empty string"}]
+    if '\x00' in name:
+        return [{"error": "name contains a null byte, which is not allowed"}]
     # Normalize mode and kind to lowercase so callers can pass 'Definition',
     # 'CALLERS', 'FUNCTION', etc. without getting a spurious validation error.
     if isinstance(mode, str):

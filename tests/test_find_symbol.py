@@ -981,5 +981,46 @@ class TestFindSymbolAbsolutePaths(unittest.TestCase):
         )
 
 
+class TestFindSymbolNullByteInName(unittest.TestCase):
+    """Null bytes in `name` must return an error dict, not silently return []. (#762)"""
+
+    def setUp(self):
+        # Create a throwaway .py file in a temp dir outside of any excluded path
+        import tempfile
+        self.tmp_dir = tempfile.mkdtemp()
+        self.tmp_py = Path(self.tmp_dir) / "sample.py"
+        self.tmp_py.write_text("def find_symbol(): pass\n", encoding="utf-8")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_null_byte_in_name_returns_error_not_empty_list(self):
+        """Before the fix, name='foo\\x00bar' would return [] — misleading the
+        caller into thinking the symbol is absent rather than flagging bad input."""
+        result = find_symbol(name='foo\x00bar', path=str(self.tmp_py), mode='definition')
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0, "expected non-empty result with error dict")
+        self.assertIn("error", result[0])
+
+    def test_null_byte_in_name_error_mentions_null_byte(self):
+        """The error message should call out the null byte explicitly."""
+        result = find_symbol(name='fn\x00', path=str(self.tmp_py), mode='definition')
+        self.assertIn("null byte", result[0]["error"])
+
+    def test_null_byte_only_in_name_returns_error(self):
+        """Even a name that is just \\x00 must return an error, not [] or an exception."""
+        result = find_symbol(name='\x00', path=str(self.tmp_py), mode='definition')
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+
+    def test_valid_name_still_works_after_null_check(self):
+        """The null-byte guard must not interfere with legitimate lookups."""
+        result = find_symbol(name='find_symbol', path=str(self.tmp_py), mode='definition')
+        self.assertIsInstance(result, list)
+        # Should find the definition, not an error
+        self.assertTrue(any("error" not in r for r in result))
+
+
 if __name__ == "__main__":
     unittest.main()

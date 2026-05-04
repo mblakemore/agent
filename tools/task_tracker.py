@@ -105,6 +105,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
     # Tabs were not handled by the original newline-only guard (#728).
     if "\n" in description or "\r" in description or "\t" in description:
         description = re.sub(r" *[\t\n\r][ \t\n\r]*", " ", description).strip()
+    if '\x00' in description:
+        return "Error: description contains a null byte, which is not allowed"
 
     # Validate task_id type — must be an integer (or the default 0).
     # Non-integer values (e.g. strings passed by a model) would cause
