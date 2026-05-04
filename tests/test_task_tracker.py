@@ -2240,3 +2240,80 @@ def test_concurrent_done_no_double_complete():
     assert len(done_tasks) == 1, (
         f"Expected 1 done task, got {len(done_tasks)}: {tasks}"
     )
+
+
+# ── Issue #853: non-string status must return Error, not raise AttributeError ──
+
+def test_list_status_integer_returns_error():
+    """list with status=123 (integer) must return Error, not raise AttributeError (#853)."""
+    fn(action="add", description="Task 1")
+    res = fn(action="list", status=123)
+    assert res.startswith("Error:"), f"Expected Error string, got: {res!r}"
+    assert "status" in res.lower()
+
+
+def test_list_status_bool_true_returns_error():
+    """list with status=True (bool) must return Error, not raise AttributeError (#853)."""
+    fn(action="add", description="Task 1")
+    res = fn(action="list", status=True)
+    assert res.startswith("Error:"), f"Expected Error string, got: {res!r}"
+    assert "bool" in res.lower()
+
+
+def test_list_status_bool_false_returns_error():
+    """list with status=False (bool) must return Error, not raise AttributeError (#853).
+
+    False is falsy so it would bypass the `if status else ''` guard — but it is
+    still not a valid string and should be rejected explicitly.
+    """
+    fn(action="add", description="Task 1")
+    res = fn(action="list", status=False)
+    assert res.startswith("Error:"), f"Expected Error string, got: {res!r}"
+    assert "bool" in res.lower()
+
+
+def test_list_status_none_treated_as_no_filter():
+    """list with status=None must be treated as no filter (return all tasks) (#853)."""
+    fn(action="add", description="Open task")
+    res = fn(action="list", status=None)
+    assert "Open task" in res
+    assert "Error" not in res
+
+
+def test_list_status_float_returns_error():
+    """list with status=3.14 (float) must return Error, not raise AttributeError (#853)."""
+    fn(action="add", description="Task 1")
+    res = fn(action="list", status=3.14)
+    assert res.startswith("Error:"), f"Expected Error string, got: {res!r}"
+
+
+def test_list_status_list_returns_error():
+    """list with status=['open'] (list) must return Error, not raise AttributeError (#853)."""
+    fn(action="add", description="Task 1")
+    res = fn(action="list", status=["open"])
+    assert res.startswith("Error:"), f"Expected Error string, got: {res!r}"
+
+
+def test_list_status_error_message_is_useful():
+    """Error message for non-string status must mention valid status values (#853)."""
+    fn(action="add", description="Task 1")
+    res = fn(action="list", status=99)
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    # Should mention at least one valid status value for guidance
+    assert "in_progress" in res or "open" in res or "blocked" in res or "deferred" in res
+
+
+def test_list_status_valid_string_still_works_after_fix():
+    """list with a valid string status must still work after the type guard is added (#853)."""
+    fn(action="add", description="Open task")
+    res = fn(action="list", status="open")
+    assert "Open task" in res
+    assert "Error" not in res
+
+
+def test_list_status_empty_string_returns_all_tasks():
+    """list with status='' (empty string) must return all tasks, same as no filter (#853)."""
+    fn(action="add", description="Task A")
+    res = fn(action="list", status="")
+    assert "Task A" in res
+    assert "Error" not in res
