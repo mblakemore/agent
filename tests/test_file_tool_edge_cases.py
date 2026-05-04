@@ -577,7 +577,7 @@ class TestFileLineBoolRejection(unittest.TestCase):
 class TestFileLineFloatRejection(unittest.TestCase):
     """start_line and end_line must reject float values — floats would either
     silently truncate (write/delete arithmetic produces '2.5 lines remain') or
-    cause insert to write nothing while falsely reporting success (#820)."""
+    cause insert to write nothing while falsely reporting success (#817)."""
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
