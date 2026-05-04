@@ -435,6 +435,24 @@ class TestIsPrivateAddress(unittest.TestCase):
         # 'localhost' is explicitly blocked as it always resolves to loopback
         self.assertTrue(self.check("http://localhost/"))
 
+    def test_ipv4_mapped_loopback(self):
+        """::ffff:127.0.0.1 must be treated as loopback, not a public IPv6 address. (#874)"""
+        self.assertTrue(self.check("http://[::ffff:127.0.0.1]/"))
+        self.assertTrue(self.check("http://[::ffff:7f00:1]/"))
+
+    def test_ipv4_mapped_rfc1918(self):
+        """::ffff:192.168.x.x must be treated as RFC-1918 private. (#874)"""
+        self.assertTrue(self.check("http://[::ffff:192.168.1.1]/"))
+        self.assertTrue(self.check("http://[::ffff:10.0.0.1]/"))
+
+    def test_ipv4_mapped_link_local(self):
+        """::ffff:169.254.169.254 must be treated as link-local (AWS IMDS). (#874)"""
+        self.assertTrue(self.check("http://[::ffff:169.254.169.254]/"))
+
+    def test_ipv4_mapped_public(self):
+        """::ffff:8.8.8.8 must be allowed — it maps to a public IPv4 address. (#874)"""
+        self.assertFalse(self.check("http://[::ffff:8.8.8.8]/"))
+
 
 # ── Credential scrubbing (#822) ───────────────────────────────────────────────
 
