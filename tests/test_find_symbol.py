@@ -1351,5 +1351,68 @@ class TestFindSymbolSymlinks(unittest.TestCase):
         self.assertIsInstance(result, list)
 
 
+class TestFindSymbolNameTypeValidation(unittest.TestCase):
+    """Non-string name must return a type-specific error, not 'must be a non-empty string' (#917)."""
+
+    def test_integer_name_returns_type_specific_error(self):
+        """Integer name must mention 'string' and 'int', not 'non-empty string' (#917)."""
+        result = find_symbol(42)
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+        error = result[0]["error"]
+        self.assertIn("string", error, f"Error must mention 'string': {error!r}")
+        self.assertIn("'int'", error, f"Error must mention type 'int': {error!r}")
+
+    def test_none_name_returns_type_specific_error(self):
+        """None name must mention 'string' and 'NoneType', not 'non-empty string' (#917)."""
+        result = find_symbol(None)
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+        error = result[0]["error"]
+        self.assertIn("string", error, f"Error must mention 'string': {error!r}")
+        self.assertIn("'NoneType'", error, f"Error must mention type 'NoneType': {error!r}")
+
+    def test_list_name_returns_type_specific_error(self):
+        """List name must mention 'string' and 'list' (#917)."""
+        result = find_symbol(["fn"])
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+        error = result[0]["error"]
+        self.assertIn("string", error, f"Error must mention 'string': {error!r}")
+        self.assertIn("'list'", error, f"Error must mention type 'list': {error!r}")
+
+    def test_empty_string_name_still_rejected(self):
+        """Empty string name must still be rejected after splitting the check (#917)."""
+        result = find_symbol("")
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+
+    def test_whitespace_name_still_rejected(self):
+        """Whitespace-only name must still be rejected after splitting the check (#917)."""
+        result = find_symbol("   ")
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+
+
+class TestFindSymbolPathTypeNameQuoting(unittest.TestCase):
+    """path type name in error must be single-quoted ('int', not int) (#917)."""
+
+    def test_integer_path_type_name_is_quoted(self):
+        """Integer path error must include quoted type name 'int', not bare int (#917)."""
+        result = find_symbol("fn", path=42)
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+        error = result[0]["error"]
+        self.assertIn("'int'", error, f"Type name must be quoted: {error!r}")
+
+    def test_none_path_type_name_is_quoted(self):
+        """None path error must include quoted type name 'NoneType' (#917)."""
+        result = find_symbol("fn", path=None)
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+        error = result[0]["error"]
+        self.assertIn("'NoneType'", error, f"Type name must be quoted: {error!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
