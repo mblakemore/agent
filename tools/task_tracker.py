@@ -60,7 +60,7 @@ def _load_tasks():
         if not isinstance(data, list):
             return _Corrupted(
                 str(p.resolve()),
-                f"expected a JSON array at top level, got {type(data).__name__}",
+                f"expected a JSON array at top level, got {type(data).__name__!r}",
             )
         # Each element must be a dict.  Non-dict elements (strings, ints, etc.)
         # would cause AttributeError / TypeError when the code does t["status"].
@@ -68,7 +68,7 @@ def _load_tasks():
             if not isinstance(item, dict):
                 return _Corrupted(
                     str(p.resolve()),
-                    f"element {i} is not an object (got {type(item).__name__})",
+                    f"element {i} is not an object (got {type(item).__name__!r})",
                 )
         return data
     except json.JSONDecodeError as exc:
