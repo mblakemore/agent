@@ -216,14 +216,8 @@ def find_symbol(
         except Exception:
             continue
 
-        # Use relative path if search_path is a directory, else just the filename
-        if search_path.is_dir():
-            try:
-                display_path = str(py_file.relative_to(search_path))
-            except ValueError:
-                display_path = str(py_file)
-        else:
-            display_path = str(py_file)
+        # Always use the absolute path so callers can open the file regardless of cwd.
+        display_path = str(py_file.resolve())
 
         if mode in ("definition", "both"):
             defs = _find_definitions_with_scope(tree, name, kind, display_path)
