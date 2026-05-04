@@ -636,6 +636,30 @@ def test_exec_command_env_list_returns_error():
     assert result.startswith("Error: env must be a dict or None")
 
 
+def test_exec_command_env_integer_value_returns_clear_error():
+    """env dict with an integer value must return a descriptive error, not an opaque subprocess exception (#754)."""
+    result = fn(command="echo $NUM", env={"NUM": 42})
+    assert result.startswith("Error: env values must be strings")
+    assert "'NUM'" in result
+    assert "'int'" in result
+
+
+def test_exec_command_env_none_value_returns_clear_error():
+    """env dict with a None value must return a descriptive error (#754)."""
+    result = fn(command="echo hello", env={"KEY": None})
+    assert result.startswith("Error: env values must be strings")
+    assert "'KEY'" in result
+    assert "'NoneType'" in result
+
+
+def test_exec_command_env_float_value_returns_clear_error():
+    """env dict with a float value must return a descriptive error (#754)."""
+    result = fn(command="echo $RATE", env={"RATE": 3.14})
+    assert result.startswith("Error: env values must be strings")
+    assert "'RATE'" in result
+    assert "'float'" in result
+
+
 def test_exec_command_env_does_not_unset_pythonpath(tmp_path):
     """Auto-injected PYTHONPATH must still be present when env is provided (#730)."""
     import os

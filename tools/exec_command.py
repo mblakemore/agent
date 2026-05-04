@@ -185,6 +185,13 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
 
     if env is not None and not isinstance(env, dict):
         return f"Error: env must be a dict or None, got {type(env).__name__!r}"
+    if env is not None:
+        for k, v in env.items():
+            if not isinstance(v, str):
+                return (
+                    f"Error: env values must be strings; "
+                    f"key {k!r} has type {type(v).__name__!r}"
+                )
 
     if cwd:
         if not isinstance(cwd, str):
