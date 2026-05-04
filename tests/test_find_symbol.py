@@ -197,6 +197,36 @@ class TestFindSymbolInvalidKind(unittest.TestCase):
         self.assertFalse(any("error" in r for r in results))
 
 
+class TestFindSymbolEmptyName(unittest.TestCase):
+    """AC: find_symbol with an empty name returns an error dict, not []."""
+
+    def test_empty_string_returns_error_dict(self):
+        results = find_symbol("")
+        self.assertEqual(len(results), 1)
+        self.assertIn("error", results[0])
+        self.assertIn("empty", results[0]["error"].lower())
+
+    def test_whitespace_only_name_returns_error_dict(self):
+        """A name of only whitespace is also treated as empty."""
+        results = find_symbol("   ")
+        self.assertEqual(len(results), 1)
+        self.assertIn("error", results[0])
+        self.assertIn("empty", results[0]["error"].lower())
+
+    def test_empty_name_not_confused_with_not_found(self):
+        """Error dict is distinguishable from an empty 'not found' result."""
+        results = find_symbol("")
+        self.assertNotEqual(results, [])
+        self.assertIn("error", results[0])
+
+    def test_empty_name_error_returned_without_scanning_files(self):
+        """Passing a nonexistent path alongside empty name still raises the name error first."""
+        results = find_symbol("", path="/nonexistent/path/xyz")
+        self.assertEqual(len(results), 1)
+        self.assertIn("error", results[0])
+        self.assertIn("empty", results[0]["error"].lower())
+
+
 class TestFindSymbolUnit(unittest.TestCase):
     """Unit tests using temporary files."""
 
