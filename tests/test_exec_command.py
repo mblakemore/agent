@@ -653,3 +653,31 @@ def test_exec_command_env_background_mode():
     time.sleep(0.5)
     poll = fn(session_id=sid)
     assert "bg_value" in poll
+
+
+def test_exec_command_caller_pythonpath_does_not_clobber_auto_injected(tmp_path):
+    """Caller-supplied PYTHONPATH in env must be merged with (not replace) auto-injected git root (#734).
+
+    When a caller passes env={'PYTHONPATH': '/extra'}, the auto-injected git-root path
+    must still appear in the subprocess environment so project-local imports work.
+    """
+    import os
+    from unittest.mock import patch
+    env_without = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    with patch.dict(os.environ, env_without, clear=True):
+        result = fn(
+            command="printenv PYTHONPATH",
+            env={"PYTHONPATH": "/extra/custom/path"},
+            timeout=10,
+        )
+    assert "exit=0" in result
+    # The caller's custom path must be present
+    assert "/extra/custom/path" in result, "Caller's PYTHONPATH was dropped"
+    # The auto-injected git root must also be present (not silently clobbered)
+    # We can't know the exact git root in every environment, but we can confirm
+    # PYTHONPATH contains more than just the caller's value (i.e. it was merged).
+    pp_line = [line for line in result.splitlines() if "/extra/custom/path" in line]
+    assert pp_line, "PYTHONPATH line not found in output"
+    assert ":" in pp_line[0], (
+        f"PYTHONPATH was not merged — only caller's value present: {pp_line[0]!r}"
+    )
