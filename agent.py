@@ -1243,6 +1243,12 @@ def _expand_file_refs(text):
     if not refs:
         return text, None, None
 
+    # Resolve working directory once so every ref can be checked against it.
+    # We use Path.cwd().resolve() (not os.getcwd()) to follow any symlinks in
+    # the cwd itself, giving a canonical base for confinement checks.
+    cwd_resolved = Path.cwd().resolve()
+    cwd_prefix = str(cwd_resolved) + os.sep  # e.g. /droid/repos/agent/
+
     seen = set()
     attachments = []
     for ref in refs:
@@ -1255,6 +1261,19 @@ def _expand_file_refs(text):
             return None, None, f"Error: file '{ref}' does not exist"
         if p.is_dir():
             return None, None, f"Error: '{ref}' is a directory, not a file"
+
+        # Confinement check: reject any ref that resolves outside the working
+        # directory.  This blocks both relative traversals (@../../secret) and
+        # absolute paths (@/etc/passwd) that escape the project tree.
+        resolved_ref = p.resolve()
+        if resolved_ref != cwd_resolved and not str(resolved_ref).startswith(cwd_prefix):
+            return (
+                None,
+                None,
+                f"Error: '{ref}' resolves to '{resolved_ref}' which is outside "
+                f"the working directory '{cwd_resolved}'. "
+                f"Only files inside the current working directory can be referenced with @.",
+            )
 
         lines = p.read_text(encoding='utf-8', errors='replace').splitlines(True)
         total = len(lines)
