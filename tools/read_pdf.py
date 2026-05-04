@@ -35,8 +35,16 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
         doc.close()
         return "Error: PDF has no pages"
 
+    # Validate start_page — must be 1-indexed (≥ 1)
+    if start_page < 1:
+        doc.close()
+        return (
+            f"Error: start_page ({start_page}) is invalid — "
+            "pages are 1-indexed (minimum value: 1)"
+        )
+
     # Resolve page range
-    start = max(1, start_page)
+    start = start_page
     end = min(total, end_page) if end_page > 0 else total
 
     if start > total:

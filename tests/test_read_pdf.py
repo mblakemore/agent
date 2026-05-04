@@ -101,3 +101,33 @@ def test_read_pdf_inverted_range_returns_error():
         assert "end_page" in result
         assert "start_page" in result
         mock_doc.close.assert_called_once()
+
+
+def test_read_pdf_start_page_zero_returns_error():
+    """read_pdf must reject start_page=0; pages are 1-indexed."""
+    with patch('fitz.open') as mock_open:
+        mock_doc = MagicMock()
+        mock_doc.is_pdf = True
+        mock_doc.__len__.return_value = 10
+        mock_open.return_value = mock_doc
+
+        result = fn("dummy.pdf", start_page=0)
+        assert result.startswith("Error:")
+        assert "start_page" in result
+        assert "1-indexed" in result
+        mock_doc.close.assert_called_once()
+
+
+def test_read_pdf_start_page_negative_returns_error():
+    """read_pdf must reject negative start_page values."""
+    with patch('fitz.open') as mock_open:
+        mock_doc = MagicMock()
+        mock_doc.is_pdf = True
+        mock_doc.__len__.return_value = 10
+        mock_open.return_value = mock_doc
+
+        result = fn("dummy.pdf", start_page=-3)
+        assert result.startswith("Error:")
+        assert "start_page" in result
+        assert "1-indexed" in result
+        mock_doc.close.assert_called_once()
