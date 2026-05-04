@@ -109,7 +109,9 @@ def _find_definitions_with_scope(tree: ast.AST, name: str, kind: Optional[str], 
                             "scope": child.name,
                             "context": context,
                         })
-                _walk(child, class_stack)
+                # Entering a function scope resets the class context — any function
+                # nested inside this one is a closure/helper, not a method.
+                _walk(child, [])
             else:
                 _walk(child, class_stack)
 
