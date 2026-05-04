@@ -326,3 +326,37 @@ def test_exec_command_negative_timeout_does_not_kill_command():
     assert result == "Error: timeout must be a positive number"
     assert "ran" not in result
     assert "timed out" not in result
+
+
+# ── nan/inf timeout tests (#650) ──────────────────────────────────────────────
+
+def test_exec_command_nan_timeout_rejected():
+    """float('nan') must be rejected — it would silently disable the deadline check."""
+    result = fn(command="echo hello", timeout=float('nan'))
+    assert result == "Error: timeout must be a positive number"
+
+
+def test_exec_command_inf_timeout_rejected():
+    """float('inf') must be rejected — it would create an infinite deadline."""
+    result = fn(command="echo hello", timeout=float('inf'))
+    assert result == "Error: timeout must be a positive number"
+
+
+def test_exec_command_neg_inf_timeout_rejected():
+    """float('-inf') must be rejected along with other non-finite values."""
+    result = fn(command="echo hello", timeout=float('-inf'))
+    assert result == "Error: timeout must be a positive number"
+
+
+def test_exec_command_nan_timeout_does_not_run_command():
+    """With a nan timeout the command must NOT run at all — error returned immediately."""
+    result = fn(command="echo ran", timeout=float('nan'))
+    assert result == "Error: timeout must be a positive number"
+    assert "ran" not in result
+
+
+def test_exec_command_inf_timeout_does_not_run_command():
+    """With an inf timeout the command must NOT run at all — error returned immediately."""
+    result = fn(command="echo ran", timeout=float('inf'))
+    assert result == "Error: timeout must be a positive number"
+    assert "ran" not in result
