@@ -656,3 +656,73 @@ def test_update_auto_resolve_single_open_task_with_explicit_note():
 
     tasks = json.loads(Path(_TASKS_FILE).read_text())
     assert tasks[0].get("note") == "A real annotation"
+
+
+# ── Issue #722: exact description match must take priority over substring match ──
+
+def test_done_exact_match_preferred_over_substring():
+    """done with description='fix bug' must resolve to the exact-match task even when
+    another task's description contains 'fix bug' as a substring (#722)."""
+    fn(action="add", description="fix bug")
+    fn(action="add", description="fix bug in login")
+    # 'fix bug' is an exact match for task #1 and a substring of task #2
+    res = fn(action="done", description="fix bug")
+    assert "Completed task #1" in res, (
+        f"Expected exact-match task #1 to be completed, got: {res!r}"
+    )
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["status"] == "done", "task #1 must be marked done"
+    assert tasks[1]["status"] == "open", "task #2 must remain open"
+
+
+def test_update_exact_match_preferred_over_substring():
+    """update with description='fix bug' must resolve to the exact-match task, not error
+    on ambiguity, even when another task contains 'fix bug' as a substring (#722)."""
+    fn(action="add", description="fix bug")
+    fn(action="add", description="fix bug in login")
+    res = fn(action="update", description="fix bug", status="in_progress")
+    assert "Updated task #1" in res, (
+        f"Expected exact-match task #1 to be updated, got: {res!r}"
+    )
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["status"] == "in_progress"
+    assert tasks[1]["status"] == "open"
+
+
+def test_drop_exact_match_preferred_over_substring():
+    """drop with description='fix bug' must resolve to the exact-match task (#722)."""
+    fn(action="add", description="fix bug")
+    fn(action="add", description="fix bug in login")
+    res = fn(action="drop", description="fix bug")
+    assert "Dropped task #1" in res, (
+        f"Expected exact-match task #1 to be dropped, got: {res!r}"
+    )
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert len(tasks) == 1
+    assert tasks[0]["description"] == "fix bug in login"
+
+
+def test_exact_match_resolves_uniquely_add_prevents_duplicates():
+    """add prevents duplicate open tasks; exact match therefore always resolves to one task (#722)."""
+    res1 = fn(action="add", description="fix bug")
+    res2 = fn(action="add", description="fix bug")
+    # Second add must be rejected as a duplicate
+    assert "Already exists" in res2 or "already exists" in res2, (
+        f"Expected duplicate add to be rejected, got: {res2!r}"
+    )
+    # Exactly one task with 'fix bug' — done must succeed
+    res = fn(action="done", description="fix bug")
+    assert "Completed task" in res, (
+        f"Expected task to be completed, got: {res!r}"
+    )
+
+
+def test_substring_match_still_works_when_no_exact_match():
+    """done by description must still auto-resolve via substring when no exact match (#722)."""
+    fn(action="add", description="fix the big login bug")
+    fn(action="add", description="update docs")
+    # 'login bug' is not an exact match for either task, but is a substring of task #1
+    res = fn(action="done", description="login bug")
+    assert "Completed task #1" in res, (
+        f"Expected task #1 to be completed via substring match, got: {res!r}"
+    )
