@@ -147,7 +147,7 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
 def fn(
     pattern: str,
     path: str = ".",
-    glob: str = "*",
+    glob=None,
     ignore_case: bool = False,
     context: int = 3,
     count_only: bool = False,
@@ -160,6 +160,8 @@ def fn(
         pattern: Regex pattern to search for.
         path: Directory to search in (default: current directory).
         glob: File glob pattern to filter (default: * for all files).
+            Accepts a plain string ('*.py'), a comma-separated string
+            ('*.py,*.txt'), or a list of strings (['*.py', '*.txt']).
         ignore_case: Case-insensitive search (default: False).
         context: Lines of context to include before/after each match, like
             grep -C. Capped at _MAX_CONTEXT. Default 3. Match lines use
@@ -183,15 +185,47 @@ def fn(
     if isinstance(pattern, str) and '\x00' in pattern:
         return "Error: pattern contains a null byte, which is not allowed"
 
-    if glob is not None and (not isinstance(glob, str) or not glob.strip()):
-        return "Error: glob filter cannot be empty — omit the argument or pass '*' to match all files."
-
-    if glob is not None and ("/" in glob or os.sep in glob):
+    # Normalise glob into a list of patterns so callers can pass:
+    #   • a plain string:            glob='*.py'
+    #   • a comma-separated string:  glob='*.py,*.txt'  (common user mistake)
+    #   • a list of strings:         glob=['*.py', '*.txt']
+    # Internally we always work with a list; the legacy single-string path
+    # separator check is applied to every element.
+    if glob is None:
+        glob_patterns: list[str] = ["*"]
+    elif isinstance(glob, list):
+        # Flatten list; reject non-string elements
+        bad = [i for i, g in enumerate(glob) if not isinstance(g, str)]
+        if bad:
+            return (
+                f"Error: glob list contains non-string element(s) at index {bad[0]}. "
+                "Each element must be a plain string pattern (e.g. '*.py')."
+            )
+        flat = [g.strip() for g in glob if g.strip()]
+        if not flat:
+            return "Error: glob filter cannot be empty — omit the argument or pass '*' to match all files."
+        glob_patterns = flat
+    elif isinstance(glob, str):
+        if not glob.strip():
+            return "Error: glob filter cannot be empty — omit the argument or pass '*' to match all files."
+        # Split on commas so 'glob=*.py,*.txt' works as expected
+        parts = [g.strip() for g in glob.split(",") if g.strip()]
+        if not parts:
+            return "Error: glob filter cannot be empty — omit the argument or pass '*' to match all files."
+        glob_patterns = parts
+    else:
         return (
-            f"Error: glob pattern {glob!r} contains a path separator. "
-            "Use a plain filename pattern (e.g. '*.py') and set path= to the "
-            "desired subdirectory to restrict the search."
+            f"Error: glob must be a string or list of strings, got {type(glob).__name__}. "
+            "Pass a plain filename pattern (e.g. '*.py') or a comma-separated list."
         )
+
+    for g in glob_patterns:
+        if "/" in g or os.sep in g:
+            return (
+                f"Error: glob pattern {g!r} contains a path separator. "
+                "Use a plain filename pattern (e.g. '*.py') and set path= to the "
+                "desired subdirectory to restrict the search."
+            )
 
     try:
         flags = re.IGNORECASE if ignore_case else 0
@@ -266,7 +300,7 @@ def fn(
             dirs[:] = [d for d in dirs if d not in _DEFAULT_EXCLUDE_DIRS]
 
         for file_name in files:
-            if not _fnmatch.fnmatch(file_name, glob):
+            if not any(_fnmatch.fnmatch(file_name, g) for g in glob_patterns):
                 files_glob_skipped += 1
                 continue
 
@@ -382,9 +416,10 @@ def fn(
     if total_matches == 0:
         if files_searched == 0:
             if files_glob_skipped > 0:
+                glob_display = glob_patterns[0] if len(glob_patterns) == 1 else str(glob_patterns)
                 return (
                     header
-                    + f"No files matched glob {glob!r} under '{resolved}'. "
+                    + f"No files matched glob {glob_display!r} under '{resolved}'. "
                     + f"To search all files, omit glob= or pass glob='*'."
                 )
             return (
@@ -450,7 +485,11 @@ definition = {
                     },
                 "glob": {
                     "type": "string",
-                    "description": "File glob to filter, e.g. '*.py', '*.json', '*.md' (default: all files).",
+                    "description": (
+                        "File glob to filter, e.g. '*.py', '*.json', '*.md' (default: all files). "
+                        "To match multiple extensions, pass a comma-separated string: '*.py,*.txt'. "
+                        "A list of strings is also accepted: ['*.py', '*.txt']."
+                    ),
                 },
                 "ignore_case": {
                     "type": "boolean",
