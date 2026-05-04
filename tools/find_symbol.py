@@ -172,13 +172,15 @@ def find_symbol(
         a directory with no .py files, a single non-.py file, or a single file
         with a SyntaxError.
     """
-    if not name or not name.strip():
-        return [{"error": "name must not be empty"}]
+    if not isinstance(name, str) or not name.strip():
+        return [{"error": "name must be a non-empty string"}]
     if mode not in _VALID_MODES:
         return [{"error": f"Invalid mode {mode!r}. Must be one of: {sorted(_VALID_MODES)}"}]
     if kind is not None and kind not in _VALID_KINDS:
         return [{"error": f"Invalid kind {kind!r}. Must be one of: {sorted(_VALID_KINDS)}"}]
 
+    if not isinstance(path, str):
+        return [{"error": f"path must be a string, got {type(path).__name__}"}]
     search_path = Path(path.strip())
     if not search_path.exists():
         return [{"error": f"path '{search_path}' does not exist"}]

@@ -171,10 +171,10 @@ def fn(
     """
     import fnmatch as _fnmatch
 
-    if not pattern or not pattern.strip():
+    if not isinstance(pattern, str) or not pattern.strip():
         return "Error: Search pattern cannot be empty."
 
-    if glob is not None and not glob.strip():
+    if glob is not None and (not isinstance(glob, str) or not glob.strip()):
         return "Error: glob filter cannot be empty — omit the argument or pass '*' to match all files."
 
     if glob is not None and ("/" in glob or os.sep in glob):
@@ -191,6 +191,8 @@ def fn(
         return f"Error: invalid regex pattern: {e}"
 
     # Resolve search_path immediately to avoid absolute vs relative mismatch in relative_to()
+    if not isinstance(path, str):
+        return f"Error: path must be a string, got {type(path).__name__}"
     path = path.strip()
     search_path = Path(path).resolve()
     if not search_path.exists():

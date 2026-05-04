@@ -107,3 +107,17 @@ def test_web_fetch_ftp_url_returns_error():
     result = fn(url="ftp://example.com/file.txt")
     assert result.startswith("Error:")
     assert "http" in result
+
+
+def test_web_fetch_int_url_returns_error():
+    """Passing an int as url must return an error string, not raise AttributeError."""
+    result = fn(url=42)
+    assert isinstance(result, str)
+    assert "Error" in result
+
+
+def test_web_fetch_none_url_returns_error():
+    """Passing None as url must return an error string, not raise AttributeError."""
+    result = fn(url=None)
+    assert isinstance(result, str)
+    assert "Error" in result
