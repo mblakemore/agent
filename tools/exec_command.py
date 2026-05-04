@@ -154,8 +154,8 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         background: If true, start the command and return immediately.
         new_session: If true, create a new temporary session for parallel work.
     """
-    if not command and not session_id:
-        return "Error: at least one of 'command' or 'session_id' is required"
+    if not command.strip() and not session_id:
+        return "Error: command cannot be empty"
 
     sid, err = _get_or_create_session(session_id, new_session)
     if err:

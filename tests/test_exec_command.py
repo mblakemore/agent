@@ -22,7 +22,28 @@ def test_exec_command_failure():
 def test_exec_command_no_args():
     # Test calling fn without command or session_id
     result = fn()
-    assert "Error: at least one of 'command' or 'session_id' is required" in result
+    assert "Error: command cannot be empty" in result
+
+
+def test_exec_command_whitespace_only_spaces():
+    # Whitespace-only command should be rejected the same as empty
+    result = fn(command="   ")
+    assert "Error: command cannot be empty" in result
+
+
+def test_exec_command_whitespace_only_tab():
+    result = fn(command="\t")
+    assert "Error: command cannot be empty" in result
+
+
+def test_exec_command_whitespace_only_newline():
+    result = fn(command="\n")
+    assert "Error: command cannot be empty" in result
+
+
+def test_exec_command_whitespace_mixed():
+    result = fn(command="  \t  \n  ")
+    assert "Error: command cannot be empty" in result
 
 def test_exec_command_cd_guard_safe():
     # Test relative cd (should be allowed)
