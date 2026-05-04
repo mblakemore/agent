@@ -21,6 +21,33 @@ from pathlib import Path
 from .file import _accessed_files
 
 
+def _find_git_root(start_dir: str) -> str | None:
+    """Walk up from start_dir and return the first directory containing a .git entry."""
+    try:
+        path = Path(start_dir).resolve()
+    except (OSError, ValueError):
+        path = Path(start_dir)
+    for candidate in [path] + list(path.parents):
+        if (candidate / ".git").exists():
+            return str(candidate)
+    return None
+
+
+def _build_env_with_pythonpath(cwd: str) -> dict | None:
+    """Return an env dict with PYTHONPATH set to the git root if not already set.
+
+    Returns None if no auto-injection is needed (PYTHONPATH already set or no git root found).
+    """
+    if os.environ.get("PYTHONPATH"):
+        return None
+    git_root = _find_git_root(cwd)
+    if git_root is None:
+        return None
+    env = os.environ.copy()
+    env["PYTHONPATH"] = git_root
+    return env
+
+
 def _extract_write_target(command):
     """Extract target file path from a shell write command, or None if not a write."""
     # Heredoc: cat > file.ext <<'EOF'  or  cat > file.ext << EOF
@@ -260,6 +287,9 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         # Track the write so subsequent commands know it's been touched
         _accessed_files.add(resolved)
 
+    # ── Auto-inject PYTHONPATH if a git root is found and PYTHONPATH not set ──
+    _auto_env = _build_env_with_pythonpath(home_cwd)
+
     # ── Background execution ──────────────────────────────────────────
     if background:
         try:
@@ -269,6 +299,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                env=_auto_env,
             )
         except Exception as e:
             return f"Error starting background command: {e}"
@@ -298,6 +329,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            env=_auto_env,
         )
     except Exception as e:
         return f"Error running command: {e}"
@@ -404,7 +436,13 @@ definition = {
             "background=true and poll with session_id to check output. "
             "You can write files via shell (cat >, heredocs). "
               "For existing files, you must read them first (cat or file tool) in this session. "
-              "Worktrees must be created under WORKTREE_ROOT."
+              "Worktrees must be created under WORKTREE_ROOT. "
+              "When running `python3 -c` or a Python script that imports project-local modules, "
+              "prepend `PYTHONPATH=<repo_root>` to the command, "
+              "e.g. `PYTHONPATH=/droid/repos/agent python3 -c 'import tools; ...'`. "
+              "Without this, imports of project modules will fail with ModuleNotFoundError. "
+              "Note: PYTHONPATH is auto-injected when a .git directory is found in an ancestor "
+              "of the working directory and PYTHONPATH is not already set."
         ),
         "parameters": {
             "type": "object",
