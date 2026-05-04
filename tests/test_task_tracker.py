@@ -1541,3 +1541,47 @@ def test_list_no_status_filter_unaffected_by_validation():
     res = fn(action="list")
     assert "task a" in res
     assert "task b" in res
+
+
+# ── drop must refuse done/completed tasks to preserve history ─────────────────
+
+def test_drop_on_done_task_returns_error():
+    """drop on a done task must return Error, not silently erase completed history."""
+    fn(action="add", description="task to protect")
+    fn(action="done", task_id=1)
+    res = fn(action="drop", task_id=1)
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    assert "already done" in res, f"Error must mention 'already done', got: {res!r}"
+
+
+def test_drop_on_done_task_does_not_remove_record():
+    """A rejected drop on a done task must leave the task record intact."""
+    fn(action="add", description="finished task")
+    fn(action="done", task_id=1)
+    fn(action="drop", task_id=1)  # should be rejected
+    # Task must still appear in the list
+    result = fn(action="list")
+    assert "finished task" in result, (
+        f"Task record must be preserved after rejected drop, got: {result!r}"
+    )
+
+
+def test_drop_on_completed_status_task_returns_error():
+    """drop on a legacy 'completed'-status task must also return Error (covers both terminal statuses)."""
+    Path(_TASKS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    tasks = [
+        {"id": 1, "description": "legacy task", "status": "completed", "created": "2024-01-01T00:00:00"},
+    ]
+    Path(_TASKS_FILE).write_text(json.dumps(tasks))
+    res = fn(action="drop", task_id=1)
+    assert res.startswith("Error:"), f"Expected Error for completed task, got: {res!r}"
+    assert "already done" in res, f"Error must mention 'already done', got: {res!r}"
+
+
+def test_drop_on_open_task_still_works():
+    """Regression: drop on an open (non-done) task must still succeed after the guard."""
+    fn(action="add", description="open task to drop")
+    res = fn(action="drop", task_id=1)
+    assert "Dropped task #1" in res, f"Expected drop success, got: {res!r}"
+    result = fn(action="list")
+    assert "open task to drop" not in result, "Dropped task must be gone"

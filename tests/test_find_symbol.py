@@ -1,6 +1,7 @@
 """Tests for tools/find_symbol.py — AST-aware Python symbol lookup."""
 
 import os
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -11,8 +12,20 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools.find_symbol import find_symbol
 
-# Absolute path to the repo root (parent of this tests/ directory)
-_REPO_ROOT = str(Path(__file__).parent.parent)
+# Absolute path to the repo root — resolved via git so this works correctly
+# regardless of whether the test runs from a worktree (where Path(__file__).parent.parent
+# would resolve to the worktree path, which is listed in DEFAULT_EXCLUDES and would
+# cause _collect_py_files to return []).
+#
+# In a linked worktree, --show-toplevel returns the *worktree* path, not the main
+# repo path.  --git-common-dir (absolute form) points to the .git directory of the
+# main repo, whose parent is always the canonical repo root.
+_git_common_dir = subprocess.check_output(
+    ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    cwd=Path(__file__).parent,
+    text=True,
+).strip()
+_REPO_ROOT = str(Path(_git_common_dir).parent)
 _AGENT_PY = os.path.join(_REPO_ROOT, "agent.py")
 _LLM_BACKEND_PY = os.path.join(_REPO_ROOT, "llm_backend.py")
 
