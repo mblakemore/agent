@@ -175,6 +175,10 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     """
     if not isinstance(command, str):
         return "Error: command must be a string"
+    if not isinstance(session_id, str):
+        return f"Error: session_id must be a string, got {type(session_id).__name__!r}"
+    if '\x00' in session_id:
+        return "Error: session_id contains a null byte, which is not allowed"
     if not command.strip() and not session_id:
         return "Error: command cannot be empty"
     if '\x00' in command:

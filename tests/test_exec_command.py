@@ -1097,3 +1097,33 @@ def test_exec_command_background_false_unaffected():
     """background=False continues to run synchronously after adding the type check (#885)."""
     result = fn(command="echo hi", background=False, timeout=5)
     assert "exit=0" in result
+
+
+# ── session_id validation (#889) ─────────────────────────────────────────────
+
+
+def test_exec_command_session_id_null_byte_returns_clean_error():
+    """session_id containing a null byte must return a clean error without embedding
+    the null byte in the message (#889).
+
+    Before the fix, the null byte flowed into the 'session does not exist' f-string
+    error message rather than being caught by an explicit guard.
+    """
+    result = fn(command="", session_id="abc\x00def")
+    assert result.startswith("Error:"), f"Expected error, got: {result!r}"
+    assert "null byte" in result, f"Error should mention null byte: {result!r}"
+    assert "\x00" not in result, f"Null byte must not appear in error message: {result!r}"
+
+
+def test_exec_command_session_id_non_string_returns_error():
+    """session_id must be a string; non-string types must return a clear error (#889)."""
+    result = fn(command="echo hi", session_id=42)
+    assert result.startswith("Error:"), f"Expected error, got: {result!r}"
+    assert "session_id" in result, f"Error should name the param: {result!r}"
+    assert "str" in result or "string" in result, f"Error should mention expected type: {result!r}"
+
+
+def test_exec_command_session_id_empty_string_unaffected():
+    """session_id='' (the default) must still work normally after adding the check (#889)."""
+    result = fn(command="echo hi", session_id="", timeout=5)
+    assert "exit=0" in result, f"Expected normal execution: {result!r}"
