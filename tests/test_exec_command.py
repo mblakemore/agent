@@ -1127,3 +1127,34 @@ def test_exec_command_session_id_empty_string_unaffected():
     """session_id='' (the default) must still work normally after adding the check (#889)."""
     result = fn(command="echo hi", session_id="", timeout=5)
     assert "exit=0" in result, f"Expected normal execution: {result!r}"
+
+
+# ── command / cwd type error messages include the bad type (#909) ─────────────
+
+
+def test_exec_command_non_string_command_names_the_type():
+    """fn(42) must name the bad type in the error, not just say 'must be a string' (#909).
+
+    Before the fix the message was 'Error: command must be a string' without
+    the type name, inconsistent with session_id and all other tools.
+    """
+    result = fn(42)  # type: ignore[arg-type]
+    assert result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}"
+    assert "string" in result, f"Error must mention 'string': {result!r}"
+    assert "int" in result, f"Error must name the bad type: {result!r}"
+
+
+def test_exec_command_none_command_names_the_type():
+    """fn(None) must name the bad type in the error (#909)."""
+    result = fn(None)  # type: ignore[arg-type]
+    assert result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}"
+    assert "string" in result, f"Error must mention 'string': {result!r}"
+    assert "NoneType" in result, f"Error must name the bad type: {result!r}"
+
+
+def test_exec_command_non_string_cwd_names_the_type():
+    """fn('cmd', cwd=42) must name the bad type in the error (#909)."""
+    result = fn("echo hi", cwd=42)  # type: ignore[arg-type]
+    assert result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}"
+    assert "string" in result, f"Error must mention 'string': {result!r}"
+    assert "int" in result, f"Error must name the bad type: {result!r}"
