@@ -93,14 +93,69 @@ class TestFindSymbolCallers(unittest.TestCase):
         """)
         self._write("main.py", """
             from utils import util_fn
-            
+
             def main():
                 util_fn()
         """)
-        
+
         results = find_symbol("util_fn", path=self.tmp, mode="callers")
         self.assertEqual(len(results), 1)
         self.assertIn("main.py", results[0]["path"])
+
+    def test_callers_cross_file_finds_calls_in_multiple_files(self):
+        """callers mode must find call sites across multiple source files (#792 probe)."""
+        self._write("lib.py", """
+            def shared_helper():
+                pass
+        """)
+        self._write("consumer_a.py", """
+            def task_a():
+                shared_helper()
+        """)
+        self._write("consumer_b.py", """
+            def task_b():
+                shared_helper()
+                shared_helper()
+        """)
+
+        results = find_symbol("shared_helper", path=self.tmp, mode="callers")
+        # Must find 3 calls across 2 files
+        self.assertEqual(len(results), 3,
+                         f"Expected 3 call sites, got {len(results)}: {results}")
+        paths = {r["path"] for r in results}
+        # Calls must span both consumer files
+        consumer_paths = {p for p in paths if "consumer" in p}
+        self.assertEqual(len(consumer_paths), 2,
+                         f"Calls must span 2 consumer files, found: {consumer_paths}")
+
+    def test_callers_nonexistent_function_returns_empty_list(self):
+        """callers mode for a symbol that does not exist must return [] not an error (#792 probe)."""
+        self._write("any.py", """
+            def some_func():
+                pass
+        """)
+        results = find_symbol("no_such_func_xyz999", path=self.tmp, mode="callers")
+        self.assertEqual(results, [],
+                         f"Expected [], got: {results!r}")
+
+    def test_callers_returns_call_kind_for_all_results(self):
+        """All results from callers mode must have kind='call'. (#792 probe)"""
+        self._write("module.py", """
+            def target():
+                pass
+
+            def a():
+                target()
+
+            def b():
+                obj = None
+                obj.target()
+        """)
+        results = find_symbol("target", path=self.tmp, mode="callers")
+        self.assertGreater(len(results), 0, "Expected at least one caller")
+        for r in results:
+            self.assertEqual(r["kind"], "call",
+                             f"All callers results must have kind='call', got: {r!r}")
 
 if __name__ == "__main__":
     unittest.main()
