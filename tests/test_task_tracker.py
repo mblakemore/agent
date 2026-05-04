@@ -798,3 +798,94 @@ def test_add_multiline_whitespace_description_still_rejected():
     res = fn(action="add", description="  \n  \n  ")
     assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
     assert "description required" in res
+
+
+# ── Issue #728: embedded tab characters in description/note must be collapsed ──
+
+def test_add_description_with_tab_collapsed():
+    """description with embedded tab must be collapsed to a space (#728)."""
+    res = fn(action="add", description="task\twith\ttab")
+    assert "Added task #1" in res, f"Expected add success, got: {res!r}"
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert "\t" not in tasks[0]["description"], (
+        f"description must not contain tabs, got: {tasks[0]['description']!r}"
+    )
+    assert tasks[0]["description"] == "task with tab"
+
+
+def test_add_description_with_multiple_tabs_collapsed():
+    """Multiple consecutive tabs must be collapsed to a single space (#728)."""
+    res = fn(action="add", description="a\t\tb")
+    assert "Added task #1" in res, f"Expected add success, got: {res!r}"
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["description"] == "a b", (
+        f"Expected 'a b', got: {tasks[0]['description']!r}"
+    )
+
+
+def test_add_description_with_mixed_tab_and_newline_collapsed():
+    """Mixed tabs and newlines in description must all be collapsed (#728)."""
+    res = fn(action="add", description="line1\n\tline2")
+    assert "Added task #1" in res, f"Expected add success, got: {res!r}"
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    desc = tasks[0]["description"]
+    assert "\t" not in desc and "\n" not in desc, (
+        f"description must contain no tabs or newlines, got: {desc!r}"
+    )
+    assert desc == "line1 line2", f"Expected 'line1 line2', got: {desc!r}"
+
+
+def test_update_note_with_tab_collapsed():
+    """note passed to update with tab characters must be collapsed (#728)."""
+    fn(action="add", description="Task to annotate")
+    res = fn(action="update", task_id=1, description="note\twith\ttabs")
+    assert "Updated task #1" in res, f"Expected update success, got: {res!r}"
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    note = tasks[0].get("note", "")
+    assert "\t" not in note, f"note must not contain tabs, got: {note!r}"
+    assert note == "note with tabs", f"Expected 'note with tabs', got: {note!r}"
+
+
+def test_done_note_with_tab_collapsed():
+    """note passed to done with tab characters must be collapsed (#728)."""
+    fn(action="add", description="Task to finish")
+    res = fn(action="done", task_id=1, description="finished\twith\tnote")
+    assert "Completed task #1" in res, f"Expected completion, got: {res!r}"
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    note = tasks[0].get("note", "")
+    assert "\t" not in note, f"note must not contain tabs, got: {note!r}"
+    assert note == "finished with note", f"Expected 'finished with note', got: {note!r}"
+
+
+def test_list_output_not_broken_by_tab_in_description():
+    """list output must keep one task per line even when description had tabs (#728)."""
+    fn(action="add", description="tab\ttest\ttask")
+    result = fn(action="list")
+    task_lines = [line for line in result.splitlines() if "#1" in line]
+    assert len(task_lines) == 1, (
+        f"Expected exactly one line mentioning #1, got: {result!r}"
+    )
+    assert "[ ] #1 (open): tab test task" in result
+
+
+def test_add_tab_only_description_rejected():
+    """description='\\t' (tab only) must return Error, not create a blank task (#728)."""
+    res = fn(action="add", description="\t")
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    assert "description required" in res
+
+
+def test_add_tab_and_space_only_description_rejected():
+    """description='  \\t  ' (whitespace + tab only) must return Error (#728)."""
+    res = fn(action="add", description="  \t  \t  ")
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    assert "description required" in res
+
+
+def test_description_with_space_around_tab_collapsed_cleanly():
+    """Spaces surrounding a tab (e.g. 'a \\t b') must collapse to single space (#728)."""
+    res = fn(action="add", description="word1 \t word2")
+    assert "Added task #1" in res, f"Expected add success, got: {res!r}"
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    desc = tasks[0]["description"]
+    assert desc == "word1 word2", f"Expected 'word1 word2', got: {desc!r}"
