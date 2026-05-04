@@ -55,7 +55,7 @@ def fn(prompt: str, depth: str = "brief", context: str = "") -> str:
         context = ""
     if "\x00" in context:
         return "Error: context must not contain null bytes"
-    if depth not in DEPTH_MAX_TOKENS:
+    if not isinstance(depth, str) or depth not in DEPTH_MAX_TOKENS:
         valid = ", ".join(DEPTH_MAX_TOKENS)
         return f"Error: invalid depth {depth!r}. Use one of: {valid}."
     log = logging.getLogger("agent")
