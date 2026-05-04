@@ -20,9 +20,13 @@ def _is_excluded(path_str: str) -> bool:
 
 
 def _collect_py_files(root: Path) -> list[Path]:
-    """Collect all .py files under root, applying DEFAULT_EXCLUDES."""
+    """Collect all .py files under root, applying DEFAULT_EXCLUDES.
+
+    followlinks=True ensures that symlinked subdirectories are walked, so that
+    .py files reachable via directory symlinks are not silently skipped (#828).
+    """
     results = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
         # Prune excluded directories in-place so os.walk won't descend into them.
         dirnames[:] = [
             d for d in dirnames
