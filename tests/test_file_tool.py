@@ -308,6 +308,22 @@ class TestFileCoverageGaps(unittest.TestCase):
             result = file_tool.fn(action="read", path=str(target), start_line=5)
             self.assertIn("Error: start_line (5) exceeds file length", result)
 
+    def test_read_start_line_greater_than_end_line(self):
+        """read with start_line > end_line must return a clear error, not empty content."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("".join(f"line{i}\n" for i in range(1, 11)), encoding="utf-8")
+            # start_line > end_line: should error, not silently return nothing
+            result = file_tool.fn(action="read", path=str(target), start_line=8, end_line=2)
+            self.assertIn("Error: start_line (8) > end_line (2)", result)
+            # Also test a smaller gap
+            result2 = file_tool.fn(action="read", path=str(target), start_line=5, end_line=3)
+            self.assertIn("Error: start_line (5) > end_line (3)", result2)
+            # Valid range still works
+            result3 = file_tool.fn(action="read", path=str(target), start_line=3, end_line=5)
+            self.assertNotIn("Error", result3)
+            self.assertIn("line3", result3)
+
     def test_write_replace_range_nonexistent(self):
         with tempfile.TemporaryDirectory() as d:
             target = Path(d) / "nonexistent.txt"
