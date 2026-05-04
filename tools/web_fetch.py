@@ -32,6 +32,8 @@ def fn(url: str) -> str:
     """
     if not isinstance(url, str) or not url.strip():
         return "Error: url must not be empty"
+    if '\x00' in url:
+        return "Error: url contains a null byte, which is not allowed"
     if not url.startswith(("http://", "https://")):
         return f"Error: invalid URL '{url}' — must begin with http:// or https://"
     try:
