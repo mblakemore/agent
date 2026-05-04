@@ -142,3 +142,34 @@ def test_sleep_negative_does_not_expose_stdlib_message():
     assert result.startswith("Error:"), (
         f"Expected 'Error:' prefix for negative sleep, got: {result!r}"
     )
+
+
+# ── NaN / Inf guards (#891) ───────────────────────────────────────────────────
+
+
+def test_sleep_nan_returns_clear_error():
+    """sleep(float('nan')) must return a clear error rather than an obscure
+    'sleep length must be non-negative' message from time.sleep (#891).
+
+    Before the fix, NaN passed both the < 0 and > _MAX_SLEEP guards (NaN
+    comparisons are always False), reaching time.sleep(nan) which raised
+    ValueError with a confusing stdlib message.
+    """
+    import math
+    result = fn(math.nan)
+    assert result.startswith("Error:"), f"Expected error, got: {result!r}"
+    assert "finite" in result or "nan" in result.lower(), (
+        f"Error should mention finite or nan: {result!r}"
+    )
+
+
+def test_sleep_inf_returns_clear_error():
+    """sleep(float('inf')) must return a clear error (#891).
+
+    Inf > _MAX_SLEEP is True, so Inf was already caught — but with the
+    message 'sleep duration inf exceeds maximum…' which is somewhat
+    misleading. The isfinite check now fires first with a clearer message.
+    """
+    import math
+    result = fn(math.inf)
+    assert result.startswith("Error:"), f"Expected error, got: {result!r}"
