@@ -119,11 +119,82 @@ class TestFileEdgeCases(unittest.TestCase):
             target = Path(d) / "test.txt"
             target.write_text("line1\nline2\nline3", encoding="utf-8")
             file_tool.fn(action="read", path=str(target))
-            
+
             # Replacing with empty content (deleting lines)
             result = file_tool.fn(action="write", path=str(target), content="", start_line=2, end_line=2)
             self.assertIn("Replaced lines 2-2", result)
             self.assertEqual(target.read_text(), "line1\nline3")
+
+
+class TestAppendMainGuard(unittest.TestCase):
+    """Tests for smart-insert behaviour when appending to .py files with __main__ guard."""
+
+    def test_append_to_py_file_inserts_before_main_guard(self):
+        """Appending to a .py file that ends with an __main__ guard places new content before it."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test_suite.py"
+            original = (
+                "import unittest\n"
+                "\n"
+                "class MyTests(unittest.TestCase):\n"
+                "    def test_existing(self):\n"
+                "        pass\n"
+                "\n"
+                "if __name__ == '__main__':\n"
+                "    unittest.main()\n"
+            )
+            target.write_text(original, encoding="utf-8")
+
+            new_method = (
+                "    def test_new(self):\n"
+                "        self.assertTrue(True)\n"
+            )
+            result = file_tool.fn(action="append", path=str(target), content=new_method)
+
+            self.assertIn("Appended to", result)
+            final = target.read_text(encoding="utf-8")
+
+            # New content must appear before the guard
+            guard_pos = final.find("if __name__")
+            new_pos = final.find("def test_new")
+            self.assertGreater(guard_pos, -1, "Guard must still be present")
+            self.assertGreater(new_pos, -1, "New method must be present")
+            self.assertLess(new_pos, guard_pos, "New content must appear before the __main__ guard")
+
+            # Guard must still be the last meaningful block
+            self.assertTrue(final.rstrip().endswith("unittest.main()"),
+                            "Guard block must remain at the end")
+
+    def test_append_to_file_without_main_guard_appends_at_end(self):
+        """Normal append still works for .py files without a __main__ guard."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "module.py"
+            original = "def foo():\n    pass\n"
+            target.write_text(original, encoding="utf-8")
+
+            new_code = "def bar():\n    pass\n"
+            result = file_tool.fn(action="append", path=str(target), content=new_code)
+
+            self.assertIn("Appended to", result)
+            final = target.read_text(encoding="utf-8")
+            self.assertEqual(final, original + new_code)
+
+    def test_append_to_non_py_file_always_appends_at_end(self):
+        """Non-.py files always get content appended at EOF, even if they contain an __main__ line."""
+        with tempfile.TemporaryDirectory() as d:
+            for ext in (".txt", ".md"):
+                target = Path(d) / f"file{ext}"
+                original = 'some text\nif __name__ == "__main__":\n    pass\n'
+                target.write_text(original, encoding="utf-8")
+
+                extra = "appended line\n"
+                result = file_tool.fn(action="append", path=str(target), content=extra)
+
+                self.assertIn("Appended to", result)
+                final = target.read_text(encoding="utf-8")
+                self.assertTrue(final.endswith(extra),
+                                f"Content must be at EOF for {ext} file, got: {final!r}")
+
 
 if __name__ == "__main__":
     unittest.main()
