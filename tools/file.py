@@ -76,6 +76,11 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
             f"Valid parameters are: action, path, content, start_line, end_line. "
             f"Valid actions are: read, write, insert, append, delete, list."
         )
+    if not isinstance(content, str):
+        return (
+            f"Error: 'content' must be a string, got {type(content).__name__}. "
+            f"Pass a plain string value for write/append/insert actions."
+        )
     try:
         resolved = str(_resolve_path(path.strip()))
         if action == "read":

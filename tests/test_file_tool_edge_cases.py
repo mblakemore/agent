@@ -363,5 +363,83 @@ class TestFileUnexpectedKwargs(unittest.TestCase):
             self.assertEqual(target.read_text(), "hi")
 
 
+class TestFileContentTypeValidation(unittest.TestCase):
+    """fn() must return a clean Error string when content is not a string (#678)."""
+
+    def _prime_file(self, path):
+        """Write a file and prime the session read-tracker."""
+        Path(path).write_text("original\n", encoding="utf-8")
+        file_tool.fn(action="read", path=path)
+
+    def test_write_with_int_content_returns_clean_error(self):
+        """write action with content=42 must return Error, not leak Python exception."""
+        with tempfile.TemporaryDirectory() as d:
+            target = str(Path(d) / "test.txt")
+            self._prime_file(target)
+            result = file_tool.fn(action="write", path=target, content=42)
+            self.assertIsInstance(result, str)
+            self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+            self.assertIn("int", result)
+            self.assertNotIn("write()", result, "Must not leak raw Python exception text")
+
+    def test_append_with_int_content_returns_clean_error(self):
+        """append action with content=99 must return Error, not leak Python exception."""
+        with tempfile.TemporaryDirectory() as d:
+            target = str(Path(d) / "test.txt")
+            self._prime_file(target)
+            result = file_tool.fn(action="append", path=target, content=99)
+            self.assertIsInstance(result, str)
+            self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+            self.assertIn("int", result)
+            self.assertNotIn("write()", result, "Must not leak raw Python exception text")
+
+    def test_insert_with_int_content_returns_clean_error(self):
+        """insert action with content=0 must return Error, not leak Python exception."""
+        with tempfile.TemporaryDirectory() as d:
+            target = str(Path(d) / "test.txt")
+            self._prime_file(target)
+            result = file_tool.fn(action="insert", path=target, content=0, start_line=1)
+            self.assertIsInstance(result, str)
+            self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+            self.assertIn("int", result)
+            self.assertNotIn("splitlines", result, "Must not leak raw Python exception text")
+
+    def test_write_with_list_content_returns_clean_error(self):
+        """write action with content=['a', 'b'] must return a clean Error string."""
+        with tempfile.TemporaryDirectory() as d:
+            target = str(Path(d) / "test.txt")
+            result = file_tool.fn(action="write", path=target, content=["a", "b"])
+            self.assertIsInstance(result, str)
+            self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+            self.assertIn("list", result)
+
+    def test_write_with_none_content_returns_clean_error(self):
+        """write action with content=None must return a clean Error string."""
+        with tempfile.TemporaryDirectory() as d:
+            target = str(Path(d) / "test.txt")
+            result = file_tool.fn(action="write", path=target, content=None)
+            self.assertIsInstance(result, str)
+            self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+            self.assertIn("NoneType", result)
+
+    def test_write_with_string_content_unaffected(self):
+        """Normal string content must still work after adding the type check."""
+        with tempfile.TemporaryDirectory() as d:
+            target = str(Path(d) / "newfile.txt")
+            result = file_tool.fn(action="write", path=target, content="hello")
+            self.assertTrue(result.startswith("Wrote '"), f"Normal write broke: {result!r}")
+            self.assertEqual(Path(target).read_text(), "hello")
+
+    def test_error_message_names_the_bad_type(self):
+        """The Error message must mention the actual bad type so the caller can self-correct."""
+        with tempfile.TemporaryDirectory() as d:
+            target = str(Path(d) / "test.txt")
+            for bad_value, expected_type_name in [(3.14, "float"), (True, "bool"), (b"bytes", "bytes")]:
+                with self.subTest(bad_value=bad_value):
+                    result = file_tool.fn(action="write", path=target, content=bad_value)
+                    self.assertIn(expected_type_name, result,
+                                  f"Error must mention '{expected_type_name}', got: {result!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
