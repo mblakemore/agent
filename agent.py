@@ -1257,15 +1257,20 @@ def _expand_file_refs(text):
         seen.add(ref)
 
         p = Path(ref)
-        if not p.exists():
+        try:
+            path_exists = p.exists()
+            path_is_dir = p.is_dir() if path_exists else False
+            resolved_ref = p.resolve()
+        except OSError as exc:
+            return None, None, f"Error: '{ref}': {exc.strerror}"
+        if not path_exists:
             return None, None, f"Error: file '{ref}' does not exist"
-        if p.is_dir():
+        if path_is_dir:
             return None, None, f"Error: '{ref}' is a directory, not a file"
 
         # Confinement check: reject any ref that resolves outside the working
         # directory.  This blocks both relative traversals (@../../secret) and
         # absolute paths (@/etc/passwd) that escape the project tree.
-        resolved_ref = p.resolve()
         if resolved_ref != cwd_resolved and not str(resolved_ref).startswith(cwd_prefix):
             return (
                 None,
