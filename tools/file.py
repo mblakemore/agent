@@ -235,7 +235,42 @@ def _write(path, content, start_line, end_line):
 
 import re as _re
 
-_MAIN_GUARD_RE = _re.compile(r'^if\s+__name__\s*==\s*["\']__main__["\']\s*:', _re.MULTILINE)
+_MAIN_GUARD_RE = _re.compile(
+    r'^if\s+__name__\s*==\s*["\']__main__["\']\s*:(\s*#.*)?$',
+    _re.MULTILINE,
+)
+
+# Lines that look like module-level metadata — skipped when scanning backwards
+# past the guard so that trailing assignments don't stop the search.
+_METADATA_LINE_RE = _re.compile(
+    r'^(?:[A-Z_][A-Z0-9_]*\s*=|__[a-z]+__\s*=|["\'])'
+)
+
+# Detect triple-quoted string delimiters
+_TRIPLE_QUOTE_RE = _re.compile(r'(\'\'\'|""")')
+
+
+def _line_is_in_string(lines, idx):
+    """Return True if lines[idx] is inside a triple-quoted string literal.
+
+    Performs a forward scan counting unmatched triple-quote openers so that a
+    guard-like line embedded in a docstring is not treated as a real guard.
+    """
+    depth = 0
+    open_delim = None
+    for i, line in enumerate(lines):
+        if i == idx:
+            return depth > 0
+        for m in _TRIPLE_QUOTE_RE.finditer(line):
+            delim = m.group(1)
+            if depth == 0:
+                depth = 1
+                open_delim = delim
+            elif delim == open_delim:
+                depth -= 1
+                if depth == 0:
+                    open_delim = None
+    return depth > 0
 
 
 def _find_main_guard_start(lines):
@@ -253,10 +288,18 @@ def _find_main_guard_start(lines):
     # Search backwards from the last non-empty line to find the guard header.
     for i in range(last_nonempty, -1, -1):
         if _MAIN_GUARD_RE.match(lines[i]):
+            # Edge-case 1: guard-text inside a string literal — skip it.
+            if _line_is_in_string(lines, i):
+                continue
             return i
-        # Stop if we hit a non-empty line that doesn't look like part of the guard block
-        # (i.e. not indented and not the guard itself and not blank).
-        if lines[i].strip() and i != last_nonempty and not lines[i][0].isspace():
+        # Stop if we hit a non-empty, non-indented line that is not:
+        #   • the last non-empty line (guard body / trailing code)
+        #   • a blank line
+        #   • a module-level metadata assignment / bare string (edge-case 2)
+        if (lines[i].strip()
+                and i != last_nonempty
+                and not lines[i][0].isspace()
+                and not _METADATA_LINE_RE.match(lines[i])):
             break
     return None
 

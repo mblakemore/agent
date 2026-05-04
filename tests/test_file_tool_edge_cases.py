@@ -245,5 +245,82 @@ class TestAppendMainGuard(unittest.TestCase):
                             f"Content must be at EOF for indented guard, got: {final!r}")
 
 
+    def test_append_guard_in_docstring_not_treated_as_guard(self):
+        """Guard-text inside a triple-quoted string must not trigger smart-insert."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "docstring_module.py"
+            original = (
+                'USAGE = """\n'
+                'Example:\n'
+                '    if __name__ == "__main__":\n'
+                '        main()\n'
+                '"""\n'
+                '\n'
+                'def main():\n'
+                '    pass\n'
+            )
+            target.write_text(original, encoding="utf-8")
+
+            new_code = "def helper(): pass\n"
+            result = file_tool.fn(action="append", path=str(target), content=new_code)
+
+            self.assertIn("Appended to", result)
+            final = target.read_text(encoding="utf-8")
+            # Content must appear at EOF, not inside the docstring
+            self.assertTrue(final.endswith(new_code),
+                            f"Content must be at EOF when guard is inside a string, got: {final!r}")
+
+    def test_append_with_two_trailing_metadata_lines_finds_guard(self):
+        """Two trailing module-level metadata assignments must not block guard detection."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "versioned.py"
+            original = (
+                "def run():\n"
+                "    pass\n"
+                "\n"
+                "if __name__ == '__main__':\n"
+                "    run()\n"
+                'VERSION = "1.0"\n'
+                'AUTHOR = "me"\n'
+            )
+            target.write_text(original, encoding="utf-8")
+
+            new_code = "def helper(): pass\n"
+            result = file_tool.fn(action="append", path=str(target), content=new_code)
+
+            self.assertIn("Appended to", result)
+            final = target.read_text(encoding="utf-8")
+            guard_pos = final.find("if __name__")
+            new_pos = final.find("def helper")
+            self.assertGreater(guard_pos, -1, "Guard must still be present")
+            self.assertGreater(new_pos, -1, "New function must be present")
+            self.assertLess(new_pos, guard_pos,
+                            "New content must appear before the __main__ guard")
+
+    def test_append_single_quote_guard_detected(self):
+        """A guard written with single quotes must be detected by smart-insert."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "singlequote.py"
+            original = (
+                "def main():\n"
+                "    pass\n"
+                "\n"
+                "if __name__ == '__main__':\n"
+                "    main()\n"
+            )
+            target.write_text(original, encoding="utf-8")
+
+            new_code = "def helper(): pass\n"
+            result = file_tool.fn(action="append", path=str(target), content=new_code)
+
+            self.assertIn("inserted before __main__ guard", result,
+                          f"Smart-insert must fire for single-quote guard, got: {result!r}")
+            final = target.read_text(encoding="utf-8")
+            guard_pos = final.find("if __name__")
+            new_pos = final.find("def helper")
+            self.assertLess(new_pos, guard_pos,
+                            "New content must appear before the single-quote __main__ guard")
+
+
 if __name__ == "__main__":
     unittest.main()
