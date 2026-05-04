@@ -9,6 +9,7 @@ merge test. No network, no subprocess — these exercise
 import json
 
 from dev_mode_prompt import (
+    _parse_tool_calls,
     DEV_MODE_PREAMBLE,
     build_dev_prompt,
     is_truncated,
@@ -172,3 +173,44 @@ def test_sanitize_strips_think_tags_and_smart_quotes():
     assert "<think>" not in narrative
     assert "</think>" not in narrative
     assert '"hi"--ok.' in narrative
+
+
+# Non-dict args guard: model returns "args" as a list or string.
+# Previously these would propagate into agent.py's **func_args dispatch and
+# raise TypeError. After the fix, _parse_tool_calls coerces non-dict args
+# to {} and logs a warning, so parse_dev_response returns arguments="{}".
+def test_parse_tool_calls_list_args_coerced_to_empty_dict(caplog):
+    """args=[...] should be coerced to {} with a warning, not crash."""
+    import logging
+    text = '<tool_call>{"tool": "file", "args": ["action", "read"]}</tool_call>'
+    with caplog.at_level(logging.WARNING, logger="dev_mode_prompt"):
+        calls = _parse_tool_calls(text)
+
+    assert len(calls) == 1
+    assert calls[0]["name"] == "file"
+    assert calls[0]["args"] == {}  # coerced from list
+    assert any("args is list" in r.message for r in caplog.records)
+
+
+def test_parse_tool_calls_string_args_coerced_to_empty_dict(caplog):
+    """args="some string" should be coerced to {} with a warning, not crash."""
+    import logging
+    text = '<tool_call>{"tool": "exec_command", "args": "run ls"}</tool_call>'
+    with caplog.at_level(logging.WARNING, logger="dev_mode_prompt"):
+        calls = _parse_tool_calls(text)
+
+    assert len(calls) == 1
+    assert calls[0]["name"] == "exec_command"
+    assert calls[0]["args"] == {}
+    assert any("args is str" in r.message for r in caplog.records)
+
+
+def test_parse_dev_response_non_dict_args_yields_empty_arguments():
+    """parse_dev_response with list args produces arguments='{}' (safe for JSON dispatch)."""
+    text = '<tool_call>{"tool": "file", "args": [1, 2, 3]}</tool_call>'
+    narrative, calls = parse_dev_response(text)
+
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "file"
+    parsed_args = json.loads(calls[0]["function"]["arguments"])
+    assert parsed_args == {}  # coerced -- not a list, so **func_args won't TypeError
