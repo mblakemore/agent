@@ -222,6 +222,11 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
             f"Error: limit must be a plain integer, got bool ({limit!r}). "
             f"Pass an integer (e.g. limit=10) or omit for no limit."
         )
+    if isinstance(limit, str):
+        return (
+            f"Error: limit must be an integer, got 'str': {limit!r}. "
+            f"Pass an integer without quotes (e.g. limit=10)."
+        )
     if not isinstance(limit, int):
         try:
             coerced = int(limit)
