@@ -342,7 +342,8 @@ definition = {
             "IMPORTANT: always pass `path` explicitly when you know the "
             "directory you want to search. The default `'.'` is the process "
             "working directory, which in automation mode is usually an empty "
-            "temp dir — not the repo the user asked about."
+            "temp dir — not the repo the user asked about. "
+            "When searching for TODO/FIXME comments in code, use `# TODO|# FIXME` as the pattern (with the `#` prefix) to avoid matching these words inside string literals or docstrings."
             ),
         "parameters": {
             "type": "object",
