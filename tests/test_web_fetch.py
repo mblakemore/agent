@@ -545,3 +545,88 @@ class TestWebFetchCredentialScrubbing(unittest.TestCase):
         assert "example.com" in result, (
             f"Hostname was lost from tool result: {result!r}"
         )
+
+
+# ── Malformed Content-Length header (#831) ────────────────────────────────────
+
+
+def _make_mock_response_with_content_length(content_length_value, content=b"valid page content"):
+    """Build a mock response with a custom Content-Length header value."""
+    mock_resp = MagicMock()
+    mock_resp.url = "http://example.com/page"
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.headers = {"content-type": "text/plain", "content-length": content_length_value}
+    mock_resp.encoding = "utf-8"
+    mock_resp.iter_content = MagicMock(return_value=iter([content]))
+    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+class TestWebFetchMalformedContentLength(unittest.TestCase):
+    """A non-numeric Content-Length header must not crash web_fetch (#831)."""
+
+    def test_non_numeric_content_length_still_fetches_page(self):
+        """A server returning Content-Length: 'not-a-number' must not fail the fetch.
+
+        Without the fix, int('not-a-number') raises ValueError which propagates
+        to the outer except-Exception handler and returns a cryptic error.
+        With the fix, the bad header is skipped and streaming proceeds normally.
+        """
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response_with_content_length("not-a-number")
+            result = fn("http://example.com/page")
+        self.assertFalse(
+            result.startswith("Error:"),
+            f"Malformed Content-Length caused fetch failure: {result!r}",
+        )
+        self.assertIn("valid page content", result)
+
+    def test_chunked_content_length_still_fetches_page(self):
+        """'0, chunked' is a real-world malformed Content-Length value that must be tolerated."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response_with_content_length("0, chunked")
+            result = fn("http://example.com/page")
+        self.assertFalse(
+            result.startswith("Error:"),
+            f"'0, chunked' Content-Length caused fetch failure: {result!r}",
+        )
+
+    def test_valid_numeric_content_length_still_enforced(self):
+        """A valid numeric Content-Length above the limit must still be rejected."""
+        over_limit = str(1024 * 1024 + 1)  # 1 byte over _MAX_BYTES
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response_with_content_length(over_limit)
+            result = fn("http://example.com/page")
+        self.assertTrue(
+            result.startswith("Error:"),
+            f"Oversized Content-Length was not rejected: {result!r}",
+        )
+        self.assertIn("too large", result)
+
+    def test_valid_small_content_length_passes(self):
+        """A valid numeric Content-Length within the limit must allow the fetch."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response_with_content_length("100")
+            result = fn("http://example.com/page")
+        self.assertFalse(
+            result.startswith("Error:"),
+            f"Valid Content-Length caused fetch failure: {result!r}",
+        )
+
+    def test_missing_content_length_header_still_fetches(self):
+        """Absence of Content-Length header must not affect the fetch."""
+        mock_resp = MagicMock()
+        mock_resp.url = "http://example.com/page"
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.headers = {"content-type": "text/plain"}  # no content-length
+        mock_resp.encoding = "utf-8"
+        mock_resp.iter_content = MagicMock(return_value=iter([b"valid page content"]))
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch("tools.web_fetch.requests.get", return_value=mock_resp):
+            result = fn("http://example.com/page")
+        self.assertFalse(
+            result.startswith("Error:"),
+            f"Missing Content-Length caused fetch failure: {result!r}",
+        )

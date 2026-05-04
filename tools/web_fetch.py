@@ -112,9 +112,18 @@ def fn(url: str) -> str:
 
             content_type = resp.headers.get("content-type", "").lower()
             
-            # 1. Fast-fail if Content-Length is obviously too large
+            # 1. Fast-fail if Content-Length is obviously too large.
+            # Guard int() with a try/except: some servers return non-numeric
+            # Content-Length values (e.g. "0, chunked", "unk") which would
+            # raise ValueError and cause the whole fetch to fail with a
+            # cryptic error.  When the header is non-numeric we skip the
+            # pre-check and let the streaming byte-count limit do the job.
             content_length = resp.headers.get("content-length")
-            if content_length and int(content_length) > _MAX_BYTES:
+            try:
+                cl_int = int(content_length) if content_length else None
+            except (ValueError, TypeError):
+                cl_int = None
+            if cl_int is not None and cl_int > _MAX_BYTES:
                 return f"Error: Remote file is too large ({content_length} bytes). Max allowed is {_MAX_BYTES}."
 
             # 2. Stream content to avoid OOM
