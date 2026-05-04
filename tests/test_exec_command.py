@@ -1034,3 +1034,66 @@ def test_exec_command_small_output_unaffected_by_cap():
     assert "exit=0" in result
     assert "small output" in result
     assert "truncated" not in result
+
+
+# ── background/new_session boolean coercion (#885) ───────────────────────────
+
+
+def test_exec_command_background_string_false_returns_error():
+    """background='false' must return a clear error, not silently start a background
+    process (#885).
+
+    Python treats non-empty strings as truthy, so background='false' would
+    previously run the command in background even though the caller intended
+    synchronous execution.
+    """
+    result = fn(command="echo hi", background="false")
+    assert result.startswith("Error:"), f"Expected error, got: {result!r}"
+    assert "background" in result, f"Error should name the offending param: {result!r}"
+    assert "str" in result or "quotes" in result, f"Error should hint at string type: {result!r}"
+
+
+def test_exec_command_background_string_true_returns_error():
+    """background='true' must return a clear error — strings are not booleans (#885)."""
+    result = fn(command="echo hi", background="true")
+    assert result.startswith("Error:"), f"Expected error, got: {result!r}"
+    assert "background" in result
+
+
+def test_exec_command_new_session_string_false_returns_error():
+    """new_session='false' must return a clear error, not silently create a session (#885)."""
+    result = fn(command="echo hi", new_session="false")
+    assert result.startswith("Error:"), f"Expected error, got: {result!r}"
+    assert "new_session" in result
+
+
+def test_exec_command_background_integer_2_returns_error():
+    """background=2 must return a clear error — only 0, 1, and bool are accepted (#885)."""
+    result = fn(command="echo hi", background=2)
+    assert result.startswith("Error:"), f"Expected error, got: {result!r}"
+    assert "background" in result
+
+
+def test_exec_command_background_zero_runs_synchronously():
+    """background=0 must behave as False (runs synchronously) and return command output (#885)."""
+    result = fn(command="echo sync_output", timeout=5, background=0)
+    assert "exit=0" in result, f"Expected synchronous exit=0: {result!r}"
+    assert "sync_output" in result, f"Expected command output: {result!r}"
+
+
+def test_exec_command_background_one_starts_background():
+    """background=1 must behave as True (starts background process) (#885)."""
+    result = fn(command="echo bg_test", background=1)
+    assert "background" in result.lower(), f"Expected background message: {result!r}"
+
+
+def test_exec_command_background_true_unaffected():
+    """background=True continues to work normally after adding the type check (#885)."""
+    result = fn(command="echo hi", background=True)
+    assert "background" in result.lower()
+
+
+def test_exec_command_background_false_unaffected():
+    """background=False continues to run synchronously after adding the type check (#885)."""
+    result = fn(command="echo hi", background=False, timeout=5)
+    assert "exit=0" in result
