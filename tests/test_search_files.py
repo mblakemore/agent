@@ -559,3 +559,27 @@ class TestSearchFilesBinarySkip(unittest.TestCase):
             p = Path(d, "text.py")
             p.write_text("def hello(): pass\n")
             self.assertFalse(search_files._is_binary(p))
+
+
+class TestSearchFilesNonStringGuards(unittest.TestCase):
+    """Non-string inputs must return an error string, not raise AttributeError."""
+
+    def test_pattern_int_returns_error(self):
+        result = search_files.fn(pattern=42)
+        self.assertIsInstance(result, str)
+        self.assertIn("Error", result)
+
+    def test_pattern_none_returns_error(self):
+        result = search_files.fn(pattern=None)
+        self.assertIsInstance(result, str)
+        self.assertIn("Error", result)
+
+    def test_path_int_returns_error(self):
+        result = search_files.fn(pattern="x", path=42)
+        self.assertIsInstance(result, str)
+        self.assertIn("Error", result)
+
+    def test_path_none_returns_error(self):
+        result = search_files.fn(pattern="x", path=None)
+        self.assertIsInstance(result, str)
+        self.assertIn("Error", result)

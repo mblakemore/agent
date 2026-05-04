@@ -30,7 +30,7 @@ def fn(url: str) -> str:
     Args:
         url: The URL to fetch.
     """
-    if not url or not url.strip():
+    if not isinstance(url, str) or not url.strip():
         return "Error: url must not be empty"
     if not url.startswith(("http://", "https://")):
         return f"Error: invalid URL '{url}' — must begin with http:// or https://"

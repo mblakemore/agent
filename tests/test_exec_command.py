@@ -360,3 +360,17 @@ def test_exec_command_inf_timeout_does_not_run_command():
     result = fn(command="echo ran", timeout=float('inf'))
     assert result == "Error: timeout must be a positive number"
     assert "ran" not in result
+
+
+def test_exec_command_int_command_returns_error():
+    """Passing an int as command must return an error string, not raise AttributeError."""
+    result = fn(command=42, timeout=5)
+    assert isinstance(result, str)
+    assert "Error" in result
+
+
+def test_exec_command_none_command_returns_error():
+    """Passing None as command must return an error string, not raise AttributeError."""
+    result = fn(command=None, timeout=5)
+    assert isinstance(result, str)
+    assert "Error" in result
