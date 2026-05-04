@@ -147,6 +147,9 @@ def _find_callers(tree: ast.AST, name: str, src_path: str) -> list[dict]:
     return matches
 
 
+_VALID_MODES = {"definition", "callers", "both"}
+
+
 def find_symbol(
     name: str,
     path: str = ".",
@@ -164,7 +167,11 @@ def find_symbol(
 
     Returns:
         List of match dicts with keys: path, line, kind, scope, context.
+        Returns [{"error": "..."}] for invalid arguments.
     """
+    if mode not in _VALID_MODES:
+        return [{"error": f"Invalid mode {mode!r}. Must be one of: {sorted(_VALID_MODES)}"}]
+
     search_path = Path(path)
     if not search_path.exists():
         return []
