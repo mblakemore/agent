@@ -8,6 +8,8 @@ file tool if it needs the full content.
 import hashlib
 import ipaddress
 import os
+import re
+import socket
 import requests
 from markdownify import markdownify
 from urllib.parse import urlparse, urlunparse
@@ -38,6 +40,18 @@ _PRIVATE_NETWORKS = [
         "fc00::/7",         # IPv6 ULA (fc00:: and fd00::)
     )
 ]
+
+# Matches non-standard numeric IP formats that ipaddress rejects but the OS
+# socket layer resolves: hex (0x7f000001), decimal integer (2130706433),
+# octal per-octet (0177.0.0.1).  Used to detect SSRF bypass attempts (#876).
+_NUMERIC_HOST_RE = re.compile(r'^(?:0[xX][0-9a-fA-F]+|[0-9]+(?:\.[0-9]+){0,3})$')
+
+
+def _addr_is_private(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return True if addr (after unwrapping any IPv4-mapped IPv6) is private."""
+    if hasattr(addr, 'ipv4_mapped') and addr.ipv4_mapped:
+        addr = addr.ipv4_mapped
+    return any(addr in net for net in _PRIVATE_NETWORKS)
 
 
 def _strip_credentials(url: str) -> str:
@@ -77,12 +91,22 @@ def _is_private_address(url: str) -> bool:
         # Strip brackets for IPv6 literals (e.g. "[::1]" → "::1")
         host = host.strip("[]")
         addr = ipaddress.ip_address(host)
-        # Unwrap IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1 → 127.0.0.1)
-        # so they are checked against the IPv4 private ranges.
-        if hasattr(addr, 'ipv4_mapped') and addr.ipv4_mapped:
-            addr = addr.ipv4_mapped
-        return any(addr in net for net in _PRIVATE_NETWORKS)
+        return _addr_is_private(addr)
     except ValueError:
+        # Non-standard numeric IP formats (hex 0x7f000001, octal 0177.0.0.1, decimal
+        # integer 2130706433) are rejected by ipaddress but resolved by the OS socket
+        # layer to private addresses.  Detect them with a pattern match and resolve.
+        if _NUMERIC_HOST_RE.match(host):
+            try:
+                for _, _, _, _, sockaddr in socket.getaddrinfo(host, None):
+                    try:
+                        resolved = ipaddress.ip_address(sockaddr[0])
+                        if _addr_is_private(resolved):
+                            return True
+                    except ValueError:
+                        pass
+            except (socket.gaierror, OSError):
+                pass
         # Not a numeric IP address or localhost — allow (could be an external hostname)
         return False
 
