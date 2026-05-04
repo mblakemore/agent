@@ -589,6 +589,20 @@ def test_exec_command_cwd_background_mode(tmp_path):
     assert "Command started in background" in result
 
 
+def test_exec_command_cwd_null_byte_returns_clean_error():
+    """cwd containing a null byte must return a clear error without embedding the
+    null byte in the error message (#883).
+
+    Before the fix, Path('abc\\x00def').exists() returned False on this Python
+    version, so the null byte silently flowed into the 'does not exist' error
+    message string rather than being caught by an explicit guard.
+    """
+    result = fn(command="echo hi", cwd="abc\x00def")
+    assert result.startswith("Error:"), f"Expected error, got: {result!r}"
+    assert "null byte" in result, f"Error message should mention null byte: {result!r}"
+    assert "\x00" not in result, f"Null byte must not appear in error message: {result!r}"
+
+
 # ── env parameter tests (#730) ────────────────────────────────────────────────
 
 def test_exec_command_env_injects_variable():
