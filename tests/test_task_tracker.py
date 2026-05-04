@@ -2610,3 +2610,44 @@ def test_corrupted_non_dict_element_type_name_is_quoted():
     assert result.startswith("Error:"), f"Expected error: {result!r}"
     assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
     assert "'str'" in result, f"Type name must be quoted as 'str': {result!r}"
+
+
+# ── Missing required fields in task dict (#929) ───────────────────────────────
+
+def test_task_missing_status_returns_corrupted_error():
+    """A task dict with missing 'status' must return a clear error, not KeyError (#929)."""
+    import json
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps([{"id": 1, "description": "no status"}]), encoding="utf-8")
+
+    result = fn(action="list")
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
+    assert "'status'" in result, f"Error must name the missing field: {result!r}"
+
+
+def test_task_missing_id_returns_corrupted_error():
+    """A task dict with missing 'id' must return a clear error, not KeyError (#929)."""
+    import json
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps([{"status": "open", "description": "no id"}]), encoding="utf-8")
+
+    result = fn(action="list")
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
+    assert "'id'" in result, f"Error must name the missing field: {result!r}"
+
+
+def test_valid_task_with_required_fields_still_works():
+    """A task dict with all required fields must not be falsely flagged as corrupted (#929)."""
+    import json
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps([{"id": 1, "status": "open", "description": "good task"}]),
+                 encoding="utf-8")
+
+    result = fn(action="list")
+    assert not result.startswith("Error:"), f"Valid task should not error: {result!r}"
+    assert "good task" in result, f"Task must appear in output: {result!r}"
