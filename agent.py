@@ -1281,7 +1281,11 @@ def _expand_file_refs(text):
         preamble = (
             f"[SYSTEM CONTEXT: Your working directory is {cwd}. "
             f"All relative paths resolve from here. "
-            f"Do not cd to other repositories or search for files outside this tree.]\n\n"
+            f"Do not cd to other repositories or search for files outside this tree. "
+            f"Do not start with a directory listing for orientation. The task prompt specifies the repo path. "
+            f"Begin with the first tool call that directly advances the task — read a specific file, "
+            f"search for a pattern, or look up a symbol. "
+            f"Use `file list` only when you specifically need to enumerate a directory's contents as part of the task.]\n\n"
         )
     else:
         preamble = ""
