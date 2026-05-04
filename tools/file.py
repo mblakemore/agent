@@ -59,7 +59,7 @@ def _get_diff(old_content, new_content):
     return "\n".join(result)
 
 
-def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end_line: int = 0) -> str:
+def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end_line: int = 0, **kwargs) -> str:
     """Perform file operations.
 
     Args:
@@ -69,6 +69,13 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
         start_line: For read: first line (1-indexed). For write: first line to replace. For insert: line number to insert BEFORE.
         end_line: For read: last line (1-indexed). For write: last line to replace (REQUIRED when start_line is set).
     """
+    if kwargs:
+        unexpected = ", ".join(f"'{k}'" for k in sorted(kwargs))
+        return (
+            f"Error: unexpected argument(s) {unexpected}. "
+            f"Valid parameters are: action, path, content, start_line, end_line. "
+            f"Valid actions are: read, write, insert, append, delete, list."
+        )
     try:
         resolved = str(_resolve_path(path.strip()))
         if action == "read":
