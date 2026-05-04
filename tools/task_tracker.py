@@ -180,7 +180,13 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
         )
     if not isinstance(limit, int):
         try:
-            limit = int(limit)
+            coerced = int(limit)
+            if isinstance(limit, float) and limit != coerced:
+                return (
+                    f"Error: limit must be an integer, got non-integer float: {limit!r}. "
+                    f"Did you mean {coerced} or {coerced + 1}?"
+                )
+            limit = coerced
         except (TypeError, ValueError):
             return f"Error: limit must be an integer, got {type(limit).__name__!r}: {limit!r}"
     if limit < 0:
