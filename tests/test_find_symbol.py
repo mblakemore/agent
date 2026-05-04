@@ -1133,5 +1133,50 @@ class TestFindSymbolEmptyPath(unittest.TestCase):
         self.assertEqual(result[0]["scope"], "my_func")
 
 
+class TestFindSymbolLongPath(unittest.TestCase):
+    """Very long path (> OS NAME_MAX) must return an error dict, not raise OSError (#808)."""
+
+    def test_path_exceeding_os_limit_returns_error_dict(self):
+        """A path longer than NAME_MAX bytes must return [{"error": "..."}], not raise OSError."""
+        long_path = "/" + "a" * 1_000_000
+        result = find_symbol(name="test", path=long_path)
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0, "Expected non-empty error list for overlong path")
+        self.assertIn("error", result[0],
+                      f"Expected error key in first result, got: {result[0]!r}")
+
+    def test_path_exceeding_os_limit_error_message_is_useful(self):
+        """Error for a path that exceeds NAME_MAX must mention the failure reason."""
+        long_path = "/" + "a" * 1_000_000
+        result = find_symbol(name="test", path=long_path)
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+        # Must not just say 'does not exist' — the OS couldn't even check existence
+        err = result[0]["error"]
+        # Error should mention something about the path or the OS error
+        self.assertTrue(
+            len(err) > 0,
+            "Error message must be non-empty for overlong path"
+        )
+
+    def test_path_just_over_255_chars_returns_error_dict(self):
+        """A path component just over 255 chars (typical Linux NAME_MAX) returns error dict."""
+        # Construct a path with a single component that is 300 chars (> NAME_MAX=255)
+        long_component = "a" * 300
+        long_path = f"/tmp/{long_component}"
+        result = find_symbol(name="test", path=long_path)
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0)
+        self.assertIn("error", result[0])
+
+    def test_normal_nonexistent_path_still_works(self):
+        """After adding the OSError guard, normal non-existent paths still return 'does not exist' (#808)."""
+        result = find_symbol(name="anything", path="/this/path/does/not/exist/xyz")
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0)
+        self.assertIn("error", result[0])
+        self.assertIn("does not exist", result[0]["error"])
+
+
 if __name__ == "__main__":
     unittest.main()

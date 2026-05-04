@@ -145,6 +145,14 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
         description = re.sub(r" *[\t\n\r][ \t\n\r]*", " ", description).strip()
     if '\x00' in description:
         return "Error: description contains a null byte, which is not allowed"
+    # Reject excessively long descriptions — unbounded strings would exhaust
+    # disk space and inflate the context window when listed (#809).
+    _MAX_DESCRIPTION_LEN = 2000
+    if len(description) > _MAX_DESCRIPTION_LEN:
+        return (
+            f"Error: description is too long ({len(description)} chars). "
+            f"Maximum allowed length is {_MAX_DESCRIPTION_LEN} characters."
+        )
 
     # Validate task_id type — must be an integer (or the default 0).
     # Non-integer values (e.g. strings passed by a model) would cause

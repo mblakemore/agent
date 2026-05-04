@@ -2057,3 +2057,66 @@ def test_add_description_with_embedded_tabs_collapsed_to_spaces():
     assert "\t" not in tasks[-1]["description"], (
         f"Tabs must be collapsed in stored description, got: {tasks[-1]['description']!r}"
     )
+
+
+# ── Issue #809: description length limit ──────────────────────────────────────
+
+
+def test_add_description_at_max_length_is_accepted():
+    """A description exactly at the max allowed length (2000 chars) must be accepted (#809)."""
+    desc = "x" * 2000
+    result = fn(action="add", description=desc)
+    assert not result.startswith("Error:"), (
+        f"Description at max length (2000) must be accepted, got: {result!r}"
+    )
+    assert "Added task" in result
+
+
+def test_add_description_one_over_max_length_returns_error():
+    """A description of 2001 chars must be rejected with an error (#809)."""
+    desc = "x" * 2001
+    result = fn(action="add", description=desc)
+    assert result.startswith("Error:"), (
+        f"Description of 2001 chars must be rejected, got: {result!r}"
+    )
+    assert "too long" in result.lower() or "length" in result.lower(), (
+        f"Error must mention length, got: {result!r}"
+    )
+
+
+def test_add_description_very_long_returns_error():
+    """A 1M-char description must be rejected with an error, not silently stored (#809)."""
+    desc = "A" * 1_000_000
+    result = fn(action="add", description=desc)
+    assert result.startswith("Error:"), (
+        f"1M-char description must be rejected, got: {result!r}"
+    )
+    assert "too long" in result.lower() or "length" in result.lower() or "2000" in result, (
+        f"Error must mention length limit, got: {result!r}"
+    )
+
+
+def test_add_description_very_long_not_written_to_disk():
+    """A rejected oversized description must not be persisted to disk (#809)."""
+    from pathlib import Path as _Path
+    desc = "A" * 1_000_000
+    fn(action="add", description=desc)
+    # tasks file should either not exist or be empty
+    p = _Path(_TASKS_FILE)
+    if p.exists():
+        import json as _json
+        tasks = _json.load(open(p))
+        assert len(tasks) == 0, (
+            f"Oversized description must not be written to disk, but got {len(tasks)} task(s)"
+        )
+
+
+def test_add_description_length_error_mentions_char_count():
+    """Error message for too-long description must report the actual character count (#809)."""
+    desc = "y" * 3000
+    result = fn(action="add", description=desc)
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    # Error should tell the caller how many chars were supplied
+    assert "3000" in result, (
+        f"Error must mention actual length (3000), got: {result!r}"
+    )

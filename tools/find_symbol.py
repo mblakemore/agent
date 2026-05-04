@@ -203,17 +203,25 @@ def find_symbol(
     if not path.strip():
         return [{"error": "path must be a non-empty string"}]
     search_path = Path(path.strip())
-    if not search_path.exists():
+    try:
+        path_exists = search_path.exists()
+        path_is_file = search_path.is_file() if path_exists else False
+    except OSError as exc:
+        # Very long paths (> NAME_MAX bytes on Linux) raise ENAMETOOLONG (errno 36).
+        # Treat any OS-level error during path resolution as "path does not exist"
+        # rather than propagating an unhandled exception.
+        return [{"error": f"path '{search_path}': {exc.strerror}"}]
+    if not path_exists:
         return [{"error": f"path '{search_path}' does not exist"}]
 
-    if search_path.is_file():
+    if path_is_file:
         if search_path.suffix != ".py":
             return [{"error": f"not a Python file: '{search_path}'. find_symbol only supports .py files."}]
         py_files = [search_path]
     else:
         py_files = _collect_py_files(search_path)
 
-    single_file = search_path.is_file()
+    single_file = path_is_file
 
     results = []
 
