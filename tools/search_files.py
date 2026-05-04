@@ -96,13 +96,13 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
                             break
                         if not current_group:
                             for b_num, b_text in buffer:
-                                current_group.append(f"{rel}-{b_num}- {b_text}")
+                                current_group.append(f"{rel}:{b_num}- {b_text}")
                         current_group.append(f"{rel}:{line_num}: {text_line}")
                         lines_to_emit = context
                     else:
                         if current_group:
                             if lines_to_emit > 0:
-                                current_group.append(f"{rel}-{line_num}- {text_line}")
+                                current_group.append(f"{rel}:{line_num}- {text_line}")
                                 lines_to_emit -= 1
                             else:
                                 context_groups.append(current_group)
@@ -160,8 +160,9 @@ def fn(
         glob: File glob pattern to filter (default: * for all files).
         ignore_case: Case-insensitive search (default: True).
         context: Lines of context to include before/after each match, like
-            grep -C. Capped at _MAX_CONTEXT. Default 3; pass 0 to get the
-            legacy bare-match shape.
+            grep -C. Capped at _MAX_CONTEXT. Default 3. Match lines use
+            'file:linenum: text'; context lines use 'file:linenum- text'.
+            Pass 0 to get match lines only (no context).
         count_only: If True, return only the match count summary (files
             searched, files matched, total matches) without the match lines.
             Use this when you only need to know how many matches exist, not where they are.
@@ -303,13 +304,13 @@ def fn(
                                     break
                                 if not current_group:
                                     for b_num, b_text in buffer:
-                                        current_group.append(f"{rel}-{b_num}- {b_text}")
+                                        current_group.append(f"{rel}:{b_num}- {b_text}")
                                 current_group.append(f"{rel}:{line_num}: {text_line}")
                                 lines_to_emit = context
                             else:
                                 if current_group:
                                     if lines_to_emit > 0:
-                                        current_group.append(f"{rel}-{line_num}- {text_line}")
+                                        current_group.append(f"{rel}:{line_num}- {text_line}")
                                         lines_to_emit -= 1
                                     else:
                                         context_groups.append(current_group)
@@ -424,8 +425,11 @@ definition = {
                     "type": "integer",
                     "description": (
                         "Lines of context to show before and after each match, like grep -C. "
-                        "Capped at 20. Default 3 — pass 0 only if you want the legacy "
-                        "bare-match shape."
+                        "Capped at 20. Default 3. "
+                        "Output format: match lines use 'file:linenum: text'; "
+                        "context lines use 'file:linenum- text' (trailing dash instead of colon "
+                        "distinguishes context from the matched line). "
+                        "Pass 0 to get match lines only (no context)."
                         ),
                         "default": 3,
                         "minimum": 0,
