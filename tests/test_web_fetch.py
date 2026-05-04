@@ -723,3 +723,44 @@ class TestWebFetchPreRequestSSRFGuard(unittest.TestCase):
             result = fn("http://user:s3cr3t@127.0.0.1/secret")
         self.assertNotIn("s3cr3t", result, f"Password leaked in error: {result!r}")
         self.assertTrue(result.startswith("Error:"), f"Expected error, got: {result!r}")
+
+    def test_hex_ip_loopback_blocked_before_network(self):
+        """Hex IP 0x7f000001 (= 127.0.0.1) must be blocked before any network call (#876)."""
+        self._assert_blocked_before_network("http://0x7f000001/secret")
+
+    def test_octal_ip_loopback_blocked_before_network(self):
+        """Octal IP 0177.0.0.1 (= 127.0.0.1) must be blocked before any network call (#876)."""
+        self._assert_blocked_before_network("http://0177.0.0.1/secret")
+
+    def test_decimal_integer_ip_loopback_blocked_before_network(self):
+        """Decimal integer IP 2130706433 (= 127.0.0.1) must be blocked before any network call (#876)."""
+        self._assert_blocked_before_network("http://2130706433/secret")
+
+
+class TestIsPrivateAddressNumericFormats(unittest.TestCase):
+    """Unit tests for non-standard numeric IP SSRF bypass (#876).
+
+    ipaddress.ip_address() raises ValueError for hex/octal/integer forms, but
+    the OS socket layer resolves them to private addresses.  _is_private_address
+    must detect and block these formats.
+    """
+
+    def setUp(self):
+        from tools.web_fetch import _is_private_address
+        self.check = _is_private_address
+
+    def test_hex_loopback_blocked(self):
+        """0x7f000001 resolves to 127.0.0.1 — must be flagged as private."""
+        self.assertTrue(self.check("http://0x7f000001/"), "hex 0x7f000001 must be private")
+
+    def test_octal_loopback_blocked(self):
+        """0177.0.0.1 resolves to 127.0.0.1 — must be flagged as private."""
+        self.assertTrue(self.check("http://0177.0.0.1/"), "octal 0177.0.0.1 must be private")
+
+    def test_decimal_integer_loopback_blocked(self):
+        """2130706433 resolves to 127.0.0.1 — must be flagged as private."""
+        self.assertTrue(self.check("http://2130706433/"), "decimal 2130706433 must be private")
+
+    def test_hex_public_ip_allowed(self):
+        """0x08080808 resolves to 8.8.8.8 — must be allowed through."""
+        self.assertFalse(self.check("http://0x08080808/"), "hex 0x08080808 (8.8.8.8) must not be private")
