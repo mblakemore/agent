@@ -648,3 +648,73 @@ class TestSearchFilesContextFormatUnambiguous(unittest.TestCase):
             # old format must not appear
             self.assertNotIn("data-pipeline-utils.py-2-", body)
             self.assertNotIn("data-pipeline-utils.py-4-", body)
+
+
+class TestSearchFilesIncludeHidden(unittest.TestCase):
+    """search_files must skip hidden files/dirs by default but expose them when
+    include_hidden=True — issue #676."""
+
+    def test_hidden_file_skipped_by_default(self):
+        """A hidden file (dotfile) must not appear in default search results."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, ".hidden.txt").write_text("findme\n")
+            Path(d, "visible.txt").write_text("nothing\n")
+            result = search_files.fn("findme", path=d, context=0)
+            self.assertNotIn("findme", _body(result))
+            self.assertIn("1 files", result)  # only visible.txt counted
+
+    def test_hidden_file_found_with_include_hidden(self):
+        """include_hidden=True must expose hidden files."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, ".hidden.txt").write_text("findme\n")
+            Path(d, "visible.txt").write_text("nothing\n")
+            result = search_files.fn("findme", path=d, context=0, include_hidden=True)
+            self.assertIn("findme", _body(result))
+            self.assertIn("2 files", result)  # both files searched
+            self.assertIn("1 matched", result)
+
+    def test_hidden_dir_skipped_by_default(self):
+        """A hidden directory must not be traversed by default."""
+        with tempfile.TemporaryDirectory() as d:
+            hidden_dir = Path(d, ".hidden_dir")
+            hidden_dir.mkdir()
+            (hidden_dir / "secret.txt").write_text("findme\n")
+            Path(d, "visible.txt").write_text("nothing\n")
+            result = search_files.fn("findme", path=d, context=0)
+            self.assertNotIn("findme", _body(result))
+
+    def test_hidden_dir_found_with_include_hidden(self):
+        """include_hidden=True must traverse hidden directories."""
+        with tempfile.TemporaryDirectory() as d:
+            hidden_dir = Path(d, ".hidden_dir")
+            hidden_dir.mkdir()
+            (hidden_dir / "secret.txt").write_text("findme\n")
+            Path(d, "visible.txt").write_text("nothing\n")
+            result = search_files.fn("findme", path=d, context=0, include_hidden=True)
+            self.assertIn("findme", _body(result))
+
+    def test_git_dir_always_excluded(self):
+        """.git/ must remain excluded even when include_hidden=True."""
+        with tempfile.TemporaryDirectory() as d:
+            git_dir = Path(d, ".git")
+            git_dir.mkdir()
+            (git_dir / "config").write_text("findme\n")
+            Path(d, "visible.txt").write_text("nothing\n")
+            result = search_files.fn("findme", path=d, context=0, include_hidden=True)
+            self.assertNotIn("findme", _body(result))
+            self.assertNotIn(".git", result)
+
+    def test_dotenv_file_found_with_include_hidden(self):
+        """.env files are a common real-world use case."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, ".env").write_text("SECRET_KEY=abc123\n")
+            result = search_files.fn("SECRET_KEY", path=d, context=0, include_hidden=True)
+            self.assertIn("SECRET_KEY", _body(result))
+
+    def test_definition_advertises_include_hidden_param(self):
+        """The tool definition must expose include_hidden so the LLM can use it."""
+        props = search_files.definition["function"]["parameters"]["properties"]
+        self.assertIn("include_hidden", props)
+        self.assertEqual(props["include_hidden"]["type"], "boolean")
+        self.assertFalse(props["include_hidden"]["default"])
+        self.assertIn(".git", props["include_hidden"]["description"])
