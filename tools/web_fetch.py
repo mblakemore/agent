@@ -98,6 +98,13 @@ def fn(url: str) -> str:
         return "Error: url contains a null byte, which is not allowed"
     if not url.startswith(("http://", "https://")):
         return f"Error: invalid URL '{url}' — must begin with http:// or https://"
+    # Pre-request SSRF guard: block direct requests to private/internal addresses
+    # before any network I/O occurs.  The post-redirect check inside the response
+    # context manager handles redirect-based SSRF, but without this guard a direct
+    # request to e.g. http://127.0.0.1/ or http://169.254.169.254/ would be fully
+    # fetched (up to 1 MB) before the address was checked and discarded.
+    if _is_private_address(url):
+        return f"Error: fetching private/internal address is not allowed: '{_strip_credentials(url)}'"
     try:
         with requests.get(url, headers=_HEADERS, timeout=_TIMEOUT, stream=True) as resp:
             resp.raise_for_status()

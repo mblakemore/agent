@@ -630,3 +630,78 @@ class TestWebFetchMalformedContentLength(unittest.TestCase):
             result.startswith("Error:"),
             f"Missing Content-Length caused fetch failure: {result!r}",
         )
+
+
+# ── Pre-request SSRF guard (#849) ────────────────────────────────────────────
+# _is_private_address was only called on final_url (post-redirect), meaning a
+# direct request to a private IP was fully fetched before the block fired.
+# The fix adds a pre-request check so no network I/O occurs for private URLs.
+
+
+class TestWebFetchPreRequestSSRFGuard(unittest.TestCase):
+    """Direct requests to private/internal addresses must be blocked before any
+    network I/O occurs (#849)."""
+
+    def _assert_blocked_before_network(self, url):
+        """Helper: assert fn() returns an error and requests.get is never called."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            result = fn(url)
+        self.assertTrue(
+            result.startswith("Error:"),
+            f"Expected 'Error:' prefix for private URL {url!r}: {result!r}",
+        )
+        mock_get.assert_not_called()
+
+    def test_loopback_direct_blocked_before_network(self):
+        """Direct request to http://127.0.0.1/ must be rejected without a network call."""
+        self._assert_blocked_before_network("http://127.0.0.1/secret")
+
+    def test_localhost_direct_blocked_before_network(self):
+        """Direct request to http://localhost/ must be rejected without a network call."""
+        self._assert_blocked_before_network("http://localhost/admin")
+
+    def test_rfc1918_10_direct_blocked_before_network(self):
+        """Direct request to an RFC 1918 10.x.x.x address must be blocked before network."""
+        self._assert_blocked_before_network("http://10.0.0.1/internal")
+
+    def test_rfc1918_192_168_direct_blocked_before_network(self):
+        """Direct request to a 192.168.x.x address must be blocked before network."""
+        self._assert_blocked_before_network("http://192.168.1.1/router")
+
+    def test_link_local_aws_imds_direct_blocked_before_network(self):
+        """Direct request to the AWS IMDSv1 address must be blocked before network."""
+        self._assert_blocked_before_network("http://169.254.169.254/latest/meta-data/")
+
+    def test_ipv6_loopback_direct_blocked_before_network(self):
+        """Direct request to the IPv6 loopback address must be blocked before network."""
+        self._assert_blocked_before_network("http://[::1]/secret")
+
+    def test_error_message_contains_private_or_internal(self):
+        """Error message for a blocked private URL must say 'private' or 'internal'."""
+        with patch("tools.web_fetch.requests.get"):
+            result = fn("http://127.0.0.1/secret")
+        self.assertTrue(
+            "private" in result.lower() or "internal" in result.lower(),
+            f"Error must mention 'private' or 'internal': {result!r}",
+        )
+
+    def test_public_ip_not_blocked_by_pre_check(self):
+        """A public IP must still reach the network (pre-check must not over-block)."""
+        mock_resp = MagicMock()
+        mock_resp.url = "http://8.8.8.8/"
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.headers = {"content-type": "text/plain"}
+        mock_resp.encoding = "utf-8"
+        mock_resp.iter_content = MagicMock(return_value=iter([b"ok"]))
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch("tools.web_fetch.requests.get", return_value=mock_resp) as mock_get:
+            fn("http://8.8.8.8/")
+        mock_get.assert_called_once()
+
+    def test_credentials_stripped_from_pre_check_error(self):
+        """Error message for a credentialed private URL must not expose the password."""
+        with patch("tools.web_fetch.requests.get"):
+            result = fn("http://user:s3cr3t@127.0.0.1/secret")
+        self.assertNotIn("s3cr3t", result, f"Password leaked in error: {result!r}")
+        self.assertTrue(result.startswith("Error:"), f"Expected error, got: {result!r}")
