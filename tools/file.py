@@ -345,7 +345,9 @@ definition = {
         "description": (
             "Unified file operations for reading and writing files.\n"
             "Actions:\n"
-            "- read: Read file contents (with optional line range). Returns numbered lines.\n"
+            "- read: Read file contents (with optional line range). Returns numbered lines. "
+            "To locate where a Python symbol (function, class, method) is defined or called, "
+            "use `find_symbol` instead of reading the whole file.\n"
             "- write: Create/overwrite a file, or replace a line range (MUST set both start_line AND end_line). "
             "Parent directories are created automatically — do NOT call mkdir or exec_command before writing a file into a new directory.\n"
             "- insert: Insert content BEFORE a line (set start_line). Existing lines shift down. Does NOT replace anything.\n"

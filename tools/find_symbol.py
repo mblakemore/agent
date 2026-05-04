@@ -215,6 +215,9 @@ definition = {
         "description": (
             "Find Python symbols (functions, classes, methods, or call sites) using "
             "accurate AST-based analysis — no regex false positives. "
+            "Prefer this over `file read` when you need to locate where a Python symbol "
+            "is defined or called. Reading a 4000-line file to find one function wastes "
+            "context; `find_symbol` returns just the definition in one call. "
             "Use mode='definition' to locate where a symbol is defined, "
             "mode='callers' to find all call sites, or mode='both' for both. "
             "Optionally filter by kind: 'function', 'class', or 'method'. "
