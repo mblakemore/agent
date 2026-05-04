@@ -139,6 +139,28 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
 _BLOCKED_FILENAMES = {"conversation_checkpoint.json"}
 
 
+def _check_write_confinement(path, p):
+    """Return an error string if the resolved path is outside the working directory, else None.
+
+    Mirrors the confinement logic in _expand_file_refs (fixed in #845):
+    both absolute paths (/tmp/evil) and relative traversals (../../secret) are
+    caught by resolving the path and comparing it to cwd.
+    """
+    try:
+        resolved = p.resolve()
+    except (OSError, ValueError):
+        return None  # let the write attempt fail naturally
+    cwd_resolved = Path.cwd().resolve()
+    cwd_prefix = str(cwd_resolved) + os.sep
+    if resolved != cwd_resolved and not str(resolved).startswith(cwd_prefix):
+        return (
+            f"Error: path '{path}' resolves to '{resolved}' which is outside "
+            f"the working directory '{cwd_resolved}'. "
+            f"Only files inside the current working directory can be written."
+        )
+    return None
+
+
 def _read(path, start_line, end_line):
     p = Path(path)
     if p.name in _BLOCKED_FILENAMES:
@@ -202,6 +224,11 @@ def _write(path, content, start_line, end_line):
     p = Path(path)
     if p.name in _BLOCKED_FILENAMES:
         return f"Error: '{p.name}' is an internal runtime file and cannot be written."
+
+    # Confinement: reject writes to paths outside the working directory
+    err = _check_write_confinement(path, p)
+    if err:
+        return err
 
     # If file exists but hasn't been read this session, force a read first
     if p.exists() and str(p.resolve()) not in _accessed_files:
@@ -388,6 +415,12 @@ def _append(path, content):
     p = Path(path)
     if p.name in _BLOCKED_FILENAMES:
         return f"Error: '{p.name}' is an internal runtime file and cannot be written."
+
+    # Confinement: reject writes to paths outside the working directory
+    err = _check_write_confinement(path, p)
+    if err:
+        return err
+
     if p.suffix.lower() == '.json':
         return (f"Error: cannot append to JSON file '{path}' — breaks structure. "
                f"Use action='write' with full contents instead.")
