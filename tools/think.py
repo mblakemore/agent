@@ -47,8 +47,11 @@ def fn(prompt: str, depth: str = "brief", context: str = "") -> str:
         depth: Reasoning depth — "brief", "normal", or "deep".
         context: Optional conversation context to include.
     """
+    if depth not in DEPTH_MAX_TOKENS:
+        valid = ", ".join(DEPTH_MAX_TOKENS)
+        return f"Error: invalid depth {depth!r}. Use one of: {valid}."
     log = logging.getLogger("agent")
-    max_tokens = DEPTH_MAX_TOKENS.get(depth, DEPTH_MAX_TOKENS["normal"])
+    max_tokens = DEPTH_MAX_TOKENS[depth]
     base_url = _get_base_url()
 
     # <|think|> in system prompt enables Gemma 4 thinking
