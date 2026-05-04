@@ -567,5 +567,29 @@ class TestFindSymbolNonPyFile(unittest.TestCase):
                       f"Error should mention .py support; got: {results[0]['error']!r}")
 
 
+class TestFindSymbolNonStringGuards(unittest.TestCase):
+    """Non-string inputs must return an error dict, not raise AttributeError."""
+
+    def test_name_int_returns_error(self):
+        result = find_symbol(name=42, path="/droid/repos/agent/tools")
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+
+    def test_name_none_returns_error(self):
+        result = find_symbol(name=None, path="/droid/repos/agent/tools")
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+
+    def test_path_int_returns_error(self):
+        result = find_symbol(name="fn", path=42)
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+
+    def test_path_none_returns_error(self):
+        result = find_symbol(name="fn", path=None)
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+
+
 if __name__ == "__main__":
     unittest.main()

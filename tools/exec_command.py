@@ -155,6 +155,8 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         background: If true, start the command and return immediately.
         new_session: If true, create a new temporary session for parallel work.
     """
+    if not isinstance(command, str):
+        return "Error: command must be a string"
     if not command.strip() and not session_id:
         return "Error: command cannot be empty"
 
