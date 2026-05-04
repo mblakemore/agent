@@ -34,34 +34,23 @@ def test_inside_worktree():
             assert _check_worktree_guard("/home/user/repo/wt", "/home/user/repo/wt/file.py") == (False, None)
 
 def test_correction_needed():
+    # Signature: _check_worktree_guard(file_path, worktree_path)
+    # MagicMock is not a descriptor so Path.resolve side_effect receives no `self` —
+    # use an ordered list (same pattern as test_outside_cwd / test_inside_worktree).
+    # Path.cwd().resolve() goes through the cwd mock, not the patched Path.resolve.
     with patch('pathlib.Path.cwd') as mock_cwd:
         mock_cwd.return_value.resolve.return_value = Path("/home/user/repo")
         with patch('pathlib.Path.resolve') as mock_resolve:
-            # The order in agent.py: 
-            # 1. Path(file_path).resolve()
-            # 2. Path(worktree_path).resolve()
-            # 3. Path.cwd().resolve() (Wait, Path.cwd().resolve() is called separately)
-            
-            # Let's be careful with the side_effect order:
-            # line 108: _abs_file = str(Path(file_path).resolve())
-            # line 109: _abs_wt = str(Path(worktree_path).resolve())
-            # line 110: _abs_cwd = str(Path.cwd().resolve())
-            
-            # But I patched Path.cwd already.
-            # If I patch Path.resolve, it hits all Path(...).resolve() calls.
-            
-            # Let's use a side_effect that returns different things based on the path
-            def resolve_side_effect(path_obj):
-                p = str(path_obj)
-                if "main_file.py" in p: return Path("/home/user/repo/main_file.py")
-                if "wt" in p: return Path("/home/user/repo/wt")
-                if "cwd" in p: return Path("/home/user/repo")
-                return path_obj
-
-            with patch('pathlib.Path.resolve', side_effect=resolve_side_effect):
-                res, path = _check_worktree_guard("/home/user/repo/wt", "/home/user/repo/main_file.py")
-                assert res is True
-                assert path == "/home/user/repo/wt/main_file.py"
+            mock_resolve.side_effect = [
+                Path("/home/user/repo/main_file.py"),  # Path(file_path).resolve()
+                Path("/home/user/repo/wt"),             # Path(worktree_path).resolve()
+            ]
+            res, path = _check_worktree_guard(
+                "/home/user/repo/main_file.py",  # file_path
+                "/home/user/repo/wt",            # worktree_path
+            )
+            assert res is True
+            assert path == "/home/user/repo/wt/main_file.py"
 
 def test_exception():
     with patch('pathlib.Path.resolve', side_effect=Exception("Fail")):
