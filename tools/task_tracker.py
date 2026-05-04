@@ -32,6 +32,10 @@ def _load_tasks():
         return []
     try:
         raw = p.read_text(encoding='utf-8', errors='replace')
+        # An empty file (or whitespace-only) is a valid initial state — treat it
+        # the same as a missing file rather than raising JSONDecodeError.
+        if not raw.strip():
+            return []
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         return _Corrupted(str(p.resolve()), str(exc))

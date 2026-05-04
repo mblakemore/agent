@@ -540,3 +540,49 @@ def test_update_on_open_task_still_works_after_706_fix():
     assert "Updated task #1: status=in_progress" in res
     tasks = json.loads(Path(_TASKS_FILE).read_text())
     assert tasks[0]["status"] == "in_progress"
+
+
+# ── Issue #714: empty tasks file must be treated as empty list, not corrupted ──
+
+def test_empty_file_list_returns_no_tasks():
+    """list on a zero-byte tasks file must return 'No tasks.', not a corruption error (#714)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("", encoding="utf-8")
+
+    res = fn(action="list")
+    assert res == "No tasks.", f"Expected 'No tasks.', got: {res!r}"
+
+
+def test_empty_file_add_succeeds():
+    """add on a zero-byte tasks file must create a new task, not error (#714)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("", encoding="utf-8")
+
+    res = fn(action="add", description="first task")
+    assert "Added task #1: first task" == res, f"Unexpected: {res!r}"
+    tasks = json.loads(p.read_text())
+    assert len(tasks) == 1
+    assert tasks[0]["description"] == "first task"
+
+
+def test_whitespace_only_file_treated_as_empty():
+    """A file containing only whitespace/newlines must also be treated as empty (#714)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("\n\n   \n", encoding="utf-8")
+
+    res = fn(action="list")
+    assert res == "No tasks.", f"Expected 'No tasks.', got: {res!r}"
+
+
+def test_corrupted_file_still_errors():
+    """Genuinely corrupted JSON must still return an Error after the #714 fix."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("{not valid json", encoding="utf-8")
+
+    res = fn(action="list")
+    assert res.startswith("Error:"), f"Expected Error for corrupted file, got: {res!r}"
+    assert "corrupted" in res.lower()
