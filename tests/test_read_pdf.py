@@ -313,3 +313,68 @@ def test_read_pdf_non_pdf_extension_returns_error():
         assert result.startswith("Error"), f"Expected Error string, got: {result!r}"
     finally:
         os.unlink(f.name)
+
+
+# ── Issue #792: bool page arguments must be rejected explicitly ────────────────
+# Booleans are a subclass of int in Python; True==1 and False==0.  Without an
+# explicit guard, start_page=True would silently read page 1 and start_page=False
+# would produce a confusing "start_page (0) is invalid" message instead of a clear
+# type error.  These tests document and lock in the explicit-rejection behaviour.
+
+
+@patch("fitz.open")
+def test_read_pdf_bool_true_start_page_returns_error(mock_open):
+    """start_page=True must return a clear type error, not silently read page 1. (#792)"""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=True)
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "bool" in result, f"Error must mention bool type, got: {result!r}"
+    assert "start_page" in result
+
+
+@patch("fitz.open")
+def test_read_pdf_bool_false_start_page_returns_error(mock_open):
+    """start_page=False must return a clear type error, not a '< 1' message. (#792)"""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=False)
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "bool" in result, f"Error must mention bool type, got: {result!r}"
+    assert "start_page" in result
+
+
+@patch("fitz.open")
+def test_read_pdf_bool_true_end_page_returns_error(mock_open):
+    """end_page=True must return a clear type error, not silently set end_page=1. (#792)"""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=1, end_page=True)
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "bool" in result, f"Error must mention bool type, got: {result!r}"
+    assert "end_page" in result
+
+
+@patch("fitz.open")
+def test_read_pdf_bool_false_end_page_returns_error(mock_open):
+    """end_page=False must return a clear type error, not silently treat as end_page=0. (#792)"""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=1, end_page=False)
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "bool" in result, f"Error must mention bool type, got: {result!r}"
+    assert "end_page" in result
+
+
+@patch("fitz.open")
+def test_read_pdf_bool_start_page_doc_closed(mock_open):
+    """doc.close() must be called before returning a bool-type error. (#792)"""
+    mock_doc = _mock_pdf_doc()
+    mock_open.return_value = mock_doc
+    fn("dummy.pdf", start_page=True)
+    mock_doc.close.assert_called_once()
+
+
+@patch("fitz.open")
+def test_read_pdf_integer_start_page_unaffected_by_bool_guard(mock_open):
+    """Plain integer start_page must still work correctly after the bool guard. (#792)"""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=2)
+    assert "Error" not in result
+    assert "Pages 2-" in result
