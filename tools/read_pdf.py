@@ -89,6 +89,12 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
     # rather than silently truncated — int(1.5) == 1, which would read the wrong page.
     # Whole-number floats (e.g. 2.0) are safe to coerce, consistent with task_tracker.
     if not isinstance(start_page, int):
+        if isinstance(start_page, str):
+            doc.close()
+            return (
+                f"Error: start_page must be an integer, got 'str': {start_page!r}. "
+                f"Pass an integer without quotes (e.g. start_page=2)."
+            )
         if isinstance(start_page, float) and not math.isfinite(start_page):
             doc.close()
             return f"Error: start_page must be a finite integer, got {start_page!r}"
@@ -108,6 +114,12 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
     # Validate end_page type before numeric comparisons.
     # Same fractional-float guard as start_page.
     if not isinstance(end_page, int):
+        if isinstance(end_page, str):
+            doc.close()
+            return (
+                f"Error: end_page must be an integer, got 'str': {end_page!r}. "
+                f"Pass an integer without quotes (e.g. end_page=5)."
+            )
         if isinstance(end_page, float) and not math.isfinite(end_page):
             doc.close()
             return f"Error: end_page must be a finite integer, got {end_page!r}"

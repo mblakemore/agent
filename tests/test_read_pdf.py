@@ -226,21 +226,28 @@ def _mock_pdf_doc(total_pages=5):
 
 
 @patch("fitz.open")
-def test_read_pdf_string_start_page_coerced(mock_open):
-    """start_page='2' (stringified int) must be coerced, not raise TypeError (#680)."""
+def test_read_pdf_string_start_page_rejected(mock_open):
+    """start_page='2' must now return a clear type error rather than silently coerce (#905).
+
+    Before #905, int('2') succeeded in the coercion block and start_page was
+    silently treated as 2.  Now strings are caught by an explicit guard.
+    """
     mock_open.return_value = _mock_pdf_doc()
     result = fn("dummy.pdf", start_page='2')
-    assert "Error" not in result
-    assert "Pages 2-" in result
+    assert result.startswith("Error:"), f"Expected error for start_page='2': {result!r}"
+    assert "str" in result, f"Error must mention 'str': {result!r}"
+    assert "quote" in result.lower() or "without" in result.lower(), (
+        f"Error should hint about removing quotes: {result!r}"
+    )
 
 
 @patch("fitz.open")
-def test_read_pdf_string_end_page_coerced(mock_open):
-    """end_page='3' (stringified int) must be coerced, not raise TypeError (#680)."""
+def test_read_pdf_string_end_page_rejected(mock_open):
+    """end_page='3' must now return a clear type error rather than silently coerce (#905)."""
     mock_open.return_value = _mock_pdf_doc()
     result = fn("dummy.pdf", start_page=1, end_page='3')
-    assert "Error" not in result
-    assert "Pages 1-3 of 5" in result
+    assert result.startswith("Error:"), f"Expected error for end_page='3': {result!r}"
+    assert "str" in result, f"Error must mention 'str': {result!r}"
 
 
 @patch("fitz.open")
