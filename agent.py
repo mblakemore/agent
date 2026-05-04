@@ -3371,12 +3371,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         result_str = f"Error: Unknown tool '{func_name}'"
                     else:
                         try:
-                            print(f"DEBUG: Executing tool {func_name} with args {func_args}")
                             result_str = str(MAP_FN[func_name](**func_args))
                         except CircuitBreakerError as e:
                             # Tool temporarily unavailable - return graceful degradation
                             result_str = f"Tool {func_name} temporarily unavailable: {e}"
-                            print(f"DEBUG: Tool {func_name} circuit breaker triggered: {e}")
                         except CancelledError:
                             # Propagate to outer handler to return 'cancelled'
                             raise
