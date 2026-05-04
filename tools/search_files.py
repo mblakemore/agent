@@ -44,7 +44,7 @@ def _is_binary(file_path: Path) -> bool:
 def _search_single_file(file_path, base_dir, regex, context, count_only):
     """Search a single file and return formatted results."""
     from collections import deque
-    rel = str(file_path.relative_to(base_dir))
+    abs_path = str(file_path.resolve())
     resolved = file_path
     total_matches = 0
     files_searched = 1
@@ -77,7 +77,7 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
                     if regex.search(line):
                         files_matched = 1
                         total_matches += 1
-                        match_lines.append(f"{rel}:{line_num}: {line.rstrip()}")
+                        match_lines.append(f"{abs_path}:{line_num}: {line.rstrip()}")
                         if len(match_lines) >= _MAX_RESULTS:
                             truncated = True
                             break
@@ -96,13 +96,13 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
                             break
                         if not current_group:
                             for b_num, b_text in buffer:
-                                current_group.append(f"{rel}:{b_num}- {b_text}")
-                        current_group.append(f"{rel}:{line_num}: {text_line}")
+                                current_group.append(f"{abs_path}:{b_num}- {b_text}")
+                        current_group.append(f"{abs_path}:{line_num}: {text_line}")
                         lines_to_emit = context
                     else:
                         if current_group:
                             if lines_to_emit > 0:
-                                current_group.append(f"{rel}:{line_num}- {text_line}")
+                                current_group.append(f"{abs_path}:{line_num}- {text_line}")
                                 lines_to_emit -= 1
                             else:
                                 context_groups.append(current_group)
@@ -275,7 +275,7 @@ def fn(
             if _is_binary(file_path):
                 continue
 
-            rel = str(file_path.relative_to(search_path))
+            abs_path = str(file_path.resolve())
             files_searched += 1
             file_has_match = False
 
@@ -296,7 +296,7 @@ def fn(
                             if regex.search(line):
                                 file_has_match = True
                                 total_matches += 1
-                                match_lines.append(f"{rel}:{line_num}: {line.rstrip()}")
+                                match_lines.append(f"{abs_path}:{line_num}: {line.rstrip()}")
                                 if len(match_lines) >= _MAX_RESULTS:
                                     truncated = True
                                     break
@@ -319,13 +319,13 @@ def fn(
                                     break
                                 if not current_group:
                                     for b_num, b_text in buffer:
-                                        current_group.append(f"{rel}:{b_num}- {b_text}")
-                                current_group.append(f"{rel}:{line_num}: {text_line}")
+                                        current_group.append(f"{abs_path}:{b_num}- {b_text}")
+                                current_group.append(f"{abs_path}:{line_num}: {text_line}")
                                 lines_to_emit = context
                             else:
                                 if current_group:
                                     if lines_to_emit > 0:
-                                        current_group.append(f"{rel}:{line_num}- {text_line}")
+                                        current_group.append(f"{abs_path}:{line_num}- {text_line}")
                                         lines_to_emit -= 1
                                     else:
                                         context_groups.append(current_group)
