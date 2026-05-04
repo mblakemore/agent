@@ -494,11 +494,8 @@ class TestFindSymbolUnit(unittest.TestCase):
         (pycache_dir / "hidden.py").write_text("def my_func(): pass")
         results = find_symbol("my_func", path=self.tmp, mode="definition")
         # The only .py file is inside __pycache__ which is excluded, so no
-        # scannable Python files remain. The tool now returns an informative
-        # error dict rather than a silent [].
-        self.assertEqual(len(results), 1)
-        self.assertIn("error", results[0])
-        self.assertIn("no Python files found", results[0]["error"])
+        # scannable Python files remain — returns [] (same as "symbol not found").
+        self.assertEqual(results, [])
 
     def test_result_keys(self):
         self._write("g.py", """\
@@ -759,33 +756,22 @@ class TestFindSymbolNoPyFiles(unittest.TestCase):
         import shutil
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_empty_dir_returns_error_dict(self):
-        """Completely empty directory -> error dict, not []."""
+    def test_empty_dir_returns_empty_list(self):
+        """Completely empty directory -> [] (no files to scan, no results)."""
         results = find_symbol("my_func", path=self.tmp)
-        self.assertEqual(len(results), 1, f"Expected 1 error dict, got: {results}")
-        self.assertIn("error", results[0])
-        self.assertIn("no Python files found", results[0]["error"])
+        self.assertEqual(results, [])
 
-    def test_dir_with_only_non_py_files_returns_error_dict(self):
-        """Directory containing only .txt/.json files -> error dict."""
+    def test_dir_with_only_non_py_files_returns_empty_list(self):
+        """Directory containing only .txt/.json files -> []."""
         (Path(self.tmp) / "notes.txt").write_text("def my_func(): pass\n")
         (Path(self.tmp) / "data.json").write_text('{"key": 1}')
         results = find_symbol("my_func", path=self.tmp)
-        self.assertEqual(len(results), 1, f"Expected 1 error dict, got: {results}")
-        self.assertIn("error", results[0])
-        self.assertIn("no Python files found", results[0]["error"])
+        self.assertEqual(results, [])
 
-    def test_error_dict_mentions_path(self):
-        """Error message must include the searched path to help diagnosis."""
+    def test_no_py_files_same_as_symbol_not_found(self):
+        """No Python files -> [] (same as symbol not found — caller checks path)."""
         results = find_symbol("anything", path=self.tmp)
-        self.assertIn(self.tmp, results[0]["error"],
-                      f"Error should mention the path; got: {results[0]['error']!r}")
-
-    def test_no_py_files_not_confused_with_not_found(self):
-        """Error dict must be distinguishable from an empty 'not found' result."""
-        results = find_symbol("anything", path=self.tmp)
-        self.assertNotEqual(results, [],
-                            "Should return error dict, not [], for dir with no .py files")
+        self.assertEqual(results, [])
 
     def test_dir_with_py_files_symbol_absent_still_returns_empty(self):
         """Regression: a dir that HAS .py files but lacks the symbol still returns []."""
