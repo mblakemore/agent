@@ -178,7 +178,10 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
                 if description:
                     t["note"] = description
                 _save_tasks(tasks)
-                return f"Updated task #{task_id}: status={t['status']}"
+                msg = f"Updated task #{task_id}: status={t['status']}"
+                if description:
+                    msg += f", note={description!r}"
+                return msg
         return f"Error: task #{task_id} not found"
 
     elif action == "drop":
