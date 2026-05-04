@@ -117,6 +117,28 @@ def test_exec_command_timeout():
     result = fn(command="sleep 5", timeout=1)
     assert "timed out after 1s" in result
 
+
+def test_exec_command_timeout_includes_partial_output():
+    """Partial output produced before a timeout must be included in the result (#698)."""
+    result = fn(command="echo PARTIAL_OUTPUT && sleep 10", timeout=2)
+    assert "timed out after 2s" in result
+    assert "PARTIAL_OUTPUT" in result
+    assert "partial output below" in result
+
+
+def test_exec_command_timeout_no_output_omits_partial_section():
+    """When no output was produced before timeout, the message must not include the partial header (#698)."""
+    result = fn(command="sleep 10", timeout=2)
+    assert "timed out after 2s" in result
+    assert "partial output below" not in result
+
+
+def test_exec_command_timeout_only_pre_timeout_output_shown():
+    """Only output produced before the timeout kill must appear; post-kill output must be absent (#698)."""
+    result = fn(command="echo before_sleep && sleep 10 && echo after_sleep", timeout=2)
+    assert "before_sleep" in result
+    assert "after_sleep" not in result
+
 def test_exec_command_cleanup_sessions():
     # Create a session
     fn(command="echo 1", new_session=True)
