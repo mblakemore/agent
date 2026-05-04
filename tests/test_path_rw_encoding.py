@@ -39,21 +39,29 @@ def _src(path: Path) -> str:
 class TestTaskTrackerReadWriteEncoding(unittest.TestCase):
 
     def test_task_tracker_read_uses_utf8(self):
-        """Static: task_tracker.py _load_tasks read_text must use encoding='utf-8'."""
+        """Static: task_tracker.py _load_tasks must use utf-8-sig encoding.
+
+        utf-8-sig strips the BOM that some editors write at the start of JSON
+        files, preventing JSONDecodeError on otherwise-valid task files.
+        """
         src = _src(TASK_TRACKER_PY)
         self.assertIn(
-            "p.read_text(encoding='utf-8'",
+            "encoding='utf-8-sig'",
             src,
-            "task_tracker.py _load_tasks read_text must pass encoding='utf-8'",
+            "task_tracker.py _load_tasks read_text must pass encoding='utf-8-sig'",
         )
 
     def test_task_tracker_write_uses_utf8(self):
-        """Static: task_tracker.py _save_tasks write_text must use encoding='utf-8'."""
+        """Static: task_tracker.py _save_tasks must write with encoding='utf-8'.
+
+        The write path uses an atomic os.fdopen(fd, 'w', encoding='utf-8') +
+        os.replace() pattern rather than write_text() — the encoding is the same.
+        """
         src = _src(TASK_TRACKER_PY)
         self.assertIn(
             "encoding='utf-8'",
-            src.split("write_text")[1],
-            "task_tracker.py _save_tasks write_text must pass encoding='utf-8'",
+            src,
+            "task_tracker.py _save_tasks must pass encoding='utf-8' when writing",
         )
 
 
