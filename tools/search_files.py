@@ -68,16 +68,17 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
         with file_path.open(encoding='utf-8', errors='ignore') as f:
             if count_only:
                 for line in f:
-                    if regex.search(line):
+                    if regex.search(line.rstrip()):
                         total_matches += 1
                 if total_matches > 0:
                     files_matched = 1
             elif context == 0:
                 for line_num, line in enumerate(f, 1):
-                    if regex.search(line):
+                    text_line = line.rstrip()
+                    if regex.search(text_line):
                         files_matched = 1
                         total_matches += 1
-                        match_lines.append(f"{abs_path}:{line_num}: {line.rstrip()}")
+                        match_lines.append(f"{abs_path}:{line_num}: {text_line}")
                         if len(match_lines) >= _MAX_RESULTS:
                             truncated = True
                             break
@@ -286,7 +287,7 @@ def fn(
                     if count_only:
                         file_hits = 0
                         for line in f:
-                            if regex.search(line):
+                            if regex.search(line.rstrip()):
                                 file_hits += 1
                         if file_hits > 0:
                             files_matched += 1
@@ -295,10 +296,11 @@ def fn(
 
                     if context == 0:
                         for line_num, line in enumerate(f, 1):
-                            if regex.search(line):
+                            text_line = line.rstrip()
+                            if regex.search(text_line):
                                 file_has_match = True
                                 total_matches += 1
-                                match_lines.append(f"{abs_path}:{line_num}: {line.rstrip()}")
+                                match_lines.append(f"{abs_path}:{line_num}: {text_line}")
                                 if len(match_lines) >= _MAX_RESULTS:
                                     truncated = True
                                     break
