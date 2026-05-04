@@ -281,6 +281,23 @@ class TestSearchFilesPathIsFile(unittest.TestCase):
         self.assertNotEqual(body.strip(), "No matches found.")
         self.assertIn("def _classify_turn_complexity", body)
 
+    def test_permission_error_on_single_file_shows_warning(self):
+        """Issue #614: PermissionError on a single-file path must surface a warning,
+        not silently return 'No matches found.' (which is indistinguishable from a
+        successful empty search)."""
+        import os
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "secret.txt")
+            p.write_text("HIT\n")
+            os.chmod(str(p), 0o000)
+            try:
+                result = search_files.fn("HIT", path=str(p))
+                self.assertIn("Warning", result,
+                    f"Expected a Warning in the header for an unreadable file, got: {result}")
+                self.assertNotIn("def _classify_turn_complexity", result)
+            finally:
+                os.chmod(str(p), 0o644)
+
 
 class TestSearchFilesEdgeCases(unittest.TestCase):
 
