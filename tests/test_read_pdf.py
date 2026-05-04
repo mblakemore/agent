@@ -1,3 +1,6 @@
+import os
+import struct
+import tempfile
 import pytest
 from unittest.mock import MagicMock, patch
 from tools.read_pdf import fn
@@ -243,3 +246,70 @@ def test_read_pdf_non_numeric_end_page_returns_error(mock_open):
     result = fn("dummy.pdf", start_page=1, end_page='bad')
     assert result.startswith("Error: end_page must be an integer")
     assert "'str'" in result
+
+
+# ── Issue #776: real-file edge cases must return Error strings, not crash ─────
+
+
+def test_read_pdf_plain_text_with_pdf_extension_returns_error():
+    """A plain-text file with a .pdf extension must return an Error string, not raise. (#776)"""
+    f = tempfile.NamedTemporaryFile(mode='w', suffix='.pdf', delete=False)
+    f.write("This is not a PDF\n")
+    f.close()
+    try:
+        result = fn(path=f.name)
+        assert isinstance(result, str), "Must return a string, not raise"
+        assert result.startswith("Error"), f"Expected Error string, got: {result!r}"
+    finally:
+        os.unlink(f.name)
+
+
+def test_read_pdf_empty_file_returns_error():
+    """An empty file with a .pdf extension must return an Error string, not raise. (#776)"""
+    f = tempfile.NamedTemporaryFile(suffix='.pdf', delete=False)
+    f.close()
+    try:
+        result = fn(path=f.name)
+        assert isinstance(result, str), "Must return a string, not raise"
+        assert result.startswith("Error"), f"Expected Error string, got: {result!r}"
+    finally:
+        os.unlink(f.name)
+
+
+def test_read_pdf_binary_non_pdf_returns_error():
+    """A JPEG binary renamed to .pdf must return an Error string, not raise. (#776)"""
+    f = tempfile.NamedTemporaryFile(mode='wb', suffix='.pdf', delete=False)
+    f.write(b'\xff\xd8\xff\xe0' + b'\x00' * 100)  # JPEG magic bytes
+    f.close()
+    try:
+        result = fn(path=f.name)
+        assert isinstance(result, str), "Must return a string, not raise"
+        assert result.startswith("Error"), f"Expected Error string, got: {result!r}"
+    finally:
+        os.unlink(f.name)
+
+
+def test_read_pdf_corrupted_pdf_header_returns_error():
+    """A file with the PDF magic header but corrupt body must return an Error, not raise. (#776)"""
+    f = tempfile.NamedTemporaryFile(mode='wb', suffix='.pdf', delete=False)
+    f.write(b'%PDF-1.4\n%corrupted content here\n')
+    f.close()
+    try:
+        result = fn(path=f.name)
+        assert isinstance(result, str), "Must return a string, not raise"
+        assert result.startswith("Error"), f"Expected Error string, got: {result!r}"
+    finally:
+        os.unlink(f.name)
+
+
+def test_read_pdf_non_pdf_extension_returns_error():
+    """A file without a .pdf extension must return an Error string, not raise. (#776)"""
+    f = tempfile.NamedTemporaryFile(suffix='.txt', delete=False)
+    f.write(b'not a pdf')
+    f.close()
+    try:
+        result = fn(path=f.name)
+        assert isinstance(result, str), "Must return a string, not raise"
+        assert result.startswith("Error"), f"Expected Error string, got: {result!r}"
+    finally:
+        os.unlink(f.name)
