@@ -591,5 +591,81 @@ class TestFindSymbolNonStringGuards(unittest.TestCase):
         self.assertIn("error", result[0])
 
 
+class TestFindSymbolAbsolutePaths(unittest.TestCase):
+    """Directory search must return absolute paths so callers can open files
+    regardless of the process working directory. (#686)"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self._orig_cwd = os.getcwd()
+
+    def tearDown(self):
+        import shutil
+        os.chdir(self._orig_cwd)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, name, content):
+        p = Path(self.tmp) / name
+        p.write_text(textwrap.dedent(content), encoding="utf-8")
+        return str(p)
+
+    def test_directory_search_returns_absolute_path(self):
+        """Paths returned by a directory search must be absolute."""
+        self._write("mod.py", "def my_func(): pass\n")
+        results = find_symbol("my_func", path=self.tmp, mode="definition")
+        self.assertEqual(len(results), 1)
+        returned_path = results[0]["path"]
+        self.assertTrue(
+            os.path.isabs(returned_path),
+            f"Expected absolute path, got relative: {returned_path!r}",
+        )
+
+    def test_directory_search_path_exists_from_different_cwd(self):
+        """The returned path must resolve to an existing file even from a
+        different working directory (e.g. /tmp)."""
+        self._write("mod.py", "def my_func(): pass\n")
+        # Switch cwd away from the search directory
+        os.chdir("/tmp")
+        results = find_symbol("my_func", path=self.tmp, mode="definition")
+        self.assertEqual(len(results), 1)
+        returned_path = results[0]["path"]
+        self.assertTrue(
+            os.path.exists(returned_path),
+            f"Path {returned_path!r} does not exist from cwd=/tmp",
+        )
+
+    def test_absolute_path_contains_full_directory(self):
+        """Absolute path must include the search directory, not just the filename."""
+        self._write("mymod.py", "def target_fn(): pass\n")
+        results = find_symbol("target_fn", path=self.tmp, mode="definition")
+        self.assertEqual(len(results), 1)
+        returned_path = results[0]["path"]
+        # A relative 'mymod.py' would fail this; a full absolute path passes.
+        self.assertIn(self.tmp, returned_path,
+                      f"Path {returned_path!r} should contain search dir {self.tmp!r}")
+
+    def test_single_file_search_still_absolute(self):
+        """Single-file search also returns an absolute path (regression guard)."""
+        src = self._write("lone.py", "def lone_fn(): pass\n")
+        results = find_symbol("lone_fn", path=src, mode="definition")
+        self.assertEqual(len(results), 1)
+        returned_path = results[0]["path"]
+        self.assertTrue(
+            os.path.isabs(returned_path),
+            f"Single-file path should be absolute, got: {returned_path!r}",
+        )
+
+    def test_callers_mode_also_returns_absolute_path(self):
+        """mode='callers' must also produce absolute paths."""
+        self._write("caller.py", "def callee(): pass\ncallee()\n")
+        results = find_symbol("callee", path=self.tmp, mode="callers")
+        self.assertTrue(len(results) >= 1, f"Expected >=1 caller result, got: {results}")
+        returned_path = results[0]["path"]
+        self.assertTrue(
+            os.path.isabs(returned_path),
+            f"Caller path should be absolute, got: {returned_path!r}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
