@@ -200,8 +200,27 @@ class TestFindSymbolUnit(unittest.TestCase):
         self.assertIn("call", kinds)
 
     def test_syntax_error_file_skipped(self):
+        # Directory search: broken files are silently skipped (other files still searched)
         self._write("bad.py", "def (broken syntax")
         results = find_symbol("anything", path=self.tmp)
+        self.assertEqual(results, [])
+
+    def test_syntax_error_single_file_returns_error_dict(self):
+        # Single-file search: a SyntaxError must surface as an error dict so the
+        # agent can distinguish "not found" from "file is unparseable".
+        self._write("broken.py", "def foo(:\n    pass\n")
+        broken_path = os.path.join(self.tmp, "broken.py")
+        results = find_symbol("foo", path=broken_path)
+        self.assertEqual(len(results), 1)
+        self.assertIn("error", results[0])
+        self.assertIn("SyntaxError", results[0]["error"])
+        self.assertIn("path", results[0])
+
+    def test_syntax_error_single_file_not_confused_with_not_found(self):
+        # A valid file with the symbol absent must still return []
+        self._write("empty.py", "def bar():\n    pass\n")
+        empty_path = os.path.join(self.tmp, "empty.py")
+        results = find_symbol("nonexistent_symbol", path=empty_path)
         self.assertEqual(results, [])
 
     def test_excludes_pycache(self):
