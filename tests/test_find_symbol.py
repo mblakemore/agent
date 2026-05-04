@@ -168,6 +168,156 @@ class TestFindSymbolInvalidMode(unittest.TestCase):
             )
 
 
+class TestFindSymbolModeCaseNormalization(unittest.TestCase):
+    """find_symbol must normalize mode to lowercase so uppercase/mixed-case
+    variants ('DEFINITION', 'Definition', 'CALLERS', etc.) work identically
+    to their lowercase equivalents. (#718)"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        p = Path(self.tmp) / "mod.py"
+        p.write_text("def missing_xyz_zzz(): pass\n", encoding="utf-8")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_uppercase_definition_mode_works(self):
+        """mode='DEFINITION' must succeed, not return an error dict."""
+        results = find_symbol("nonexistent_symbol", path=self.tmp, mode="DEFINITION")
+        self.assertIsInstance(results, list)
+        self.assertFalse(
+            any("error" in r for r in results),
+            f"mode='DEFINITION' returned unexpected error: {results}",
+        )
+
+    def test_titlecase_definition_mode_works(self):
+        """mode='Definition' must succeed, not return an error dict."""
+        results = find_symbol("nonexistent_symbol", path=self.tmp, mode="Definition")
+        self.assertIsInstance(results, list)
+        self.assertFalse(
+            any("error" in r for r in results),
+            f"mode='Definition' returned unexpected error: {results}",
+        )
+
+    def test_uppercase_callers_mode_works(self):
+        """mode='CALLERS' must succeed, not return an error dict."""
+        results = find_symbol("nonexistent_symbol", path=self.tmp, mode="CALLERS")
+        self.assertIsInstance(results, list)
+        self.assertFalse(
+            any("error" in r for r in results),
+            f"mode='CALLERS' returned unexpected error: {results}",
+        )
+
+    def test_uppercase_both_mode_works(self):
+        """mode='BOTH' must succeed, not return an error dict."""
+        results = find_symbol("nonexistent_symbol", path=self.tmp, mode="BOTH")
+        self.assertIsInstance(results, list)
+        self.assertFalse(
+            any("error" in r for r in results),
+            f"mode='BOTH' returned unexpected error: {results}",
+        )
+
+    def test_uppercase_definition_finds_same_results_as_lowercase(self):
+        """mode='DEFINITION' must produce the same results as mode='definition'."""
+        lower = find_symbol("_classify_turn_complexity", path=_AGENT_PY, mode="definition")
+        upper = find_symbol("_classify_turn_complexity", path=_AGENT_PY, mode="DEFINITION")
+        self.assertEqual(lower, upper,
+                         "mode='DEFINITION' and mode='definition' must return identical results")
+
+    def test_truly_invalid_mode_still_errors(self):
+        """A genuinely invalid mode (not a case variant) must still return an error."""
+        results = find_symbol("foo", mode="bogus")
+        self.assertEqual(len(results), 1)
+        self.assertIn("error", results[0])
+
+
+class TestFindSymbolKindCaseNormalization(unittest.TestCase):
+    """find_symbol must normalize kind to lowercase so uppercase/mixed-case
+    variants ('FUNCTION', 'Function', 'CLASS', etc.) work identically to
+    their lowercase equivalents. (#718)"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write(self, name, content):
+        p = Path(self.tmp) / name
+        p.write_text(textwrap.dedent(content), encoding="utf-8")
+        return str(p)
+
+    def test_uppercase_function_kind_works(self):
+        """kind='FUNCTION' must succeed, not return an error dict."""
+        self._write("a.py", "def foo(): pass\n")
+        results = find_symbol("foo", path=self.tmp, kind="FUNCTION", mode="definition")
+        self.assertIsInstance(results, list)
+        self.assertFalse(
+            any("error" in r for r in results),
+            f"kind='FUNCTION' returned unexpected error: {results}",
+        )
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["kind"], "function")
+
+    def test_titlecase_function_kind_works(self):
+        """kind='Function' must succeed, not return an error dict."""
+        self._write("b.py", "def bar(): pass\n")
+        results = find_symbol("bar", path=self.tmp, kind="Function", mode="definition")
+        self.assertIsInstance(results, list)
+        self.assertFalse(
+            any("error" in r for r in results),
+            f"kind='Function' returned unexpected error: {results}",
+        )
+
+    def test_uppercase_class_kind_works(self):
+        """kind='CLASS' must succeed, not return an error dict."""
+        self._write("c.py", "class MyClass: pass\n")
+        results = find_symbol("MyClass", path=self.tmp, kind="CLASS", mode="definition")
+        self.assertIsInstance(results, list)
+        self.assertFalse(
+            any("error" in r for r in results),
+            f"kind='CLASS' returned unexpected error: {results}",
+        )
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["kind"], "class")
+
+    def test_uppercase_method_kind_works(self):
+        """kind='METHOD' must succeed, not return an error dict."""
+        self._write("d.py", "class Foo:\n    def bar(self): pass\n")
+        results = find_symbol("bar", path=self.tmp, kind="METHOD", mode="definition")
+        self.assertIsInstance(results, list)
+        self.assertFalse(
+            any("error" in r for r in results),
+            f"kind='METHOD' returned unexpected error: {results}",
+        )
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["kind"], "method")
+
+    def test_uppercase_function_finds_same_as_lowercase(self):
+        """kind='FUNCTION' must produce the same results as kind='function'."""
+        self._write("e.py", "def baz(x, y): return x + y\n")
+        lower = find_symbol("baz", path=self.tmp, kind="function", mode="definition")
+        upper = find_symbol("baz", path=self.tmp, kind="FUNCTION", mode="definition")
+        self.assertEqual(lower, upper,
+                         "kind='FUNCTION' and kind='function' must return identical results")
+
+    def test_truly_invalid_kind_still_errors(self):
+        """A genuinely invalid kind must still return an error."""
+        results = find_symbol("foo", kind="bogus")
+        self.assertEqual(len(results), 1)
+        self.assertIn("error", results[0])
+
+    def test_combined_uppercase_mode_and_kind(self):
+        """Uppercase mode and kind together must both be normalized correctly."""
+        self._write("f.py", "def greet(name): pass\n")
+        results = find_symbol("greet", path=self.tmp, kind="FUNCTION", mode="DEFINITION")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["kind"], "function")
+        self.assertNotIn("error", results[0])
+
+
 class TestFindSymbolInvalidKind(unittest.TestCase):
     """AC: find_symbol with an invalid kind returns an error dict, not []."""
 

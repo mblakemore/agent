@@ -183,6 +183,12 @@ def find_symbol(
     """
     if not isinstance(name, str) or not name.strip():
         return [{"error": "name must be a non-empty string"}]
+    # Normalize mode and kind to lowercase so callers can pass 'Definition',
+    # 'CALLERS', 'FUNCTION', etc. without getting a spurious validation error.
+    if isinstance(mode, str):
+        mode = mode.lower()
+    if isinstance(kind, str):
+        kind = kind.lower()
     if mode not in _VALID_MODES:
         return [{"error": f"Invalid mode {mode!r}. Must be one of: {sorted(_VALID_MODES)}"}]
     if kind is not None and kind not in _VALID_KINDS:
