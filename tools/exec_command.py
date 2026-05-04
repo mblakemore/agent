@@ -214,6 +214,8 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     if cwd:
         if not isinstance(cwd, str):
             return "Error: cwd must be a string"
+        if '\x00' in cwd:
+            return "Error: cwd contains a null byte, which is not allowed"
         cwd_path = Path(cwd)
         if not cwd_path.exists():
             return f"Error: cwd '{cwd}' does not exist"
