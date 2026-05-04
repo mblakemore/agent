@@ -230,6 +230,7 @@ def fn(
     total_matches = 0
     files_searched = 0
     files_matched = 0
+    files_glob_skipped = 0
     truncated = False
     permission_errors = 0
 
@@ -254,6 +255,7 @@ def fn(
 
         for file_name in files:
             if not _fnmatch.fnmatch(file_name, glob):
+                files_glob_skipped += 1
                 continue
 
             # Skip hidden files unless include_hidden=True
@@ -366,6 +368,12 @@ def fn(
 
     if total_matches == 0:
         if files_searched == 0:
+            if files_glob_skipped > 0:
+                return (
+                    header
+                    + f"No files matched glob {glob!r} under '{resolved}'. "
+                    + f"To search all files, omit glob= or pass glob='*'."
+                )
             return (
                 header
                 + f"No files were searched under '{resolved}'. "
