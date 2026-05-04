@@ -11,6 +11,8 @@ def fn(seconds: float) -> str:
     Args:
         seconds: Number of seconds to sleep. Must be between 0 and 3600.
     """
+    if not isinstance(seconds, (int, float)):
+        return f"Error: 'seconds' must be a number, got {type(seconds).__name__}"
     try:
         if seconds > _MAX_SLEEP:
             return f"Error: sleep duration {seconds} exceeds maximum allowed ({_MAX_SLEEP} s)"
