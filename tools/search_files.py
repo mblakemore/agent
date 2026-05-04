@@ -151,6 +151,7 @@ def fn(
     context: int = 3,
     count_only: bool = False,
     include_temp: bool = False,
+    include_hidden: bool = False,
 ) -> str:
     """Search file contents for a regex pattern.
 
@@ -169,6 +170,9 @@ def fn(
         include_temp: If True, disable DEFAULT_EXCLUDES so that temp/,
             worktrees/, state/debug/, and similar high-noise directories
             are included in the search.  Default False.
+        include_hidden: If True, include hidden files and directories (names
+            starting with '.', e.g. .env, .gitignore, .claude/).  .git/ is
+            always excluded regardless of this flag.  Default False.
     """
     import fnmatch as _fnmatch
 
@@ -229,9 +233,12 @@ def fn(
             permission_errors += 1
 
     for root, dirs, files in os.walk(resolved, onerror=handle_error):
-        # Filter directories to skip hidden ones (mimicking rglob behavior with .agent filter)
-        # Modifying 'dirs' in-place allows os.walk to prune the search tree.
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d != ".agent"]
+        # Filter directories to skip hidden ones (mimicking rglob behavior).
+        # .git/ is always excluded; other dotdirs are skipped unless include_hidden=True.
+        if include_hidden:
+            dirs[:] = [d for d in dirs if d != ".git"]
+        else:
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
 
         if not include_temp:
             # Prune directories that are in DEFAULT_EXCLUDES.
@@ -241,8 +248,8 @@ def fn(
             if not _fnmatch.fnmatch(file_name, glob):
                 continue
 
-            # Skip hidden files
-            if file_name.startswith("."):
+            # Skip hidden files unless include_hidden=True
+            if not include_hidden and file_name.startswith("."):
                 continue
 
             if not include_temp:
@@ -446,6 +453,15 @@ definition = {
                         "(temp/, worktrees/, state/debug/, .venv*/, node_modules/, "
                         "__pycache__/, .git/, *.log). Use this only when you specifically "
                         "need to search inside those directories. Default: false."
+                    ),
+                    "default": False,
+                },
+                "include_hidden": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, include hidden files and directories (names starting with "
+                        "'.', e.g. .env, .gitignore, .claude/). .git/ is always excluded "
+                        "regardless of this flag. Default: false."
                     ),
                     "default": False,
                 },
