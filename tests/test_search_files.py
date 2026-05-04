@@ -1530,3 +1530,43 @@ class TestSearchFilesContextStringRejection(unittest.TestCase):
             Path(d, "a.txt").write_text("before\nHIT\nafter\n")
             result = search_files.fn("HIT", path=d, context=1)
         self.assertFalse(result.startswith("Error:"), f"Integer context must not error: {result!r}")
+
+
+# ── NaN / Inf context guards (#903) ───────────────────────────────────────────
+
+
+class TestSearchFilesContextNaNInf(unittest.TestCase):
+    """context=float('nan') and context=float('inf') must return clear errors,
+    not crash with OverflowError or produce confusing stdlib messages (#903).
+
+    Before the fix, int(inf) raised OverflowError which escaped the
+    except (TypeError, ValueError) handler and propagated as an unhandled
+    exception.
+    """
+
+    def test_inf_context_returns_clear_error(self):
+        """context=float('inf') must return a 'finite' error, not OverflowError (#903)."""
+        import math
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("HIT\n")
+            result = search_files.fn("HIT", path=d, context=math.inf)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertTrue(
+            "finite" in result or "inf" in result.lower(),
+            f"Error should mention finite or inf: {result!r}",
+        )
+
+    def test_nan_context_returns_clear_error(self):
+        """context=float('nan') must return a clear error (#903)."""
+        import math
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("HIT\n")
+            result = search_files.fn("HIT", path=d, context=math.nan)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+
+    def test_integer_context_unaffected_by_nan_inf_guard(self):
+        """A plain integer context must still work after the NaN/Inf guard (#903)."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("before\nHIT\nafter\n")
+            result = search_files.fn("HIT", path=d, context=2)
+        self.assertFalse(result.startswith("Error:"), f"Integer context broke: {result!r}")

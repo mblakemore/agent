@@ -1,5 +1,6 @@
 """Search files tool — grep through files for patterns."""
 
+import math
 import os
 import re
 from pathlib import Path
@@ -296,6 +297,8 @@ def fn(
             f"Pass an integer without quotes (e.g. context=3)."
         )
     if not isinstance(context, int):
+        if isinstance(context, float) and not math.isfinite(context):
+            return f"Error: context must be a finite integer, got {context!r}"
         try:
             context = int(context)
         except (TypeError, ValueError):
