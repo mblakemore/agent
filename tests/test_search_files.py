@@ -1342,3 +1342,94 @@ class TestSearchFilesPathConfinement(unittest.TestCase):
         self.assertNotIn("Error: path", result)
         # tools/ has Python files with 'def' in them
         self.assertIn("def", result)
+
+
+class TestSearchFilesBoolParamCoercion(unittest.TestCase):
+    """Boolean params (ignore_case, count_only, include_temp, include_hidden) must
+    reject non-bool/non-01-int values rather than silently coercing them (#887).
+
+    The critical failure mode is an LLM passing 'false' (a string) — non-empty
+    strings are truthy in Python, so ignore_case='false' would make the search
+    case-insensitive when the caller intended case-sensitive.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._f = os.path.join(self._tmpdir.name, "sample.txt")
+        with open(self._f, "w") as fh:
+            fh.write("Hello World\nhello world\nHELLO WORLD\n")
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    # ── ignore_case ────────────────────────────────────────────────────────────
+
+    def test_ignore_case_string_false_returns_error(self):
+        """ignore_case='false' must return a clear error, not silently go case-insensitive."""
+        result = search_files.fn("hello", path=self._f, ignore_case="false")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("ignore_case", result)
+        self.assertIn("str", result)
+
+    def test_ignore_case_string_true_returns_error(self):
+        """ignore_case='true' must return a clear error — strings are not booleans."""
+        result = search_files.fn("hello", path=self._f, ignore_case="true")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("ignore_case", result)
+
+    def test_ignore_case_integer_2_returns_error(self):
+        """ignore_case=2 must return a clear error — only 0, 1, and bool are accepted."""
+        result = search_files.fn("hello", path=self._f, ignore_case=2)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("ignore_case", result)
+
+    def test_ignore_case_zero_works_as_false(self):
+        """ignore_case=0 must behave as False (case-sensitive search)."""
+        result = search_files.fn("hello", path=self._f, ignore_case=0, context=0)
+        # Only the lowercase 'hello world' line matches
+        self.assertIn("hello world", result)
+        self.assertNotIn("Hello World", result)
+
+    def test_ignore_case_one_works_as_true(self):
+        """ignore_case=1 must behave as True (case-insensitive search)."""
+        result = search_files.fn("hello", path=self._f, ignore_case=1, context=0)
+        # All three lines match case-insensitively
+        self.assertIn("Hello World", result)
+        self.assertIn("hello world", result)
+
+    def test_ignore_case_true_unaffected(self):
+        """ignore_case=True continues to work normally after adding the type check."""
+        result = search_files.fn("hello", path=self._f, ignore_case=True, context=0)
+        self.assertNotIn("Error:", result)
+        self.assertIn("hello world", result)
+
+    def test_ignore_case_false_unaffected(self):
+        """ignore_case=False continues to do a case-sensitive search."""
+        result = search_files.fn("hello", path=self._f, ignore_case=False, context=0)
+        self.assertNotIn("Error:", result)
+        self.assertIn("hello world", result)
+        self.assertNotIn("Hello World", result)
+
+    # ── count_only ─────────────────────────────────────────────────────────────
+
+    def test_count_only_string_false_returns_error(self):
+        """count_only='false' must return a clear error (#887)."""
+        result = search_files.fn("hello", path=self._f, count_only="false")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("count_only", result)
+
+    # ── include_temp ───────────────────────────────────────────────────────────
+
+    def test_include_temp_string_false_returns_error(self):
+        """include_temp='false' must return a clear error (#887)."""
+        result = search_files.fn("hello", path=self._f, include_temp="false")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("include_temp", result)
+
+    # ── include_hidden ─────────────────────────────────────────────────────────
+
+    def test_include_hidden_string_false_returns_error(self):
+        """include_hidden='false' must return a clear error (#887)."""
+        result = search_files.fn("hello", path=self._f, include_hidden="false")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("include_hidden", result)
