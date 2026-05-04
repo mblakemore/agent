@@ -47,8 +47,8 @@ def fn(prompt: str, depth: str = "brief", context: str = "") -> str:
         depth: Reasoning depth — "brief", "normal", or "deep".
         context: Optional conversation context to include.
     """
-    if not prompt or not prompt.strip():
-        return "Error: prompt must not be empty"
+    if not isinstance(prompt, str) or not prompt.strip():
+        return "Error: prompt must be a non-empty string"
     if depth not in DEPTH_MAX_TOKENS:
         valid = ", ".join(DEPTH_MAX_TOKENS)
         return f"Error: invalid depth {depth!r}. Use one of: {valid}."
