@@ -1072,3 +1072,89 @@ def test_list_completed_and_done_both_counted_as_done():
     assert "[x] #1" in result, "completed task must show [x]"
     assert "[x] #2" in result, "done task must show [x]"
     assert "[ ] #3" in result, "open task must show [ ]"
+
+
+# ── Issue #740: done/update 'Open tasks:' hint must exclude 'completed' tasks ──
+
+def test_done_missing_task_id_hint_excludes_completed_tasks():
+    """done without task_id must not list 'completed' tasks in 'Open tasks:' hint (#740).
+
+    Two open tasks are required so that auto-resolution does not kick in (which
+    would silently complete the unique open task without showing the hint).
+    """
+    Path(_TASKS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    tasks = [
+        {"id": 1, "description": "legacy completed", "status": "completed", "created": "2024-01-01T00:00:00"},
+        {"id": 2, "description": "still open A", "status": "open", "created": "2024-01-01T00:00:00"},
+        {"id": 3, "description": "still open B", "status": "open", "created": "2024-01-01T00:00:00"},
+    ]
+    Path(_TASKS_FILE).write_text(json.dumps(tasks))
+    result = fn(action="done", task_id=0)
+    assert "task_id required" in result, f"Expected task_id-required error, got: {result!r}"
+    assert "#1" not in result, (
+        f"'Open tasks:' hint must not include completed task #1, got: {result!r}"
+    )
+    assert "#2" in result, (
+        f"'Open tasks:' hint must include open task #2, got: {result!r}"
+    )
+    assert "#3" in result, (
+        f"'Open tasks:' hint must include open task #3, got: {result!r}"
+    )
+
+
+def test_done_missing_task_id_hint_empty_when_only_completed_tasks():
+    """done without task_id shows '(none)' when only 'completed' legacy tasks exist (#740)."""
+    Path(_TASKS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    tasks = [
+        {"id": 1, "description": "legacy completed", "status": "completed", "created": "2024-01-01T00:00:00"},
+    ]
+    Path(_TASKS_FILE).write_text(json.dumps(tasks))
+    result = fn(action="done", task_id=0)
+    assert "(none)" in result, (
+        f"Expected '(none)' when no open tasks remain, got: {result!r}"
+    )
+    assert "#1" not in result, (
+        f"completed task #1 must not appear in hint, got: {result!r}"
+    )
+
+
+def test_update_missing_task_id_hint_excludes_completed_tasks():
+    """update without task_id must not list 'completed' tasks in 'Open tasks:' hint (#740).
+
+    Two open tasks are required so that auto-resolution does not kick in (which
+    would silently update the unique open task without showing the hint).
+    """
+    Path(_TASKS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    tasks = [
+        {"id": 1, "description": "legacy completed", "status": "completed", "created": "2024-01-01T00:00:00"},
+        {"id": 2, "description": "still open A", "status": "open", "created": "2024-01-01T00:00:00"},
+        {"id": 3, "description": "still open B", "status": "open", "created": "2024-01-01T00:00:00"},
+    ]
+    Path(_TASKS_FILE).write_text(json.dumps(tasks))
+    result = fn(action="update", task_id=0, status="in_progress")
+    assert "task_id required" in result, f"Expected task_id-required error, got: {result!r}"
+    assert "#1" not in result, (
+        f"'Open tasks:' hint must not include completed task #1, got: {result!r}"
+    )
+    assert "#2" in result, (
+        f"'Open tasks:' hint must include open task #2, got: {result!r}"
+    )
+    assert "#3" in result, (
+        f"'Open tasks:' hint must include open task #3, got: {result!r}"
+    )
+
+
+def test_update_missing_task_id_hint_empty_when_only_completed_tasks():
+    """update without task_id shows '(none)' when only 'completed' legacy tasks exist (#740)."""
+    Path(_TASKS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    tasks = [
+        {"id": 1, "description": "legacy completed", "status": "completed", "created": "2024-01-01T00:00:00"},
+    ]
+    Path(_TASKS_FILE).write_text(json.dumps(tasks))
+    result = fn(action="update", task_id=0, status="in_progress")
+    assert "(none)" in result, (
+        f"Expected '(none)' when no open tasks remain, got: {result!r}"
+    )
+    assert "#1" not in result, (
+        f"completed task #1 must not appear in hint, got: {result!r}"
+    )

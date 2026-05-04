@@ -181,7 +181,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
 
     elif action == "done":
         if task_id <= 0:
-            available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] != "done"]
+            available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] not in ("done", "completed")]
             return f"Error: task_id required for 'done'. Example: task_tracker(action=\"done\", task_id=1)\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
         for t in tasks:
             if t["id"] == task_id:
@@ -197,7 +197,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
 
     elif action == "update":
         if task_id <= 0:
-            available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] != "done"]
+            available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] not in ("done", "completed")]
             return f"Error: task_id required for 'update'. Example: task_tracker(action=\"update\", task_id=1, status=\"in_progress\")\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
         # When description was used only to resolve task_id, it carries no note
         # intent — treat it as absent for validation and note-writing purposes.
