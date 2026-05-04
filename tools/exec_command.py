@@ -348,7 +348,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     if background:
         try:
             proc = subprocess.Popen(
-                ['bash', '-c', f'{command} 2>&1'],
+                ['bash', '-c', f'exec 2>&1; {command}'],
                 cwd=run_cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -378,7 +378,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
 
     try:
         proc = subprocess.Popen(
-            ['bash', '-c', f'{command} 2>&1'],
+            ['bash', '-c', f'exec 2>&1; {command}'],
             cwd=run_cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

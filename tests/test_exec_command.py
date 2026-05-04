@@ -169,6 +169,25 @@ def test_exec_command_heredoc_write_target():
     assert "exit=0" in result
     os.remove("test_heredoc.py")
 
+def test_exec_command_heredoc_stdout_clean():
+    # Regression: appending '2>&1' to the command string corrupts heredoc
+    # terminators — 'EOF' becomes 'EOF 2>&1' which doesn't match the delimiter.
+    # The fix uses 'exec 2>&1;' as a prefix so the redirect is applied before
+    # the command is parsed, leaving the heredoc body intact.
+    result = fn(command="cat << EOF\nhello from heredoc\nEOF")
+    assert "exit=0" in result
+    assert "hello from heredoc" in result
+    # Must not contain the corrupted terminator or the bash warning
+    assert "EOF 2>&1" not in result
+    assert "here-document" not in result
+    assert "delimited by end-of-file" not in result
+
+def test_exec_command_heredoc_stderr_still_captured():
+    # Verify that stderr output is still captured when using 'exec 2>&1;' prefix.
+    result = fn(command="echo stderr_msg >&2")
+    assert "exit=0" in result
+    assert "stderr_msg" in result
+
 def test_exec_command_invalid_session_id():
     # Test line 63: return None, f"Error: session '{session_id}' does not exist"
     result = fn(session_id="nonexistent-session-123")
