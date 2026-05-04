@@ -1074,6 +1074,44 @@ class TestSearchFilesNullByteValidation(unittest.TestCase):
             result = search_files.fn(pattern="hello", path=d, context=0)
         self.assertIn("hello world", result)
 
+    def test_null_byte_in_glob_string_returns_error(self):
+        """glob string containing a null byte must return a clear error, not silently
+        match zero files (regression for the bug where '*.py\\x00bad' produced a
+        misleading 'No files matched' message instead of 'Error: ...')."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("def foo(): pass\n")
+            result = search_files.fn(pattern="def", path=d, glob="*.py\x00bad")
+        self.assertIsInstance(result, str, "fn() must return a string, not raise")
+        self.assertIn("null byte", result)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+
+    def test_null_byte_in_glob_list_element_returns_error(self):
+        """glob list element containing a null byte must return a clear error."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("def foo(): pass\n")
+            result = search_files.fn(pattern="def", path=d, glob=["*.py\x00bad"])
+        self.assertIsInstance(result, str, "fn() must return a string, not raise")
+        self.assertIn("null byte", result)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+
+    def test_null_byte_in_second_glob_list_element_returns_error(self):
+        """Null byte in any list element (not just the first) must be caught."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("def foo(): pass\n")
+            result = search_files.fn(pattern="def", path=d, glob=["*.py", "*.txt\x00x"])
+        self.assertIsInstance(result, str, "fn() must return a string, not raise")
+        self.assertIn("null byte", result)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+
+    def test_glob_without_null_byte_still_works_after_check(self):
+        """Regression guard: normal glob patterns must be unaffected by the new check."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("def foo(): pass\n")
+            Path(d, "b.txt").write_text("def bar(): pass\n")
+            result = search_files.fn(pattern="def", path=d, glob="*.py", context=0)
+        self.assertIn("a.py", result)
+        self.assertNotIn("b.txt", result)
+
 
 # ── invalid regex patterns (#770) ─────────────────────────────────────────────
 

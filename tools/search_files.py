@@ -206,6 +206,8 @@ def fn(
             return "Error: glob filter cannot be empty — omit the argument or pass '*' to match all files."
         glob_patterns = flat
     elif isinstance(glob, str):
+        if '\x00' in glob:
+            return "Error: glob pattern contains a null byte, which is not allowed"
         if not glob.strip():
             return "Error: glob filter cannot be empty — omit the argument or pass '*' to match all files."
         # Split on commas so 'glob=*.py,*.txt' works as expected
@@ -220,6 +222,8 @@ def fn(
         )
 
     for g in glob_patterns:
+        if '\x00' in g:
+            return "Error: glob pattern contains a null byte, which is not allowed"
         if "/" in g or os.sep in g:
             return (
                 f"Error: glob pattern {g!r} contains a path separator. "
