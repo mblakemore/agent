@@ -186,7 +186,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
     # be treated as 0 (no task specified) — both are wrong.  Reject explicitly.
     if isinstance(task_id, bool):
         return (
-            f"Error: task_id must be a plain integer, got bool ({task_id!r}). "
+            f"Error: task_id must be a plain integer, got 'bool': {task_id!r}. "
             f"Pass an integer task ID (e.g. task_id=1)."
         )
     if not isinstance(task_id, int):
@@ -215,7 +215,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
     # reject them explicitly with a clear message.  None is treated as "".
     if isinstance(status, bool):
         return (
-            f"Error: status must be a string, got bool ({status!r}). "
+            f"Error: status must be a string, got 'bool': {status!r}. "
             f"Pass a status string such as 'open', 'in_progress', 'blocked', 'deferred'."
         )
     if status is None:
@@ -231,7 +231,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
     # Validate limit
     if isinstance(limit, bool):
         return (
-            f"Error: limit must be a plain integer, got bool ({limit!r}). "
+            f"Error: limit must be a plain integer, got 'bool': {limit!r}. "
             f"Pass an integer (e.g. limit=10) or omit for no limit."
         )
     if isinstance(limit, str):

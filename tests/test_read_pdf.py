@@ -694,3 +694,27 @@ def test_read_pdf_none_path_type_name_is_quoted():
     result = fn(None)
     assert result.startswith("Error:"), f"Expected error: {result!r}"
     assert "'NoneType'" in result, f"Type name must be quoted as 'NoneType', got: {result!r}"
+
+
+# ── bool guard colon format (#921) ────────────────────────────────────────────
+
+@patch("fitz.open")
+def test_read_pdf_bool_start_page_uses_colon_format(mock_open):
+    """Bool start_page error must say got 'bool': True, not got bool (True) (#921)."""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=True)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "'bool'" in result, f"Type name must be quoted: {result!r}"
+    assert "True" in result, f"Value must appear in error: {result!r}"
+    assert "(True)" not in result, f"Old parenthesis format must be gone: {result!r}"
+
+
+@patch("fitz.open")
+def test_read_pdf_bool_end_page_uses_colon_format(mock_open):
+    """Bool end_page error must say got 'bool': False, not got bool (False) (#921)."""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", end_page=False)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "'bool'" in result, f"Type name must be quoted: {result!r}"
+    assert "False" in result, f"Value must appear in error: {result!r}"
+    assert "(False)" not in result, f"Old parenthesis format must be gone: {result!r}"

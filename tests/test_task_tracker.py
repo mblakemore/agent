@@ -2553,3 +2553,32 @@ def test_description_string_still_works():
     """Plain string description must still succeed (#919)."""
     result = fn(action="add", description="Write tests for the new feature")
     assert not result.startswith("Error:"), f"Valid description broke: {result!r}"
+
+
+# ── bool guard colon format (#921) ────────────────────────────────────────────
+
+def test_task_id_bool_uses_colon_format():
+    """Bool task_id error must say got 'bool': True, not got bool (True) (#921)."""
+    result = fn(action="done", task_id=True)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "'bool'" in result, f"Type name must be quoted: {result!r}"
+    assert "True" in result, f"Value must appear in error: {result!r}"
+    assert "(True)" not in result, f"Old parenthesis format must be gone: {result!r}"
+
+
+def test_status_bool_uses_colon_format():
+    """Bool status error must say got 'bool': True, not got bool (True) (#921)."""
+    result = fn(action="list", status=True)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "'bool'" in result, f"Type name must be quoted: {result!r}"
+    assert "True" in result, f"Value must appear in error: {result!r}"
+    assert "(True)" not in result, f"Old parenthesis format must be gone: {result!r}"
+
+
+def test_limit_bool_uses_colon_format():
+    """Bool limit error must say got 'bool': False, not got bool (False) (#921)."""
+    result = fn(action="list", limit=False)
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "'bool'" in result, f"Type name must be quoted: {result!r}"
+    assert "False" in result, f"Value must appear in error: {result!r}"
+    assert "(False)" not in result, f"Old parenthesis format must be gone: {result!r}"

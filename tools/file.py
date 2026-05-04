@@ -95,12 +95,12 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
     # slip through as valid line numbers.
     if isinstance(start_line, bool):
         return (
-            f"Error: 'start_line' must be a plain integer, got bool ({start_line!r}). "
+            f"Error: 'start_line' must be a plain integer, got 'bool': {start_line!r}. "
             f"Pass a plain integer line number."
         )
     if isinstance(end_line, bool):
         return (
-            f"Error: 'end_line' must be a plain integer, got bool ({end_line!r}). "
+            f"Error: 'end_line' must be a plain integer, got 'bool': {end_line!r}. "
             f"Pass a plain integer line number."
         )
     # Floats are not valid line numbers — reject them so that start_line=1.5 or

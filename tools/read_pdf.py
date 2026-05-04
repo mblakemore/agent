@@ -74,13 +74,13 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
     if isinstance(start_page, bool):
         doc.close()
         return (
-            f"Error: start_page must be a plain integer, got bool ({start_page!r}). "
+            f"Error: start_page must be a plain integer, got 'bool': {start_page!r}. "
             "Pass a plain integer page number (e.g. start_page=1)."
         )
     if isinstance(end_page, bool):
         doc.close()
         return (
-            f"Error: end_page must be a plain integer, got bool ({end_page!r}). "
+            f"Error: end_page must be a plain integer, got 'bool': {end_page!r}. "
             "Pass a plain integer page number, or 0 for last page."
         )
 
