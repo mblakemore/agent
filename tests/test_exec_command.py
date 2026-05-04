@@ -292,6 +292,44 @@ def test_exec_command_auto_pythonpath():
     assert "exit=0" in result
 
 
+def test_build_env_falls_back_to_home_when_cwd_outside_repo(tmp_path):
+    """_build_env_with_pythonpath must fall back to the agent home when cwd has no .git ancestor.
+
+    Regression test for #694: when cwd='/tmp' (no .git up the tree),
+    PYTHONPATH was silently omitted causing ModuleNotFoundError.
+    """
+    from tools.exec_command import _build_env_with_pythonpath
+    # tmp_path has no .git; os.getcwd() (the agent repo) does.
+    env_without = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    with patch.dict(os.environ, env_without, clear=True):
+        env = _build_env_with_pythonpath(str(tmp_path))
+    assert env is not None, "Expected PYTHONPATH to be injected via home-dir fallback"
+    # The injected value must be a real path containing a .git directory
+    from pathlib import Path
+    assert (Path(env["PYTHONPATH"]) / ".git").exists(), (
+        f"PYTHONPATH={env['PYTHONPATH']!r} does not contain a .git directory"
+    )
+
+
+def test_exec_command_pythonpath_injected_when_cwd_outside_repo(tmp_path):
+    """exec_command must inject PYTHONPATH even when cwd is outside the repo tree.
+
+    Regression test for #694: running with cwd='/tmp' failed to import project
+    modules because PYTHONPATH was not auto-injected for non-repo cwd values.
+    """
+    env_without = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    with patch.dict(os.environ, env_without, clear=True):
+        result = fn(
+            command="python3 -c 'import os; print(os.environ.get(\"PYTHONPATH\", \"NOT SET\"))'",
+            timeout=5,
+            cwd=str(tmp_path),
+        )
+    assert "exit=0" in result
+    assert "NOT SET" not in result, (
+        "PYTHONPATH was not injected when cwd is outside the repo tree"
+    )
+
+
 # ── timeout validation tests ──────────────────────────────────────────────────
 
 def test_exec_command_negative_timeout_rejected():

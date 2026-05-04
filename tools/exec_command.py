@@ -37,11 +37,18 @@ def _find_git_root(start_dir: str) -> str | None:
 def _build_env_with_pythonpath(cwd: str) -> dict | None:
     """Return an env dict with PYTHONPATH set to the git root if not already set.
 
+    Searches for a .git directory starting from *cwd*. When *cwd* is outside
+    the repo tree (e.g. /tmp), no .git is found there, so the search falls back
+    to the agent's home directory (os.getcwd()), which is always inside the repo.
+
     Returns None if no auto-injection is needed (PYTHONPATH already set or no git root found).
     """
     if os.environ.get("PYTHONPATH"):
         return None
     git_root = _find_git_root(cwd)
+    if git_root is None:
+        # cwd may be outside the repo (e.g. /tmp); fall back to the agent's home
+        git_root = _find_git_root(os.getcwd())
     if git_root is None:
         return None
     env = os.environ.copy()
