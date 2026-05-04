@@ -44,6 +44,16 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
     """
     # Ensure description is always a string even if the model omits the field
     description = description or ""
+
+    # Validate task_id type — must be an integer (or the default 0).
+    # Non-integer values (e.g. strings passed by a model) would cause
+    # TypeError at the `task_id <= 0` comparisons below.
+    if not isinstance(task_id, int):
+        try:
+            task_id = int(task_id)
+        except (TypeError, ValueError):
+            return f"Error: task_id must be an integer, got {type(task_id).__name__!r}: {task_id!r}"
+
     tasks = _load_tasks()
 
     # Treat update with completed/done status as the "done" action

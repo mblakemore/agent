@@ -290,3 +290,54 @@ def test_update_with_only_status_still_works():
     assert "Updated task #1: status=in_progress" in res
     tasks = json.loads(Path(_TASKS_FILE).read_text())
     assert tasks[0]["status"] == "in_progress"
+
+
+# ── Issue #664: non-integer task_id must return Error, not raise TypeError ──
+
+def test_update_non_integer_task_id_string():
+    """update with task_id='notanumber' must return Error, not raise TypeError."""
+    fn(action="add", description="test")
+    res = fn(action="update", task_id="notanumber", status="in_progress")
+    assert res.startswith("Error:"), f"Expected Error string, got: {res!r}"
+    assert "task_id" in res.lower()
+
+
+def test_done_non_integer_task_id_string():
+    """done with task_id='bad' must return Error, not raise TypeError."""
+    fn(action="add", description="test")
+    res = fn(action="done", task_id="bad")
+    assert res.startswith("Error:"), f"Expected Error string, got: {res!r}"
+
+
+def test_drop_non_integer_task_id_string():
+    """drop with task_id='bad' must return Error, not raise TypeError."""
+    fn(action="add", description="test")
+    res = fn(action="drop", task_id="bad")
+    assert res.startswith("Error:"), f"Expected Error string, got: {res!r}"
+
+
+def test_non_integer_task_id_dict():
+    """task_id as a dict must return Error, not raise TypeError."""
+    res = fn(action="done", task_id={"id": 1})
+    assert res.startswith("Error:"), f"Expected Error string, got: {res!r}"
+
+
+def test_non_integer_task_id_none():
+    """task_id=None must return Error, not raise TypeError."""
+    fn(action="add", description="test")
+    res = fn(action="update", task_id=None, status="in_progress")
+    assert res.startswith("Error:"), f"Expected Error string, got: {res!r}"
+
+
+def test_string_numeric_task_id_coerced():
+    """task_id='1' (string that looks like an int) should be coerced and work."""
+    fn(action="add", description="Task to update")
+    res = fn(action="update", task_id="1", status="in_progress")
+    assert "Updated task #1" in res
+
+
+def test_float_task_id_coerced():
+    """task_id=1.0 (float) should be coerced to int and work."""
+    fn(action="add", description="Task to complete")
+    res = fn(action="done", task_id=1.0)
+    assert "Completed task #1" in res
