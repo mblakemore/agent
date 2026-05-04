@@ -353,7 +353,8 @@ definition = {
             "- delete: Delete a file or empty directory.\n"
             "- list: List directory contents. "
             "IMPORTANT: skip this action if the user's prompt already names the files or paths "
-            "you need — calling list when you already know the paths wastes a turn.\n"
+            "you need — calling list when you already know the paths wastes a turn. "
+            "Avoid using `list` as a first-step orientation — go directly to the relevant file or search instead.\n"
             "IMPORTANT: You MUST read an existing file before writing to it. "
             "The tool will reject writes to files you haven't read this session."
         ),
