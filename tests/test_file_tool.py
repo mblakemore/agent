@@ -1090,3 +1090,64 @@ class TestFileErrorMessageFormat(unittest.TestCase):
             result = file_tool.fn(action="read", path="/tmp/nonexistent_file_xyz.txt")
         self.assertIsInstance(result, str)
         self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+
+
+# ── Regression: read start_line=0 with end_line (#803) ───────────────────────
+
+class TestFileReadStartLineZeroConsistency(unittest.TestCase):
+    """read with start_line=0 and end_line>0 must return an error, consistent
+    with write which rejects the same combination (#803).
+
+    start_line=0 with end_line=0 (the default) is still valid — it means
+    "read from the beginning of the file" (full-read mode).  The bug was that
+    start_line=0 with an explicit end_line was silently treated as start_line=1,
+    making read inconsistent with write/insert/delete."""
+
+    def test_read_start_line_zero_with_end_line_returns_error(self):
+        """read(start_line=0, end_line=N) must return an error, not silently read from line 1."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("line1\nline2\nline3\n", encoding="utf-8")
+            result = file_tool.fn(action="read", path=str(target), start_line=0, end_line=2)
+            self.assertTrue(
+                result.startswith("Error:"),
+                msg=f"read(start_line=0, end_line=2) must return Error:, got: {result!r}",
+            )
+            self.assertIn("start_line must be >= 1", result,
+                          msg=f"Error must mention start_line >= 1, got: {result!r}")
+            self.assertIn("1-indexed", result,
+                          msg=f"Error should mention 1-indexed, got: {result!r}")
+
+    def test_read_start_line_zero_with_end_line_does_not_return_file_content(self):
+        """read(start_line=0, end_line=N) must not silently return file lines."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+            result = file_tool.fn(action="read", path=str(target), start_line=0, end_line=1)
+            self.assertNotIn("alpha", result,
+                             msg="File content must not appear in response to invalid start_line=0")
+
+    def test_read_start_line_zero_no_end_line_still_reads_full_file(self):
+        """read(start_line=0) with no end_line is the default full-read mode and must succeed."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("line1\nline2\n", encoding="utf-8")
+            result = file_tool.fn(action="read", path=str(target), start_line=0)
+            self.assertFalse(
+                result.startswith("Error:"),
+                msg=f"read(start_line=0) with no end_line must succeed (full-read mode), got: {result!r}",
+            )
+            self.assertIn("line1", result)
+            self.assertIn("line2", result)
+
+    def test_read_start_line_one_with_end_line_still_works(self):
+        """read(start_line=1, end_line=2) must still return the first two lines."""
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "test.txt"
+            target.write_text("first\nsecond\nthird\n", encoding="utf-8")
+            result = file_tool.fn(action="read", path=str(target), start_line=1, end_line=2)
+            self.assertFalse(result.startswith("Error:"),
+                             msg=f"read(start_line=1, end_line=2) must succeed, got: {result!r}")
+            self.assertIn("first", result)
+            self.assertIn("second", result)
+            self.assertNotIn("third", result)

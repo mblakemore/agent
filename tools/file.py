@@ -135,7 +135,17 @@ def _read(path, start_line, end_line):
     if p.is_dir():
         return f"Error: '{path}' is a directory. Use action='list' instead."
 
-    # Validate start_line/end_line combination before opening the file
+    # Validate start_line/end_line combination before opening the file.
+    # start_line=0 is rejected (consistent with write/insert/delete which all
+    # require start_line >= 1 when a line number is supplied).  Callers that
+    # want to read from the beginning of the file must omit start_line entirely
+    # (i.e. leave it at its default of 0) rather than passing 0 explicitly.
+    if start_line == 0 and end_line > 0:
+        return (
+            f"Error: start_line must be >= 1 (got 0). "
+            f"Line numbers are 1-indexed. To read from the beginning of the file, "
+            f"omit start_line (or pass start_line=1)."
+        )
     if start_line < 0:
         return f"Error: start_line must be >= 1 (got {start_line})"
     if end_line > 0 and start_line > 0 and start_line > end_line:
