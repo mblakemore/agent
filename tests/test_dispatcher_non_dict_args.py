@@ -164,3 +164,59 @@ def test_exec_command_null_args_does_not_crash_commit_tracking(mock_log):
     assert any(m.get("role") == "assistant" for m in conversation_history), (
         "Expected at least one assistant message — loop should have completed"
     )
+
+
+# ── Issue #859: non-dict func_args must not produce confusing TypeError at **-unpack ──
+
+@pytest.mark.parametrize("raw_args", ["null", "[]", '"string"', "42"])
+def test_non_dict_args_no_type_error_in_result(mock_log, raw_args):
+    """Tool result must not contain the 'must be a mapping' TypeError message (#859).
+
+    Before the fix, json.loads('null') → None was passed directly to **-unpack,
+    raising 'TypeError: argument after ** must be a mapping, not NoneType'.
+    After the fix, non-dict args are coerced to {} before dispatch.
+    """
+    conversation_history = []
+    summary_state = {"text": "", "up_to": 0}
+
+    with patch("agent._llm_request") as mock_llm, patch("agent._emit"):
+        mock_llm.side_effect = [
+            _make_resp_raw_args("think", raw_args),
+            _make_resp_text("Done"),
+        ]
+        with patch("agent._NUDGE_ENABLED", False):
+            agent.run_agent_single(conversation_history, summary_state, None, mock_log)
+
+    tool_results = [m for m in conversation_history if m.get("role") == "tool"]
+    assert tool_results, "Expected at least one tool result"
+    content = tool_results[0]["content"]
+    assert "must be a mapping" not in content, (
+        f"Got confusing TypeError from **-unpack for raw_args={raw_args!r}: {content!r}"
+    )
+
+
+def test_non_dict_args_tool_called_not_skipped(mock_log):
+    """When non-dict args are received, the tool must still be invoked (#859).
+
+    Before the fix, **None raised TypeError inside the try block and was caught by
+    'except Exception', producing an error result but still calling the tool.
+    After the fix, the tool is called with {}, which may produce a different error
+    (e.g. 'missing required argument: prompt') but must NOT produce the cryptic
+    'argument after ** must be a mapping, not NoneType' message.
+    """
+    conversation_history = []
+    summary_state = {"text": "", "up_to": 0}
+    mock_tool = MagicMock(return_value="called with empty args")
+
+    with patch("agent.MAP_FN", {**agent.MAP_FN, "think": mock_tool}), \
+         patch("agent._llm_request") as mock_llm, \
+         patch("agent._emit"):
+        mock_llm.side_effect = [
+            _make_resp_raw_args("think", "null"),
+            _make_resp_text("Done"),
+        ]
+        with patch("agent._NUDGE_ENABLED", False):
+            agent.run_agent_single(conversation_history, summary_state, None, mock_log)
+
+    # Tool MUST have been called (with empty kwargs, not skipped or crashed before call)
+    mock_tool.assert_called_once_with()
