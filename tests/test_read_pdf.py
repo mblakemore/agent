@@ -378,3 +378,75 @@ def test_read_pdf_integer_start_page_unaffected_by_bool_guard(mock_open):
     result = fn("dummy.pdf", start_page=2)
     assert "Error" not in result
     assert "Pages 2-" in result
+
+
+# ── Issue #803: fractional float page numbers must be rejected, whole floats coerced ──
+# Fractional floats like 1.5 would silently truncate to int(1) = 1, reading the
+# wrong page without any indication of the error.  Whole-number floats like 2.0
+# are safe to coerce, consistent with the task_tracker float-guard pattern.
+
+
+@patch("fitz.open")
+def test_read_pdf_fractional_float_start_page_returns_error(mock_open):
+    """start_page=1.5 must return a clear error, not silently read page 1. (#803)"""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=1.5)
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "non-integer float" in result, f"Error must mention non-integer float, got: {result!r}"
+    assert "start_page" in result
+    assert "1.5" in result
+
+
+@patch("fitz.open")
+def test_read_pdf_fractional_float_start_page_suggests_neighbors(mock_open):
+    """Error for start_page=1.5 must suggest 1 and 2 as likely intended values. (#803)"""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=1.5)
+    assert "1" in result and "2" in result, f"Error must suggest neighbors, got: {result!r}"
+
+
+@patch("fitz.open")
+def test_read_pdf_whole_float_start_page_coerced(mock_open):
+    """start_page=2.0 (whole-number float) must be coerced to 2, not rejected. (#803)"""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=2.0)
+    assert "Error" not in result, f"Unexpected error for whole float 2.0: {result!r}"
+    assert "Pages 2-" in result
+
+
+@patch("fitz.open")
+def test_read_pdf_fractional_float_end_page_returns_error(mock_open):
+    """end_page=3.7 must return a clear error, not silently set end_page=3. (#803)"""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=1, end_page=3.7)
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "non-integer float" in result, f"Error must mention non-integer float, got: {result!r}"
+    assert "end_page" in result
+    assert "3.7" in result
+
+
+@patch("fitz.open")
+def test_read_pdf_whole_float_end_page_coerced(mock_open):
+    """end_page=3.0 (whole-number float) must be coerced to 3, not rejected. (#803)"""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=1, end_page=3.0)
+    assert "Error" not in result, f"Unexpected error for whole float 3.0: {result!r}"
+    assert "Pages 1-3 of 5" in result
+
+
+@patch("fitz.open")
+def test_read_pdf_fractional_float_start_page_doc_closed(mock_open):
+    """doc.close() must be called before returning a fractional-float error. (#803)"""
+    mock_doc = _mock_pdf_doc()
+    mock_open.return_value = mock_doc
+    fn("dummy.pdf", start_page=1.5)
+    mock_doc.close.assert_called_once()
+
+
+@patch("fitz.open")
+def test_read_pdf_fractional_float_end_page_doc_closed(mock_open):
+    """doc.close() must be called before returning a fractional end_page float error. (#803)"""
+    mock_doc = _mock_pdf_doc()
+    mock_open.return_value = mock_doc
+    fn("dummy.pdf", start_page=1, end_page=2.9)
+    mock_doc.close.assert_called_once()
