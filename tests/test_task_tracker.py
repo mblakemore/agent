@@ -81,8 +81,10 @@ def test_update_status():
 def test_update_note():
     fn(action="add", description="Task to update")
     res = fn(action="update", task_id=1, description="New note")
-    assert "Updated task #1" in res
-    
+    # Return message must confirm both the (unchanged) status and the saved note
+    assert "Updated task #1: status=open" in res
+    assert "note='New note'" in res
+
     with open(_TASKS_FILE, 'r') as f:
         tasks = json.load(f)
     assert tasks[0]["note"] == "New note"
@@ -91,11 +93,19 @@ def test_update_status_and_note():
     fn(action="add", description="Task to update")
     res = fn(action="update", task_id=1, status="blocked", description="Waiting on API")
     assert "Updated task #1: status=blocked" in res
-    
+    assert "note='Waiting on API'" in res
+
     with open(_TASKS_FILE, 'r') as f:
         tasks = json.load(f)
     assert tasks[0]["status"] == "blocked"
     assert tasks[0]["note"] == "Waiting on API"
+
+def test_update_status_only_no_note_in_message():
+    """Status-only update must NOT include a note= component in the message."""
+    fn(action="add", description="Task to update")
+    res = fn(action="update", task_id=1, status="in_progress")
+    assert "Updated task #1: status=in_progress" in res
+    assert "note=" not in res
 
 def test_update_auto_resolve_single():
     fn(action="add", description="The only open task")
