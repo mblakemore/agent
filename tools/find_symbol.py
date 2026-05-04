@@ -208,6 +208,18 @@ def find_symbol(
         return [{"error": "path must be a non-empty string"}]
     search_path = Path(path.strip())
     try:
+        cwd_resolved = Path.cwd().resolve()
+        cwd_prefix = str(cwd_resolved) + os.sep
+        resolved_path = search_path.resolve()
+        if resolved_path != cwd_resolved and not str(resolved_path).startswith(cwd_prefix):
+            return [{"error": (
+                f"path '{path}' resolves to '{resolved_path}' which is outside "
+                f"the working directory '{cwd_resolved}'. "
+                f"find_symbol only searches within the working directory."
+            )}]
+    except (OSError, ValueError):
+        pass  # Let the existing existence check handle OS errors
+    try:
         path_exists = search_path.exists()
         path_is_file = search_path.is_file() if path_exists else False
     except OSError as exc:
