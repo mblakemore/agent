@@ -468,3 +468,76 @@ class TestSearchFilesPathWhitespace(unittest.TestCase):
             result = search_files.fn("hello", path=" " + str(target) + " ", context=0)
             self.assertNotIn("does not exist", result)
             self.assertIn("hello", result)
+
+
+class TestSearchFilesBinarySkip(unittest.TestCase):
+    """search_files must skip binary files rather than returning garbage content — issue #632."""
+
+    def _make_binary(self, path: Path) -> None:
+        """Write a file that contains null bytes (binary marker)."""
+        path.write_bytes(b"ELF\x00\x01\x02\x03hello\x00world\x00test\x00data")
+
+    def test_single_binary_file_returns_skipped_message(self):
+        """Directly passing a binary file as path= must return a clear skip message."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "binary.bin")
+            self._make_binary(p)
+            result = search_files.fn(pattern="test", path=str(p))
+            self.assertIn("binary file", result)
+            self.assertNotIn("\x00", result)
+            # Must not contain raw binary garbage
+            self.assertFalse(
+                any(ord(c) < 32 and c not in "\n\r\t" for c in result),
+                f"Result contains control/binary characters: {repr(result[:200])}",
+            )
+
+    def test_single_binary_file_no_matches_message(self):
+        """Skip message should not look like a successful empty search."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "binary.bin")
+            self._make_binary(p)
+            result = search_files.fn(pattern="test", path=str(p))
+            # Should not look like "searched N files, N matched" with 0 results
+            # as if it were a normal text file that happened to have no matches.
+            self.assertNotIn("1 files, 1 matched", result)
+
+    def test_directory_with_binary_skips_binary_finds_text(self):
+        """In a directory, binary files are silently skipped; text matches still appear."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "real.txt").write_text("this is a test\n")
+            self._make_binary(Path(d, "binary.bin"))
+            result = search_files.fn(pattern="test", path=d, context=0)
+            # The text match must be found
+            self.assertIn("real.txt:1: this is a test", result)
+            # No binary garbage in the output
+            self.assertNotIn("\x00", result)
+            self.assertFalse(
+                any(ord(c) < 32 and c not in "\n\r\t" for c in result),
+                f"Result contains binary garbage: {repr(result[:200])}",
+            )
+
+    def test_directory_only_binary_files_no_matches(self):
+        """A directory containing only binary files should return no matches, not garbage."""
+        with tempfile.TemporaryDirectory() as d:
+            self._make_binary(Path(d, "a.bin"))
+            self._make_binary(Path(d, "b.bin"))
+            result = search_files.fn(pattern="test", path=d)
+            self.assertNotIn("\x00", result)
+            self.assertFalse(
+                any(ord(c) < 32 and c not in "\n\r\t" for c in result),
+                f"Result contains binary garbage: {repr(result[:200])}",
+            )
+
+    def test_is_binary_helper_detects_null_bytes(self):
+        """_is_binary must return True for files with null bytes."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "binary.bin")
+            self._make_binary(p)
+            self.assertTrue(search_files._is_binary(p))
+
+    def test_is_binary_helper_returns_false_for_text(self):
+        """_is_binary must return False for normal text files."""
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d, "text.py")
+            p.write_text("def hello(): pass\n")
+            self.assertFalse(search_files._is_binary(p))

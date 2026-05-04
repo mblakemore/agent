@@ -28,6 +28,18 @@ _DEFAULT_EXCLUDE_DIRS = {e.rstrip("/") for e in DEFAULT_EXCLUDES if e.endswith("
 # File-level glob patterns from DEFAULT_EXCLUDES.
 _DEFAULT_EXCLUDE_FILE_GLOBS = [e for e in DEFAULT_EXCLUDES if not e.endswith("/")]
 
+_BINARY_CHUNK = 8192  # bytes to sample when probing for binary content
+
+
+def _is_binary(file_path: Path) -> bool:
+    """Return True if the file appears to be binary (contains a null byte in the first chunk)."""
+    try:
+        with file_path.open("rb") as f:
+            chunk = f.read(_BINARY_CHUNK)
+        return b"\x00" in chunk
+    except Exception:
+        return False
+
 
 def _search_single_file(file_path, base_dir, regex, context, count_only):
     """Search a single file and return formatted results."""
@@ -48,6 +60,9 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
     elif context > _MAX_CONTEXT:
         context = _MAX_CONTEXT
         context_capped = True
+
+    if _is_binary(file_path):
+        return f"[Skipped '{resolved}': binary file]\nNo matches found."
 
     try:
         with file_path.open(encoding='utf-8', errors='ignore') as f:
@@ -229,6 +244,11 @@ def fn(
 
             if truncated:
                 break
+
+            # Skip binary files silently — returning raw binary content would
+            # mislead an agent into thinking it has useful search results.
+            if _is_binary(file_path):
+                continue
 
             rel = str(file_path.relative_to(search_path))
             files_searched += 1
