@@ -14,6 +14,7 @@ def test_read_pdf_open_error():
 def test_read_pdf_empty():
     with patch('fitz.open') as mock_open:
         mock_doc = MagicMock()
+        mock_doc.needs_pass = 0
         mock_doc.__len__.return_value = 0
         mock_open.return_value = mock_doc
         result = fn("dummy.pdf")
@@ -22,6 +23,7 @@ def test_read_pdf_empty():
 def test_read_pdf_start_page_exceeds():
     with patch('fitz.open') as mock_open:
         mock_doc = MagicMock()
+        mock_doc.needs_pass = 0
         mock_doc.__len__.return_value = 5
         mock_open.return_value = mock_doc
         result = fn("dummy.pdf", start_page=10)
@@ -30,6 +32,7 @@ def test_read_pdf_start_page_exceeds():
 def test_read_pdf_happy_path():
     with patch('fitz.open') as mock_open:
         mock_doc = MagicMock()
+        mock_doc.needs_pass = 0
         mock_doc.__len__.return_value = 2
         # mock_doc[0] and mock_doc[1]
         mock_page1 = MagicMock()
@@ -37,9 +40,9 @@ def test_read_pdf_happy_path():
         mock_page2 = MagicMock()
         mock_page2.get_text.return_value = "Page 2 Content"
         mock_doc.__getitem__.side_effect = [mock_page1, mock_page2]
-        
+
         mock_open.return_value = mock_doc
-        
+
         result = fn("dummy.pdf")
         assert "[PDF: dummy.pdf | Pages 1-2 of 2]" in result
         assert "--- Page 1 ---\nPage 1 Content" in result
@@ -48,14 +51,15 @@ def test_read_pdf_happy_path():
 def test_read_pdf_paging_cap():
     with patch('fitz.open') as mock_open:
         mock_doc = MagicMock()
+        mock_doc.needs_pass = 0
         mock_doc.__len__.return_value = 100
         mock_open.return_value = mock_doc
-        
+
         # Mock many pages
         mock_page = MagicMock()
         mock_page.get_text.return_value = "Content"
         mock_doc.__getitem__.return_value = mock_page
-        
+
         result = fn("dummy.pdf", start_page=1)
         # _MAX_PAGES_PER_CALL = 50
         assert "Pages 1-50 of 100" in result
@@ -77,6 +81,7 @@ def test_read_pdf_non_pdf_file():
 def test_read_pdf_custom_range():
     with patch('fitz.open') as mock_open:
         mock_doc = MagicMock()
+        mock_doc.needs_pass = 0
         mock_doc.__len__.return_value = 10
         mock_open.return_value = mock_doc
 
@@ -96,6 +101,7 @@ def test_read_pdf_inverted_range_returns_error():
     with patch('fitz.open') as mock_open:
         mock_doc = MagicMock()
         mock_doc.is_pdf = True
+        mock_doc.needs_pass = 0
         mock_doc.__len__.return_value = 10
         mock_open.return_value = mock_doc
 
@@ -111,6 +117,7 @@ def test_read_pdf_start_page_zero_returns_error():
     with patch('fitz.open') as mock_open:
         mock_doc = MagicMock()
         mock_doc.is_pdf = True
+        mock_doc.needs_pass = 0
         mock_doc.__len__.return_value = 10
         mock_open.return_value = mock_doc
 
@@ -126,6 +133,7 @@ def test_read_pdf_start_page_negative_returns_error():
     with patch('fitz.open') as mock_open:
         mock_doc = MagicMock()
         mock_doc.is_pdf = True
+        mock_doc.needs_pass = 0
         mock_doc.__len__.return_value = 10
         mock_open.return_value = mock_doc
 
@@ -141,6 +149,7 @@ def test_read_pdf_end_page_negative_returns_error():
     with patch('fitz.open') as mock_open:
         mock_doc = MagicMock()
         mock_doc.is_pdf = True
+        mock_doc.needs_pass = 0
         mock_doc.__len__.return_value = 3
         mock_open.return_value = mock_doc
 
@@ -156,6 +165,7 @@ def test_read_pdf_end_page_exceeds_page_count_returns_error():
     with patch('fitz.open') as mock_open:
         mock_doc = MagicMock()
         mock_doc.is_pdf = True
+        mock_doc.needs_pass = 0
         mock_doc.__len__.return_value = 3
         mock_open.return_value = mock_doc
 
@@ -172,6 +182,7 @@ def test_read_pdf_end_page_zero_means_last_page():
     with patch('fitz.open') as mock_open:
         mock_doc = MagicMock()
         mock_doc.is_pdf = True
+        mock_doc.needs_pass = 0
         mock_doc.__len__.return_value = 2
         mock_page = MagicMock()
         mock_page.get_text.return_value = "content"
@@ -188,6 +199,7 @@ def test_read_pdf_end_page_exact_last_page():
     with patch('fitz.open') as mock_open:
         mock_doc = MagicMock()
         mock_doc.is_pdf = True
+        mock_doc.needs_pass = 0
         mock_doc.__len__.return_value = 5
         mock_page = MagicMock()
         mock_page.get_text.return_value = "content"
@@ -205,6 +217,7 @@ def _mock_pdf_doc(total_pages=5):
     """Return a pre-configured MagicMock that looks like a fitz PDF document."""
     doc = MagicMock()
     doc.is_pdf = True
+    doc.needs_pass = 0
     doc.__len__ = MagicMock(return_value=total_pages)
     page = MagicMock()
     page.get_text.return_value = "content"
@@ -492,3 +505,66 @@ def test_read_pdf_open_exception_error_format():
     assert result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}"
     assert "opening PDF" in result, f"Expected 'opening PDF' in message, got: {result!r}"
     assert "disk I/O error" in result
+
+
+# ── Issue #824: encrypted/password-protected PDFs must return Error, not raise ──
+# fitz.open() succeeds on encrypted PDFs but leaves doc.needs_pass=1.
+# Accessing pages then raises ValueError: document closed or encrypted.
+# The fix detects needs_pass before entering the page loop.
+
+
+@patch("fitz.open")
+def test_read_pdf_encrypted_returns_error(mock_open):
+    """read_pdf must return a clean Error for encrypted PDFs, not raise ValueError. (#824)"""
+    mock_doc = MagicMock()
+    mock_doc.is_pdf = True
+    mock_doc.needs_pass = 1
+    mock_open.return_value = mock_doc
+
+    result = fn("secret.pdf")
+    assert isinstance(result, str), "Must return a string, not raise"
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "encrypted" in result.lower() or "password" in result.lower(), (
+        f"Error must mention encryption or password, got: {result!r}"
+    )
+
+
+@patch("fitz.open")
+def test_read_pdf_encrypted_doc_closed(mock_open):
+    """doc.close() must be called before returning the encrypted-PDF error. (#824)"""
+    mock_doc = MagicMock()
+    mock_doc.is_pdf = True
+    mock_doc.needs_pass = 1
+    mock_open.return_value = mock_doc
+
+    fn("secret.pdf")
+    mock_doc.close.assert_called_once()
+
+
+@patch("fitz.open")
+def test_read_pdf_encrypted_with_page_range_returns_error(mock_open):
+    """Encrypted PDFs must return Error even when start_page/end_page are provided. (#824)"""
+    mock_doc = MagicMock()
+    mock_doc.is_pdf = True
+    mock_doc.needs_pass = 1
+    mock_open.return_value = mock_doc
+
+    result = fn("secret.pdf", start_page=1, end_page=1)
+    assert isinstance(result, str), "Must return a string, not raise"
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+
+
+@patch("fitz.open")
+def test_read_pdf_page_extraction_exception_returns_error(mock_open):
+    """Unexpected exception during page extraction must return Error, not propagate. (#824)"""
+    mock_doc = MagicMock()
+    mock_doc.is_pdf = True
+    mock_doc.needs_pass = 0
+    mock_doc.__len__ = MagicMock(return_value=3)
+    mock_doc.__getitem__.side_effect = RuntimeError("internal fitz error")
+    mock_open.return_value = mock_doc
+
+    result = fn("broken.pdf")
+    assert isinstance(result, str), "Must return a string, not raise"
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "reading PDF page" in result or "internal fitz error" in result
