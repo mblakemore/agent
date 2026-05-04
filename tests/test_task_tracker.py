@@ -2317,3 +2317,45 @@ def test_list_status_empty_string_returns_all_tasks():
     res = fn(action="list", status="")
     assert "Task A" in res
     assert "Error" not in res
+
+
+# ── Null bytes in action and status (#878) ────────────────────────────────────
+
+def test_null_byte_in_action_returns_error():
+    """Null byte in action must be rejected with a clear error, not embedded in response (#878)."""
+    res = fn(action="add\x00evil")
+    assert res.startswith("Error:"), f"Expected 'Error:' prefix: {res!r}"
+    assert "null byte" in res.lower(), f"Error must mention null byte: {res!r}"
+    assert "\x00" not in res, f"Error message itself must not contain null byte: {res!r}"
+
+
+def test_null_byte_only_in_action_returns_error():
+    """action=\\x00 alone must also be rejected cleanly (#878)."""
+    res = fn(action="\x00")
+    assert res.startswith("Error:"), f"Expected 'Error:' prefix: {res!r}"
+    assert "null byte" in res.lower(), f"Error must mention null byte: {res!r}"
+    assert "\x00" not in res, f"Error message must not contain null byte: {res!r}"
+
+
+def test_null_byte_in_status_returns_error():
+    """Null byte in status must be rejected with a clear error, not embedded in response (#878)."""
+    fn(action="add", description="task to update")
+    res = fn(action="update", task_id=1, status="in_progress\x00evil")
+    assert res.startswith("Error:"), f"Expected 'Error:' prefix: {res!r}"
+    assert "null byte" in res.lower(), f"Error must mention null byte: {res!r}"
+    assert "\x00" not in res, f"Error message must not contain null byte: {res!r}"
+
+
+def test_non_string_action_returns_error():
+    """Passing an integer as action must return a clean error, not raise AttributeError (#878)."""
+    res = fn(action=42)
+    assert res.startswith("Error:"), f"Expected 'Error:' prefix: {res!r}"
+    assert "action" in res.lower(), f"Error must mention 'action': {res!r}"
+
+
+def test_valid_action_unaffected_by_null_byte_check():
+    """A valid action must still work normally after the null-byte guard is added (#878)."""
+    fn(action="add", description="Guard test task")
+    res = fn(action="list")
+    assert "Guard test task" in res
+    assert "Error" not in res
