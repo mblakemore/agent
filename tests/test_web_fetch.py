@@ -434,3 +434,114 @@ class TestIsPrivateAddress(unittest.TestCase):
     def test_localhost_hostname(self):
         # 'localhost' is explicitly blocked as it always resolves to loopback
         self.assertTrue(self.check("http://localhost/"))
+
+
+# ── Credential scrubbing (#822) ───────────────────────────────────────────────
+
+
+class TestStripCredentials(unittest.TestCase):
+    """Unit tests for _strip_credentials — credentials must be removed from URLs before
+    being written to disk or returned in tool output."""
+
+    def setUp(self):
+        from tools.web_fetch import _strip_credentials
+        self.strip = _strip_credentials
+
+    def test_user_and_password_removed(self):
+        result = self.strip("http://user:password@example.com/")
+        assert "user" not in result, f"Username still present: {result!r}"
+        assert "password" not in result, f"Password still present: {result!r}"
+        assert "example.com" in result, f"Host was lost: {result!r}"
+
+    def test_token_only_removed(self):
+        """A bare token (no colon) in the netloc must also be removed."""
+        result = self.strip("https://token@example.com/page")
+        assert "token" not in result, f"Token still present: {result!r}"
+        assert "example.com" in result
+
+    def test_port_retained(self):
+        """The port number must be kept after stripping credentials."""
+        result = self.strip("https://user:pass@example.com:8443/api")
+        assert ":8443" in result, f"Port was lost: {result!r}"
+        assert "user" not in result
+        assert "pass" not in result
+
+    def test_path_retained(self):
+        """The path component must survive credential stripping."""
+        result = self.strip("http://user:s3cr3t@example.com/some/path?q=1")
+        assert "/some/path" in result, f"Path was lost: {result!r}"
+
+    def test_no_credentials_unchanged(self):
+        """A URL with no credentials must be returned unchanged."""
+        url = "https://example.com/page"
+        result = self.strip(url)
+        assert result == url, f"URL without credentials was modified: {result!r}"
+
+    def test_scheme_retained(self):
+        """The scheme (http/https) must be preserved."""
+        result = self.strip("https://u:p@example.com/")
+        assert result.startswith("https://"), f"Scheme changed: {result!r}"
+
+
+def _make_credentialed_mock_response(final_url, content=b"secret content"):
+    mock_resp = MagicMock()
+    mock_resp.url = final_url
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.headers = {"content-type": "text/plain"}
+    mock_resp.encoding = "utf-8"
+    mock_resp.iter_content = MagicMock(return_value=iter([content]))
+    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+class TestWebFetchCredentialScrubbing(unittest.TestCase):
+    """Integration tests: credentials embedded in the URL must NOT appear in the
+    tool result string or in the saved .md file (#XXX)."""
+
+    def test_credentials_not_in_tool_result(self):
+        """The tool result string must not contain the password."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_credentialed_mock_response("http://example.com/")
+            result = fn("http://user:s3cr3t@example.com/")
+        assert "s3cr3t" not in result, (
+            f"Password appeared in tool result: {result!r}"
+        )
+        assert "user:s3cr3t" not in result
+
+    def test_username_not_in_tool_result(self):
+        """The username must also be absent from the tool result."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_credentialed_mock_response("http://example.com/")
+            result = fn("http://myuser:mypass@example.com/")
+        assert "myuser" not in result, (
+            f"Username appeared in tool result: {result!r}"
+        )
+
+    def test_credentials_not_in_saved_file(self, tmp_path=None):
+        """The saved .md file header must not contain the embedded credentials."""
+        import tempfile, os
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_credentialed_mock_response("https://example.com/page")
+            with patch("tools.web_fetch.os.getcwd", return_value=tempfile.mkdtemp()):
+                result = fn("https://admin:hunter2@example.com/page")
+        # Extract save path from the result
+        import re
+        m = re.search(r'saved to (\S+\.md)', result)
+        assert m is not None, f"Could not find save path in result: {result!r}"
+        save_path = m.group(1)
+        if os.path.exists(save_path):
+            saved = open(save_path, encoding="utf-8").read()
+            assert "hunter2" not in saved, (
+                f"Password appeared in saved file header: {saved[:200]!r}"
+            )
+            assert "admin:hunter2" not in saved  # #822
+
+    def test_host_present_in_tool_result(self):
+        """The hostname must still appear in the tool result after credential scrubbing."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_credentialed_mock_response("https://example.com/")
+            result = fn("https://user:pass@example.com/")
+        assert "example.com" in result, (
+            f"Hostname was lost from tool result: {result!r}"
+        )
