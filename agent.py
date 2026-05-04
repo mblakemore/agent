@@ -3296,6 +3296,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             raw_args = tool_call["function"]["arguments"]
                             tool_id = tool_call["id"]
                         func_args = json.loads(raw_args)
+                        # Coerce non-dict JSON values (null, [], 42, "str") to {}
+                        # so that **-unpack never raises TypeError (#859).
+                        # Consistent with _get_tc_args (line ~3218).
+                        if not isinstance(func_args, dict):
+                            func_args = {}
                         # Sanitize garbled Gemma 4 args that parsed as valid JSON
                         # e.g. {"action": "write**,content:"} — valid JSON but bogus values
                         func_args = _sanitize_tool_args(func_name, func_args, log)
