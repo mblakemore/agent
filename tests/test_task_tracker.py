@@ -247,3 +247,46 @@ def test_update_done_redirect_still_works():
     import json as _json
     tasks = _json.loads(Path(_TASKS_FILE).read_text())
     assert tasks[0]["status"] == "done"
+
+
+# ── Issue #642: update with no status/description must not silently no-op ──
+
+def test_update_no_status_no_description_returns_error():
+    """update with task_id but neither status nor description must return an Error."""
+    fn(action="add", description="Task for no-op test")
+    res = fn(action="update", task_id=1)
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    assert "status" in res or "description" in res
+    # Task must not be modified
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["status"] == "open"
+    assert "note" not in tasks[0]
+
+
+def test_update_no_status_no_description_auto_resolved_returns_error():
+    """update with auto-resolved task_id but no status/description must also error."""
+    fn(action="add", description="Single open task")
+    # auto-resolve will find task_id=1, but no status/description → must error
+    res = fn(action="update")
+    # Either error about missing task_id (multiple tasks not auto-resolvable) or
+    # about missing status/description — either way must not say 'Updated'.
+    assert "Updated" not in res
+
+
+def test_update_with_only_description_still_works():
+    """update with just a description note (no status) must succeed."""
+    fn(action="add", description="Task to annotate")
+    res = fn(action="update", task_id=1, description="Added a note")
+    assert "Updated task #1" in res
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["note"] == "Added a note"
+    assert tasks[0]["status"] == "open"  # status unchanged
+
+
+def test_update_with_only_status_still_works():
+    """update with just a status (no description) must succeed."""
+    fn(action="add", description="Task to progress")
+    res = fn(action="update", task_id=1, status="in_progress")
+    assert "Updated task #1: status=in_progress" in res
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["status"] == "in_progress"
