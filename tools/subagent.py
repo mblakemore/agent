@@ -1,3 +1,4 @@
+import math
 import subprocess
 import tempfile
 import os
@@ -26,8 +27,8 @@ def subagent(
         return "Error: prompt must not contain null bytes"
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
         return f"Error: timeout must be a number, got {type(timeout).__name__!r}"
-    if timeout <= 0:
-        return "Error: timeout must be a positive number"
+    if not math.isfinite(timeout) or timeout <= 0:
+        return "Error: timeout must be a finite positive number"
 
     # Determine the absolute path to agent.py
     # tools/subagent.py -> ../agent.py

@@ -1,5 +1,6 @@
 """Sleep for a specified duration."""
 
+import math
 import time
 
 _MAX_SLEEP = 3600  # 1 hour ceiling — prevent indefinite process hang
@@ -15,6 +16,8 @@ def fn(seconds: float) -> str:
         return f"Error: 'seconds' must be a number, got {type(seconds).__name__}"
     if not isinstance(seconds, (int, float)):
         return f"Error: 'seconds' must be a number, got {type(seconds).__name__}"
+    if not math.isfinite(seconds):
+        return f"Error: 'seconds' must be a finite number, got {seconds!r}"
     if seconds < 0:
         return "Error: seconds must be non-negative"
     if seconds > _MAX_SLEEP:

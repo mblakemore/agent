@@ -215,5 +215,37 @@ class TestSubagent(unittest.TestCase):
         call_kwargs = mock_run.call_args[1]
         self.assertEqual(call_kwargs["timeout"], 30)
 
+class TestSubagentNaNInfTimeout(unittest.TestCase):
+    """NaN and Inf timeout values must be caught before subprocess.run (#891).
+
+    Before the fix, both values passed the 'timeout <= 0' guard (NaN and Inf
+    comparisons return False) and reached subprocess.run() which raised
+    ValueError/OverflowError, producing obscure 'cannot convert float NaN to
+    integer' messages caught by the outer except-handler.
+    """
+
+    def test_nan_timeout_returns_clear_error(self):
+        """timeout=float('nan') must return a descriptive error, not a confusing
+        'cannot convert float NaN to integer' message (#891)."""
+        import math
+        result = subagent("echo hi", timeout=math.nan)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("finite", result, f"Error should mention 'finite': {result!r}")
+
+    def test_inf_timeout_returns_clear_error(self):
+        """timeout=float('inf') must return a descriptive error (#891)."""
+        import math
+        result = subagent("echo hi", timeout=math.inf)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("finite", result, f"Error should mention 'finite': {result!r}")
+
+    def test_negative_timeout_still_rejected(self):
+        """A negative timeout must continue to be rejected normally (#891)."""
+        result = subagent("echo hi", timeout=-1)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertNotIn("nan", result.lower())
+        self.assertNotIn("inf", result.lower())
+
+
 if __name__ == '__main__':
     unittest.main()
