@@ -49,6 +49,12 @@ def fn(prompt: str, depth: str = "brief", context: str = "") -> str:
     """
     if not isinstance(prompt, str) or not prompt.strip():
         return "Error: prompt must be a non-empty string"
+    if "\x00" in prompt:
+        return "Error: prompt must not contain null bytes"
+    if not isinstance(context, str):
+        context = ""
+    if "\x00" in context:
+        return "Error: context must not contain null bytes"
     if depth not in DEPTH_MAX_TOKENS:
         valid = ", ".join(DEPTH_MAX_TOKENS)
         return f"Error: invalid depth {depth!r}. Use one of: {valid}."
