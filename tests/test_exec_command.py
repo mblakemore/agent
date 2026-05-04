@@ -660,6 +660,42 @@ def test_exec_command_env_float_value_returns_clear_error():
     assert "'float'" in result
 
 
+# ── env key validation tests (#756) ──────────────────────────────────────────
+
+def test_exec_command_env_empty_key_returns_clear_error():
+    """env dict with an empty-string key must return a descriptive error, not silently succeed (#756)."""
+    result = fn(command="echo test", env={"": "value"})
+    assert result.startswith("Error: env keys must be valid environment variable names"), result
+
+
+def test_exec_command_env_key_with_space_returns_clear_error():
+    """env dict with a key containing spaces must return a descriptive error (#756)."""
+    result = fn(command="echo test", env={"KEY WITH SPACE": "value"})
+    assert result.startswith("Error: env keys must be valid environment variable names"), result
+    assert "KEY WITH SPACE" in result
+
+
+def test_exec_command_env_key_starting_with_digit_returns_clear_error():
+    """env dict with a key starting with a digit must return a descriptive error (#756)."""
+    result = fn(command="echo test", env={"1INVALID": "value"})
+    assert result.startswith("Error: env keys must be valid environment variable names"), result
+    assert "1INVALID" in result
+
+
+def test_exec_command_env_key_with_equals_returns_clear_error():
+    """env dict with a key containing '=' must return a descriptive error, not an OS-level exception (#756)."""
+    result = fn(command="echo test", env={"KEY=BAD": "value"})
+    assert result.startswith("Error: env keys must be valid environment variable names"), result
+    assert "KEY=BAD" in result
+
+
+def test_exec_command_env_valid_underscore_key_works():
+    """env dict with an underscore-prefixed key (e.g. _PRIV) must work correctly (#756)."""
+    result = fn(command="echo $_PRIV_VAR", env={"_PRIV_VAR": "works"})
+    assert "exit=0" in result
+    assert "works" in result
+
+
 def test_exec_command_env_does_not_unset_pythonpath(tmp_path):
     """Auto-injected PYTHONPATH must still be present when env is provided (#730)."""
     import os
