@@ -392,5 +392,32 @@ class TestFindSymbolRegistered(unittest.TestCase):
         self.assertIn("mode", params)
 
 
+class TestFindSymbolPathWhitespace(unittest.TestCase):
+    """A path with leading/trailing whitespace must be treated the same as a
+    trimmed path — the tool should strip it rather than silently returning []."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_file_path_with_spaces_finds_symbol(self):
+        src = Path(self.tmp) / "mod.py"
+        src.write_text("def greet(name):\n    pass\n", encoding="utf-8")
+        results = find_symbol("greet", path=" " + str(src) + " ", mode="definition")
+        self.assertTrue(len(results) >= 1, f"Expected >=1 result, got: {results}")
+        self.assertNotIn("error", results[0])
+        self.assertEqual(results[0]["scope"], "greet")
+
+    def test_dir_path_with_spaces_finds_symbol(self):
+        src = Path(self.tmp) / "mod.py"
+        src.write_text("def hello(): pass\n", encoding="utf-8")
+        results = find_symbol("hello", path="  " + self.tmp + "  ", mode="definition")
+        self.assertTrue(len(results) >= 1, f"Expected >=1 result, got: {results}")
+        self.assertNotIn("error", results[0])
+
+
 if __name__ == "__main__":
     unittest.main()
