@@ -231,6 +231,27 @@ def fn(
                 "desired subdirectory to restrict the search."
             )
 
+    # Validate boolean parameters: accept bool and integer 0/1; reject strings
+    # and other types that would silently coerce (#887).  A non-empty string like
+    # "false" is truthy — ignore_case="false" would make the search case-insensitive
+    # when the caller intended case-sensitive.
+    for _bname, _bval in (
+        ("ignore_case", ignore_case),
+        ("count_only", count_only),
+        ("include_temp", include_temp),
+        ("include_hidden", include_hidden),
+    ):
+        if isinstance(_bval, bool):
+            pass
+        elif isinstance(_bval, int) and _bval in (0, 1):
+            pass
+        else:
+            _hint = " Pass true or false without quotes." if isinstance(_bval, str) else ""
+            return (
+                f"Error: '{_bname}' must be a boolean, "
+                f"got {type(_bval).__name__!r}: {_bval!r}.{_hint}"
+            )
+
     try:
         flags = re.IGNORECASE if ignore_case else 0
         regex = re.compile(pattern, flags)
