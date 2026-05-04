@@ -175,6 +175,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
                     f"(or action='done' to mark complete).")
         for t in tasks:
             if t["id"] == task_id:
+                if t["status"] in ("done", "completed"):
+                    return f"Error: task #{task_id} is already done"
                 if status:
                     t["status"] = status
                 if description:
