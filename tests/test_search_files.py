@@ -72,12 +72,36 @@ class TestSearchFilesContextBasic(unittest.TestCase):
             self.assertNotIn(f"{abs_d}/a.txt:4-", body)
             self.assertEqual(len(lines), 3)
 
-    def test_negative_context_clamped_to_zero(self):
+    def test_negative_context_returns_error(self):
+        # Negative context is rejected with a clear error (not silently clamped to 0).
         with tempfile.TemporaryDirectory() as d:
-            abs_d = str(Path(d).resolve())
             Path(d, "a.txt").write_text("l1\nHIT\nl3\n")
-            body = _body(search_files.fn("HIT", path=d, context=-5))
-            self.assertEqual(body, f"{abs_d}/a.txt:2: HIT")
+            result = search_files.fn("HIT", path=d, context=-5)
+            self.assertIn("Error", result)
+            self.assertIn("context must be >= 0", result)
+
+    def test_negative_context_minus_one_returns_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("l1\nHIT\nl3\n")
+            result = search_files.fn("HIT", path=d, context=-1)
+            self.assertIn("Error", result)
+            self.assertIn("context must be >= 0", result)
+
+    def test_context_bool_true_returns_error(self):
+        # Booleans must be rejected — True == 1 in Python but is not a valid int param.
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("l1\nHIT\nl3\n")
+            result = search_files.fn("HIT", path=d, context=True)
+            self.assertIn("Error", result)
+            self.assertIn("bool", result)
+
+    def test_context_bool_false_returns_error(self):
+        # Booleans must be rejected — False == 0 in Python but is not a valid int param.
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("l1\nHIT\nl3\n")
+            result = search_files.fn("HIT", path=d, context=False)
+            self.assertIn("Error", result)
+            self.assertIn("bool", result)
 
     def test_absurd_context_clamped_to_max(self):
         lines = [f"line{i}" for i in range(1, 101)]
@@ -787,14 +811,18 @@ class TestSearchFilesContextTypeCoercion(unittest.TestCase):
             self.assertTrue(result.startswith("Error: context must be an integer"))
             self.assertIn("'str'", result)
 
-    def test_bool_context_coerced_to_int(self):
-        """context=True (bool) is coerced to int(True)==1 rather than crashing (#680)."""
+    def test_bool_context_returns_error(self):
+        """context=True/False (bool) must be rejected with a clear error (#769).
+        Previously bools were silently coerced to int; now they are rejected so
+        callers get a helpful message instead of surprising behaviour."""
         with tempfile.TemporaryDirectory() as d:
             Path(d, "a.py").write_text("x = 1\n")
-            # True coerces to 1 — should work the same as context=1
-            result_bool = search_files.fn("x", path=d, context=True)
-            result_int = search_files.fn("x", path=d, context=1)
-            self.assertEqual(result_bool, result_int)
+            result_true = search_files.fn("x", path=d, context=True)
+            self.assertIn("Error", result_true)
+            self.assertIn("bool", result_true)
+            result_false = search_files.fn("x", path=d, context=False)
+            self.assertIn("Error", result_false)
+            self.assertIn("bool", result_false)
 
 
 class TestSearchFilesAbsolutePaths(unittest.TestCase):

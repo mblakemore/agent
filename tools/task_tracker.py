@@ -114,6 +114,14 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
     # Float task_ids with a fractional part (e.g. 1.5, 6.9) must be rejected
     # rather than silently truncated — int(1.5) == 1, which would operate on
     # the wrong task.  Whole-number floats (e.g. 2.0) are safe to coerce.
+    # Booleans are a subclass of int in Python; True==1 and False==0, so
+    # task_id=True would silently operate on task #1 and task_id=False would
+    # be treated as 0 (no task specified) — both are wrong.  Reject explicitly.
+    if isinstance(task_id, bool):
+        return (
+            f"Error: task_id must be a plain integer, got bool ({task_id!r}). "
+            f"Pass an integer task ID (e.g. task_id=1)."
+        )
     if not isinstance(task_id, int):
         try:
             coerced = int(task_id)

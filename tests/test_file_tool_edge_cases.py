@@ -510,5 +510,69 @@ class TestFilePathTypeValidation(unittest.TestCase):
                 self.assertIn("int", result)
 
 
+class TestFileLineBoolRejection(unittest.TestCase):
+    """start_line and end_line must reject bool values — bool is a subclass of int
+    in Python, so True==1 and False==0 would silently pass an isinstance(x, int)
+    check and produce nonsensical results (#769)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._target = str(Path(self._tmpdir.name) / "lines.txt")
+        Path(self._target).write_text("line1\nline2\nline3\nline4\nline5\n")
+        # Prime session so reads are allowed
+        file_tool.fn(action="read", path=self._target)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_read_start_line_true_returns_error(self):
+        result = file_tool.fn(action="read", path=self._target, start_line=True)
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("bool", result)
+        self.assertIn("start_line", result)
+
+    def test_read_start_line_false_returns_error(self):
+        result = file_tool.fn(action="read", path=self._target, start_line=False)
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("bool", result)
+        self.assertIn("start_line", result)
+
+    def test_read_end_line_true_returns_error(self):
+        result = file_tool.fn(action="read", path=self._target, start_line=1, end_line=True)
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("bool", result)
+        self.assertIn("end_line", result)
+
+    def test_read_end_line_false_returns_error(self):
+        result = file_tool.fn(action="read", path=self._target, start_line=1, end_line=False)
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("bool", result)
+        self.assertIn("end_line", result)
+
+    def test_read_normal_int_start_end_still_works(self):
+        """Plain integer line numbers must not be broken by the bool guard."""
+        result = file_tool.fn(action="read", path=self._target, start_line=2, end_line=3)
+        self.assertIn("line2", result)
+        self.assertIn("line3", result)
+        self.assertNotIn("line1", result)
+        self.assertNotIn("line4", result)
+
+    def test_write_start_line_bool_returns_error(self):
+        result = file_tool.fn(action="write", path=self._target, content="x\n", start_line=True, end_line=1)
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("bool", result)
+
+    def test_delete_start_line_bool_returns_error(self):
+        result = file_tool.fn(action="delete", path=self._target, start_line=True, end_line=1)
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("bool", result)
+
+
 if __name__ == "__main__":
     unittest.main()

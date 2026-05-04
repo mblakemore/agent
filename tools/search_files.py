@@ -211,11 +211,17 @@ def fn(
 
     # Validate context type before any comparison — must come before the single-file branch
     # so both code paths receive a properly-typed integer.
-    if not isinstance(context, int) or isinstance(context, bool):
+    # Booleans are a subclass of int in Python; reject them explicitly so that
+    # context=True (silently 1) or context=False (silently 0) don't sneak through.
+    if isinstance(context, bool):
+        return f"Error: context must be an integer, got bool. Pass a plain integer (e.g. context=3)."
+    if not isinstance(context, int):
         try:
             context = int(context)
         except (TypeError, ValueError):
             return f"Error: context must be an integer, got {type(context).__name__!r}"
+    if context < 0:
+        return f"Error: context must be >= 0, got {context}"
 
     # If path points to a single file, search just that file.
     if search_path.is_file():
