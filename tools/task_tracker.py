@@ -190,6 +190,24 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
         except (TypeError, ValueError):
             return f"Error: task_id must be an integer, got {type(task_id).__name__!r}: {task_id!r}"
 
+    # Validate status type — must be a string (or the default "").
+    # Non-string values (e.g. an integer passed by a model) would cause
+    # AttributeError at `status.strip()` in the list action (#853).
+    # Booleans are a subclass of str in no language but a common mistake —
+    # reject them explicitly with a clear message.  None is treated as "".
+    if isinstance(status, bool):
+        return (
+            f"Error: status must be a string, got bool ({status!r}). "
+            f"Pass a status string such as 'open', 'in_progress', 'blocked', 'deferred'."
+        )
+    if status is None:
+        status = ""
+    if not isinstance(status, str):
+        return (
+            f"Error: status must be a string, got {type(status).__name__} ({status!r}). "
+            f"Pass a status string such as 'open', 'in_progress', 'blocked', 'deferred'."
+        )
+
     # Validate limit
     if isinstance(limit, bool):
         return (
