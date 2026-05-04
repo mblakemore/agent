@@ -348,6 +348,28 @@ def test_exec_command_neg_inf_timeout_rejected():
     assert result == "Error: timeout must be a positive number"
 
 
+# ── wrong-type timeout tests (#680) ───────────────────────────────────────────
+
+def test_exec_command_string_timeout_returns_error():
+    """A string timeout must return a clean Error string, not raise TypeError (#680)."""
+    result = fn(command="echo hello", timeout='5')
+    assert result.startswith("Error: timeout must be a number")
+    assert "'str'" in result
+
+
+def test_exec_command_bool_timeout_returns_error():
+    """bool is a subclass of int but is not a valid timeout (#680)."""
+    result = fn(command="echo hello", timeout=True)
+    assert result.startswith("Error: timeout must be a number")
+    assert "'bool'" in result
+
+
+def test_exec_command_list_timeout_returns_error():
+    """A list timeout must return a clean Error string, not raise TypeError (#680)."""
+    result = fn(command="echo hello", timeout=[5])
+    assert result.startswith("Error: timeout must be a number")
+
+
 def test_exec_command_nan_timeout_does_not_run_command():
     """With a nan timeout the command must NOT run at all — error returned immediately."""
     result = fn(command="echo ran", timeout=float('nan'))
