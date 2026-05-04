@@ -1084,7 +1084,6 @@ def _sanitize_tool_args(func_name, args, log):
             fixed[key] = val
 
     # Fix action if it was garbled
-    # Fix action if it was garbled
     if "action" in fixed and fixed["action"] not in _FILE_ACTIONS:
         import difflib
         action_lower = str(fixed["action"]).lower()
@@ -3411,7 +3410,6 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         "content": result_str,
                     })
 
-                    # Track file edits (file tool with action=write/create)
                     # Track file edits (file tool with action=write/create)
                     if func_name == "file" and isinstance(func_args, dict) and func_args.get("action") in ("write", "create"):
                         _has_edited, _has_reviewer_persisted = _handle_cicd_file_edit(
