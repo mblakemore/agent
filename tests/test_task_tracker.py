@@ -1406,3 +1406,36 @@ def test_task_id_int_still_works_after_bool_check():
     fn(action="add", description="task for int id test")
     result = fn(action="done", task_id=1)
     assert "Completed task #1" in result, f"Expected success, got: {result!r}"
+
+
+# ── edge case: empty/whitespace description, unknown action (#770) ─────────────
+
+def test_add_empty_description_returns_error():
+    """add with an empty string description must return a clear error, not add a blank task."""
+    result = fn(action="add", description="")
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "description required" in result.lower() or "description" in result
+
+
+def test_add_whitespace_only_description_returns_error():
+    """add with a whitespace-only description (stripped to empty) must return a clear error."""
+    result = fn(action="add", description="   ")
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "description" in result.lower()
+
+
+def test_unknown_action_returns_clear_error():
+    """An unrecognised action (e.g. 'hint') must return a clear error listing valid actions."""
+    result = fn(action="hint", task_id=0)
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "unknown action" in result.lower()
+    # Must list the valid action names so the caller can self-correct
+    for valid in ("add", "done", "update", "drop", "list"):
+        assert valid in result, f"Valid action '{valid}' missing from error message: {result!r}"
+
+
+def test_unknown_action_with_no_tasks_returns_error():
+    """Unknown action must return an error even when no tasks exist."""
+    result = fn(action="bogus")
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "unknown action" in result.lower()
