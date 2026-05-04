@@ -1285,7 +1285,8 @@ def _expand_file_refs(text):
             f"Do not start with a directory listing for orientation. The task prompt specifies the repo path. "
             f"Begin with the first tool call that directly advances the task — read a specific file, "
             f"search for a pattern, or look up a symbol. "
-            f"Use `file list` only when you specifically need to enumerate a directory's contents as part of the task.]\n\n"
+            f"Use `file list` only when you specifically need to enumerate a directory's contents as part of the task. "
+            f"**Search before reading large files.** When you need to find where something is defined or called, use `search_files` first to locate the right file and line — then read only from that line using `start_line=`. Never read a whole file >300 lines hoping to find something; search first.]\n\n"
         )
     else:
         preamble = ""

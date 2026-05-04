@@ -326,6 +326,7 @@ definition = {
     "function": {
         "name": "search_files",
         "description": (
+            "Use this as your first step when you need to find where a symbol, function, variable, or pattern appears in the codebase — before reading any file. "
             "Search file contents for a regex pattern (like grep). "
             "Searches recursively through through a directory and returns each hit "
             "with surrounding context lines by default, so you can tell a "
