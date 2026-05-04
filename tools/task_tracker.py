@@ -62,14 +62,21 @@ def _load_tasks():
                 str(p.resolve()),
                 f"expected a JSON array at top level, got {type(data).__name__!r}",
             )
-        # Each element must be a dict.  Non-dict elements (strings, ints, etc.)
-        # would cause AttributeError / TypeError when the code does t["status"].
+        # Each element must be a dict with the required 'id' and 'status' fields.
+        # A missing field causes a KeyError crash on every action since these
+        # keys are accessed directly (not via .get) throughout fn().
         for i, item in enumerate(data):
             if not isinstance(item, dict):
                 return _Corrupted(
                     str(p.resolve()),
                     f"element {i} is not an object (got {type(item).__name__!r})",
                 )
+            for field in ("id", "status"):
+                if field not in item:
+                    return _Corrupted(
+                        str(p.resolve()),
+                        f"element {i} is missing required field {field!r}",
+                    )
         return data
     except json.JSONDecodeError as exc:
         return _Corrupted(str(p.resolve()), str(exc))
