@@ -118,7 +118,7 @@ def _next_id(tasks):
     return max((t.get("id", 0) for t in tasks), default=0) + 1
 
 
-def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -> str:
+def fn(action: str, description: str = "", task_id: int = 0, status: str = "", limit: int = 0) -> str:
     """Manage persistent tasks.
 
     Args:
@@ -126,6 +126,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
         description: Task description (for add) or note (for update). Optional — omit for list/done/drop.
         task_id: Task ID (for done, update, drop).
         status: New status string (for update). Common: "in_progress", "blocked", "deferred".
+        limit: For "list": maximum number of tasks to return (0 = no limit).
     """
     # Ensure description is always a string even if the model omits the field
     # or passes a non-string (e.g. integer) — coerce to str to prevent AttributeError
@@ -170,6 +171,20 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
             task_id = coerced
         except (TypeError, ValueError):
             return f"Error: task_id must be an integer, got {type(task_id).__name__!r}: {task_id!r}"
+
+    # Validate limit
+    if isinstance(limit, bool):
+        return (
+            f"Error: limit must be a plain integer, got bool ({limit!r}). "
+            f"Pass an integer (e.g. limit=10) or omit for no limit."
+        )
+    if not isinstance(limit, int):
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            return f"Error: limit must be an integer, got {type(limit).__name__!r}: {limit!r}"
+    if limit < 0:
+        return f"Error: limit must be >= 0 (got {limit}). Pass 0 for no limit."
 
     tasks = _load_tasks()
     if isinstance(tasks, _Corrupted):
@@ -220,6 +235,14 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
                     )
 
     if action == "add":
+        # task_id is not a valid parameter for 'add' — IDs are assigned automatically.
+        # Return an error rather than silently ignoring it.
+        if task_id > 0:
+            return (
+                f"Error: task_id={task_id} is not valid for 'add'. "
+                f"Task IDs are assigned automatically. "
+                f"To update an existing task, use action='update' with task_id={task_id}."
+            )
         if not description:
             if status and task_id > 0:
                 return (f"Error: 'add' requires description. To change status of an "
@@ -348,13 +371,17 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
         else:
             filtered = tasks
         _DONE_STATUSES = {"done", "completed"}
+        # Apply limit to the filtered view (0 means no limit)
+        display = filtered[:limit] if limit > 0 else filtered
         lines = []
-        for t in filtered:
+        for t in display:
             marker = "x" if t["status"] in _DONE_STATUSES else " "
             line = f"[{marker}] #{t['id']} ({t['status']}): {t.get('description', '')}"
             if t.get("note"):
                 line += f" — {t['note']}"
             lines.append(line)
+        if limit > 0 and len(filtered) > limit:
+            lines.append(f"(showing {limit} of {len(filtered)} tasks)")
         # Summary counts always reflect the full task list, not just the filtered view.
         # Both 'done' and 'completed' are terminal statuses (#738).
         # Count each non-done status separately so the summary is accurate — lumping
@@ -405,6 +432,11 @@ definition = {
                 "status": {
                     "type": "string",
                     "description": "New status (for update). Common: 'in_progress', 'blocked', 'deferred'.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "For 'list': maximum number of tasks to return. 0 (default) means no limit.",
+                    "default": 0,
                 },
             },
             "required": ["action"],

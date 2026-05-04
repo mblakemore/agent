@@ -1182,3 +1182,70 @@ class TestCountOnlyProbeRegression(unittest.TestCase):
         # No match lines
         self.assertNotIn("def alpha", result)
         self.assertNotIn("def gamma", result)
+
+
+class TestSearchFilesMultiGlob(unittest.TestCase):
+    """Regression tests for comma-separated and list glob patterns (#fix-misc-edges)."""
+
+    def test_comma_separated_glob_matches_both_extensions(self):
+        """glob='*.py,*.txt' must match both .py and .txt files."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("hello world\n")
+            Path(d, "b.txt").write_text("hello world\n")
+            Path(d, "c.md").write_text("hello world\n")
+            result = search_files.fn("hello", path=d, glob="*.py,*.txt", context=0)
+            self.assertIn("a.py", result)
+            self.assertIn("b.txt", result)
+            self.assertNotIn("c.md", result)
+
+    def test_comma_separated_glob_with_spaces_matches(self):
+        """glob='*.py, *.txt' (with space) must match both extensions after stripping."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("hello world\n")
+            Path(d, "b.txt").write_text("hello world\n")
+            result = search_files.fn("hello", path=d, glob="*.py, *.txt", context=0)
+            self.assertIn("a.py", result)
+            self.assertIn("b.txt", result)
+
+    def test_glob_as_list_matches_multiple_extensions(self):
+        """glob=['*.py', '*.txt'] must match both .py and .txt files."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("hello world\n")
+            Path(d, "b.txt").write_text("hello world\n")
+            Path(d, "c.md").write_text("hello world\n")
+            result = search_files.fn("hello", path=d, glob=["*.py", "*.txt"], context=0)
+            self.assertIn("a.py", result)
+            self.assertIn("b.txt", result)
+            self.assertNotIn("c.md", result)
+
+    def test_glob_as_single_element_list(self):
+        """glob=['*.py'] (one element) behaves the same as glob='*.py'."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("hit\n")
+            Path(d, "b.txt").write_text("hit\n")
+            result = search_files.fn("hit", path=d, glob=["*.py"], context=0)
+            self.assertIn("a.py", result)
+            self.assertNotIn("b.txt", result)
+
+    def test_glob_list_empty_string_returns_error(self):
+        """glob=[''] must return an error, not silently match nothing."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("hit\n")
+            result = search_files.fn("hit", path=d, glob=[""])
+            self.assertIn("Error", result)
+
+    def test_glob_wrong_type_returns_error(self):
+        """glob=42 (non-string, non-list) must return a clear error."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("hit\n")
+            result = search_files.fn("hit", path=d, glob=42)
+            self.assertIn("Error", result)
+
+    def test_single_glob_string_still_works(self):
+        """Plain single-pattern glob='*.py' continues to work after the refactor."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.py").write_text("hello\n")
+            Path(d, "b.txt").write_text("hello\n")
+            result = search_files.fn("hello", path=d, glob="*.py", context=0)
+            self.assertIn("a.py", result)
+            self.assertNotIn("b.txt", result)
