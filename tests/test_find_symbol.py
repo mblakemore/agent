@@ -132,18 +132,23 @@ class TestFindSymbolAC4(unittest.TestCase):
         self.assertEqual(results, [])
 
     def test_nonexistent_path_returns_error_dict(self):
-        results = find_symbol("anything", path="/nonexistent/path/xyz")
+        # Use a path inside _REPO_ROOT that is guaranteed not to exist,
+        # so the confinement check passes and the existence check fires.
+        nonexistent = os.path.join(_REPO_ROOT, "nonexistent_path_xyz_unique")
+        results = find_symbol("anything", path=nonexistent)
         self.assertEqual(len(results), 1)
         self.assertIn("error", results[0])
         self.assertIn("does not exist", results[0]["error"])
 
     def test_nonexistent_path_error_mentions_path(self):
-        results = find_symbol("anything", path="/nonexistent/path/xyz")
-        self.assertIn("/nonexistent/path/xyz", results[0]["error"])
+        nonexistent = os.path.join(_REPO_ROOT, "nonexistent_path_xyz_unique")
+        results = find_symbol("anything", path=nonexistent)
+        self.assertIn("nonexistent_path_xyz_unique", results[0]["error"])
 
     def test_nonexistent_path_not_confused_with_not_found(self):
         """Error dict for missing path is distinguishable from empty 'not found' result."""
-        results = find_symbol("anything", path="/nonexistent/path/xyz")
+        nonexistent = os.path.join(_REPO_ROOT, "nonexistent_path_xyz_unique")
+        results = find_symbol("anything", path=nonexistent)
         self.assertNotEqual(results, [])
 
 
@@ -233,8 +238,11 @@ class TestFindSymbolModeCaseNormalization(unittest.TestCase):
 
     def test_uppercase_definition_finds_same_results_as_lowercase(self):
         """mode='DEFINITION' must produce the same results as mode='definition'."""
-        lower = find_symbol("_classify_turn_complexity", path=_AGENT_PY, mode="definition")
-        upper = find_symbol("_classify_turn_complexity", path=_AGENT_PY, mode="DEFINITION")
+        # Write a symbol into self.tmp so both lookups search the same path.
+        p = Path(self.tmp) / "target.py"
+        p.write_text("def _classify_turn_complexity(x): pass\n", encoding="utf-8")
+        lower = find_symbol("_classify_turn_complexity", path=self.tmp, mode="definition")
+        upper = find_symbol("_classify_turn_complexity", path=self.tmp, mode="DEFINITION")
         self.assertEqual(lower, upper,
                          "mode='DEFINITION' and mode='definition' must return identical results")
 
@@ -880,6 +888,80 @@ class TestFindSymbolNonPyFile(unittest.TestCase):
                       f"Error should mention .py support; got: {results[0]['error']!r}")
 
 
+class TestFindSymbolPathConfinement(unittest.TestCase):
+    """find_symbol must refuse to scan paths outside the working directory (#856).
+
+    The find_symbol_cwd fixture in conftest.py sets cwd to /droid/repos/agent for
+    all tests in this class, so relative paths like '.' and 'tools/find_symbol.py'
+    resolve correctly while absolute outside paths (/etc, /tmp) are rejected.
+    """
+
+    def test_absolute_etc_returns_confinement_error(self):
+        """path='/etc' must return an error dict mentioning 'outside the working directory'."""
+        result = find_symbol("foo", path="/etc")
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIn("error", result[0])
+        self.assertIn("outside the working directory", result[0]["error"])
+
+    def test_absolute_tmp_returns_confinement_error(self):
+        """path='/tmp' must return a confinement error (cwd is /droid/repos/agent, not /tmp)."""
+        result = find_symbol("foo", path="/tmp")
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIn("error", result[0])
+        self.assertIn("outside the working directory", result[0]["error"])
+
+    def test_relative_traversal_returns_confinement_error(self):
+        """path='../other' must be rejected — it resolves outside cwd."""
+        result = find_symbol("foo", path="../other")
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 1)
+        self.assertIn("error", result[0])
+        self.assertIn("outside the working directory", result[0]["error"])
+
+    def test_dot_path_still_works(self):
+        """path='.' must still return results (happy path — cwd is inside itself)."""
+        result = find_symbol("find_symbol", path=".")
+        self.assertIsInstance(result, list)
+        # Should find at least one definition (in tools/find_symbol.py)
+        self.assertFalse(
+            result and "error" in result[0] and "outside" in result[0]["error"],
+            f"path='.' must not be rejected by confinement check; got: {result!r}",
+        )
+
+    def test_relative_path_inside_cwd_still_works(self):
+        """path='tools/find_symbol.py' must work — it resolves inside cwd."""
+        result = find_symbol("find_symbol", path="tools/find_symbol.py")
+        self.assertIsInstance(result, list)
+        self.assertFalse(
+            result and "error" in result[0] and "outside" in result[0]["error"],
+            f"path='tools/find_symbol.py' must not be rejected; got: {result!r}",
+        )
+        # Should find the definition
+        self.assertTrue(
+            any(r.get("kind") in ("function",) for r in result),
+            f"Expected at least one function match; got: {result!r}",
+        )
+
+    def test_confinement_error_mentions_resolved_path(self):
+        """Error message must include the resolved path for diagnosis."""
+        result = find_symbol("foo", path="/etc")
+        self.assertIn("/etc", result[0]["error"])
+
+    def test_confinement_error_mentions_cwd(self):
+        """Error message must include the working directory for diagnosis."""
+        result = find_symbol("foo", path="/etc")
+        error = result[0]["error"]
+        # The error should name the working directory
+        self.assertIn("/droid/repos/agent", error)
+
+    def test_confinement_not_confused_with_not_found(self):
+        """Confinement error dict must be distinguishable from 'symbol not found' []."""
+        result = find_symbol("foo", path="/tmp")
+        self.assertNotEqual(result, [], "Should return error dict, not [], for outside path")
+
+
 class TestFindSymbolNonStringGuards(unittest.TestCase):
     """Non-string inputs must return an error dict, not raise AttributeError."""
 
@@ -1171,7 +1253,9 @@ class TestFindSymbolLongPath(unittest.TestCase):
 
     def test_normal_nonexistent_path_still_works(self):
         """After adding the OSError guard, normal non-existent paths still return 'does not exist' (#808)."""
-        result = find_symbol(name="anything", path="/this/path/does/not/exist/xyz")
+        # Use a path under /tmp (cwd for this test class) so the confinement check
+        # passes and the existence check fires.
+        result = find_symbol(name="anything", path="/tmp/nonexistent_path_xyz_unique_808")
         self.assertIsInstance(result, list)
         self.assertGreater(len(result), 0)
         self.assertIn("error", result[0])
