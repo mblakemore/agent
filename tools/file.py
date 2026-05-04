@@ -116,6 +116,18 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
             f"Error: 'end_line' must be a plain integer, got float ({end_line!r}). "
             f"Pass a plain integer line number."
         )
+    if not isinstance(start_line, int):
+        _hint = " Pass an integer without quotes." if isinstance(start_line, str) else ""
+        return (
+            f"Error: 'start_line' must be a plain integer, "
+            f"got {type(start_line).__name__!r}: {start_line!r}.{_hint}"
+        )
+    if not isinstance(end_line, int):
+        _hint = " Pass an integer without quotes." if isinstance(end_line, str) else ""
+        return (
+            f"Error: 'end_line' must be a plain integer, "
+            f"got {type(end_line).__name__!r}: {end_line!r}.{_hint}"
+        )
     try:
         resolved = str(_resolve_path(path.strip()))
         if action == "read":
