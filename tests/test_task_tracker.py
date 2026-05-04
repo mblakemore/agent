@@ -151,6 +151,75 @@ def test_drop_no_id():
     res = fn(action="drop")
     assert "Error: task_id required for 'drop'" in res
 
+
+# ── Issue #742: drop with missing task_id must include example and task list hint ──
+
+def test_drop_missing_task_id_includes_example():
+    """drop without task_id must include an example invocation in the error (#742)."""
+    fn(action="add", description="Task A")
+    fn(action="add", description="Task B")
+    res = fn(action="drop")
+    assert "Error: task_id required for 'drop'" in res, f"Expected error, got: {res!r}"
+    assert 'task_tracker(action="drop", task_id=1)' in res, (
+        f"Error must include an example invocation, got: {res!r}"
+    )
+
+
+def test_drop_missing_task_id_includes_open_tasks_list():
+    """drop without task_id must list the open tasks so the agent can pick one (#742)."""
+    fn(action="add", description="Task A")
+    fn(action="add", description="Task B")
+    res = fn(action="drop")
+    assert "Open tasks:" in res, f"Expected 'Open tasks:' hint section, got: {res!r}"
+    assert "#1" in res, f"Task #1 must appear in hint, got: {res!r}"
+    assert "#2" in res, f"Task #2 must appear in hint, got: {res!r}"
+
+
+def test_drop_missing_task_id_excludes_done_tasks_from_hint():
+    """drop hint list must not include done/completed tasks (#742)."""
+    from pathlib import Path
+    import json as _json
+    Path(_TASKS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    tasks = [
+        {"id": 1, "description": "legacy completed", "status": "completed", "created": "2024-01-01T00:00:00"},
+        {"id": 2, "description": "still open A", "status": "open", "created": "2024-01-01T00:00:00"},
+        {"id": 3, "description": "still open B", "status": "open", "created": "2024-01-01T00:00:00"},
+    ]
+    Path(_TASKS_FILE).write_text(_json.dumps(tasks))
+    res = fn(action="drop")
+    assert "task_id required" in res, f"Expected task_id-required error, got: {res!r}"
+    assert "#1" not in res, (
+        f"'Open tasks:' hint must not include completed task #1, got: {res!r}"
+    )
+    assert "#2" in res, f"'Open tasks:' hint must include open task #2, got: {res!r}"
+    assert "#3" in res, f"'Open tasks:' hint must include open task #3, got: {res!r}"
+
+
+def test_drop_missing_task_id_shows_none_when_no_open_tasks():
+    """drop hint list shows '(none)' when only done/completed tasks exist (#742)."""
+    from pathlib import Path
+    import json as _json
+    Path(_TASKS_FILE).parent.mkdir(parents=True, exist_ok=True)
+    tasks = [
+        {"id": 1, "description": "finished task", "status": "done", "created": "2024-01-01T00:00:00"},
+    ]
+    Path(_TASKS_FILE).write_text(_json.dumps(tasks))
+    res = fn(action="drop")
+    assert "(none)" in res, (
+        f"Expected '(none)' when no open tasks remain, got: {res!r}"
+    )
+    assert "#1" not in res, (
+        f"done task #1 must not appear in hint, got: {res!r}"
+    )
+
+
+def test_drop_no_id_no_tasks_shows_none():
+    """drop with no tasks at all should show '(none)' in the hint (#742)."""
+    res = fn(action="drop")
+    assert "Error: task_id required for 'drop'" in res
+    assert "(none)" in res, f"Expected '(none)' for empty task list, got: {res!r}"
+
+
 def test_drop_not_found():
     fn(action="add", description="Task 1")
     res = fn(action="drop", task_id=99)

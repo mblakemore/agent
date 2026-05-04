@@ -226,7 +226,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
 
     elif action == "drop":
         if task_id <= 0:
-            return "Error: task_id required for 'drop'"
+            available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] not in ("done", "completed")]
+            return f"Error: task_id required for 'drop'. Example: task_tracker(action=\"drop\", task_id=1)\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
         for i, t in enumerate(tasks):
             if t["id"] == task_id:
                 removed = tasks.pop(i)
