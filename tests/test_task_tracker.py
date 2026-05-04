@@ -2020,6 +2020,58 @@ def test_list_limit_whole_float_is_accepted():
     assert len(task_lines) == 2, f"Expected 2 tasks with limit=2.0, got {len(task_lines)}: {result!r}"
 
 
+# ── limit=<string> must be rejected, not silently coerced (#894) ─────────────
+
+
+def test_list_limit_numeric_string_returns_error():
+    """limit='10' must be rejected with a clear error, not silently coerced to 10 (#894).
+
+    Before the fix, int('10') succeeded in the coercion block, so
+    fn(action='list', limit='10') silently ran as if limit=10 was passed.
+    This is inconsistent with every other tool which rejects wrong-type
+    params explicitly.
+    """
+    fn(action="add", description="task")
+    result = fn(action="list", limit="10")
+    assert result.startswith("Error:"), f"Expected error for limit='10', got: {result!r}"
+    assert "str" in result, f"Error must mention 'str': {result!r}"
+    assert "integer" in result.lower(), f"Error must mention 'integer': {result!r}"
+
+
+def test_list_limit_zero_string_returns_error():
+    """limit='0' must be rejected even though int('0') == 0 (#894)."""
+    fn(action="add", description="task")
+    result = fn(action="list", limit="0")
+    assert result.startswith("Error:"), f"Expected error for limit='0', got: {result!r}"
+    assert "str" in result, f"Error must mention 'str': {result!r}"
+
+
+def test_list_limit_string_error_mentions_quotes():
+    """The error for a string limit must hint to remove quotes (#894)."""
+    result = fn(action="list", limit="5")
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "quote" in result.lower() or "without" in result.lower(), (
+        f"Error should hint about removing quotes: {result!r}"
+    )
+
+
+def test_list_limit_non_numeric_string_still_returns_error():
+    """A non-numeric string like 'abc' must also be rejected at the string guard (#894)."""
+    result = fn(action="list", limit="abc")
+    assert result.startswith("Error:"), f"Expected error for limit='abc', got: {result!r}"
+    assert "str" in result, f"Error must mention 'str': {result!r}"
+
+
+def test_list_limit_integer_unaffected_by_string_guard():
+    """A plain integer must still work correctly after the string guard is added (#894)."""
+    for i in range(3):
+        fn(action="add", description=f"task {i+1}")
+    result = fn(action="list", limit=2)
+    assert not result.startswith("Error:"), f"Integer limit should not error: {result!r}"
+    task_lines = [l for l in result.splitlines() if l.startswith("[")]
+    assert len(task_lines) == 2, f"Expected 2 tasks, got {len(task_lines)}: {result!r}"
+
+
 # ── Issue #792: probe-confirmed behaviour regressions ─────────────────────────
 
 
