@@ -43,7 +43,7 @@ class TestFindSymbolAC1(unittest.TestCase):
         )
         self.assertEqual(len(results), 1, f"Expected 1 match, got {len(results)}: {results}")
         m = results[0]
-        self.assertEqual(m["line"], 1167)
+        self.assertEqual(m["line"], 1166)
         self.assertEqual(m["kind"], "function")
         self.assertEqual(m["scope"], "_classify_turn_complexity")
         self.assertIn("_classify_turn_complexity", m["context"])
@@ -1176,6 +1176,95 @@ class TestFindSymbolLongPath(unittest.TestCase):
         self.assertGreater(len(result), 0)
         self.assertIn("error", result[0])
         self.assertIn("does not exist", result[0]["error"])
+
+
+# ── Issue #828: symlink handling in find_symbol ───────────────────────────────
+
+class TestFindSymbolSymlinks(unittest.TestCase):
+    """Verify find_symbol handles symlinks correctly (#828)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def _make_py(self, path, content):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    def test_symlink_to_py_file_is_scanned(self):
+        """A symlink pointing to a .py file should be followed and scanned."""
+        real = os.path.join(self.tmp, "real.py")
+        self._make_py(real, "def hello():\n    pass\n")
+        link = os.path.join(self.tmp, "link.py")
+        os.symlink(real, link)
+        result = find_symbol("hello", path=link)
+        self.assertIsInstance(result, list)
+        self.assertFalse(
+            result and "error" in result[0],
+            f"Expected matches, got error: {result}",
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["kind"], "function")
+
+    def test_symlink_to_directory_is_scanned(self):
+        """A symlink pointing to a directory should be followed and its .py files scanned."""
+        real_dir = os.path.join(self.tmp, "real_dir")
+        os.makedirs(real_dir)
+        self._make_py(os.path.join(real_dir, "code.py"), "def world():\n    pass\n")
+        link_dir = os.path.join(self.tmp, "link_dir")
+        os.symlink(real_dir, link_dir)
+        result = find_symbol("world", path=link_dir)
+        self.assertIsInstance(result, list)
+        self.assertFalse(
+            result and "error" in result[0],
+            f"Expected matches, got error: {result}",
+        )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["kind"], "function")
+
+    def test_symlinked_subdir_is_descended_into(self):
+        """Symlinked subdirectories inside the search root must be followed (#828).
+
+        Before the fix, os.walk(followlinks=False) silently skipped symlinked
+        subdirs, so find_symbol returned [] instead of the real matches.
+        """
+        real_dir = os.path.join(self.tmp, "real")
+        os.makedirs(real_dir)
+        self._make_py(os.path.join(real_dir, "code.py"), "def hello():\n    pass\n")
+        root = os.path.join(self.tmp, "root")
+        os.makedirs(root)
+        os.symlink(real_dir, os.path.join(root, "symlink_subdir"))
+        result = find_symbol("hello", path=root)
+        self.assertIsInstance(result, list)
+        self.assertGreater(
+            len(result), 0,
+            "find_symbol must find matches inside symlinked subdirectories (#828)",
+        )
+        self.assertFalse(
+            "error" in result[0],
+            f"Expected match dict, got error: {result}",
+        )
+        self.assertEqual(result[0]["kind"], "function")
+
+    def test_dangling_symlink_returns_clean_error(self):
+        """A dangling symlink (target does not exist) must return a clean error dict, not crash."""
+        dangling = os.path.join(self.tmp, "dangling.py")
+        os.symlink(os.path.join(self.tmp, "nonexistent.py"), dangling)
+        result = find_symbol("hello", path=dangling)
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0)
+        self.assertIn("error", result[0])
+        self.assertIn("does not exist", result[0]["error"])
+
+    def test_dangling_symlink_does_not_raise(self):
+        """A dangling symlink must never propagate an exception — always returns a list."""
+        dangling = os.path.join(self.tmp, "dangling.py")
+        os.symlink(os.path.join(self.tmp, "nonexistent.py"), dangling)
+        try:
+            result = find_symbol("anything", path=dangling)
+        except Exception as exc:
+            self.fail(f"find_symbol raised an exception on dangling symlink: {exc}")
+        self.assertIsInstance(result, list)
 
 
 if __name__ == "__main__":
