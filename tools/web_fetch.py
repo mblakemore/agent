@@ -30,6 +30,10 @@ def fn(url: str) -> str:
     Args:
         url: The URL to fetch.
     """
+    if not url or not url.strip():
+        return "Error: url must not be empty"
+    if not url.startswith(("http://", "https://")):
+        return f"Error: invalid URL '{url}' — must begin with http:// or https://"
     try:
         with requests.get(url, headers=_HEADERS, timeout=_TIMEOUT, stream=True) as resp:
             resp.raise_for_status()
