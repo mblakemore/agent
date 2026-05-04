@@ -473,11 +473,19 @@ def test_non_integer_task_id_none():
     assert res.startswith("Error:"), f"Expected Error string, got: {res!r}"
 
 
-def test_string_numeric_task_id_coerced():
-    """task_id='1' (string that looks like an int) should be coerced and work."""
+def test_string_numeric_task_id_rejected():
+    """task_id='1' must now return a clear type error, not silently coerce (#913).
+
+    Before #913, int('1') succeeded in the coercion block and task_id was
+    silently set to 1.  Now strings are caught by an explicit guard.
+    """
     fn(action="add", description="Task to update")
     res = fn(action="update", task_id="1", status="in_progress")
-    assert "Updated task #1" in res
+    assert res.startswith("Error:"), f"Expected error for task_id='1': {res!r}"
+    assert "str" in res, f"Error must mention 'str': {res!r}"
+    assert "quote" in res.lower() or "without" in res.lower(), (
+        f"Error should hint about removing quotes: {res!r}"
+    )
 
 
 def test_float_task_id_coerced():
