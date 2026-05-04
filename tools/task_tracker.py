@@ -218,7 +218,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
         status = ""
     if not isinstance(status, str):
         return (
-            f"Error: status must be a string, got {type(status).__name__} ({status!r}). "
+            f"Error: status must be a string, got {type(status).__name__!r}: {status!r}. "
             f"Pass a status string such as 'open', 'in_progress', 'blocked', 'deferred'."
         )
     if '\x00' in status:

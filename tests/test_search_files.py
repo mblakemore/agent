@@ -1570,3 +1570,35 @@ class TestSearchFilesContextNaNInf(unittest.TestCase):
             Path(d, "a.txt").write_text("before\nHIT\nafter\n")
             result = search_files.fn("HIT", path=d, context=2)
         self.assertFalse(result.startswith("Error:"), f"Integer context broke: {result!r}")
+
+
+class TestSearchFilesTypeNameQuoting(unittest.TestCase):
+    """Type names in error messages must be single-quoted ('int', not int) (#915)."""
+
+    def test_glob_integer_type_name_is_quoted(self):
+        """Integer glob error must include quoted type name 'int', not bare int (#915)."""
+        with tempfile.TemporaryDirectory() as d:
+            result = search_files.fn("HIT", path=d, glob=42)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'int'", result, f"Type name must be quoted: {result!r}")
+
+    def test_glob_dict_type_name_is_quoted(self):
+        """Dict glob error must include quoted type name 'dict', not bare dict (#915).
+        Note: glob=None is valid (means 'match all'); dict is a genuinely invalid type.
+        """
+        with tempfile.TemporaryDirectory() as d:
+            result = search_files.fn("HIT", path=d, glob={"ext": "py"})
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'dict'", result, f"Type name must be quoted: {result!r}")
+
+    def test_path_integer_type_name_is_quoted(self):
+        """Integer path error must include quoted type name 'int', not bare int (#915)."""
+        result = search_files.fn("HIT", path=42)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'int'", result, f"Type name must be quoted: {result!r}")
+
+    def test_path_none_type_name_is_quoted(self):
+        """None path error must include quoted type name 'NoneType' (#915)."""
+        result = search_files.fn("HIT", path=None)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'NoneType'", result, f"Type name must be quoted: {result!r}")

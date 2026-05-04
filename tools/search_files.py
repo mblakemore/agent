@@ -220,7 +220,7 @@ def fn(
         glob_patterns = parts
     else:
         return (
-            f"Error: glob must be a string or list of strings, got {type(glob).__name__}. "
+            f"Error: glob must be a string or list of strings, got {type(glob).__name__!r}. "
             "Pass a plain filename pattern (e.g. '*.py') or a comma-separated list."
         )
 
@@ -263,7 +263,7 @@ def fn(
 
     # Resolve search_path immediately to avoid absolute vs relative mismatch in relative_to()
     if not isinstance(path, str):
-        return f"Error: path must be a string, got {type(path).__name__}"
+        return f"Error: path must be a string, got {type(path).__name__!r}"
     if '\x00' in path:
         return "Error: path contains a null byte, which is not allowed"
     path = path.strip()
