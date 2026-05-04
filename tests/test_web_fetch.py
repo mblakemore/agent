@@ -335,3 +335,102 @@ class TestWebFetchRedirectGuard(unittest.TestCase):
             result.startswith("Error:"),
             f"Redirect to external site must not return an error: {result!r}",
         )
+
+    def test_redirect_to_172_17_blocked(self):
+        """A redirect to 172.17.x.x must be blocked — within RFC 1918 172.16.0.0/12 range (#815)."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response("http://172.17.0.1/")
+            result = fn("http://example.com/redirect-me")
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertTrue(
+            "private" in result.lower() or "internal" in result.lower(),
+            f"Error must mention 'private' or 'internal': {result!r}",
+        )
+
+    def test_redirect_to_172_31_blocked(self):
+        """A redirect to 172.31.x.x must be blocked — top of RFC 1918 172.16.0.0/12 range (#815)."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response("http://172.31.255.254/")
+            result = fn("http://example.com/redirect-me")
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertTrue(
+            "private" in result.lower() or "internal" in result.lower(),
+            f"Error must mention 'private' or 'internal': {result!r}",
+        )
+
+    def test_redirect_to_172_16_still_blocked(self):
+        """A redirect to 172.16.x.x must still be blocked after the ipaddress refactor (#815)."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response("http://172.16.0.1/")
+            result = fn("http://example.com/redirect-me")
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
+        self.assertTrue(
+            "private" in result.lower() or "internal" in result.lower(),
+            f"Error must mention 'private' or 'internal': {result!r}",
+        )
+
+    def test_redirect_to_172_32_passes_through(self):
+        """A redirect to 172.32.x.x must be allowed — outside RFC 1918 range (#815)."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response("http://172.32.0.1/")
+            result = fn("http://example.com/redirect-me")
+        self.assertFalse(
+            result.startswith("Error:"),
+            f"172.32.x.x is public and must not be blocked: {result!r}",
+        )
+
+
+class TestIsPrivateAddress(unittest.TestCase):
+    """Unit tests for the _is_private_address helper (#815)."""
+
+    def setUp(self):
+        from tools.web_fetch import _is_private_address
+        self.check = _is_private_address
+
+    def test_loopback_ipv4(self):
+        self.assertTrue(self.check("http://127.0.0.1/"))
+        self.assertTrue(self.check("http://127.255.255.255/"))
+
+    def test_rfc1918_10(self):
+        self.assertTrue(self.check("http://10.0.0.1/"))
+        self.assertTrue(self.check("http://10.255.255.255/"))
+
+    def test_rfc1918_172_full_range(self):
+        for last in (16, 17, 20, 24, 31):
+            url = f"http://172.{last}.0.1/"
+            self.assertTrue(self.check(url), f"Expected private: {url}")
+
+    def test_rfc1918_172_outside_range(self):
+        self.assertFalse(self.check("http://172.15.0.1/"))
+        self.assertFalse(self.check("http://172.32.0.1/"))
+
+    def test_rfc1918_192_168(self):
+        self.assertTrue(self.check("http://192.168.0.1/"))
+
+    def test_link_local(self):
+        self.assertTrue(self.check("http://169.254.169.254/"))
+
+    def test_ipv6_loopback(self):
+        self.assertTrue(self.check("http://[::1]/"))
+
+    def test_ipv6_ula_fc(self):
+        self.assertTrue(self.check("http://[fc00::1]/"))
+
+    def test_ipv6_ula_fd(self):
+        self.assertTrue(self.check("http://[fd00::1]/"))
+
+    def test_public_ip(self):
+        self.assertFalse(self.check("http://8.8.8.8/"))
+        self.assertFalse(self.check("https://93.184.216.34/"))
+
+    def test_hostname_passes(self):
+        # Hostnames are not numeric IPs and must not be flagged
+        self.assertFalse(self.check("http://example.com/"))
+        self.assertFalse(self.check("http://internal-service/"))
+
+    def test_empty_host(self):
+        self.assertFalse(self.check("http:///path"))
+
+    def test_localhost_hostname(self):
+        # 'localhost' is explicitly blocked as it always resolves to loopback
+        self.assertTrue(self.check("http://localhost/"))
