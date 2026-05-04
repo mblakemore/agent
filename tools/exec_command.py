@@ -177,6 +177,8 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         return "Error: command must be a string"
     if not command.strip() and not session_id:
         return "Error: command cannot be empty"
+    if '\x00' in command:
+        return "Error: command contains a null byte, which is not allowed"
 
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
         return f"Error: timeout must be a number, got {type(timeout).__name__!r}"
@@ -197,6 +199,11 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
                 return (
                     f"Error: env values must be strings; "
                     f"key {k!r} has type {type(v).__name__!r}"
+                )
+            if '\x00' in v:
+                return (
+                    f"Error: env value for key {k!r} contains a null byte, "
+                    f"which is not allowed in environment variable values"
                 )
 
     if cwd:
