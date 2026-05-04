@@ -102,6 +102,8 @@ def _read(path, start_line, end_line):
         return f"Error: '{path}' is a directory. Use action='list' instead."
 
     # Validate start_line/end_line combination before opening the file
+    if start_line < 0:
+        return f"Error: start_line must be >= 1 (got {start_line})"
     if end_line > 0 and start_line > 0 and start_line > end_line:
         return f"Error: start_line ({start_line}) > end_line ({end_line})"
 
