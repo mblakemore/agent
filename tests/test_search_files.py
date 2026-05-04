@@ -203,6 +203,29 @@ class TestSearchFilesHeaderIdentity(unittest.TestCase):
             self.assertIn(f"'{resolved}'", body)
             self.assertIn("pass path=", body)
 
+    def test_zero_files_glob_filter_emits_glob_hint(self):
+        with tempfile.TemporaryDirectory() as d:
+            # Directory has .py files but we search for .rb — glob filters everything.
+            Path(d, "test.py").write_text("needle\n")
+            Path(d, "other.py").write_text("more content\n")
+            result = search_files.fn("needle", path=d, glob="*.rb")
+            resolved = str(Path(d).resolve())
+            header, _, body = result.partition("]\n")
+            self.assertIn("0 files", header)
+            # Must mention the glob pattern, not suggest the path is wrong
+            self.assertIn("*.rb", body)
+            self.assertIn("glob", body.lower())
+            self.assertNotIn("pass path=", body)
+            self.assertNotIn("If you meant a different directory", body)
+
+    def test_zero_files_glob_filter_does_not_blame_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            # Variant: a non-standard glob that excludes the one present file.
+            Path(d, "config.json").write_text('{"key": "value"}\n')
+            result = search_files.fn("key", path=d, glob="*.yaml")
+            self.assertNotIn("If you meant a different directory", result)
+            self.assertIn("*.yaml", result)
+
     def test_header_shape_body_partition_still_works(self):
         # Cycle 0003's _body() helper partitions on "]\n". Prove that still
         # works for every shape the new header can take: hit, miss-with-files,
