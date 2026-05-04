@@ -290,7 +290,7 @@ def fn(
     # Booleans are a subclass of int in Python; reject them explicitly so that
     # context=True (silently 1) or context=False (silently 0) don't sneak through.
     if isinstance(context, bool):
-        return f"Error: context must be an integer, got bool. Pass a plain integer (e.g. context=3)."
+        return f"Error: context must be an integer, got 'bool': {context!r}. Pass a plain integer (e.g. context=3)."
     if isinstance(context, str):
         return (
             f"Error: context must be an integer, got 'str': {context!r}. "
