@@ -185,6 +185,21 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     if not math.isfinite(timeout) or timeout <= 0:
         return "Error: timeout must be a positive number"
 
+    # background and new_session must be actual booleans (or 0/1 integers).
+    # Strings like "false" are non-empty and therefore truthy — an LLM passing
+    # background="false" would silently start a background process (#885).
+    for _param_name, _param_val in (("background", background), ("new_session", new_session)):
+        if isinstance(_param_val, bool):
+            pass  # correct type
+        elif isinstance(_param_val, int) and _param_val in (0, 1):
+            pass  # 0/1 integer is an accepted boolean stand-in
+        else:
+            _hint = " Pass true or false without quotes." if isinstance(_param_val, str) else ""
+            return (
+                f"Error: '{_param_name}' must be a boolean, "
+                f"got {type(_param_val).__name__!r}: {_param_val!r}.{_hint}"
+            )
+
     if env is not None and not isinstance(env, dict):
         return f"Error: env must be a dict or None, got {type(env).__name__!r}"
     if env is not None:
