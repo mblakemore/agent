@@ -150,6 +150,9 @@ def fn(
     if not pattern or not pattern.strip():
         return "Error: Search pattern cannot be empty."
 
+    if glob is not None and not glob.strip():
+        return "Error: glob filter cannot be empty — omit the argument or pass '*' to match all files."
+
     try:
         flags = re.IGNORECASE if ignore_case else 0
         regex = re.compile(pattern, flags)
