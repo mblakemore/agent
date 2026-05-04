@@ -170,6 +170,8 @@ def find_symbol(
         List of match dicts with keys: path, line, kind, scope, context.
         Returns [{"error": "..."}] for invalid arguments.
     """
+    if not name or not name.strip():
+        return [{"error": "name must not be empty"}]
     if mode not in _VALID_MODES:
         return [{"error": f"Invalid mode {mode!r}. Must be one of: {sorted(_VALID_MODES)}"}]
     if kind is not None and kind not in _VALID_KINDS:
