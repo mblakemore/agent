@@ -198,6 +198,8 @@ def find_symbol(
 
     if not isinstance(path, str):
         return [{"error": f"path must be a string, got {type(path).__name__}"}]
+    if '\x00' in path:
+        return [{"error": "path contains a null byte, which is not allowed"}]
     search_path = Path(path.strip())
     if not search_path.exists():
         return [{"error": f"path '{search_path}' does not exist"}]
