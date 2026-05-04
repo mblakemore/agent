@@ -1072,5 +1072,67 @@ class TestFindSymbolNullByteInPath(unittest.TestCase):
                         f"Expected at least one non-error result, got: {result!r}")
 
 
+class TestFindSymbolEmptyPath(unittest.TestCase):
+    """Empty or whitespace-only path must return an error dict, not silently scan
+    the process working directory. (#774)"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_empty_string_path_returns_error(self):
+        """path='' must return an error dict, not scan cwd (#774)."""
+        result = find_symbol("fn", path="", mode="definition")
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0, "Expected non-empty result with error dict")
+        self.assertIn("error", result[0])
+
+    def test_empty_string_path_error_mentions_non_empty(self):
+        """Error message for empty path must indicate a non-empty path is required (#774)."""
+        result = find_symbol("fn", path="", mode="definition")
+        self.assertIn("non-empty", result[0]["error"],
+                      f"Expected 'non-empty' in error, got: {result[0]['error']!r}")
+
+    def test_whitespace_only_path_returns_error(self):
+        """path='   ' (spaces only) must return an error dict, not scan cwd (#774)."""
+        result = find_symbol("fn", path="   ", mode="definition")
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0, "Expected non-empty result with error dict")
+        self.assertIn("error", result[0])
+
+    def test_whitespace_only_path_error_mentions_non_empty(self):
+        """Error for whitespace-only path must indicate a non-empty path is required (#774)."""
+        result = find_symbol("fn", path="   ", mode="definition")
+        self.assertIn("non-empty", result[0]["error"],
+                      f"Expected 'non-empty' in error, got: {result[0]['error']!r}")
+
+    def test_empty_path_not_confused_with_not_found(self):
+        """Error dict for empty path must be distinguishable from 'symbol not found' []."""
+        result = find_symbol("fn", path="")
+        self.assertNotEqual(result, [], "Should return error dict, not [], for empty path")
+
+    def test_empty_path_does_not_scan_cwd(self):
+        """Empty path must not silently scan and return results from cwd (#774)."""
+        result = find_symbol("fn", path="")
+        # Must be an error, not a non-empty list of real matches
+        self.assertTrue(
+            len(result) == 1 and "error" in result[0],
+            f"empty path must return exactly one error dict, got: {result!r}",
+        )
+
+    def test_valid_path_unaffected_by_empty_path_guard(self):
+        """A valid explicit path must still work after the empty-path guard is added (#774)."""
+        p = Path(self.tmp) / "mod.py"
+        p.write_text("def my_func(): pass\n", encoding="utf-8")
+        result = find_symbol("my_func", path=str(p), mode="definition")
+        self.assertIsInstance(result, list)
+        self.assertGreater(len(result), 0, f"Expected >=1 match, got: {result!r}")
+        self.assertNotIn("error", result[0])
+        self.assertEqual(result[0]["scope"], "my_func")
+
+
 if __name__ == "__main__":
     unittest.main()
