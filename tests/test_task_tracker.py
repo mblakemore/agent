@@ -387,3 +387,31 @@ def test_float_task_id_coerced():
     fn(action="add", description="Task to complete")
     res = fn(action="done", task_id=1.0)
     assert "Completed task #1" in res
+
+
+# ── wrong-type description tests (#680) ───────────────────────────────────────
+
+def test_add_integer_description_coerced():
+    """description=42 (int) must be coerced to '42' and succeed, not raise AttributeError (#680)."""
+    res = fn(action="add", description=42)
+    assert "Added task" in res
+    assert "42" in res
+
+
+def test_add_float_description_coerced():
+    """description=3.14 (float) must be coerced to '3.14' and succeed (#680)."""
+    res = fn(action="add", description=3.14)
+    assert "Added task" in res
+    assert "3.14" in res
+
+
+def test_add_none_description_treated_as_empty():
+    """description=None must be treated as empty (same as omitting it), returning an error (#680)."""
+    res = fn(action="add", description=None)
+    assert "Error" in res
+
+
+def test_add_list_description_coerced():
+    """description=['a', 'b'] (list) must be coerced to string and succeed (#680)."""
+    res = fn(action="add", description=['a', 'b'])
+    assert "Added task" in res

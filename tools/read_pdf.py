@@ -35,6 +35,22 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
         doc.close()
         return "Error: PDF has no pages"
 
+    # Validate start_page type before numeric comparisons
+    if not isinstance(start_page, int) or isinstance(start_page, bool):
+        try:
+            start_page = int(start_page)
+        except (TypeError, ValueError):
+            doc.close()
+            return f"Error: start_page must be an integer, got {type(start_page).__name__!r}"
+
+    # Validate end_page type before numeric comparisons
+    if not isinstance(end_page, int) or isinstance(end_page, bool):
+        try:
+            end_page = int(end_page)
+        except (TypeError, ValueError):
+            doc.close()
+            return f"Error: end_page must be an integer, got {type(end_page).__name__!r}"
+
     # Validate start_page — must be 1-indexed (≥ 1)
     if start_page < 1:
         doc.close()

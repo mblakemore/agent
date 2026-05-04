@@ -203,6 +203,14 @@ def fn(
     if not search_path.exists():
         return f"Error: path '{path}' does not exist"
 
+    # Validate context type before any comparison — must come before the single-file branch
+    # so both code paths receive a properly-typed integer.
+    if not isinstance(context, int) or isinstance(context, bool):
+        try:
+            context = int(context)
+        except (TypeError, ValueError):
+            return f"Error: context must be an integer, got {type(context).__name__!r}"
+
     # If path points to a single file, search just that file.
     if search_path.is_file():
         return _search_single_file(search_path, search_path.parent, regex, context, count_only)

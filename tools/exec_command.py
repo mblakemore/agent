@@ -168,6 +168,8 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     if not command.strip() and not session_id:
         return "Error: command cannot be empty"
 
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+        return f"Error: timeout must be a number, got {type(timeout).__name__!r}"
     if not math.isfinite(timeout) or timeout <= 0:
         return "Error: timeout must be a positive number"
 

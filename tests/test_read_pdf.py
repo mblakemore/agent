@@ -194,3 +194,52 @@ def test_read_pdf_end_page_exact_last_page():
         result = fn("dummy.pdf", start_page=1, end_page=5)
         assert "Pages 1-5 of 5" in result
         assert "Error" not in result
+
+
+# ── wrong-type page argument tests (#680) ─────────────────────────────────────
+
+def _mock_pdf_doc(total_pages=5):
+    """Return a pre-configured MagicMock that looks like a fitz PDF document."""
+    doc = MagicMock()
+    doc.is_pdf = True
+    doc.__len__ = MagicMock(return_value=total_pages)
+    page = MagicMock()
+    page.get_text.return_value = "content"
+    doc.__getitem__.return_value = page
+    return doc
+
+
+@patch("fitz.open")
+def test_read_pdf_string_start_page_coerced(mock_open):
+    """start_page='2' (stringified int) must be coerced, not raise TypeError (#680)."""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page='2')
+    assert "Error" not in result
+    assert "Pages 2-" in result
+
+
+@patch("fitz.open")
+def test_read_pdf_string_end_page_coerced(mock_open):
+    """end_page='3' (stringified int) must be coerced, not raise TypeError (#680)."""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=1, end_page='3')
+    assert "Error" not in result
+    assert "Pages 1-3 of 5" in result
+
+
+@patch("fitz.open")
+def test_read_pdf_non_numeric_start_page_returns_error(mock_open):
+    """start_page='bad' must return a clean Error string, not crash (#680)."""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page='bad')
+    assert result.startswith("Error: start_page must be an integer")
+    assert "'str'" in result
+
+
+@patch("fitz.open")
+def test_read_pdf_non_numeric_end_page_returns_error(mock_open):
+    """end_page='bad' must return a clean Error string, not crash (#680)."""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=1, end_page='bad')
+    assert result.startswith("Error: end_page must be an integer")
+    assert "'str'" in result
