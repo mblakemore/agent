@@ -965,3 +965,62 @@ def test_list_status_filter_summary_counts_reflect_full_list():
     assert "2 open" in result, (
         f"Summary counts must be for full list, not just filter match. Got: {result!r}"
     )
+
+
+# ── Issue #736: float task_id with fractional part must be rejected ───────────
+
+def test_done_fractional_float_task_id_rejected():
+    """task_id=1.5 must return Error rather than silently truncating to 1 (#736)."""
+    fn(action="add", description="do not complete via float")
+    res = fn(action="done", task_id=1.5)
+    assert res.startswith("Error:"), (
+        f"Expected Error for fractional float task_id=1.5, got: {res!r}"
+    )
+    assert "1.5" in res, f"Error message should mention the bad value 1.5, got: {res!r}"
+
+
+def test_update_fractional_float_task_id_rejected():
+    """task_id=2.9 must return Error for 'update' — not truncate to 2 (#736)."""
+    fn(action="add", description="update via float test")
+    res = fn(action="update", task_id=2.9, status="in_progress")
+    assert res.startswith("Error:"), (
+        f"Expected Error for fractional float task_id=2.9, got: {res!r}"
+    )
+    assert "2.9" in res, f"Error message should mention the bad value 2.9, got: {res!r}"
+
+
+def test_drop_fractional_float_task_id_rejected():
+    """task_id=1.1 must return Error for 'drop' (#736)."""
+    fn(action="add", description="drop via float test")
+    res = fn(action="drop", task_id=1.1)
+    assert res.startswith("Error:"), (
+        f"Expected Error for fractional float task_id=1.1, got: {res!r}"
+    )
+    assert "1.1" in res, f"Error message should mention the bad value 1.1, got: {res!r}"
+
+
+def test_whole_number_float_task_id_still_coerced():
+    """task_id=1.0 (whole-number float) must still be accepted and coerced to 1 (#736)."""
+    fn(action="add", description="whole float coerce test")
+    res = fn(action="done", task_id=1.0)
+    assert "Completed task #1" in res, (
+        f"Whole-number float task_id=1.0 should coerce to 1, got: {res!r}"
+    )
+
+
+def test_fractional_float_does_not_modify_wrong_task():
+    """task_id=1.9 must NOT complete task #1 — the task must remain open (#736)."""
+    fn(action="add", description="should stay open")
+    res = fn(action="done", task_id=1.9)
+    # Must be an error
+    assert res.startswith("Error:"), (
+        f"Expected Error for task_id=1.9, got: {res!r}"
+    )
+    # Task #1 must still be open
+    listing = fn(action="list")
+    assert "should stay open" in listing, (
+        f"Task must remain open after rejected fractional float. Listing: {listing!r}"
+    )
+    assert "[x] #1" not in listing, (
+        f"Task #1 must not be marked done. Listing: {listing!r}"
+    )

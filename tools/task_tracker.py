@@ -109,9 +109,18 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
     # Validate task_id type — must be an integer (or the default 0).
     # Non-integer values (e.g. strings passed by a model) would cause
     # TypeError at the `task_id <= 0` comparisons below.
+    # Float task_ids with a fractional part (e.g. 1.5, 6.9) must be rejected
+    # rather than silently truncated — int(1.5) == 1, which would operate on
+    # the wrong task.  Whole-number floats (e.g. 2.0) are safe to coerce.
     if not isinstance(task_id, int):
         try:
-            task_id = int(task_id)
+            coerced = int(task_id)
+            if isinstance(task_id, float) and task_id != coerced:
+                return (
+                    f"Error: task_id must be an integer, got non-integer float: {task_id!r}. "
+                    f"Did you mean {coerced} or {coerced + 1}?"
+                )
+            task_id = coerced
         except (TypeError, ValueError):
             return f"Error: task_id must be an integer, got {type(task_id).__name__!r}: {task_id!r}"
 
