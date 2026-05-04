@@ -1357,3 +1357,52 @@ def test_valid_description_still_works_after_null_check():
     """The null-byte guard must not break normal adds. (#762)"""
     result = fn(action="add", description="a normal task description")
     assert "Added task" in result, f"Expected success, got: {result!r}"
+
+
+# ── bool task_id regression tests (#769) ────────────────────────────────────
+
+def test_done_task_id_true_returns_error():
+    """task_id=True must be rejected — bool True==1 in Python and would silently
+    operate on task #1 without any indication the type was wrong. (#769)"""
+    fn(action="add", description="test task")
+    result = fn(action="done", task_id=True)
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "bool" in result, f"Error must mention 'bool', got: {result!r}"
+    # Verify task was NOT completed (no silent mutation)
+    listing = fn(action="list")
+    assert "open" in listing, f"Task should still be open, got: {listing!r}"
+
+
+def test_done_task_id_false_returns_error():
+    """task_id=False must be rejected — bool False==0 in Python and would be treated
+    as 'no task_id specified', triggering auto-resolve logic. (#769)"""
+    fn(action="add", description="test task")
+    result = fn(action="done", task_id=False)
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "bool" in result, f"Error must mention 'bool', got: {result!r}"
+
+
+def test_update_task_id_true_returns_error():
+    """task_id=True must be rejected for update action too. (#769)"""
+    fn(action="add", description="test task")
+    result = fn(action="update", task_id=True, status="in_progress")
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "bool" in result, f"Error must mention 'bool', got: {result!r}"
+
+
+def test_drop_task_id_true_returns_error():
+    """task_id=True must be rejected for drop action. (#769)"""
+    fn(action="add", description="test task")
+    result = fn(action="drop", task_id=True)
+    assert result.startswith("Error:"), f"Expected Error:, got: {result!r}"
+    assert "bool" in result, f"Error must mention 'bool', got: {result!r}"
+    # Verify task was NOT dropped
+    listing = fn(action="list")
+    assert "#1" in listing, f"Task should still exist, got: {listing!r}"
+
+
+def test_task_id_int_still_works_after_bool_check():
+    """Plain integer task_id must not be broken by the bool guard. (#769)"""
+    fn(action="add", description="task for int id test")
+    result = fn(action="done", task_id=1)
+    assert "Completed task #1" in result, f"Expected success, got: {result!r}"
