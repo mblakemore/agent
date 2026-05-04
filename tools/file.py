@@ -156,7 +156,7 @@ def _check_write_confinement(path, p):
         return (
             f"Error: path '{path}' resolves to '{resolved}' which is outside "
             f"the working directory '{cwd_resolved}'. "
-            f"Only files inside the current working directory can be written."
+            f"Only files inside the current working directory can be accessed."
         )
     return None
 
@@ -165,6 +165,10 @@ def _read(path, start_line, end_line):
     p = Path(path)
     if p.name in _BLOCKED_FILENAMES:
         return f"Error: '{p.name}' is an internal runtime file and cannot be read."
+    # Confinement: reject reads to paths outside the working directory (#870)
+    err = _check_write_confinement(path, p)
+    if err:
+        return err
     if not p.exists():
         return f"Error: '{path}' does not exist"
     if p.is_dir():
@@ -599,6 +603,10 @@ def _delete(path, start_line=0, end_line=0):
 
 def _list(path):
     p = Path(path)
+    # Confinement: reject listing of paths outside the working directory (#870)
+    err = _check_write_confinement(path, p)
+    if err:
+        return err
     if not p.exists():
         return f"Error: '{path}' does not exist"
     if not p.is_dir():

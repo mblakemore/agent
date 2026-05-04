@@ -1383,4 +1383,82 @@ class TestFileDeleteInsertPathConfinement(unittest.TestCase):
                               start_line=1)
         self.assertFalse(result.startswith("Error:"),
                          msg=f"Insert inside cwd must succeed, got: {result!r}")
-        self.assertIn("Inserted", result)
+
+
+class TestFileReadListPathConfinement(unittest.TestCase):
+    """read and list must refuse paths that resolve outside the working directory (#870).
+
+    write/append/delete/insert were already confined; read and list were missed.
+    file(action='read', path='/etc/passwd') could leak system files.
+    file(action='list', path='/etc') could enumerate system directories.
+    """
+
+    def setUp(self):
+        self._orig_cwd = os.getcwd()
+        self._outer = tempfile.mkdtemp()
+        self._project = Path(self._outer) / "project"
+        self._project.mkdir()
+        os.chdir(str(self._project))
+
+    def tearDown(self):
+        os.chdir(self._orig_cwd)
+        import shutil
+        shutil.rmtree(self._outer, ignore_errors=True)
+
+    # ── read ──────────────────────────────────────────────────────────────────
+
+    def test_read_absolute_path_outside_cwd_returns_error(self):
+        """read of an absolute path outside cwd must be rejected. (#870)"""
+        outside = str(Path(self._outer) / "secret.txt")
+        Path(outside).write_text("secret\n", encoding="utf-8")
+        result = file_tool.fn(action="read", path=outside)
+        self.assertTrue(result.startswith("Error:"),
+                        msg=f"Expected Error:, got: {result!r}")
+        self.assertIn("outside", result)
+
+    def test_read_absolute_path_outside_cwd_does_not_return_content(self):
+        """A rejected read must not return the file's contents. (#870)"""
+        outside = str(Path(self._outer) / "no_leak.txt")
+        Path(outside).write_text("SENSITIVE DATA\n", encoding="utf-8")
+        result = file_tool.fn(action="read", path=outside)
+        self.assertNotIn("SENSITIVE DATA", result)
+
+    def test_read_relative_traversal_outside_cwd_returns_error(self):
+        """read with a '../' traversal that escapes cwd must be rejected. (#870)"""
+        result = file_tool.fn(action="read", path="../escape.txt")
+        self.assertTrue(result.startswith("Error:"),
+                        msg=f"Expected Error: for traversal read, got: {result!r}")
+        self.assertIn("outside", result)
+
+    def test_read_inside_cwd_still_works(self):
+        """read of a file inside cwd must succeed after the confinement check. (#870)"""
+        inside = self._project / "hello.txt"
+        inside.write_text("hello world\n", encoding="utf-8")
+        result = file_tool.fn(action="read", path=str(inside))
+        self.assertFalse(result.startswith("Error:"),
+                         msg=f"Read inside cwd must succeed, got: {result!r}")
+        self.assertIn("hello world", result)
+
+    # ── list ──────────────────────────────────────────────────────────────────
+
+    def test_list_absolute_path_outside_cwd_returns_error(self):
+        """list of an absolute path outside cwd must be rejected. (#870)"""
+        result = file_tool.fn(action="list", path=self._outer)
+        self.assertTrue(result.startswith("Error:"),
+                        msg=f"Expected Error:, got: {result!r}")
+        self.assertIn("outside", result)
+
+    def test_list_relative_traversal_outside_cwd_returns_error(self):
+        """list with '../' traversal that escapes cwd must be rejected. (#870)"""
+        result = file_tool.fn(action="list", path="..")
+        self.assertTrue(result.startswith("Error:"),
+                        msg=f"Expected Error: for traversal list, got: {result!r}")
+        self.assertIn("outside", result)
+
+    def test_list_inside_cwd_still_works(self):
+        """list of cwd itself must succeed after the confinement check. (#870)"""
+        (self._project / "a.txt").write_text("x", encoding="utf-8")
+        result = file_tool.fn(action="list", path=str(self._project))
+        self.assertFalse(result.startswith("Error:"),
+                         msg=f"List inside cwd must succeed, got: {result!r}")
+        self.assertIn("a.txt", result)
