@@ -438,6 +438,10 @@ def _delete(path, start_line=0, end_line=0):
 
     # Line-range deletion: remove specific lines, keep the file.
     if start_line > 0 or end_line > 0:
+        if str(p.resolve()) not in _accessed_files:
+            return (f"Error: '{path}' exists but has not been read this session. "
+                    f"You must read the file first (action='read') before deleting lines from it, "
+                    f"so you can verify you are removing the correct content.")
         if start_line <= 0:
             start_line = 1
         if end_line <= 0:
