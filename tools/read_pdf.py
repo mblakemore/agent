@@ -43,6 +43,10 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
         doc.close()
         return f"Error: start_page ({start}) exceeds page count ({total})"
 
+    if end_page > 0 and end < start:
+        doc.close()
+        return f"Error: end_page ({end_page}) is less than start_page ({start_page})"
+
     # Cap to avoid flooding context
     if end - start + 1 > _MAX_PAGES_PER_CALL:
         end = start + _MAX_PAGES_PER_CALL - 1
