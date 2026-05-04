@@ -834,5 +834,42 @@ class TestFileBoolLineNumberFormat(unittest.TestCase):
         self.assertNotIn("(False)", result, f"Old parenthesis format must be gone: {result!r}")
 
 
+class TestFileFloatLineNumberFormat(unittest.TestCase):
+    """Float start_line/end_line errors must use 'got \\'float\\': value' format, not 'got float (value)' (#925)."""
+
+    def setUp(self):
+        self._tmp = tempfile.mkdtemp()
+        target = Path(self._tmp) / "sample.txt"
+        target.write_text("line1\nline2\nline3\n")
+        file_tool.fn(action="read", path=str(target))
+        self._target = str(target)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmp)
+
+    def test_float_start_line_uses_colon_format(self):
+        """Float start_line error must say got 'float': 1.5, not got float (1.5) (#925)."""
+        result = file_tool.fn(action="read", path=self._target, start_line=1.5)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'float'", result, f"Type name must be quoted: {result!r}")
+        self.assertIn("1.5", result, f"Value must appear in error: {result!r}")
+        self.assertNotIn("(1.5)", result, f"Old parenthesis format must be gone: {result!r}")
+
+    def test_float_end_line_uses_colon_format(self):
+        """Float end_line error must say got 'float': 2.9, not got float (2.9) (#925)."""
+        result = file_tool.fn(action="read", path=self._target, end_line=2.9)
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'float'", result, f"Type name must be quoted: {result!r}")
+        self.assertIn("2.9", result, f"Value must appear in error: {result!r}")
+        self.assertNotIn("(2.9)", result, f"Old parenthesis format must be gone: {result!r}")
+
+    def test_float_whole_number_still_rejected(self):
+        """Float 2.0 must still be rejected even though it equals integer 2 (#925)."""
+        result = file_tool.fn(action="read", path=self._target, start_line=2.0)
+        self.assertTrue(result.startswith("Error:"), f"Expected error for float 2.0: {result!r}")
+        self.assertIn("'float'", result, f"Type name must be quoted: {result!r}")
+
+
 if __name__ == "__main__":
     unittest.main()

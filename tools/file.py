@@ -108,12 +108,12 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
     # output like "2.5 lines remain".
     if isinstance(start_line, float):
         return (
-            f"Error: 'start_line' must be a plain integer, got float ({start_line!r}). "
+            f"Error: 'start_line' must be a plain integer, got 'float': {start_line!r}. "
             f"Pass a plain integer line number."
         )
     if isinstance(end_line, float):
         return (
-            f"Error: 'end_line' must be a plain integer, got float ({end_line!r}). "
+            f"Error: 'end_line' must be a plain integer, got 'float': {end_line!r}. "
             f"Pass a plain integer line number."
         )
     if not isinstance(start_line, int):
