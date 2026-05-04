@@ -191,10 +191,15 @@ def find_symbol(
         return [{"error": "name must not be empty"}]
     if '\x00' in name:
         return [{"error": "name contains a null byte, which is not allowed"}]
+    # Validate mode/kind types before normalization.
+    if not isinstance(mode, str):
+        return [{"error": f"mode must be a string, got {type(mode).__name__!r}"}]
+    # kind=None means no filter; any other non-string is an error.
+    if kind is not None and not isinstance(kind, str):
+        return [{"error": f"kind must be a string or None, got {type(kind).__name__!r}"}]
     # Normalize mode and kind to lowercase so callers can pass 'Definition',
     # 'CALLERS', 'FUNCTION', etc. without getting a spurious validation error.
-    if isinstance(mode, str):
-        mode = mode.lower()
+    mode = mode.lower()
     if isinstance(kind, str):
         kind = kind.lower()
     if mode not in _VALID_MODES:

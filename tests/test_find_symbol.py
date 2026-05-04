@@ -1414,5 +1414,52 @@ class TestFindSymbolPathTypeNameQuoting(unittest.TestCase):
         self.assertIn("'NoneType'", error, f"Type name must be quoted: {error!r}")
 
 
+class TestFindSymbolModeKindTypeValidation(unittest.TestCase):
+    """Non-string mode/kind must return type-specific error, not 'Invalid mode 42' (#923)."""
+
+    def test_integer_mode_returns_type_specific_error(self):
+        """mode=42 must say 'mode must be a string, got \\'int\\'', not 'Invalid mode 42' (#923)."""
+        result = find_symbol("fn", mode=42)
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+        error = result[0]["error"]
+        self.assertIn("string", error, f"Error must mention 'string': {error!r}")
+        self.assertIn("'int'", error, f"Error must name the type: {error!r}")
+
+    def test_none_mode_returns_type_specific_error(self):
+        """mode=None must say 'must be a string, got \\'NoneType\\'', not 'Invalid mode None' (#923)."""
+        result = find_symbol("fn", mode=None)
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+        error = result[0]["error"]
+        self.assertIn("string", error, f"Error must mention 'string': {error!r}")
+        self.assertIn("'NoneType'", error, f"Error must name the type: {error!r}")
+
+    def test_integer_kind_returns_type_specific_error(self):
+        """kind=99 must say 'kind must be a string or None, got \\'int\\'' (#923)."""
+        result = find_symbol("fn", kind=99)
+        self.assertIsInstance(result, list)
+        self.assertIn("error", result[0])
+        error = result[0]["error"]
+        self.assertIn("string", error, f"Error must mention 'string': {error!r}")
+        self.assertIn("'int'", error, f"Error must name the type: {error!r}")
+
+    def test_none_kind_is_valid(self):
+        """kind=None must be accepted (means no filter) (#923)."""
+        result = find_symbol("fn", kind=None)
+        self.assertIsInstance(result, list)
+        if result and "error" in result[0]:
+            self.assertNotIn("kind", result[0]["error"].lower(), (
+                f"kind=None must not produce a kind error: {result[0]['error']!r}"
+            ))
+
+    def test_string_mode_still_works(self):
+        """Valid string mode must not be broken by the new guard (#923)."""
+        result = find_symbol("fn", mode="both")
+        self.assertIsInstance(result, list)
+        if result:
+            self.assertNotIn("mode must be a string", str(result))
+
+
 if __name__ == "__main__":
     unittest.main()
