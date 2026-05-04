@@ -211,3 +211,41 @@ def test_web_fetch_text_with_no_null_bytes_is_not_rejected():
         result = fn(url="https://example.com/hello.txt")
     assert not result.startswith("Error:"), f"Text response must not be rejected as binary: {result!r}"
     assert "Hello, world!" in result
+
+
+# ── Null byte in URL (#797) ───────────────────────────────────────────────────
+
+def test_web_fetch_null_byte_in_url_rejected_before_network():
+    """A null byte anywhere in the URL must be rejected immediately — before any
+    network call — with a clear error message (#797).
+
+    Without this guard the null byte would be percent-encoded by the requests
+    library and a DNS lookup would be attempted, making a potentially slow
+    network round-trip for an obviously invalid URL.
+    """
+    with patch("requests.get") as mock_get:
+        result = fn(url="http://example.com\x00/path")
+    assert isinstance(result, str), "fn() must return a string, not raise"
+    assert result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}"
+    assert "null" in result.lower(), f"Error must mention null byte: {result!r}"
+    mock_get.assert_not_called()
+
+
+def test_web_fetch_null_byte_in_hostname_rejected_before_network():
+    """A null byte in the hostname portion of an http URL must also be caught (#797)."""
+    with patch("requests.get") as mock_get:
+        result = fn(url="http://\x00evil.com/")
+    assert isinstance(result, str)
+    assert result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}"
+    assert "null" in result.lower(), f"Error must mention null byte: {result!r}"
+    mock_get.assert_not_called()
+
+
+def test_web_fetch_null_byte_in_https_url_rejected_before_network():
+    """Same guard applies to https:// URLs (#797)."""
+    with patch("requests.get") as mock_get:
+        result = fn(url="https://example.com/page\x00.html")
+    assert isinstance(result, str)
+    assert result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}"
+    assert "null" in result.lower(), f"Error must mention null byte: {result!r}"
+    mock_get.assert_not_called()
