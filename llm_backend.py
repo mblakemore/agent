@@ -694,6 +694,11 @@ class BedrockBackend:
             }
         )
 
+        # Issue #864 — cached usage pct for proactive quota check.
+        # Must be initialised before _log_token_usage() populates them.
+        self._cached_usage_pct: float = 0.0
+        self._usage_cache_time: float = 0.0
+
         # Log monthly token usage at startup (issue #355)
         self._log_token_usage()
         # CICD 358: Conversation reuse tracking
@@ -731,6 +736,9 @@ class BedrockBackend:
             total = usage.get("total_tokens", 0)
             limit = usage.get("token_limit", 1)
             pct = (total / limit * 100) if limit else 0
+            # Cache for the proactive quota check (#864)
+            self._cached_usage_pct = pct
+            self._usage_cache_time = time.monotonic()
             level = logging.WARNING if pct >= 90 else logging.INFO
             log.log(
                 level,
@@ -742,6 +750,16 @@ class BedrockBackend:
                 "bedrock.token_usage.probe_failed role=%s model=%s error=%s",
                 self.role, self.model, str(e)[:60]
             )
+
+    # ── Proactive quota check (#864) ──
+
+    _USAGE_CACHE_TTL = 300.0  # 5 minutes between usage API calls
+
+    def _get_cached_usage_pct(self) -> float:
+        """Return the cached monthly usage %, refreshing if the cache is stale."""
+        if time.monotonic() - self._usage_cache_time > self._USAGE_CACHE_TTL:
+            self._log_token_usage()
+        return self._cached_usage_pct
 
     # ── Introspection ──
 
@@ -863,6 +881,17 @@ class BedrockBackend:
                                # retry loop instead of crashing the agent.
             ) as e:
                 if attempt >= max_retries:
+                    # Issue #864: on final timeout, check whether quota exhaustion
+                    # caused the gateway's 404-forever silent failure.  Force a
+                    # fresh probe (bypass the 5-min cache) and re-raise as
+                    # BedrockBudgetExceeded for a clear error instead of TimeoutError.
+                    self._usage_cache_time = 0.0
+                    if self._get_cached_usage_pct() >= 100.0:
+                        raise BedrockBudgetExceeded(
+                            f"Monthly token quota exceeded "
+                            f"(used_pct={self._cached_usage_pct:.1f}%). "
+                            "Gateway will not respond until quota resets."
+                        ) from e
                     raise
                 last_exc = e
 
@@ -971,6 +1000,15 @@ class BedrockBackend:
             _inference_params = {"maxTokens": 1024}
 
         log = logging.getLogger("llm_backend")
+
+        # Issue #864: proactive quota check (same guard as stream_chat).
+        usage_pct = self._get_cached_usage_pct()
+        if usage_pct >= 100.0:
+            raise BedrockBudgetExceeded(
+                f"Monthly token quota exceeded (used_pct={usage_pct:.1f}%). "
+                "Gateway will not respond until quota resets."
+            )
+
         t0 = time.monotonic()
         ok = False
         try:
@@ -1082,6 +1120,16 @@ class BedrockBackend:
         _inference_params = _build_inference_params(self.model, _caller_overrides)
 
         prompt = build_dev_prompt(messages or [], tools)
+
+        # Issue #864: proactive quota check — fail fast if monthly cap exceeded.
+        # The gateway returns 200+ID but then 404-forever when quota is gone,
+        # causing a 180s TimeoutError instead of an immediate failure.
+        usage_pct = self._get_cached_usage_pct()
+        if usage_pct >= 100.0:
+            raise BedrockBudgetExceeded(
+                f"Monthly token quota exceeded (used_pct={usage_pct:.1f}%). "
+                "Gateway will not respond until quota resets."
+            )
 
         t0 = time.monotonic()
         conv_id: str | None = None

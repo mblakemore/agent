@@ -1,5 +1,13 @@
 """pytest configuration for the test suite.
 
+bedrock proactive quota check (#864): BedrockBackend.__init__ calls
+_log_token_usage(), which hits the real gateway.  When quota is over 100%
+(as it currently is), the new proactive check in complete()/stream_chat()
+raises BedrockBudgetExceeded before the test's own mock can run.  The
+``mock_bedrock_token_usage`` fixture below patches get_token_usage() to
+return safe data for all bedrock backend/tool_loop/cost_cap test files,
+keeping the real quota state out of tests that don't test quota behavior.
+
 file_tool write/append path confinement (#847): the file tool now rejects writes to
 paths outside the working directory.  All tests in test_file_tool.py that write to
 tempfile.TemporaryDirectory() paths need to run with a cwd that is an ancestor of
@@ -27,6 +35,7 @@ test_search_files.py cwd routing.
 
 import os
 import tempfile
+from unittest.mock import patch
 import pytest
 
 _AGENT_REPO = "/droid/repos/agent"
@@ -172,3 +181,58 @@ def search_files_cwd(request):
             yield
         finally:
             os.chdir(orig)
+
+
+# Bedrock test files that need the safe-quota stub.  Tests within these files
+# that specifically test quota behaviour set _cached_usage_pct directly on the
+# BedrockBackend instance after construction.
+_BEDROCK_TEST_FILES = {
+    "test_bedrock_backend",
+    "test_bedrock_backend_tool_loop",
+    "test_bedrock_cost_cap",
+    "test_bedrock_quota_check",
+    "test_bedrock_spend_logging",
+    "test_bedrock_dev_mode_roundtrip",
+    "test_bedrock_security",
+}
+
+_SAFE_TOKEN_USAGE = {"total_tokens": 100_000, "token_limit": 1_000_000}
+
+
+@pytest.fixture(autouse=True)
+def mock_bedrock_token_usage(request):
+    """Patch BedrockChatAPI.get_token_usage to return safe (10%) quota data.
+
+    BedrockBackend.__init__ calls _log_token_usage() which hits the real gateway.
+    When the account quota is over 100% the new proactive check (#864) raises
+    BedrockBudgetExceeded before the test's own mock can run.  This fixture
+    keeps the real quota state out of tests that don't exercise quota behaviour.
+
+    Only applies to the test files listed in _BEDROCK_TEST_FILES.
+    Tests that need a >100% scenario should set b._cached_usage_pct directly.
+    """
+    stem = request.fspath.basename.replace(".py", "")
+    if stem not in _BEDROCK_TEST_FILES:
+        yield
+        return
+
+    # Exclude tests that directly exercise _log_token_usage or get_token_usage
+    # — they use their own mocks and need the real implementation accessible.
+    test_name = request.node.name
+    _USAGE_TEST_PREFIXES = (
+        "test_token_usage_",     # _log_token_usage behaviour tests
+        "test_get_token_usage_", # BedrockChatAPI.get_token_usage unit tests
+    )
+    if any(test_name.startswith(p) for p in _USAGE_TEST_PREFIXES):
+        yield
+        return
+
+    # Patch BedrockBackend._log_token_usage as a no-op.  This prevents the
+    # startup probe in __init__ from hitting the real gateway (which is
+    # currently >100%) and leaving _cached_usage_pct ≥ 100, which would cause
+    # the new proactive quota check to raise BedrockBudgetExceeded in every
+    # test that calls complete() or stream_chat().
+    # _cached_usage_pct stays at 0.0 (the default), so the proactive check
+    # is satisfied and the test's own send_and_wait mock runs normally.
+    with patch("llm_backend.BedrockBackend._log_token_usage"):
+        yield
