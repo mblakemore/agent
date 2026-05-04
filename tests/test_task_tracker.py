@@ -586,3 +586,73 @@ def test_corrupted_file_still_errors():
     res = fn(action="list")
     assert res.startswith("Error:"), f"Expected Error for corrupted file, got: {res!r}"
     assert "corrupted" in res.lower()
+
+
+# ── Issue #716: description used for auto-resolve must not be stored as a note ──
+
+def test_done_auto_resolve_by_description_does_not_add_note():
+    """done auto-resolved via description substring must NOT store the description as a note (#716)."""
+    fn(action="add", description="Fix the login bug")
+    fn(action="add", description="Update the README")
+    # description is used only to identify the task, not as an annotation
+    res = fn(action="done", description="Fix the login bug")
+    assert "Completed task #1" in res
+
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert "note" not in tasks[0], (
+        f"note must not be stored when description was used for auto-resolution, got: {tasks[0]!r}"
+    )
+
+
+def test_update_auto_resolve_by_description_does_not_add_note():
+    """update auto-resolved via description substring must NOT store the description as a note (#716)."""
+    fn(action="add", description="Task A")
+    fn(action="add", description="Task B")
+    # description='Task B' identifies the task; status is the real change
+    res = fn(action="update", description="Task B", status="in_progress")
+    assert "Updated task #2" in res
+    assert "note=" not in res, f"note= must not appear in response when description used for resolution: {res!r}"
+
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert "note" not in tasks[1], (
+        f"note must not be stored when description was used for auto-resolution, got: {tasks[1]!r}"
+    )
+
+
+def test_done_explicit_task_id_with_description_stores_note():
+    """done with explicit task_id and description MUST still store the description as a note (#716)."""
+    fn(action="add", description="Refactor the API")
+    res = fn(action="done", task_id=1, description="Used the new pattern")
+    assert "Completed task #1" in res
+
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0].get("note") == "Used the new pattern", (
+        f"note must be stored when task_id is explicit: {tasks[0]!r}"
+    )
+
+
+def test_update_explicit_task_id_with_description_stores_note():
+    """update with explicit task_id and description MUST still store the description as a note (#716)."""
+    fn(action="add", description="Deploy the fix")
+    res = fn(action="update", task_id=1, description="Blocked by infra issue", status="blocked")
+    assert "Updated task #1" in res
+    assert "note='Blocked by infra issue'" in res
+
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0].get("note") == "Blocked by infra issue", (
+        f"note must be stored when task_id is explicit: {tasks[0]!r}"
+    )
+
+
+def test_update_auto_resolve_single_open_task_with_explicit_note():
+    """When auto-resolved via single-task shortcut (no description needed), an explicit
+    description+task_id-less call that provides description as a note-only update should
+    still work correctly when task_id is provided explicitly (#716)."""
+    fn(action="add", description="The only task")
+    # Single open task auto-resolve (description not used for matching here)
+    res = fn(action="update", task_id=1, description="A real annotation", status="in_progress")
+    assert "Updated task #1" in res
+    assert "note='A real annotation'" in res
+
+    tasks = json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0].get("note") == "A real annotation"
