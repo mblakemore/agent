@@ -86,7 +86,7 @@ def fn(url: str) -> str:
     except requests.exceptions.RequestException as e:
         return f"Error fetching URL: {e}"
     except Exception as e:
-        return f"Unexpected error: {e}"
+        return f"Error: {e}"
 
     # Save to file so the full content survives context compression
     url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
