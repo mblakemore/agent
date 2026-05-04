@@ -132,6 +132,18 @@ def _parse_tool_calls(text: str) -> list[dict]:
             args = data.get("args") or data.get("arguments") or {}
             if not args and name:
                 args = {k: v for k, v in data.items() if k not in ("tool", "name")}
+            # Guard: args must be a dict. A model that emits "args": [...]
+            # or "args": "string" would otherwise propagate a non-dict into
+            # agent.py's dispatch (**func_args), raising TypeError.
+            if not isinstance(args, dict):
+                logging.getLogger("dev_mode_prompt").warning(
+                    "dev-mode: <tool_call> args is %s, not dict — treating as {}; "
+                    "tool=%r raw_args=%r",
+                    type(args).__name__,
+                    name,
+                    args,
+                )
+                args = {}
             if name:
                 calls.append({"name": name, "args": args})
         except json.JSONDecodeError:
