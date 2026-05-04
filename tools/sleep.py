@@ -11,11 +11,15 @@ def fn(seconds: float) -> str:
     Args:
         seconds: Number of seconds to sleep. Must be between 0 and 3600.
     """
+    if isinstance(seconds, bool):
+        return f"Error: 'seconds' must be a number, got {type(seconds).__name__}"
     if not isinstance(seconds, (int, float)):
         return f"Error: 'seconds' must be a number, got {type(seconds).__name__}"
+    if seconds < 0:
+        return "Error: seconds must be non-negative"
+    if seconds > _MAX_SLEEP:
+        return f"Error: sleep duration {seconds} exceeds maximum allowed ({_MAX_SLEEP} s)"
     try:
-        if seconds > _MAX_SLEEP:
-            return f"Error: sleep duration {seconds} exceeds maximum allowed ({_MAX_SLEEP} s)"
         time.sleep(seconds)
         return f"Slept for {seconds} seconds"
     except Exception as e:

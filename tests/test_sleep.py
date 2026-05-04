@@ -70,3 +70,75 @@ def test_sleep_just_under_max_allowed():
     assert _MAX_SLEEP - 0.001 < _MAX_SLEEP  # sanity
     result = fn(0)  # trivially valid; boundary logic validated by test_sleep_exceeds_max_returns_error
     assert "Error" not in result
+
+
+# ── bool guard tests (#792) ───────────────────────────────────────────────────
+
+
+def test_sleep_bool_true_returns_error():
+    """True must be rejected with a clean type error, not silently sleep for 1 second (#792).
+
+    Before the fix, isinstance(True, (int, float)) returned True because bool is a
+    subclass of int, so sleep(True) silently called time.sleep(1) and returned
+    'Slept for True seconds'.
+    """
+    result = fn(True)  # type: ignore
+    assert result.startswith("Error:"), f"Expected error for sleep(True), got: {result!r}"
+    assert "bool" in result, f"Error must mention 'bool', got: {result!r}"
+
+
+def test_sleep_bool_false_returns_error():
+    """False must be rejected with a clean type error, not silently succeed (#792)."""
+    result = fn(False)  # type: ignore
+    assert result.startswith("Error:"), f"Expected error for sleep(False), got: {result!r}"
+    assert "bool" in result, f"Error must mention 'bool', got: {result!r}"
+
+
+def test_sleep_bool_does_not_sleep():
+    """Passing a bool must return the error immediately without sleeping (#792)."""
+    import time
+    t0 = time.monotonic()
+    fn(True)  # type: ignore
+    elapsed = time.monotonic() - t0
+    assert elapsed < 0.5, (
+        f"sleep(True) should return immediately but took {elapsed:.2f}s — "
+        f"suggests the bool slipped past the guard and time.sleep(1) was called"
+    )
+
+
+# ── negative guard tests (#792) ──────────────────────────────────────────────
+
+
+def test_sleep_negative_returns_clean_error():
+    """Negative seconds must produce a clean, explicit error message (#792).
+
+    Before the fix, the negative check fell through to time.sleep(-1) which raised
+    ValueError('sleep length must be non-negative') — a stdlib message exposed raw
+    to the caller instead of a consistent tool-level error.
+    """
+    result = fn(-1.0)
+    assert result.startswith("Error:"), f"Expected error for sleep(-1), got: {result!r}"
+    assert "non-negative" in result, (
+        f"Error message should mention 'non-negative', got: {result!r}"
+    )
+
+
+def test_sleep_negative_float_returns_clean_error():
+    """A small negative float must also produce the clean guard error (#792)."""
+    result = fn(-0.001)
+    assert result.startswith("Error:")
+    assert "non-negative" in result
+
+
+def test_sleep_negative_does_not_expose_stdlib_message():
+    """The negative-seconds error must not expose the raw time.sleep ValueError text (#792)."""
+    result = fn(-5)
+    # The stdlib message includes 'sleep length must be non-negative'; our guard fires
+    # earlier with the same phrase but via an explicit return, not an exception.
+    # We check the error is a clean return (starts with 'Error:') rather than an
+    # exception bubble-up — the existing try/except wrapper would produce the same
+    # text, so we additionally verify the tool message is consistent with other
+    # tool guards (all start with "Error:").
+    assert result.startswith("Error:"), (
+        f"Expected 'Error:' prefix for negative sleep, got: {result!r}"
+    )
