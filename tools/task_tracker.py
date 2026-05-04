@@ -257,9 +257,18 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
             lines.append(line)
         # Summary counts always reflect the full task list, not just the filtered view.
         # Both 'done' and 'completed' are terminal statuses (#738).
-        open_count = sum(1 for t in tasks if t["status"] not in _DONE_STATUSES)
+        # Count each non-done status separately so the summary is accurate — lumping
+        # in_progress/blocked/deferred into "open" would misreport the true breakdown (#748).
+        _ACTIVE_STATUSES = ("in_progress", "blocked", "deferred")
+        open_count = sum(1 for t in tasks if t["status"] == "open")
         done_count = sum(1 for t in tasks if t["status"] in _DONE_STATUSES)
-        lines.append(f"\n{open_count} open, {done_count} done")
+        active_counts = {s: sum(1 for t in tasks if t["status"] == s) for s in _ACTIVE_STATUSES}
+        parts = [f"{open_count} open"]
+        for s in _ACTIVE_STATUSES:
+            if active_counts[s]:
+                parts.append(f"{active_counts[s]} {s}")
+        parts.append(f"{done_count} done")
+        lines.append("\n" + ", ".join(parts))
         return "\n".join(lines)
 
     else:
