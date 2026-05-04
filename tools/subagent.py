@@ -11,6 +11,9 @@ def subagent(
     The sub-agent will work independently and return its final answer.
     Use this to break down complex problems into smaller, manageable pieces.
     """
+    if not prompt or not prompt.strip():
+        return "Error: prompt must not be empty"
+
     # Determine the absolute path to agent.py
     # tools/subagent.py -> ../agent.py
     tool_dir = os.path.dirname(os.path.abspath(__file__))

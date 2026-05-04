@@ -69,5 +69,15 @@ class TestSubagent(unittest.TestCase):
         result = subagent("Test prompt")
         self.assertIn("An error occurred while running the sub-agent: Unexpected process error", result)
 
+    def test_subagent_empty_prompt(self):
+        """Empty string prompt must fail fast without launching subprocess."""
+        result = subagent("")
+        self.assertEqual(result, "Error: prompt must not be empty")
+
+    def test_subagent_whitespace_only_prompt(self):
+        """Whitespace-only prompt must fail fast without launching subprocess."""
+        result = subagent("   ")
+        self.assertEqual(result, "Error: prompt must not be empty")
+
 if __name__ == '__main__':
     unittest.main()
