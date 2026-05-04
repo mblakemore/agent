@@ -233,6 +233,34 @@ def _write(path, content, start_line, end_line):
     return f"Wrote '{path}' ({len(content)} chars)"
 
 
+import re as _re
+
+_MAIN_GUARD_RE = _re.compile(r'^if\s+__name__\s*==\s*["\']__main__["\']\s*:', _re.MULTILINE)
+
+
+def _find_main_guard_start(lines):
+    """Return the 0-based index of the first line of the `if __name__` guard block,
+    or None if no such block is found in the trailing non-empty content."""
+    # Walk backwards to find the last non-empty line, then locate the guard.
+    last_nonempty = None
+    for i in range(len(lines) - 1, -1, -1):
+        if lines[i].strip():
+            last_nonempty = i
+            break
+    if last_nonempty is None:
+        return None
+
+    # Search backwards from the last non-empty line to find the guard header.
+    for i in range(last_nonempty, -1, -1):
+        if _MAIN_GUARD_RE.match(lines[i]):
+            return i
+        # Stop if we hit a non-empty line that doesn't look like part of the guard block
+        # (i.e. not indented and not the guard itself and not blank).
+        if lines[i].strip() and i != last_nonempty and not lines[i][0].isspace():
+            break
+    return None
+
+
 def _append(path, content):
     p = Path(path)
     if p.name in _BLOCKED_FILENAMES:
@@ -245,6 +273,20 @@ def _append(path, content):
     if p.exists():
         with open(p, 'r', encoding='utf-8', errors='replace') as f:
             old_content = f.read()
+
+    # For Python files, insert before any trailing `if __name__ == "__main__":` guard.
+    if p.suffix.lower() == '.py' and old_content:
+        lines = old_content.splitlines(True)
+        guard_idx = _find_main_guard_start(lines)
+        if guard_idx is not None:
+            # Ensure the content to insert ends with a newline so it doesn't merge with the guard.
+            insert_block = content if content.endswith('\n') else content + '\n'
+            new_lines = lines[:guard_idx] + [insert_block] + lines[guard_idx:]
+            new_content = ''.join(new_lines)
+            with open(p, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            diff_text = _get_diff(old_content, new_content)
+            return f"Appended to '{path}' ({len(content)} chars, inserted before __main__ guard)\n\nDiff:\n{diff_text}"
 
     with open(p, 'a', encoding='utf-8') as f:
         f.write(content)
@@ -350,9 +392,12 @@ definition = {
             "use `find_symbol` instead of reading the whole file. "
             "For locating content in a large file, use `search_files` first to find the file and line, then pass `start_line=` to read just the relevant section.\n"
             "- write: Create/overwrite a file, or replace a line range (MUST set both start_line AND end_line). "
-            "Parent directories are created automatically — do NOT call mkdir or exec_command before writing a file into a new directory.\n"
+            "Parent directories are created automatically — do NOT call mkdir or exec_command before writing a file into a new directory. "
+            "Prefer this over `exec_command` echo redirects or heredocs for writing files — it handles special characters correctly and is easier to review.\n"
             "- insert: Insert content BEFORE a line (set start_line). Existing lines shift down. Does NOT replace anything.\n"
-            "- append: Append content to end of file (not for JSON files).\n"
+            "- append: Append content to end of file (not for JSON files). "
+            "For `.py` files, if the file ends with an `if __name__ == \"__main__\":` guard, "
+            "the content is inserted *before* that guard to keep it syntactically valid.\n"
             "- delete: Delete a file or empty directory.\n"
             "- list: List directory contents. "
             "IMPORTANT: skip this action if the user's prompt already names the files or paths "
