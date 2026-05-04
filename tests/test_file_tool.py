@@ -631,3 +631,55 @@ class TestFilePathWhitespace(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             result = file_tool.fn(action="list", path="\t" + d + "\t")
             self.assertNotIn("does not exist", result)
+
+
+class TestFileNullByteInContent(unittest.TestCase):
+    """Null bytes in content must be rejected for write/append/insert. (#762)"""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.txt = Path(self.tmp) / "test.txt"
+        self.txt.write_text("original\n", encoding="utf-8")
+        # Pre-read the file so write isn't blocked by unread guard
+        file_tool.fn(action="read", path=str(self.txt))
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_write_null_byte_in_content_returns_error(self):
+        """Before the fix, null bytes were silently written to the file. (#762)"""
+        result = file_tool.fn(action="write", path=str(self.txt), content="hello\x00world\n")
+        self.assertIn("null byte", result)
+        self.assertIn("Error", result)
+
+    def test_write_null_byte_does_not_modify_file(self):
+        """A rejected write must leave the file unchanged."""
+        original = self.txt.read_text(encoding="utf-8")
+        file_tool.fn(action="write", path=str(self.txt), content="corrupt\x00content\n")
+        after = self.txt.read_text(encoding="utf-8")
+        self.assertEqual(original, after, "File should not have been modified after rejected write")
+
+    def test_append_null_byte_in_content_returns_error(self):
+        """Null byte in append content must be rejected. (#762)"""
+        result = file_tool.fn(action="append", path=str(self.txt), content="appended\x00line\n")
+        self.assertIn("null byte", result)
+        self.assertIn("Error", result)
+
+    def test_append_null_byte_does_not_modify_file(self):
+        """A rejected append must leave the file unchanged."""
+        original = self.txt.read_text(encoding="utf-8")
+        file_tool.fn(action="append", path=str(self.txt), content="bad\x00append\n")
+        after = self.txt.read_text(encoding="utf-8")
+        self.assertEqual(original, after)
+
+    def test_insert_null_byte_in_content_returns_error(self):
+        """Null byte in insert content must be rejected. (#762)"""
+        result = file_tool.fn(action="insert", path=str(self.txt), content="ins\x00ert\n", start_line=1)
+        self.assertIn("null byte", result)
+        self.assertIn("Error", result)
+
+    def test_valid_content_still_works_after_null_check(self):
+        """The null-byte guard must not interfere with normal writes. (#762)"""
+        result = file_tool.fn(action="write", path=str(self.txt), content="clean content\n")
+        self.assertIn("Wrote", result)
