@@ -441,5 +441,74 @@ class TestFileContentTypeValidation(unittest.TestCase):
                                   f"Error must mention '{expected_type_name}', got: {result!r}")
 
 
+class TestFilePathTypeValidation(unittest.TestCase):
+    """fn() must return a clean Error string when path is not a string (#682)."""
+
+    def test_read_with_int_path_returns_clean_error(self):
+        """read action with path=42 must return Error, not leak Python exception."""
+        result = file_tool.fn(action="read", path=42)
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("int", result)
+        self.assertNotIn("strip", result, "Must not leak raw Python exception text")
+
+    def test_write_with_int_path_returns_clean_error(self):
+        """write action with path=42 must return Error, not leak Python exception."""
+        result = file_tool.fn(action="write", path=42, content="hello")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("int", result)
+
+    def test_path_none_returns_clean_error(self):
+        """path=None must return a clean Error, not crash."""
+        result = file_tool.fn(action="read", path=None)
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("NoneType", result)
+
+    def test_path_list_returns_clean_error(self):
+        """path=[] must return a clean Error string."""
+        result = file_tool.fn(action="list", path=[])
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("list", result)
+
+    def test_path_bytes_returns_clean_error(self):
+        """path=b'...' must return a clean Error, not an os.PathLike exception."""
+        result = file_tool.fn(action="read", path=b"/tmp/file.txt")
+        self.assertIsInstance(result, str)
+        self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
+        self.assertIn("bytes", result)
+        self.assertNotIn("PathLike", result, "Must not leak raw os exception text")
+
+    def test_error_message_names_the_bad_type_and_value(self):
+        """The Error message must mention the bad type AND value so callers can self-correct."""
+        for bad_path, expected_type in [(42, "int"), (3.14, "float"), (True, "bool")]:
+            with self.subTest(bad_path=bad_path):
+                result = file_tool.fn(action="read", path=bad_path)
+                self.assertIn(expected_type, result,
+                              f"Error must mention '{expected_type}', got: {result!r}")
+                self.assertIn(repr(bad_path), result,
+                              f"Error must show bad value, got: {result!r}")
+
+    def test_valid_string_path_unaffected(self):
+        """A normal string path must still work after adding the type check."""
+        with tempfile.TemporaryDirectory() as d:
+            target = str(Path(d) / "ok.txt")
+            result = file_tool.fn(action="write", path=target, content="hi")
+            self.assertTrue(result.startswith("Wrote '"), f"Normal write broke: {result!r}")
+            self.assertEqual(Path(target).read_text(), "hi")
+
+    def test_all_actions_respect_path_type_check(self):
+        """Every action must return a clean Error when path is not a string."""
+        for action in ("read", "write", "insert", "append", "delete", "list"):
+            with self.subTest(action=action):
+                result = file_tool.fn(action=action, path=99, content="x", start_line=1)
+                self.assertIsInstance(result, str)
+                self.assertTrue(result.startswith("Error:"),
+                                f"action={action}: Expected Error:, got: {result!r}")
+                self.assertIn("int", result)
+
+
 if __name__ == "__main__":
     unittest.main()
