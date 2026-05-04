@@ -77,6 +77,10 @@ def _is_private_address(url: str) -> bool:
         # Strip brackets for IPv6 literals (e.g. "[::1]" → "::1")
         host = host.strip("[]")
         addr = ipaddress.ip_address(host)
+        # Unwrap IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1 → 127.0.0.1)
+        # so they are checked against the IPv4 private ranges.
+        if hasattr(addr, 'ipv4_mapped') and addr.ipv4_mapped:
+            addr = addr.ipv4_mapped
         return any(addr in net for net in _PRIVATE_NETWORKS)
     except ValueError:
         # Not a numeric IP address or localhost — allow (could be an external hostname)
