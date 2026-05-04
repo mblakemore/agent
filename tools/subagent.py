@@ -20,7 +20,7 @@ def subagent(
     Use this to break down complex problems into smaller, manageable pieces.
     """
     if not isinstance(prompt, str):
-        return "Error: prompt must be a non-empty string"
+        return f"Error: prompt must be a string, got {type(prompt).__name__!r}"
     if not prompt.strip():
         return "Error: prompt must not be empty"
     if "\x00" in prompt:

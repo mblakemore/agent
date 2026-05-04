@@ -82,19 +82,25 @@ class TestSubagent(unittest.TestCase):
         self.assertEqual(result, "Error: prompt must not be empty")
 
     def test_subagent_integer_prompt(self):
-        """Integer prompt must return an error string, not raise AttributeError."""
+        """Integer prompt must return a type-specific error, not 'must be non-empty string' (#911)."""
         result = subagent(42)
-        self.assertEqual(result, "Error: prompt must be a non-empty string")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertIn("int", result, f"Error must name the bad type: {result!r}")
 
     def test_subagent_none_prompt(self):
-        """None prompt must return an error string, not raise AttributeError."""
+        """None prompt must return a type-specific error (#911)."""
         result = subagent(None)
-        self.assertEqual(result, "Error: prompt must be a non-empty string")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertIn("NoneType", result, f"Error must name the bad type: {result!r}")
 
     def test_subagent_list_prompt(self):
-        """List prompt must return an error string, not raise AttributeError."""
+        """List prompt must return a type-specific error (#911)."""
         result = subagent(["do something"])
-        self.assertEqual(result, "Error: prompt must be a non-empty string")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertIn("list", result, f"Error must name the bad type: {result!r}")
 
     def test_subagent_null_byte_prompt(self):
         """Null byte in prompt must fail fast without launching subprocess."""
