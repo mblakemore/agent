@@ -889,3 +889,79 @@ def test_description_with_space_around_tab_collapsed_cleanly():
     tasks = json.loads(Path(_TASKS_FILE).read_text())
     desc = tasks[0]["description"]
     assert desc == "word1 word2", f"Expected 'word1 word2', got: {desc!r}"
+
+
+# ── Issue #732: list action must honour the status filter ────────────────────
+
+def test_list_status_filter_no_match_returns_clear_message():
+    """list with a status filter that matches no tasks must return a clear message, not all tasks (#732)."""
+    fn(action="add", description="open task")
+    result = fn(action="list", status="blocked")
+    assert "open task" not in result, (
+        f"Expected no tasks in output, got: {result!r}"
+    )
+    assert "blocked" in result, f"Expected 'blocked' in message, got: {result!r}"
+
+
+def test_list_status_filter_returns_only_matching_tasks():
+    """list with status='blocked' must return only blocked tasks, not open or done ones (#732)."""
+    fn(action="add", description="open task")
+    fn(action="add", description="blocked task")
+    fn(action="update", task_id=2, status="blocked")
+    fn(action="add", description="done task")
+    fn(action="done", task_id=3)
+
+    result = fn(action="list", status="blocked")
+    assert "blocked task" in result, f"Expected 'blocked task' in output, got: {result!r}"
+    assert "open task" not in result, f"open task must not appear in filtered output: {result!r}"
+    assert "done task" not in result, f"done task must not appear in filtered output: {result!r}"
+
+
+def test_list_status_filter_case_insensitive():
+    """list with status='OPEN' or 'Open' must match tasks with status 'open' (#732)."""
+    fn(action="add", description="open task")
+
+    result_upper = fn(action="list", status="OPEN")
+    assert "open task" in result_upper, (
+        f"UPPERCASE filter must match open tasks, got: {result_upper!r}"
+    )
+
+    result_mixed = fn(action="list", status="Open")
+    assert "open task" in result_mixed, (
+        f"Mixed-case filter must match open tasks, got: {result_mixed!r}"
+    )
+
+
+def test_list_no_status_filter_returns_all_tasks():
+    """list without a status filter must still return all tasks (existing behaviour, #732)."""
+    fn(action="add", description="open task")
+    fn(action="add", description="another open")
+    fn(action="update", task_id=2, status="in_progress")
+
+    result = fn(action="list")
+    assert "open task" in result
+    assert "another open" in result
+
+
+def test_list_status_filter_in_progress():
+    """list with status='in_progress' must return only in_progress tasks (#732)."""
+    fn(action="add", description="task a")
+    fn(action="add", description="task b")
+    fn(action="update", task_id=1, status="in_progress")
+
+    result = fn(action="list", status="in_progress")
+    assert "task a" in result, f"Expected 'task a' in output, got: {result!r}"
+    assert "task b" not in result, f"task b must not appear in filtered output: {result!r}"
+
+
+def test_list_status_filter_summary_counts_reflect_full_list():
+    """Summary counts in filtered list must reflect the full task list, not just filtered (#732)."""
+    fn(action="add", description="open task")
+    fn(action="add", description="blocked task")
+    fn(action="update", task_id=2, status="blocked")
+
+    result = fn(action="list", status="blocked")
+    # Total: 2 open (blocked counts as open), 0 done
+    assert "2 open" in result, (
+        f"Summary counts must be for full list, not just filter match. Got: {result!r}"
+    )

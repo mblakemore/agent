@@ -228,13 +228,23 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
     elif action == "list":
         if not tasks:
             return "No tasks."
+        # Apply optional status filter (case-insensitive).
+        # When status is provided, only include tasks whose status matches.
+        status_filter = status.strip().lower() if status else ""
+        if status_filter:
+            filtered = [t for t in tasks if t["status"].lower() == status_filter]
+            if not filtered:
+                return f"No tasks with status '{status_filter}'."
+        else:
+            filtered = tasks
         lines = []
-        for t in tasks:
+        for t in filtered:
             marker = "x" if t["status"] == "done" else " "
             line = f"[{marker}] #{t['id']} ({t['status']}): {t.get('description', '')}"
             if t.get("note"):
                 line += f" — {t['note']}"
             lines.append(line)
+        # Summary counts always reflect the full task list, not just the filtered view.
         open_count = sum(1 for t in tasks if t["status"] != "done")
         done_count = sum(1 for t in tasks if t["status"] == "done")
         lines.append(f"\n{open_count} open, {done_count} done")
