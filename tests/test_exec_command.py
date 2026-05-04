@@ -568,3 +568,88 @@ def test_exec_command_cwd_background_mode(tmp_path):
     """cwd must also apply to background commands."""
     result = fn(command="pwd", background=True, cwd=str(tmp_path))
     assert "Command started in background" in result
+
+
+# ── env parameter tests (#730) ────────────────────────────────────────────────
+
+def test_exec_command_env_injects_variable():
+    """env dict must make custom variables visible inside the subprocess (#730)."""
+    result = fn(command="echo $MY_CUSTOM_VAR", env={"MY_CUSTOM_VAR": "hello_from_env"})
+    assert "exit=0" in result
+    assert "hello_from_env" in result
+
+
+def test_exec_command_env_multiple_variables():
+    """Multiple env vars must all be visible in the subprocess."""
+    result = fn(
+        command="echo $VAR_A $VAR_B",
+        env={"VAR_A": "alpha", "VAR_B": "beta"},
+    )
+    assert "exit=0" in result
+    assert "alpha" in result
+    assert "beta" in result
+
+
+def test_exec_command_env_empty_dict_works():
+    """env={} (empty dict) must not cause any error — behaves like env=None."""
+    result = fn(command="echo ok", env={})
+    assert "exit=0" in result
+    assert "ok" in result
+
+
+def test_exec_command_env_none_default_unchanged():
+    """env=None (the default) must behave identically to not passing env at all."""
+    result = fn(command="echo ok", env=None)
+    assert "exit=0" in result
+    assert "ok" in result
+
+
+def test_exec_command_env_non_dict_returns_error():
+    """Passing a non-dict env must return a clear Error string, not raise TypeError (#730)."""
+    result = fn(command="echo ok", env="VAR=value")
+    assert result.startswith("Error: env must be a dict or None")
+    assert "'str'" in result
+
+
+def test_exec_command_env_list_returns_error():
+    """A list env must also return a clear Error string."""
+    result = fn(command="echo ok", env=["VAR=value"])
+    assert result.startswith("Error: env must be a dict or None")
+
+
+def test_exec_command_env_does_not_unset_pythonpath(tmp_path):
+    """Auto-injected PYTHONPATH must still be present when env is provided (#730)."""
+    import os
+    from unittest.mock import patch
+    env_without = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    with patch.dict(os.environ, env_without, clear=True):
+        result = fn(
+            command='python3 -c "import os; print(os.environ.get(\'PYTHONPATH\', \'NOT SET\'))"',
+            env={"MY_EXTRA_VAR": "present"},
+            timeout=10,
+        )
+    assert "exit=0" in result
+    assert "NOT SET" not in result, "PYTHONPATH was dropped when env was provided"
+
+
+def test_exec_command_env_overrides_existing_variable():
+    """A variable in env must override the inherited value for that key."""
+    import os
+    # PATH is always set; override it to something simple and verify
+    result = fn(
+        command="echo $BEEWATCHER_TEST_OVERRIDE",
+        env={"BEEWATCHER_TEST_OVERRIDE": "overridden"},
+    )
+    assert "exit=0" in result
+    assert "overridden" in result
+
+
+def test_exec_command_env_background_mode():
+    """env must also apply when background=True."""
+    import re, time
+    res = fn(command="echo $BG_ENV_VAR", background=True, env={"BG_ENV_VAR": "bg_value"})
+    assert "Command started in background" in res
+    sid = re.search(r'\[session: ([^\]]+)\]', res).group(1)
+    time.sleep(0.5)
+    poll = fn(session_id=sid)
+    assert "bg_value" in poll
