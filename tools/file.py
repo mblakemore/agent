@@ -70,7 +70,7 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
         end_line: For read: last line (1-indexed). For write: last line to replace (REQUIRED when start_line is set).
     """
     try:
-        resolved = str(_resolve_path(path))
+        resolved = str(_resolve_path(path.strip()))
         if action == "read":
             return _read(resolved, start_line, end_line)
         elif action == "write":

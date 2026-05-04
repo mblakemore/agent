@@ -448,3 +448,23 @@ class TestDefaultExcludes(unittest.TestCase):
                 "my_function", path=d, context=0, include_temp=False
             )
             self.assertEqual(result_default, result_explicit)
+
+
+class TestSearchFilesPathWhitespace(unittest.TestCase):
+    """A path with leading/trailing whitespace must be treated the same as a
+    trimmed path — the tool should strip it rather than returning 'does not exist'."""
+
+    def test_directory_path_with_spaces_succeeds(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "sample.py").write_text("def greet(): pass\n", encoding="utf-8")
+            result = search_files.fn("greet", path="  " + d + "  ", context=0)
+            self.assertNotIn("does not exist", result)
+            self.assertIn("greet", result)
+
+    def test_file_path_with_spaces_succeeds(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = Path(d) / "sample.py"
+            target.write_text("def hello(): pass\n", encoding="utf-8")
+            result = search_files.fn("hello", path=" " + str(target) + " ", context=0)
+            self.assertNotIn("does not exist", result)
+            self.assertIn("hello", result)

@@ -177,7 +177,7 @@ def find_symbol(
     if kind is not None and kind not in _VALID_KINDS:
         return [{"error": f"Invalid kind {kind!r}. Must be one of: {sorted(_VALID_KINDS)}"}]
 
-    search_path = Path(path)
+    search_path = Path(path.strip())
     if not search_path.exists():
         return []
 

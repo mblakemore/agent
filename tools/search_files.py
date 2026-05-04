@@ -169,6 +169,7 @@ def fn(
         return f"Error: invalid regex pattern: {e}"
 
     # Resolve search_path immediately to avoid absolute vs relative mismatch in relative_to()
+    path = path.strip()
     search_path = Path(path).resolve()
     if not search_path.exists():
         return f"Error: path '{path}' does not exist"
