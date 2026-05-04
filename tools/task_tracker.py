@@ -145,12 +145,16 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
     if '\x00' in action:
         return "Error: action contains a null byte, which is not allowed"
 
-    # Ensure description is always a string even if the model omits the field
-    # or passes a non-string (e.g. integer) — coerce to str to prevent AttributeError
-    # from .strip() calls further down.  Strip whitespace so that a
-    # whitespace-only string ("   ") is treated the same as an empty string.
+    # description=None means "not provided" — treat as empty string.
+    # Any other non-string type is an error (same guard as task_id, limit, status).
     if not isinstance(description, str):
-        description = str(description) if description is not None else ""
+        if description is None:
+            description = ""
+        else:
+            return (
+                f"Error: description must be a string, got {type(description).__name__!r}: "
+                f"{description!r}. Pass a plain string value."
+            )
     description = description.strip()
     # Collapse embedded newlines/tabs (and any adjacent spaces) into a single
     # space so that descriptions and notes remain single-line.  This prevents
