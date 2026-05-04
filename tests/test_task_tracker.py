@@ -214,3 +214,36 @@ def test_task_missing_description_field_list():
     res = fn(action="list")
     assert "#1" in res
     assert "KeyError" not in res
+
+
+# ── Issue #640: update rejects invalid status values ──
+
+def test_update_invalid_status_rejected():
+    """update with an unrecognised status must return an Error, not silently corrupt the task."""
+    fn(action="add", description="Task for status test")
+    res = fn(action="update", task_id=1, status="foobar")
+    assert res.startswith("Error:")
+    assert "foobar" in res
+    # Task must not be modified
+    import json as _json
+    tasks = _json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["status"] == "open"
+
+
+def test_update_valid_statuses_accepted():
+    """All documented valid status values must be accepted by update."""
+    fn(action="add", description="Status cycling task")
+    for valid_status in ("in_progress", "blocked", "deferred", "open"):
+        res = fn(action="update", task_id=1, status=valid_status)
+        assert "Error" not in res, f"Unexpected error for status={valid_status!r}: {res}"
+        assert f"status={valid_status}" in res
+
+
+def test_update_done_redirect_still_works():
+    """update with status='done' or 'completed' must still redirect to the done action."""
+    fn(action="add", description="Task to finish via update")
+    res = fn(action="update", task_id=1, status="done")
+    assert "Completed task #1" in res
+    import json as _json
+    tasks = _json.loads(Path(_TASKS_FILE).read_text())
+    assert tasks[0]["status"] == "done"
