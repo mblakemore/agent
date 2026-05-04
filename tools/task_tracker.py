@@ -1,32 +1,75 @@
 """Task tracker tool — persistent task management via .agent/state/tasks.json."""
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
 
 _TASKS_FILE = ".agent/state/tasks.json"
 
+# Sentinel returned by _load_tasks when the file exists but contains invalid JSON.
+# Using a named class (rather than None / [] / a string) lets fn() detect it
+# unambiguously without coupling to a magic string value.
+class _Corrupted:
+    def __init__(self, path: str, detail: str):
+        self.path = path
+        self.detail = detail
+
+    def error_msg(self) -> str:
+        return (
+            f"Error: tasks file is corrupted (invalid JSON): {self.path}\n"
+            f"Detail: {self.detail}\n"
+            "Restore from backup or delete the file to start fresh."
+        )
+
 
 def _load_tasks():
+    """Return list-of-task-dicts, or a _Corrupted sentinel if the file is unreadable."""
     p = Path(_TASKS_FILE)
     if not p.exists():
         return []
     try:
-        return json.loads(p.read_text(encoding='utf-8', errors='replace'))
-    except (json.JSONDecodeError, IOError):
-        return []
+        raw = p.read_text(encoding='utf-8', errors='replace')
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return _Corrupted(str(p.resolve()), str(exc))
+    except IOError as exc:
+        return _Corrupted(str(p.resolve()), str(exc))
+
 
 def get_tasks():
-    """Return the current list of tasks."""
-    return _load_tasks()
-
+    """Return the current list of tasks, or [] if the file is missing/corrupted."""
+    result = _load_tasks()
+    if isinstance(result, _Corrupted):
+        return []
+    return result
 
 
 def _save_tasks(tasks):
+    """Atomically write tasks to disk using a temp-file + rename pattern.
+
+    This prevents a killed/interrupted write from leaving a partial (corrupted)
+    JSON file behind — the old file is only replaced once the new one is fully
+    flushed to disk.
+    """
     p = Path(_TASKS_FILE)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(tasks, indent=2) + "\n", encoding='utf-8')
+    # Write to a sibling temp file in the same directory so os.replace() is
+    # guaranteed to be atomic on POSIX (same filesystem, single syscall).
+    fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+            fh.write(json.dumps(tasks, indent=2) + "\n")
+        os.replace(tmp_path, str(p))
+    except Exception:
+        # Clean up the temp file if anything goes wrong before the rename.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _next_id(tasks):
@@ -55,6 +98,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
             return f"Error: task_id must be an integer, got {type(task_id).__name__!r}: {task_id!r}"
 
     tasks = _load_tasks()
+    if isinstance(tasks, _Corrupted):
+        return tasks.error_msg()
 
     # Treat update with completed/done status as the "done" action
     if action == "update" and status in ("completed", "done"):

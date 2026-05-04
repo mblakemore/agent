@@ -169,15 +169,61 @@ def test_invalid_action():
     res = fn(action="invalid")
     assert "Error: unknown action 'invalid'" in res
 
-def test_json_corruption():
-    # Create a corrupted JSON file
+def test_json_corruption_list_returns_error():
+    """Issue #670: corrupted tasks.json must return an Error, not silently 'No tasks.'"""
     p = Path(_TASKS_FILE)
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text("NOT JSON", encoding='utf-8')
+    p.write_text("NOT JSON {{{", encoding='utf-8')
 
-    # _load_tasks should handle this and return []
     res = fn(action="list")
-    assert res == "No tasks."
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    assert "corrupted" in res.lower()
+
+
+def test_json_corruption_add_returns_error():
+    """Issue #670: add must not silently overwrite a corrupted file."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    original_content = "CORRUPTED DATA"
+    p.write_text(original_content, encoding='utf-8')
+
+    res = fn(action="add", description="New task after corruption")
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    # The corrupted file must NOT be overwritten by the failed add
+    assert p.read_text(encoding='utf-8') == original_content
+
+
+def test_json_corruption_done_returns_error():
+    """Issue #670: done must return Error on corrupted file, not 'task not found'."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("<<<invalid>>>", encoding='utf-8')
+
+    res = fn(action="done", task_id=1)
+    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
+    assert "corrupted" in res.lower()
+
+
+def test_json_corruption_all_actions_return_error():
+    """Issue #670: every action must return Error on a corrupted file."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("{bad json", encoding='utf-8')
+
+    for action_kwargs in [
+        {"action": "list"},
+        {"action": "add", "description": "x"},
+        {"action": "done", "task_id": 1},
+        {"action": "update", "task_id": 1, "status": "in_progress"},
+        {"action": "drop", "task_id": 1},
+    ]:
+        res = fn(**action_kwargs)
+        assert res.startswith("Error:"), (
+            f"action={action_kwargs!r}: expected Error, got: {res!r}"
+        )
+        assert "corrupted" in res.lower(), (
+            f"action={action_kwargs!r}: 'corrupted' not in response: {res!r}"
+        )
 
 
 # ── Issue #535: description must be optional (no KeyError when omitted) ──
