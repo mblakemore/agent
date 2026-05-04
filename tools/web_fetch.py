@@ -120,7 +120,9 @@ def fn(url: str) -> str:
     Args:
         url: The URL to fetch.
     """
-    if not isinstance(url, str) or not url.strip():
+    if not isinstance(url, str):
+        return f"Error: url must be a string, got {type(url).__name__!r}"
+    if not url.strip():
         return "Error: url must not be empty"
     if '\x00' in url:
         return "Error: url contains a null byte, which is not allowed"
