@@ -863,3 +863,70 @@ class TestSearchFilesAbsolutePaths(unittest.TestCase):
                         line.startswith(abs_d),
                         f"Expected line to start with abs path, got: {line!r}",
                     )
+
+
+class TestSearchFilesCaseSensitiveDefault(unittest.TestCase):
+    """search_files must be case-sensitive by default — issue #724.
+
+    ignore_case was mistakenly defaulting to True, causing every search to
+    act as case-insensitive even when the caller did not specify the flag.
+    The correct default is False (case-sensitive), matching grep behaviour.
+    """
+
+    def test_default_is_case_sensitive(self):
+        """Without ignore_case, only the exact-case line must match."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "case.py").write_text("Hello World\nhELLO wORLD\nhello world\n")
+            result = search_files.fn(pattern="hello", path=d, context=0)
+            body = _body(result)
+            lines = [l for l in body.split("\n") if l.strip()]
+            # Only the all-lowercase line 3 should match
+            self.assertEqual(len(lines), 1, f"Expected 1 match, got {len(lines)}: {lines}")
+            self.assertIn("hello world", lines[0])
+            self.assertNotIn("Hello World", body)
+            self.assertNotIn("hELLO wORLD", body)
+
+    def test_explicit_false_is_case_sensitive(self):
+        """ignore_case=False must match only the exact-case line."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "case.py").write_text("Hello World\nhELLO wORLD\nhello world\n")
+            result = search_files.fn(pattern="hello", path=d, context=0, ignore_case=False)
+            body = _body(result)
+            lines = [l for l in body.split("\n") if l.strip()]
+            self.assertEqual(len(lines), 1)
+            self.assertIn("hello world", lines[0])
+
+    def test_explicit_true_matches_all_cases(self):
+        """ignore_case=True must match all three variants."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "case.py").write_text("Hello World\nhELLO wORLD\nhello world\n")
+            result = search_files.fn(pattern="hello", path=d, context=0, ignore_case=True)
+            body = _body(result)
+            lines = [l for l in body.split("\n") if l.strip()]
+            self.assertEqual(len(lines), 3, f"Expected 3 matches with ignore_case=True, got {len(lines)}: {lines}")
+
+    def test_definition_default_is_false(self):
+        """The tool JSON definition must advertise ignore_case default as False."""
+        props = search_files.definition["function"]["parameters"]["properties"]
+        self.assertIn("ignore_case", props)
+        self.assertFalse(
+            props["ignore_case"]["default"],
+            "ignore_case default in definition must be False",
+        )
+
+    def test_function_signature_default_is_false(self):
+        """The Python function signature must have ignore_case defaulting to False."""
+        import inspect
+        sig = inspect.signature(search_files.fn)
+        default = sig.parameters["ignore_case"].default
+        self.assertIs(default, False,
+            f"Expected ignore_case default to be False, got {default!r}")
+
+    def test_definition_default_matches_signature(self):
+        """The JSON definition default must match the Python function signature default."""
+        import inspect
+        sig = inspect.signature(search_files.fn)
+        sig_default = sig.parameters["ignore_case"].default
+        def_default = search_files.definition["function"]["parameters"]["properties"]["ignore_case"]["default"]
+        self.assertEqual(sig_default, def_default,
+            f"Signature default {sig_default!r} does not match definition default {def_default!r}")

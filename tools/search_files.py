@@ -147,7 +147,7 @@ def fn(
     pattern: str,
     path: str = ".",
     glob: str = "*",
-    ignore_case: bool = True,
+    ignore_case: bool = False,
     context: int = 3,
     count_only: bool = False,
     include_temp: bool = False,
@@ -159,7 +159,7 @@ def fn(
         pattern: Regex pattern to search for.
         path: Directory to search in (default: current directory).
         glob: File glob pattern to filter (default: * for all files).
-        ignore_case: Case-insensitive search (default: True).
+        ignore_case: Case-insensitive search (default: False).
         context: Lines of context to include before/after each match, like
             grep -C. Capped at _MAX_CONTEXT. Default 3. Match lines use
             'file:linenum: text'; context lines use 'file:linenum- text'.
@@ -441,8 +441,8 @@ definition = {
                 },
                 "ignore_case": {
                     "type": "boolean",
-                    "description": "Case-insensitive search (default: true).",
-                    "default": True,
+                    "description": "Case-insensitive search (default: false). Pass true to match regardless of letter case.",
+                    "default": False,
                 },
                 "context": {
                     "type": "integer",
