@@ -168,8 +168,8 @@ def find_symbol(
 
     Returns:
         List of match dicts with keys: path, line, kind, scope, context.
-        Returns [{"error": "..."}] for invalid arguments, a path that is a
-        directory with no .py files, a single non-.py file, or a single file
+        Returns [{"error": "..."}] for invalid arguments, a non-existent path,
+        a directory with no .py files, a single non-.py file, or a single file
         with a SyntaxError.
     """
     if not name or not name.strip():
@@ -181,7 +181,7 @@ def find_symbol(
 
     search_path = Path(path.strip())
     if not search_path.exists():
-        return []
+        return [{"error": f"path '{search_path}' does not exist"}]
 
     if search_path.is_file():
         if search_path.suffix != ".py":
@@ -252,6 +252,8 @@ definition = {
             "Optionally filter by kind: 'function', 'class', or 'method'. "
             "Returns a list of matches, each with path, line number, kind, scope, and context. "
             "Returns [] when nothing is found. "
+            "Returns [{\"error\": \"path '...' does not exist\"}] when path does not exist — "
+            "this means the path is wrong, not that the symbol is absent. "
             "Returns [{\"error\": \"SyntaxError: ...\", \"path\": \"...\"}] when a single "
             "target file cannot be parsed — check this before assuming a symbol is absent. "
             "Returns [{\"error\": \"no Python files found under '...'\"}] when path is a "
