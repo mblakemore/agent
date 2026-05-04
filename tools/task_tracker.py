@@ -104,6 +104,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
         if task_id <= 0:
             available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] != "done"]
             return f"Error: task_id required for 'update'. Example: task_tracker(action=\"update\", task_id=1, status=\"in_progress\")\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
+        if not status and not description:
+            return "Error: 'update' requires at least one of: status or description"
         _VALID_STATUSES = {"open", "in_progress", "blocked", "deferred"}
         if status and status not in _VALID_STATUSES:
             return (f"Error: invalid status '{status}'. "
