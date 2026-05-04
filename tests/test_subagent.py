@@ -142,5 +142,78 @@ class TestSubagent(unittest.TestCase):
         self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
         self.assertIn("kaboom", result)
 
+    # ── Timeout tests ──────────────────────────────────────────────────────────
+
+    @patch('subprocess.run')
+    def test_subagent_timeout_passed_to_subprocess(self, mock_run):
+        """subprocess.run must be called with the timeout kwarg so hung agents don't block forever."""
+        def side_effect(args, **kwargs):
+            # Record that timeout was passed, then simulate success
+            idx = args.index("--result-file")
+            file_path = args[idx + 1]
+            with open(file_path, "w") as f:
+                f.write("done")
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = side_effect
+        subagent("Test prompt")
+
+        call_kwargs = mock_run.call_args[1]
+        self.assertIn("timeout", call_kwargs, "subprocess.run must receive a 'timeout' kwarg")
+        self.assertGreater(call_kwargs["timeout"], 0, "timeout must be positive")
+
+    @patch('subprocess.run')
+    def test_subagent_timeout_expired_returns_error(self, mock_run):
+        """TimeoutExpired from subprocess.run must be caught and return an error string."""
+        import subprocess as _sp
+        mock_run.side_effect = _sp.TimeoutExpired(cmd="agent", timeout=5)
+        result = subagent("Test prompt", timeout=5)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+        self.assertIn("timed out", result)
+        self.assertIn("5", result)
+
+    def test_subagent_timeout_zero_rejected(self):
+        """timeout=0 must be rejected before launching subprocess."""
+        with patch("subprocess.run") as mock_run:
+            result = subagent("Test prompt", timeout=0)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+        mock_run.assert_not_called()
+
+    def test_subagent_timeout_negative_rejected(self):
+        """Negative timeout must be rejected before launching subprocess."""
+        with patch("subprocess.run") as mock_run:
+            result = subagent("Test prompt", timeout=-1)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+        mock_run.assert_not_called()
+
+    def test_subagent_timeout_non_numeric_rejected(self):
+        """Non-numeric timeout must be rejected before launching subprocess."""
+        with patch("subprocess.run") as mock_run:
+            result = subagent("Test prompt", timeout="fast")
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+        mock_run.assert_not_called()
+
+    def test_subagent_timeout_bool_rejected(self):
+        """Boolean timeout (True/False) must be rejected as non-numeric."""
+        with patch("subprocess.run") as mock_run:
+            result = subagent("Test prompt", timeout=True)
+        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
+        mock_run.assert_not_called()
+
+    @patch('subprocess.run')
+    def test_subagent_custom_timeout_used(self, mock_run):
+        """A custom timeout value must be forwarded to subprocess.run."""
+        def side_effect(args, **kwargs):
+            idx = args.index("--result-file")
+            file_path = args[idx + 1]
+            with open(file_path, "w") as f:
+                f.write("result")
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = side_effect
+        subagent("Test prompt", timeout=30)
+        call_kwargs = mock_run.call_args[1]
+        self.assertEqual(call_kwargs["timeout"], 30)
+
 if __name__ == '__main__':
     unittest.main()
