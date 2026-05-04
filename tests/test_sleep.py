@@ -12,11 +12,37 @@ def test_sleep_negative_value():
     result = fn(-1.0)
     assert "Error" in result
 
-def test_sleep_invalid_type():
-    """Test that passing a non-number raises an error."""
-    # Passing a string to time.sleep raises TypeError
-    result = fn("1") # type: ignore
-    assert "Error" in result
+def test_sleep_invalid_type_string():
+    """Test that passing a string produces a clean, user-readable error (not a raw TypeError)."""
+    result = fn("1")  # type: ignore
+    assert result.startswith("Error:")
+    # Must NOT expose the internal comparison-operator TypeError message
+    assert "not supported between instances" not in result
+    assert "str" in result  # should name the bad type
+
+
+def test_sleep_invalid_type_non_numeric_string():
+    """Test that a non-numeric string also gives a clean validation error."""
+    result = fn("five")  # type: ignore
+    assert result.startswith("Error:")
+    assert "not supported between instances" not in result
+    assert "str" in result
+
+
+def test_sleep_invalid_type_none():
+    """Test that None produces a clean validation error."""
+    result = fn(None)  # type: ignore
+    assert result.startswith("Error:")
+    assert "not supported between instances" not in result
+    assert "NoneType" in result
+
+
+def test_sleep_invalid_type_list():
+    """Test that a list produces a clean validation error."""
+    result = fn([1, 2])  # type: ignore
+    assert result.startswith("Error:")
+    assert "not supported between instances" not in result
+    assert "list" in result
 
 def test_sleep_exactly_at_max():
     """Test that sleeping for exactly _MAX_SLEEP seconds is allowed."""
