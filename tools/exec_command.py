@@ -157,6 +157,9 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     if not command.strip() and not session_id:
         return "Error: command cannot be empty"
 
+    if timeout <= 0:
+        return "Error: timeout must be a positive number"
+
     sid, err = _get_or_create_session(session_id, new_session)
     if err:
         return err
