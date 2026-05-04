@@ -208,6 +208,11 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
         open_tasks = [t for t in tasks if t["status"] not in ("done", "completed")]
         if len(open_tasks) == 1:
             task_id = open_tasks[0]["id"]
+            # If the caller passed a description that exactly matches the resolved
+            # task's own description, they were identifying it — not annotating it.
+            # Mark it consumed-for-resolution so the note is NOT stored.
+            if description and description.strip().lower() == open_tasks[0].get("description", "").strip().lower():
+                _description_used_for_resolution = True
         elif description:
             desc_lower = description.lower()
             # Prefer exact match first — resolves unambiguously even when the
