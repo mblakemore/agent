@@ -229,3 +229,43 @@ def test_exec_command_bg_read_failure():
         # Poll the session
         result = fn(session_id=sid)
         assert "Error reading output: Read error" in result
+
+
+# ── PYTHONPATH auto-inject tests ──────────────────────────────────────────────
+
+def test_find_git_root_finds_repo(tmp_path):
+    from tools.exec_command import _find_git_root
+    # Create a fake git root
+    (tmp_path / ".git").mkdir()
+    subdir = tmp_path / "subdir" / "nested"
+    subdir.mkdir(parents=True)
+    assert _find_git_root(str(subdir)) == str(tmp_path)
+
+
+def test_build_env_injects_pythonpath(tmp_path):
+    from tools.exec_command import _build_env_with_pythonpath
+    (tmp_path / ".git").mkdir()
+    subdir = tmp_path / "pkg"
+    subdir.mkdir()
+    env_without = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    with patch.dict(os.environ, env_without, clear=True):
+        env = _build_env_with_pythonpath(str(subdir))
+    assert env is not None
+    assert env["PYTHONPATH"] == str(tmp_path)
+
+
+def test_build_env_no_inject_when_pythonpath_set(tmp_path):
+    from tools.exec_command import _build_env_with_pythonpath
+    (tmp_path / ".git").mkdir()
+    with patch.dict(os.environ, {"PYTHONPATH": "/already/set"}):
+        env = _build_env_with_pythonpath(str(tmp_path))
+    assert env is None
+
+
+def test_exec_command_auto_pythonpath():
+    # Running from a git repo directory — PYTHONPATH should be auto-injected
+    # so that project modules are importable without explicit PYTHONPATH.
+    env_without = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    with patch.dict(os.environ, env_without, clear=True):
+        result = fn(command="python3 -c 'import sys; print(sys.path)'")
+    assert "exit=0" in result
