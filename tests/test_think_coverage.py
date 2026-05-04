@@ -230,5 +230,21 @@ class TestThinkCoverage(unittest.TestCase):
         self.assertEqual(messages[2]['role'], 'assistant')
         self.assertEqual(messages[3]['content'], 'prompt')
 
+    def test_null_byte_in_prompt_returns_error_without_http_call(self):
+        """think.fn with a null byte in prompt must return an error, no HTTP call."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("think\x00this", depth="brief")
+        self.assertIn("Error", result)
+        self.assertIn("null byte", result)
+        mock_post.assert_not_called()
+
+    def test_null_byte_in_context_returns_error_without_http_call(self):
+        """think.fn with a null byte in context must return an error, no HTTP call."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("valid prompt", depth="brief", context="ctx\x00null")
+        self.assertIn("Error", result)
+        self.assertIn("null byte", result)
+        mock_post.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()

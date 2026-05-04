@@ -94,5 +94,13 @@ class TestSubagent(unittest.TestCase):
         result = subagent(["do something"])
         self.assertEqual(result, "Error: prompt must be a non-empty string")
 
+    def test_subagent_null_byte_prompt(self):
+        """Null byte in prompt must fail fast without launching subprocess."""
+        with patch("subprocess.run") as mock_run:
+            result = subagent("test\x00null")
+        self.assertIn("Error", result)
+        self.assertIn("null byte", result)
+        mock_run.assert_not_called()
+
 if __name__ == '__main__':
     unittest.main()
