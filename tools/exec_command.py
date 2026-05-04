@@ -205,6 +205,11 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
                     f"Error: env value for key {k!r} contains a null byte, "
                     f"which is not allowed in environment variable values"
                 )
+            if '\n' in v or '\r' in v:
+                return (
+                    f"Error: env value for key {k!r} contains a newline character, "
+                    f"which is not allowed in environment variable values"
+                )
 
     if cwd:
         if not isinstance(cwd, str):
