@@ -252,6 +252,21 @@ def test_invalid_action():
     res = fn(action="invalid")
     assert "Error: unknown action 'invalid'" in res
 
+def test_utf8_bom_file_is_readable():
+    """tasks.json with a UTF-8 BOM (\\xef\\xbb\\xbf) must be read correctly, not treated as corrupted."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    # Write a valid JSON array with a UTF-8 BOM prefix — e.g. created by Windows editors
+    p.write_bytes(b'\xef\xbb\xbf[]')
+
+    res = fn(action="list")
+    assert res == "No tasks.", f"BOM-prefixed empty array must parse as empty list, got: {res!r}"
+
+    # Add a task to confirm round-trip works
+    res2 = fn(action="add", description="task after BOM load")
+    assert "Added task #1" in res2, f"add after BOM load failed: {res2!r}"
+
+
 def test_json_corruption_list_returns_error():
     """Issue #670: corrupted tasks.json must return an Error, not silently 'No tasks.'"""
     p = Path(_TASKS_FILE)
