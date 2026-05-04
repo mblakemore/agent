@@ -1942,3 +1942,27 @@ def test_list_limit_bool_returns_error():
     result = fn(action="list", limit=True)
     assert "Error" in result
     assert "bool" in result
+
+
+# ── limit=<float> edge cases (#784) ──────────────────────────────────────────
+
+def test_list_limit_non_integer_float_returns_error():
+    """limit=2.5 (non-integer float) must return an error, not silently truncate to 2 (#784)."""
+    for i in range(5):
+        fn(action="add", description=f"task {i+1}")
+    result = fn(action="list", limit=2.5)
+    assert result.startswith("Error:"), f"Expected Error for float limit, got: {result!r}"
+    assert "integer" in result.lower(), f"Error must mention 'integer': {result!r}"
+    # Must suggest the nearest integers
+    assert "2" in result and "3" in result, f"Error must hint at nearest integers: {result!r}"
+
+
+def test_list_limit_whole_float_is_accepted():
+    """limit=2.0 (whole-number float) must be coerced to 2 and work correctly (#784)."""
+    for i in range(5):
+        fn(action="add", description=f"task {i+1}")
+    result = fn(action="list", limit=2.0)
+    # Must not be an error
+    assert not result.startswith("Error:"), f"Whole-number float limit must not error: {result!r}"
+    task_lines = [l for l in result.splitlines() if l.startswith("[")]
+    assert len(task_lines) == 2, f"Expected 2 tasks with limit=2.0, got {len(task_lines)}: {result!r}"
