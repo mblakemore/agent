@@ -174,7 +174,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
              auto-injected PYTHONPATH). Does not replace the full environment.
     """
     if not isinstance(command, str):
-        return "Error: command must be a string"
+        return f"Error: command must be a string, got {type(command).__name__!r}"
     if not isinstance(session_id, str):
         return f"Error: session_id must be a string, got {type(session_id).__name__!r}"
     if '\x00' in session_id:
@@ -232,7 +232,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
 
     if cwd:
         if not isinstance(cwd, str):
-            return "Error: cwd must be a string"
+            return f"Error: cwd must be a string, got {type(cwd).__name__!r}"
         if '\x00' in cwd:
             return "Error: cwd contains a null byte, which is not allowed"
         cwd_path = Path(cwd)
