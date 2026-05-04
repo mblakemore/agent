@@ -76,13 +76,28 @@ def test_read_pdf_custom_range():
         mock_doc = MagicMock()
         mock_doc.__len__.return_value = 10
         mock_open.return_value = mock_doc
-        
+
         mock_page = MagicMock()
         mock_page.get_text.return_value = "Range Content"
         mock_doc.__getitem__.return_value = mock_page
-        
+
         result = fn("dummy.pdf", start_page=2, end_page=4)
         assert "Pages 2-4 of 10" in result
         # Pages 2, 3, 4 = 3 pages total.
         # We can check if mock_doc.__getitem__ was called 3 times.
         assert mock_doc.__getitem__.call_count == 3
+
+
+def test_read_pdf_inverted_range_returns_error():
+    """read_pdf must return a clear error when end_page < start_page."""
+    with patch('fitz.open') as mock_open:
+        mock_doc = MagicMock()
+        mock_doc.is_pdf = True
+        mock_doc.__len__.return_value = 10
+        mock_open.return_value = mock_doc
+
+        result = fn("dummy.pdf", start_page=5, end_page=3)
+        assert result.startswith("Error:")
+        assert "end_page" in result
+        assert "start_page" in result
+        mock_doc.close.assert_called_once()
