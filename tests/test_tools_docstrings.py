@@ -8,7 +8,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TEST_FILE = Path(__file__).resolve()
 
-_SKIP_DIR_PARTS = {"__pycache__", ".git", ".venv", "venv", "env", "node_modules", "temp"}
+# "worktrees" and "CICD" exclude in-repo git worktrees (e.g. CICD/worktrees/*)
+# from the scan — old copies of test files may contain the very strings being
+# checked, which would cause false-positive failures.
+_SKIP_DIR_PARTS = {"__pycache__", ".git", ".venv", "venv", "env", "node_modules", "temp", "worktrees", "CICD"}
 
 
 def _python_sources():
