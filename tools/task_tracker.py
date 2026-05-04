@@ -123,13 +123,20 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "") -
         if len(open_tasks) == 1:
             task_id = open_tasks[0]["id"]
         elif description:
-            # Try fuzzy match by description substring
             desc_lower = description.lower()
-            matches = [t for t in open_tasks if desc_lower in t.get("description", "").lower()
-                       or t.get("description", "").lower() in desc_lower]
-            if len(matches) == 1:
-                task_id = matches[0]["id"]
+            # Prefer exact match first — resolves unambiguously even when the
+            # description is a substring of another task's description.
+            exact = [t for t in open_tasks if t.get("description", "").lower() == desc_lower]
+            if len(exact) == 1:
+                task_id = exact[0]["id"]
                 _description_used_for_resolution = True
+            else:
+                # Fall back to fuzzy/substring match
+                matches = [t for t in open_tasks if desc_lower in t.get("description", "").lower()
+                           or t.get("description", "").lower() in desc_lower]
+                if len(matches) == 1:
+                    task_id = matches[0]["id"]
+                    _description_used_for_resolution = True
 
     if action == "add":
         if not description:
