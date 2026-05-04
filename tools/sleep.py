@@ -2,14 +2,18 @@
 
 import time
 
+_MAX_SLEEP = 3600  # 1 hour ceiling — prevent indefinite process hang
+
 
 def fn(seconds: float) -> str:
     """Sleep for the given number of seconds.
 
     Args:
-        seconds: Number of seconds to sleep.
+        seconds: Number of seconds to sleep. Must be between 0 and 3600.
     """
     try:
+        if seconds > _MAX_SLEEP:
+            return f"Error: sleep duration {seconds} exceeds maximum allowed ({_MAX_SLEEP} s)"
         time.sleep(seconds)
         return f"Slept for {seconds} seconds"
     except Exception as e:
