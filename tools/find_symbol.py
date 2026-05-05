@@ -24,13 +24,27 @@ def _collect_py_files(root: Path) -> list[Path]:
 
     followlinks=True ensures that symlinked subdirectories are walked, so that
     .py files reachable via directory symlinks are not silently skipped (#828).
+
+    seen_real tracks resolved (realpath) directory paths so that symlink cycles
+    are detected and skipped — without this, os.walk(followlinks=True) loops
+    forever when a symlink inside the tree points back to an ancestor (#968).
     """
     results = []
+    seen_real: set[str] = set()
     for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
-        # Prune excluded directories in-place so os.walk won't descend into them.
+        real_dirpath = os.path.realpath(dirpath)
+        if real_dirpath in seen_real:
+            # Already visited this real directory via a different path — stop
+            # descending to avoid an infinite loop from a circular symlink.
+            dirnames.clear()
+            continue
+        seen_real.add(real_dirpath)
+        # Prune excluded directories and already-seen real paths in-place so
+        # os.walk won't descend into them.
         dirnames[:] = [
             d for d in dirnames
             if not _is_excluded(str(Path(dirpath) / d) + "/")
+            and os.path.realpath(str(Path(dirpath) / d)) not in seen_real
         ]
         for fname in filenames:
             if not fname.endswith(".py"):
