@@ -65,6 +65,7 @@ def _load_tasks():
         # Each element must be a dict with the required 'id' and 'status' fields.
         # A missing field causes a KeyError crash on every action since these
         # keys are accessed directly (not via .get) throughout fn().
+        seen_ids: set = set()
         for i, item in enumerate(data):
             if not isinstance(item, dict):
                 return _Corrupted(
@@ -86,6 +87,14 @@ def _load_tasks():
                     str(p.resolve()),
                     f"element {i} has invalid 'id': expected a positive integer, got {_id!r}",
                 )
+            # Duplicate IDs cause done/update/drop to silently operate on only the
+            # first match and ignore the rest (#964).
+            if _id in seen_ids:
+                return _Corrupted(
+                    str(p.resolve()),
+                    f"element {i} has duplicate id {_id!r} (already seen earlier)",
+                )
+            seen_ids.add(_id)
             # 'status' must be a non-empty string — not null or integer.
             _status = item["status"]
             if not isinstance(_status, str) or not _status:
