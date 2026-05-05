@@ -916,5 +916,46 @@ class TestFileActionTypeGuard(unittest.TestCase):
         self.assertFalse(result.startswith("Error:"), f"Should not error: {result!r}")
 
 
+# ── Directory listing entry cap (#977) ────────────────────────────────────────
+
+class TestFileListEntryCap(unittest.TestCase):
+    """Large directories must be capped to prevent context flooding (#977)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._orig = os.getcwd()
+        os.chdir(self._tmpdir.name)
+
+    def tearDown(self):
+        os.chdir(self._orig)
+        self._tmpdir.cleanup()
+
+    def test_large_directory_is_truncated(self):
+        """A 1000-entry directory must return at most _MAX_LIST_ENTRIES entries (#977)."""
+        for i in range(1000):
+            open(os.path.join(self._tmpdir.name, f"f_{i:04d}.txt"), "w").close()
+        result = file_tool.fn("list", self._tmpdir.name)
+        lines = [l for l in result.splitlines() if not l.startswith("(")]
+        self.assertLessEqual(len(lines), file_tool._MAX_LIST_ENTRIES,
+                             f"Expected <= {file_tool._MAX_LIST_ENTRIES} entries, got {len(lines)}")
+
+    def test_truncation_notice_shown(self):
+        """When the entry count is capped, a truncation notice must appear (#977)."""
+        for i in range(1000):
+            open(os.path.join(self._tmpdir.name, f"f_{i:04d}.txt"), "w").close()
+        result = file_tool.fn("list", self._tmpdir.name)
+        self.assertIn("1000 entries", result, f"Notice must show total count: {result[-100:]!r}")
+        self.assertIn("search_files", result, f"Notice must suggest search_files: {result[-100:]!r}")
+
+    def test_small_directory_not_affected(self):
+        """A directory with fewer entries than _MAX_LIST_ENTRIES must not be truncated (#977)."""
+        for i in range(10):
+            open(os.path.join(self._tmpdir.name, f"f_{i}.txt"), "w").close()
+        result = file_tool.fn("list", self._tmpdir.name)
+        self.assertNotIn("showing", result, f"Small dir must not show truncation notice: {result!r}")
+        lines = result.splitlines()
+        self.assertEqual(len(lines), 10, f"All 10 entries must be shown: {result!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
