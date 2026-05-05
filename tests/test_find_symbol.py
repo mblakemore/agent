@@ -1509,5 +1509,51 @@ class TestFindSymbolCircularSymlink(unittest.TestCase):
                          f"Symbol must appear exactly once, got {len(hits)}: {hits!r}")
 
 
+# ── Result count cap to prevent context flooding (#989) ──────────────────────
+
+class TestFindSymbolResultCap(unittest.TestCase):
+    """find_symbol must cap results at _MAX_RESULTS and append a truncation notice (#989)."""
+
+    def setUp(self):
+        import tools.find_symbol as _fs
+        self._orig_max = _fs._MAX_RESULTS
+        _fs._MAX_RESULTS = 5  # Override for testing so we don't need 200+ symbols
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import tools.find_symbol as _fs
+        _fs._MAX_RESULTS = self._orig_max
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_result_count_capped(self):
+        """When >_MAX_RESULTS matches exist, result list must be <= _MAX_RESULTS + 1 (#989)."""
+        # Create 10 files each calling the target symbol once (10 callers > cap of 5)
+        for i in range(10):
+            (Path(self.tmp) / f"mod{i}.py").write_text(f"target()\n")
+        results = find_symbol("target", path=self.tmp, mode="callers")
+        self.assertLessEqual(len(results), 6,  # 5 + 1 truncation notice
+                             f"Expected <= 6 results, got {len(results)}: {results[-2:]!r}")
+
+    def test_truncation_notice_appended(self):
+        """The last entry must be a truncation notice when cap is hit (#989)."""
+        for i in range(10):
+            (Path(self.tmp) / f"m{i}.py").write_text("hit()\n")
+        results = find_symbol("hit", path=self.tmp, mode="callers")
+        last = results[-1]
+        self.assertIn("truncated", last, f"Last entry must be truncation notice: {last!r}")
+        self.assertTrue(last["truncated"], f"truncated must be True: {last!r}")
+        self.assertIn("hint", last, f"Truncation notice must include hint: {last!r}")
+
+    def test_small_result_set_not_truncated(self):
+        """When results <= _MAX_RESULTS, no truncation notice must be appended (#989)."""
+        (Path(self.tmp) / "single.py").write_text("def my_unique_fn(): pass\n")
+        results = find_symbol("my_unique_fn", path=self.tmp)
+        self.assertFalse(
+            any("truncated" in r for r in results),
+            f"No truncation notice expected for small result set: {results!r}"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
