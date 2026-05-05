@@ -13,6 +13,9 @@ _MAX_NEW_DIRS = 3
 # to avoid flooding the context window.
 _MAX_READ_LINES = 500
 
+# Cap directory listings to prevent node_modules / build-output floods (#977).
+_MAX_LIST_ENTRIES = 500
+
 # Track files that have been read or written this session — writes to existing
 # unread files are blocked to prevent blind overwrites.  Shared with exec_command.
 _accessed_files = set()
@@ -634,11 +637,19 @@ def _list(path):
     entries = sorted(p.iterdir())
     if not entries:
         return "(empty directory)"
+    total = len(entries)
+    shown = entries[:_MAX_LIST_ENTRIES]
     parts = []
-    for e in entries:
+    for e in shown:
         suffix = "/" if e.is_dir() else ""
         parts.append(f"{e}{suffix}")
-    return "\n".join(parts)
+    result = "\n".join(parts)
+    if total > _MAX_LIST_ENTRIES:
+        result += (
+            f"\n(showing {_MAX_LIST_ENTRIES} of {total} entries"
+            f" — use search_files with a glob to explore further)"
+        )
+    return result
 
 
 definition = {
