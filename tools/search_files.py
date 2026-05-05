@@ -234,6 +234,17 @@ def fn(
                 "desired subdirectory to restrict the search."
             )
 
+    # Coerce None to False for all optional boolean flags so that an LLM passing
+    # null for any of these defaults to the documented False behaviour (#952).
+    if ignore_case is None:
+        ignore_case = False
+    if count_only is None:
+        count_only = False
+    if include_temp is None:
+        include_temp = False
+    if include_hidden is None:
+        include_hidden = False
+
     # Validate boolean parameters: accept bool and integer 0/1; reject strings
     # and other types that would silently coerce (#887).  A non-empty string like
     # "false" is truthy — ignore_case="false" would make the search case-insensitive

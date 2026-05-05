@@ -733,10 +733,12 @@ class TestFileLineStringNoneRejection(unittest.TestCase):
 
     # --- None start_line ---
 
-    def test_read_start_line_none_returns_type_error(self):
-        """start_line=None must return a clean type error, not a raw TypeError (#899)."""
+    def test_read_start_line_none_coerces_to_zero(self):
+        """start_line=None must coerce to 0 (read from beginning), not return a type error (#951)."""
         result = file_tool.fn(action="read", path=self._target, start_line=None)
-        self._assert_type_error(result, "start_line", "NoneType")
+        self.assertIsInstance(result, str)
+        self.assertFalse(result.startswith("Error:"), f"start_line=None should succeed: {result!r}")
+        self.assertIn("line1", result)
 
     # --- string end_line ---
 
@@ -748,11 +750,13 @@ class TestFileLineStringNoneRejection(unittest.TestCase):
 
     # --- None end_line ---
 
-    def test_read_end_line_none_returns_type_error(self):
-        """end_line=None must return a clean type error (#899)."""
+    def test_read_end_line_none_coerces_to_zero(self):
+        """end_line=None must coerce to 0 (read to end of file), not return a type error (#951)."""
         result = file_tool.fn(action="read", path=self._target,
                               start_line=1, end_line=None)
-        self._assert_type_error(result, "end_line", "NoneType")
+        self.assertIsInstance(result, str)
+        self.assertFalse(result.startswith("Error:"), f"end_line=None should succeed: {result!r}")
+        self.assertIn("line1", result)
 
     # --- string error hints about quotes ---
 
