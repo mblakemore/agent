@@ -679,28 +679,54 @@ def test_exec_command_env_float_value_returns_clear_error():
 def test_exec_command_env_empty_key_returns_clear_error():
     """env dict with an empty-string key must return a descriptive error, not silently succeed (#756)."""
     result = fn(command="echo test", env={"": "value"})
-    assert result.startswith("Error: env keys must be valid environment variable names"), result
+    assert result.startswith("Error:"), result
+    assert "not a valid environment variable name" in result, result
 
 
 def test_exec_command_env_key_with_space_returns_clear_error():
     """env dict with a key containing spaces must return a descriptive error (#756)."""
     result = fn(command="echo test", env={"KEY WITH SPACE": "value"})
-    assert result.startswith("Error: env keys must be valid environment variable names"), result
+    assert result.startswith("Error:"), result
+    assert "not a valid environment variable name" in result, result
     assert "KEY WITH SPACE" in result
 
 
 def test_exec_command_env_key_starting_with_digit_returns_clear_error():
     """env dict with a key starting with a digit must return a descriptive error (#756)."""
     result = fn(command="echo test", env={"1INVALID": "value"})
-    assert result.startswith("Error: env keys must be valid environment variable names"), result
+    assert result.startswith("Error:"), result
+    assert "not a valid environment variable name" in result, result
     assert "1INVALID" in result
 
 
 def test_exec_command_env_key_with_equals_returns_clear_error():
     """env dict with a key containing '=' must return a descriptive error, not an OS-level exception (#756)."""
     result = fn(command="echo test", env={"KEY=BAD": "value"})
-    assert result.startswith("Error: env keys must be valid environment variable names"), result
+    assert result.startswith("Error:"), result
+    assert "not a valid environment variable name" in result, result
     assert "KEY=BAD" in result
+
+
+def test_exec_command_env_integer_key_returns_type_error():
+    """env dict with an integer key must return a type error, not a name-format error (#934)."""
+    result = fn(command="echo test", env={42: "value"})
+    assert result.startswith("Error:"), result
+    assert "string" in result, f"Error must mention 'string': {result!r}"
+    assert "'int'" in result, f"Type name must be quoted 'int': {result!r}"
+    assert "not a valid environment variable name" not in result, (
+        f"Must not give misleading name-format hint for wrong type: {result!r}"
+    )
+
+
+def test_exec_command_env_none_key_returns_type_error():
+    """env dict with a None key must return a type error (#934)."""
+    result = fn(command="echo test", env={None: "value"})
+    assert result.startswith("Error:"), result
+    assert "string" in result, f"Error must mention 'string': {result!r}"
+    assert "'NoneType'" in result, f"Type name must be quoted 'NoneType': {result!r}"
+    assert "not a valid environment variable name" not in result, (
+        f"Must not give misleading name-format hint for wrong type: {result!r}"
+    )
 
 
 def test_exec_command_env_valid_underscore_key_works():

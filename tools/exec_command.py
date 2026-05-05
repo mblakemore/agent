@@ -208,11 +208,15 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         return f"Error: env must be a dict or None, got {type(env).__name__!r}"
     if env is not None:
         for k, v in env.items():
-            if not isinstance(k, str) or not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', k):
+            if not isinstance(k, str):
                 return (
-                    f"Error: env keys must be valid environment variable names "
-                    f"(letters, digits, underscores, not starting with a digit); "
-                    f"got {k!r}"
+                    f"Error: env keys must be strings, "
+                    f"got {type(k).__name__!r}: {k!r}"
+                )
+            if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', k):
+                return (
+                    f"Error: env key {k!r} is not a valid environment variable name "
+                    f"(letters, digits, underscores, not starting with a digit)"
                 )
             if not isinstance(v, str):
                 return (
