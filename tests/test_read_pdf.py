@@ -718,3 +718,27 @@ def test_read_pdf_bool_end_page_uses_colon_format(mock_open):
     assert "'bool'" in result, f"Type name must be quoted: {result!r}"
     assert "False" in result, f"Value must appear in error: {result!r}"
     assert "(False)" not in result, f"Old parenthesis format must be gone: {result!r}"
+
+
+# ── empty path guard (#938) ────────────────────────────────────────────────────
+
+def test_read_pdf_empty_string_path_returns_clear_error():
+    """path='' must return 'path cannot be empty', not 'PDF has no pages' (#938)."""
+    result = fn("")
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "empty" in result.lower(), f"Error must mention 'empty': {result!r}"
+    assert "pages" not in result, f"Must not say 'pages' for empty path: {result!r}"
+
+
+def test_read_pdf_whitespace_only_path_returns_clear_error():
+    """path='   ' must return 'path cannot be empty', not try to open a file (#938)."""
+    result = fn("   ")
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "empty" in result.lower(), f"Error must mention 'empty': {result!r}"
+
+
+def test_read_pdf_tab_newline_path_returns_clear_error():
+    """path='\\t\\n' must return 'path cannot be empty' (#938)."""
+    result = fn("\t\n")
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "empty" in result.lower(), f"Error must mention 'empty': {result!r}"

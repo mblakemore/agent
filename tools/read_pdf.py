@@ -26,6 +26,8 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
         return f"Error: 'path' must be a string, got {type(path).__name__!r}"
     if '\x00' in path:
         return "Error: path contains a null byte, which is not allowed"
+    if not path.strip():
+        return "Error: path cannot be empty"
     # Confinement: reject paths that resolve outside the working directory (#872)
     try:
         cwd_resolved = Path.cwd().resolve()
