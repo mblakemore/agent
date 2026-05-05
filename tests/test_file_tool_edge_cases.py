@@ -957,5 +957,47 @@ class TestFileListEntryCap(unittest.TestCase):
         self.assertEqual(len(lines), 10, f"All 10 entries must be shown: {result!r}")
 
 
+# ── Atomic write for full file overwrite (#982) ──────────────────────────────
+
+class TestFileWriteAtomic(unittest.TestCase):
+    """file write must use tempfile+os.replace for atomic overwrites (#982)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._orig = os.getcwd()
+        os.chdir(self._tmpdir.name)
+
+    def tearDown(self):
+        os.chdir(self._orig)
+        self._tmpdir.cleanup()
+
+    def test_write_new_file_succeeds(self):
+        """Writing a new file must succeed and return content length (#982)."""
+        path = os.path.join(self._tmpdir.name, "new.txt")
+        result = file_tool.fn("write", path, content="hello world")
+        self.assertFalse(result.startswith("Error:"), f"Should not error: {result!r}")
+        self.assertIn("hello world", open(path).read())
+
+    def test_write_existing_file_overwrites(self):
+        """Writing an existing file must replace its content atomically (#982)."""
+        path = os.path.join(self._tmpdir.name, "existing.txt")
+        with open(path, "w") as f:
+            f.write("old content")
+        file_tool.fn("read", path)  # prime read-tracker
+        result = file_tool.fn("write", path, content="new content")
+        self.assertFalse(result.startswith("Error:"), f"Should not error: {result!r}")
+        self.assertEqual(open(path).read(), "new content")
+
+    def test_write_existing_file_shows_diff(self):
+        """Overwriting an existing file must include a diff in the result (#982)."""
+        path = os.path.join(self._tmpdir.name, "diff.txt")
+        with open(path, "w") as f:
+            f.write("line one\n")
+        file_tool.fn("read", path)  # prime read-tracker
+        result = file_tool.fn("write", path, content="line two\n")
+        self.assertIn("Diff:", result, f"Expected diff in result: {result!r}")
+        self.assertIn("line two", result)
+
+
 if __name__ == "__main__":
     unittest.main()

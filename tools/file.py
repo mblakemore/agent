@@ -355,10 +355,25 @@ def _write(path, content, start_line, end_line):
 
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, 'w', encoding='utf-8') as f:
-            f.write(content)
     except PermissionError:
         return f"Error: permission denied: {path}"
+
+    try:
+        temp_fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
+    except PermissionError:
+        return f"Error: permission denied: {path}"
+    try:
+        with os.fdopen(temp_fd, 'w', encoding='utf-8') as temp_f:
+            temp_f.write(content)
+        os.replace(temp_path, p)
+    except PermissionError:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return f"Error: permission denied: {path}"
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return f"Error: write failed: {e}"
     _accessed_files.add(str(p.resolve()))
 
     if old_content:
