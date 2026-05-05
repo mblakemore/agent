@@ -86,6 +86,11 @@ def fn(path: str, start_page: int = 1, end_page: int = 0) -> str:
             "Pass a plain integer page number, or 0 for last page."
         )
 
+    if start_page is None:
+        start_page = 1
+    if end_page is None:
+        end_page = 0
+
     # Validate start_page type before numeric comparisons.
     # Float page numbers with a fractional part (e.g. 1.5, 6.9) must be rejected
     # rather than silently truncated — int(1.5) == 1, which would read the wrong page.
