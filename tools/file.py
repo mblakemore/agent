@@ -502,19 +502,31 @@ def _append(path, content):
             diff_text = _get_diff(old_content, new_content)
             return f"Appended to '{path}' ({len(content)} chars, inserted before __main__ guard)\n\nDiff:\n{diff_text}"
 
+    # Build new content atomically: add a newline separator if the existing
+    # content doesn't end with one, then write via tempfile+os.replace so a
+    # crash between the separator write and content write can't leave the file
+    # in a partially-appended state (#985).
+    if old_content and not old_content.endswith('\n'):
+        new_content = old_content + '\n' + content
+    else:
+        new_content = old_content + content
+
     try:
-        with open(p, 'a', encoding='utf-8') as f:
-            # If the existing file doesn't end with a newline, insert one first so
-            # the appended content starts on a new line instead of being fused onto
-            # the last character of the existing content.
-            if old_content and not old_content.endswith('\n'):
-                f.write('\n')
-            f.write(content)
+        temp_fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
     except PermissionError:
         return f"Error: permission denied: {path}"
-
-    with open(p, 'r', encoding='utf-8', errors='replace') as f:
-        new_content = f.read()
+    try:
+        with os.fdopen(temp_fd, 'w', encoding='utf-8') as temp_f:
+            temp_f.write(new_content)
+        os.replace(temp_path, p)
+    except PermissionError:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return f"Error: permission denied: {path}"
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return f"Error: append failed: {e}"
 
     diff_text = _get_diff(old_content, new_content)
     return f"Appended to '{path}' ({len(content)} chars)\n\nDiff:\n{diff_text}"

@@ -999,5 +999,45 @@ class TestFileWriteAtomic(unittest.TestCase):
         self.assertIn("line two", result)
 
 
+# ── Atomic append for general (non-Python) path (#985) ───────────────────────
+
+class TestFileAppendAtomic(unittest.TestCase):
+    """file append general path must use atomic tempfile+os.replace (#985)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._orig = os.getcwd()
+        os.chdir(self._tmpdir.name)
+
+    def tearDown(self):
+        os.chdir(self._orig)
+        self._tmpdir.cleanup()
+
+    def test_append_to_new_file_creates_it(self):
+        """Appending to a non-existent file must create it with the given content (#985)."""
+        path = os.path.join(self._tmpdir.name, "new.txt")
+        result = file_tool.fn("append", path, content="hello")
+        self.assertFalse(result.startswith("Error:"), f"Should not error: {result!r}")
+        self.assertEqual(open(path).read(), "hello")
+
+    def test_append_to_file_without_trailing_newline_adds_separator(self):
+        """Appending to a file not ending in newline must insert a separator first (#985)."""
+        path = os.path.join(self._tmpdir.name, "no_nl.txt")
+        with open(path, "w") as f:
+            f.write("existing")
+        result = file_tool.fn("append", path, content="appended")
+        self.assertFalse(result.startswith("Error:"), f"Should not error: {result!r}")
+        self.assertEqual(open(path).read(), "existing\nappended")
+
+    def test_append_to_file_with_trailing_newline_no_extra_separator(self):
+        """Appending to a file ending in newline must not add an extra blank line (#985)."""
+        path = os.path.join(self._tmpdir.name, "with_nl.txt")
+        with open(path, "w") as f:
+            f.write("existing\n")
+        result = file_tool.fn("append", path, content="appended")
+        self.assertFalse(result.startswith("Error:"), f"Should not error: {result!r}")
+        self.assertEqual(open(path).read(), "existing\nappended")
+
+
 if __name__ == "__main__":
     unittest.main()
