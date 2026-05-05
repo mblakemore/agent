@@ -176,7 +176,10 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     if not isinstance(command, str):
         return f"Error: command must be a string, got {type(command).__name__!r}"
     if not isinstance(session_id, str):
-        return f"Error: session_id must be a string, got {type(session_id).__name__!r}"
+        if session_id is None:
+            session_id = ""
+        else:
+            return f"Error: session_id must be a string, got {type(session_id).__name__!r}"
     if '\x00' in session_id:
         return "Error: session_id contains a null byte, which is not allowed"
     if not command.strip() and not session_id:
@@ -234,9 +237,11 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
                     f"which is not allowed in environment variable values"
                 )
 
+    if cwd is None:
+        cwd = ""
+    elif not isinstance(cwd, str):
+        return f"Error: cwd must be a string, got {type(cwd).__name__!r}"
     if cwd:
-        if not isinstance(cwd, str):
-            return f"Error: cwd must be a string, got {type(cwd).__name__!r}"
         if '\x00' in cwd:
             return "Error: cwd contains a null byte, which is not allowed"
         cwd_path = Path(cwd)
