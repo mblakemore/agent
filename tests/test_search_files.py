@@ -1687,3 +1687,48 @@ class TestSearchFilesBoolFlagNoneCoercion(unittest.TestCase):
         result = search_files.fn("HIT", path=self._tmpdir.name, ignore_case="false")
         self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
         self.assertIn("'str'", result)
+
+
+# ── Per-match-line truncation (#975) ─────────────────────────────────────────
+
+class TestSearchFilesLineTruncation(unittest.TestCase):
+    """Very long match lines are truncated to prevent flooding the context window (#975)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._big_file = os.path.join(self._tmpdir.name, "big.txt")
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_very_long_match_line_is_truncated(self):
+        """A 200 000-char match line must be truncated; result must not exceed 2000 chars (#975)."""
+        long_line = "x" * 100000 + "TARGET" + "y" * 100000
+        with open(self._big_file, "w") as f:
+            f.write(long_line + "\n")
+        result = search_files.fn("TARGET", path=self._big_file, context=0)
+        self.assertLess(len(result), 2000, f"Result should be under 2000 chars, got {len(result)}")
+
+    def test_truncation_notice_includes_true_length(self):
+        """Truncated lines must include the original char count so the caller knows it was cut (#975)."""
+        long_line = "x" * 5000 + "NEEDLE"
+        with open(self._big_file, "w") as f:
+            f.write(long_line + "\n")
+        result = search_files.fn("NEEDLE", path=self._big_file, context=0)
+        self.assertIn("5006 chars", result, f"Truncation notice must show true length: {result!r}")
+
+    def test_short_lines_are_not_truncated(self):
+        """Lines shorter than _MAX_LINE_LEN must be returned in full (#975)."""
+        with open(self._big_file, "w") as f:
+            f.write("short line with NEEDLE here\n")
+        result = search_files.fn("NEEDLE", path=self._big_file, context=0)
+        self.assertIn("short line with NEEDLE here", result)
+        self.assertNotIn("…[", result, "Short line must not be truncated")
+
+    def test_long_context_line_is_truncated(self):
+        """Long context lines (before/after a match) must also be truncated (#975)."""
+        with open(self._big_file, "w") as f:
+            f.write("x" * 5000 + "\n")   # long context line before match
+            f.write("NEEDLE\n")           # match
+        result = search_files.fn("NEEDLE", path=self._big_file, context=1)
+        self.assertIn("…[", result, f"Long context line must be truncated: {result!r}")
