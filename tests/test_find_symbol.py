@@ -1460,5 +1460,54 @@ class TestFindSymbolModeKindTypeValidation(unittest.TestCase):
             self.assertNotIn("mode must be a string", str(result))
 
 
+# ── Circular symlink cycle detection (#968) ───────────────────────────────────
+
+class TestFindSymbolCircularSymlink(unittest.TestCase):
+    """find_symbol must not loop forever when the search tree contains a circular symlink (#968)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_circular_symlink_terminates_and_finds_symbol(self):
+        """A circular symlink (cycle -> parent) must not cause an infinite loop (#968)."""
+        # Create a real Python file in the temp dir
+        pyfile = Path(self.tmp) / "module.py"
+        pyfile.write_text("def circular_target(): pass\n")
+
+        # Create a circular symlink: tmpdir/cycle -> tmpdir (points back to parent)
+        cycle_link = Path(self.tmp) / "cycle"
+        os.symlink(self.tmp, str(cycle_link))
+
+        # find_symbol must terminate (not loop forever) and still find the symbol
+        results = find_symbol("circular_target", path=self.tmp)
+
+        self.assertIsInstance(results, list)
+        if results and "error" in results[0]:
+            self.fail(f"Unexpected error: {results[0]['error']!r}")
+        names = [r.get("scope") for r in results]
+        self.assertIn("circular_target", names,
+                      f"Symbol in real file must still be found: {results!r}")
+
+    def test_no_duplicate_results_from_circular_symlink(self):
+        """A circular symlink must not cause the same symbol to be returned multiple times (#968)."""
+        pyfile = Path(self.tmp) / "dedup.py"
+        pyfile.write_text("def unique_func(): pass\n")
+
+        cycle_link = Path(self.tmp) / "loop"
+        os.symlink(self.tmp, str(cycle_link))
+
+        results = find_symbol("unique_func", path=self.tmp)
+        self.assertIsInstance(results, list)
+
+        # Filter out any error entries
+        hits = [r for r in results if "error" not in r]
+        self.assertEqual(len(hits), 1,
+                         f"Symbol must appear exactly once, got {len(hits)}: {hits!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
