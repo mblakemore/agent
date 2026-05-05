@@ -173,7 +173,9 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
              Merged on top of the inherited process environment (including any
              auto-injected PYTHONPATH). Does not replace the full environment.
     """
-    if not isinstance(command, str):
+    if command is None:
+        command = ""
+    elif not isinstance(command, str):
         return f"Error: command must be a string, got {type(command).__name__!r}"
     if not isinstance(session_id, str):
         if session_id is None:
