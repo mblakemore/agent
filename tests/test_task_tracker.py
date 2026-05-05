@@ -2784,3 +2784,50 @@ def test_task_id_none_auto_resolves_single_task():
     res = fn(action="update", task_id=None, status="in_progress")
     assert not res.startswith("Error:"), f"single-task auto-resolve must succeed: {res!r}"
     assert "NoneType" not in res, f"Error must not mention NoneType: {res!r}"
+
+
+# ── Issue #964: duplicate task IDs in tasks.json ──────────────────────────────
+
+
+def test_duplicate_task_ids_returns_corrupted_error_on_list():
+    """tasks.json with two entries sharing the same id must return a corrupted error, not silently drop one (#964)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps([
+        {"id": 1, "status": "open", "description": "first"},
+        {"id": 1, "status": "open", "description": "second duplicate"},
+    ]), encoding="utf-8")
+
+    result = fn(action="list")
+    assert result.startswith("Error:"), f"Expected corrupted error: {result!r}"
+    assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
+    assert "duplicate" in result.lower(), f"Error must mention 'duplicate': {result!r}"
+
+
+def test_duplicate_task_ids_returns_corrupted_error_on_done():
+    """done action on a file with duplicate IDs must return a corrupted error, not silently affect only one task (#964)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps([
+        {"id": 2, "status": "open", "description": "alpha"},
+        {"id": 2, "status": "open", "description": "beta duplicate"},
+    ]), encoding="utf-8")
+
+    result = fn(action="done", task_id=2)
+    assert result.startswith("Error:"), f"Expected corrupted error: {result!r}"
+    assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
+
+
+def test_unique_task_ids_still_load_correctly():
+    """tasks.json with all-unique IDs must still load and operate correctly (#964 regression guard)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps([
+        {"id": 1, "status": "open", "description": "task one"},
+        {"id": 2, "status": "open", "description": "task two"},
+        {"id": 3, "status": "done",  "description": "task three"},
+    ]), encoding="utf-8")
+
+    result = fn(action="list")
+    assert not result.startswith("Error:"), f"Unique IDs must not be flagged as corrupted: {result!r}"
+    assert "task one" in result
