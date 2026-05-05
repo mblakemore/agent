@@ -980,10 +980,12 @@ class TestFindSymbolNonStringGuards(unittest.TestCase):
         self.assertIsInstance(result, list)
         self.assertIn("error", result[0])
 
-    def test_path_none_returns_error(self):
+    def test_path_none_coerces_to_dot(self):
+        """path=None must coerce to '.' (the default), not return a type error (#954)."""
         result = find_symbol(name="fn", path=None)
         self.assertIsInstance(result, list)
-        self.assertIn("error", result[0])
+        if result:
+            self.assertNotIn("error", result[0], f"path=None should not error: {result[0]}")
 
 
 class TestFindSymbolAbsolutePaths(unittest.TestCase):
@@ -1405,13 +1407,12 @@ class TestFindSymbolPathTypeNameQuoting(unittest.TestCase):
         error = result[0]["error"]
         self.assertIn("'int'", error, f"Type name must be quoted: {error!r}")
 
-    def test_none_path_type_name_is_quoted(self):
-        """None path error must include quoted type name 'NoneType' (#917)."""
-        result = find_symbol("fn", path=None)
+    def test_none_path_no_longer_errors(self):
+        """path=None now coerces to '.' rather than returning a type error (#954)."""
+        result = find_symbol("ZZZNOMATCH_954", path=None)
         self.assertIsInstance(result, list)
-        self.assertIn("error", result[0])
-        error = result[0]["error"]
-        self.assertIn("'NoneType'", error, f"Type name must be quoted: {error!r}")
+        if result:
+            self.assertNotIn("error", result[0], f"path=None should not error: {result[0]}")
 
 
 class TestFindSymbolModeKindTypeValidation(unittest.TestCase):

@@ -209,7 +209,9 @@ def find_symbol(
     if kind is not None and kind not in _VALID_KINDS:
         return [{"error": f"Invalid kind {kind!r}. Must be one of: {sorted(_VALID_KINDS)}"}]
 
-    if not isinstance(path, str):
+    if path is None:
+        path = "."
+    elif not isinstance(path, str):
         return [{"error": f"path must be a string, got {type(path).__name__!r}"}]
     if '\x00' in path:
         return [{"error": "path contains a null byte, which is not allowed"}]
