@@ -470,11 +470,13 @@ def test_exec_command_int_command_returns_error():
     assert "Error" in result
 
 
-def test_exec_command_none_command_returns_error():
-    """Passing None as command must return an error string, not raise AttributeError."""
+def test_exec_command_none_command_coerces_to_empty():
+    """command=None must coerce to '' and return the empty-command error, not a NoneType type error (#966)."""
     result = fn(command=None, timeout=5)
     assert isinstance(result, str)
-    assert "Error" in result
+    assert "NoneType" not in result, f"Must not mention NoneType: {result!r}"
+    assert result.startswith("Error:"), f"Empty command must still error: {result!r}"
+    assert "empty" in result.lower(), f"Must mention 'empty': {result!r}"
 
 
 # ── output cap tests (#668) ───────────────────────────────────────────────────
@@ -1170,12 +1172,10 @@ def test_exec_command_non_string_command_names_the_type():
     assert "int" in result, f"Error must name the bad type: {result!r}"
 
 
-def test_exec_command_none_command_names_the_type():
-    """fn(None) must name the bad type in the error (#909)."""
+def test_exec_command_none_command_no_longer_type_errors():
+    """command=None coerces to '' rather than returning a 'NoneType' type error (#966)."""
     result = fn(None)  # type: ignore[arg-type]
-    assert result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}"
-    assert "string" in result, f"Error must mention 'string': {result!r}"
-    assert "NoneType" in result, f"Error must name the bad type: {result!r}"
+    assert "NoneType" not in result, f"Must not mention NoneType after coercion: {result!r}"
 
 
 def test_exec_command_non_string_cwd_names_the_type():
