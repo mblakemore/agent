@@ -413,14 +413,14 @@ class TestFileContentTypeValidation(unittest.TestCase):
             self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
             self.assertIn("list", result)
 
-    def test_write_with_none_content_returns_clean_error(self):
-        """write action with content=None must return a clean Error string."""
+    def test_write_with_none_content_coerces_to_empty_string(self):
+        """write action with content=None must coerce to '' rather than return a type error (#962)."""
         with tempfile.TemporaryDirectory() as d:
             target = str(Path(d) / "test.txt")
             result = file_tool.fn(action="write", path=target, content=None)
             self.assertIsInstance(result, str)
-            self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
-            self.assertIn("NoneType", result)
+            self.assertFalse(result.startswith("Error:"), f"Expected success, got: {result!r}")
+            self.assertNotIn("NoneType", result)
 
     def test_write_with_string_content_unaffected(self):
         """Normal string content must still work after adding the type check."""
@@ -794,11 +794,10 @@ class TestFileTypeNameQuoting(unittest.TestCase):
         self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
         self.assertIn("'int'", result, f"Type name must be quoted: {result!r}")
 
-    def test_content_none_type_name_quoted(self):
-        """None content must report 'NoneType' with quotes (#915)."""
+    def test_content_none_no_longer_errors(self):
+        """content=None must coerce to '' rather than error with 'NoneType' (#962)."""
         result = file_tool.fn(action="write", path="x.txt", content=None)
-        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
-        self.assertIn("'NoneType'", result, f"Type name must be quoted: {result!r}")
+        self.assertNotIn("NoneType", result, f"Must not mention NoneType: {result!r}")
 
     def test_path_none_type_name_quoted(self):
         """None path must report 'NoneType' with quotes (#915)."""

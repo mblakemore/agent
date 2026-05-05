@@ -78,7 +78,9 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
         )
     if not isinstance(action, str):
         return f"Error: 'action' must be a string, got {type(action).__name__!r}"
-    if not isinstance(content, str):
+    if content is None:
+        content = ""
+    elif not isinstance(content, str):
         return (
             f"Error: 'content' must be a string, got {type(content).__name__!r}. "
             f"Pass a plain string value for write/append/insert actions."
