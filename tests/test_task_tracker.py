@@ -2651,3 +2651,69 @@ def test_valid_task_with_required_fields_still_works():
     result = fn(action="list")
     assert not result.startswith("Error:"), f"Valid task should not error: {result!r}"
     assert "good task" in result, f"Task must appear in output: {result!r}"
+
+
+# ── Issue #942: id/status field-type validation ────────────────────────────────
+
+def test_task_null_id_returns_corrupted_error():
+    """A task with 'id': null must return a corrupted error, not show '#None' (#942)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps([{"id": None, "status": "open", "description": "task"}]),
+                 encoding="utf-8")
+
+    result = fn(action="list")
+    assert result.startswith("Error:"), f"Expected corrupted error: {result!r}"
+    assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
+    assert "#None" not in result, f"Must not display '#None': {result!r}"
+    assert "invalid 'id'" in result, f"Error must mention invalid id: {result!r}"
+
+
+def test_task_string_id_returns_corrupted_error():
+    """A task with 'id': 'abc' must return a corrupted error (#942)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps([{"id": "abc", "status": "open", "description": "task"}]),
+                 encoding="utf-8")
+
+    result = fn(action="list")
+    assert result.startswith("Error:"), f"Expected corrupted error: {result!r}"
+    assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
+    assert "invalid 'id'" in result, f"Error must mention invalid id: {result!r}"
+
+
+def test_task_zero_id_returns_corrupted_error():
+    """A task with 'id': 0 must return a corrupted error (IDs must be >= 1) (#942)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps([{"id": 0, "status": "open", "description": "task"}]),
+                 encoding="utf-8")
+
+    result = fn(action="list")
+    assert result.startswith("Error:"), f"Expected corrupted error: {result!r}"
+    assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
+
+
+def test_task_bool_id_returns_corrupted_error():
+    """A task with 'id': true must return a corrupted error (bool is not a valid id) (#942)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps([{"id": True, "status": "open", "description": "task"}]),
+                 encoding="utf-8")
+
+    result = fn(action="list")
+    assert result.startswith("Error:"), f"Expected corrupted error: {result!r}"
+    assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
+
+
+def test_task_null_status_returns_corrupted_error():
+    """A task with 'status': null must return a corrupted error, not AttributeError (#942)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps([{"id": 1, "status": None, "description": "task"}]),
+                 encoding="utf-8")
+
+    result = fn(action="list")
+    assert result.startswith("Error:"), f"Expected corrupted error: {result!r}"
+    assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
+    assert "invalid 'status'" in result, f"Error must mention invalid status: {result!r}"

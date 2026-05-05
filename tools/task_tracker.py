@@ -77,6 +77,22 @@ def _load_tasks():
                         str(p.resolve()),
                         f"element {i} is missing required field {field!r}",
                     )
+            # 'id' must be a positive integer — not null, bool, string, or <= 0.
+            # A corrupt 'id' (e.g. null) makes list output show "#None" and
+            # makes done/update/drop unable to match the task by ID.
+            _id = item["id"]
+            if isinstance(_id, bool) or not isinstance(_id, int) or _id <= 0:
+                return _Corrupted(
+                    str(p.resolve()),
+                    f"element {i} has invalid 'id': expected a positive integer, got {_id!r}",
+                )
+            # 'status' must be a non-empty string — not null or integer.
+            _status = item["status"]
+            if not isinstance(_status, str) or not _status:
+                return _Corrupted(
+                    str(p.resolve()),
+                    f"element {i} has invalid 'status': expected a non-empty string, got {_status!r}",
+                )
         return data
     except json.JSONDecodeError as exc:
         return _Corrupted(str(p.resolve()), str(exc))
