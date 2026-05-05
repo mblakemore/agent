@@ -207,6 +207,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
     # Booleans are a subclass of int in Python; True==1 and False==0, so
     # task_id=True would silently operate on task #1 and task_id=False would
     # be treated as 0 (no task specified) — both are wrong.  Reject explicitly.
+    if task_id is None:
+        task_id = 0
     if isinstance(task_id, bool):
         return (
             f"Error: task_id must be a plain integer, got 'bool': {task_id!r}. "
@@ -252,6 +254,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
         return "Error: status contains a null byte, which is not allowed"
 
     # Validate limit
+    if limit is None:
+        limit = 0
     if isinstance(limit, bool):
         return (
             f"Error: limit must be a plain integer, got 'bool': {limit!r}. "

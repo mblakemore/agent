@@ -467,10 +467,16 @@ def test_non_integer_task_id_dict():
 
 
 def test_non_integer_task_id_none():
-    """task_id=None must return Error, not raise TypeError."""
-    fn(action="add", description="test")
+    """task_id=None must coerce to 0 (not a type error) (#956).
+
+    With a single open task, task_id=0 auto-resolves to that task.
+    With multiple open tasks, task_id=0 returns an ambiguous-match error.
+    Either way, 'NoneType' must not appear in the error message.
+    """
+    fn(action="add", description="task A")
+    fn(action="add", description="task B")
     res = fn(action="update", task_id=None, status="in_progress")
-    assert res.startswith("Error:"), f"Expected Error string, got: {res!r}"
+    assert "NoneType" not in res, f"task_id=None must not produce type error: {res!r}"
 
 
 def test_string_numeric_task_id_rejected():
@@ -2717,3 +2723,38 @@ def test_task_null_status_returns_corrupted_error():
     assert result.startswith("Error:"), f"Expected corrupted error: {result!r}"
     assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
     assert "invalid 'status'" in result, f"Error must mention invalid status: {result!r}"
+
+
+# ── Issue #956: task_id=None and limit=None coerce to defaults ────────────────
+
+
+def test_task_id_none_coerces_for_list():
+    """task_id=None must coerce to 0 and not produce a type error for list action (#956)."""
+    fn(action="add", description="test task")
+    res = fn(action="list", task_id=None)
+    assert not res.startswith("Error:"), f"task_id=None should not error for list: {res!r}"
+    assert "NoneType" not in res, f"task_id=None must not produce type error: {res!r}"
+
+
+def test_task_id_none_coerces_for_add():
+    """task_id=None must coerce to 0 and not produce a type error for add action (#956)."""
+    res = fn(action="add", description="another test", task_id=None)
+    assert not res.startswith("Error:"), f"task_id=None should not error for add: {res!r}"
+    assert "NoneType" not in res, f"task_id=None must not produce type error: {res!r}"
+
+
+def test_limit_none_coerces_to_no_limit():
+    """limit=None must coerce to 0 (no limit) and succeed for list action (#956)."""
+    fn(action="add", description="task one")
+    fn(action="add", description="task two")
+    res = fn(action="list", limit=None)
+    assert not res.startswith("Error:"), f"limit=None should succeed: {res!r}"
+    assert "NoneType" not in res, f"limit=None must not produce type error: {res!r}"
+
+
+def test_task_id_none_auto_resolves_single_task():
+    """task_id=None coerces to 0, which auto-resolves when there is exactly one open task (#956)."""
+    fn(action="add", description="the only task")
+    res = fn(action="update", task_id=None, status="in_progress")
+    assert not res.startswith("Error:"), f"single-task auto-resolve must succeed: {res!r}"
+    assert "NoneType" not in res, f"Error must not mention NoneType: {res!r}"
