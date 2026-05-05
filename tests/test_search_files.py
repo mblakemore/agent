@@ -647,10 +647,11 @@ class TestSearchFilesNonStringGuards(unittest.TestCase):
         self.assertIsInstance(result, str)
         self.assertIn("Error", result)
 
-    def test_path_none_returns_error(self):
+    def test_path_none_treated_as_dot(self):
+        """path=None must be coerced to '.' (the default), not return a type error (#946)."""
         result = search_files.fn(pattern="x", path=None)
         self.assertIsInstance(result, str)
-        self.assertIn("Error", result)
+        self.assertFalse(result.startswith("Error:"), f"Expected success, got: {result[:100]!r}")
 
 
 class TestSearchFilesContextFormatUnambiguous(unittest.TestCase):
@@ -1597,11 +1598,11 @@ class TestSearchFilesTypeNameQuoting(unittest.TestCase):
         self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
         self.assertIn("'int'", result, f"Type name must be quoted: {result!r}")
 
-    def test_path_none_type_name_is_quoted(self):
-        """None path error must include quoted type name 'NoneType' (#915)."""
-        result = search_files.fn("HIT", path=None)
-        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
-        self.assertIn("'NoneType'", result, f"Type name must be quoted: {result!r}")
+    def test_path_none_no_longer_errors(self):
+        """path=None now coerces to '.' (the default) rather than returning a type error (#946)."""
+        result = search_files.fn("ZZZNOMATCH_946", path=None)
+        self.assertIsInstance(result, str)
+        self.assertFalse(result.startswith("Error:"), f"path=None should succeed: {result[:100]!r}")
 
 
 class TestSearchFilesBoolContextFormat(unittest.TestCase):
@@ -1624,3 +1625,22 @@ class TestSearchFilesBoolContextFormat(unittest.TestCase):
         self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
         self.assertIn("'bool'", result, f"Type name must be quoted: {result!r}")
         self.assertIn("False", result, f"Value must appear in error: {result!r}")
+
+
+class TestSearchFilesNoneParamCoercion(unittest.TestCase):
+    """Issue #946: optional params with None must coerce to defaults, not return type errors."""
+
+    def test_context_none_treated_as_default(self):
+        """context=None must coerce to 3 (the default), not return a type error (#946)."""
+        with tempfile.TemporaryDirectory() as d:
+            Path(d, "a.txt").write_text("HIT\n")
+            result = search_files.fn("HIT", path=d, context=None)
+        self.assertIsInstance(result, str)
+        self.assertFalse(result.startswith("Error:"), f"Expected success: {result!r}")
+        self.assertIn("HIT", result)
+
+    def test_path_none_coerces_without_type_error(self):
+        """path=None must not return a type error (#946) — coerces to '.'."""
+        result = search_files.fn(pattern="ZZZNOMATCH_PROBE_946", path=None)
+        self.assertIsInstance(result, str)
+        self.assertFalse(result.startswith("Error:"), f"Expected success: {result[:100]!r}")

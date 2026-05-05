@@ -192,7 +192,9 @@ def find_symbol(
     if '\x00' in name:
         return [{"error": "name contains a null byte, which is not allowed"}]
     # Validate mode/kind types before normalization.
-    if not isinstance(mode, str):
+    if mode is None:
+        mode = "definition"
+    elif not isinstance(mode, str):
         return [{"error": f"mode must be a string, got {type(mode).__name__!r}"}]
     # kind=None means no filter; any other non-string is an error.
     if kind is not None and not isinstance(kind, str):

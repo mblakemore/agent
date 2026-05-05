@@ -262,7 +262,9 @@ def fn(
         return f"Error: invalid regex pattern: {e}"
 
     # Resolve search_path immediately to avoid absolute vs relative mismatch in relative_to()
-    if not isinstance(path, str):
+    if path is None:
+        path = "."
+    elif not isinstance(path, str):
         return f"Error: path must be a string, got {type(path).__name__!r}"
     if '\x00' in path:
         return "Error: path contains a null byte, which is not allowed"
@@ -289,6 +291,8 @@ def fn(
     # so both code paths receive a properly-typed integer.
     # Booleans are a subclass of int in Python; reject them explicitly so that
     # context=True (silently 1) or context=False (silently 0) don't sneak through.
+    if context is None:
+        context = 3
     if isinstance(context, bool):
         return f"Error: context must be an integer, got 'bool': {context!r}. Pass a plain integer (e.g. context=3)."
     if isinstance(context, str):

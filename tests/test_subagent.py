@@ -253,5 +253,35 @@ class TestSubagentNaNInfTimeout(unittest.TestCase):
         self.assertNotIn("inf", result.lower())
 
 
+class TestSubagentNoneTimeout(unittest.TestCase):
+    """Issue #948: timeout=None must coerce to _DEFAULT_TIMEOUT, not return a type error."""
+
+    def test_timeout_none_does_not_return_type_error(self):
+        """timeout=None must not immediately return a type error (#948)."""
+        with patch('subprocess.run') as mock_run:
+            mock_run.side_effect = RuntimeError("subprocess skipped in this test")
+            result = subagent("test", timeout=None)
+        self.assertNotIn("NoneType", result, f"timeout=None must not produce type error: {result!r}")
+
+    @patch('subprocess.run')
+    def test_timeout_none_passes_default_to_subprocess(self, mock_run):
+        """timeout=None must coerce to _DEFAULT_TIMEOUT (600) so subprocess gets the right value (#948)."""
+        def side_effect(args, **kwargs):
+            try:
+                idx = args.index("--result-file")
+                file_path = args[idx + 1]
+                with open(file_path, "w") as f:
+                    f.write("ok")
+            except (ValueError, IndexError):
+                pass
+            return MagicMock(returncode=0)
+
+        mock_run.side_effect = side_effect
+        subagent("test task", timeout=None)
+        call_kwargs = mock_run.call_args[1]
+        self.assertEqual(call_kwargs.get("timeout"), 600,
+                         f"timeout=None must coerce to 600, got {call_kwargs.get('timeout')}")
+
+
 if __name__ == '__main__':
     unittest.main()
