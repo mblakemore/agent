@@ -226,10 +226,16 @@ def fn(url: str) -> str:
     display_url = _strip_credentials(url)
     url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
     save_dir = os.path.join(os.getcwd(), ".agent", "state", "fetched")
-    os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, f"{url_hash}.md")
-    with open(save_path, "w", encoding="utf-8") as f:
-        f.write(f"# Fetched: {display_url}\n\n{text}")
+    save_path = None
+    save_error = None
+    try:
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = os.path.join(save_dir, f"{url_hash}.md")
+        with open(save_path, "w", encoding="utf-8") as f:
+            f.write(f"# Fetched: {display_url}\n\n{text}")
+    except Exception as e:
+        save_error = str(e)
+        save_path = None
 
     total_chars = len(text)
     total_lines = text.count("\n") + 1
@@ -237,11 +243,17 @@ def fn(url: str) -> str:
     if len(text) > _INLINE_PREVIEW:
         preview += f"\n\n[... truncated — {total_chars} chars total, {total_lines} lines]"
 
-    return (
-        f"[Fetched: {display_url} — saved to {save_path} ({total_chars} chars, {total_lines} lines)]\n"
-        f"[Use file tool to read full content if needed]\n\n"
-        f"{preview}"
-    )
+    if save_path:
+        header = (
+            f"[Fetched: {display_url} — saved to {save_path} ({total_chars} chars, {total_lines} lines)]\n"
+            f"[Use file tool to read full content if needed]\n"
+        )
+    else:
+        header = (
+            f"[Fetched: {display_url} ({total_chars} chars, {total_lines} lines)"
+            f" — Warning: could not save to disk: {save_error}]\n"
+        )
+    return header + "\n" + preview
 
 
 definition = {
