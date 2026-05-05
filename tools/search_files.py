@@ -359,6 +359,8 @@ def fn(
             permission_errors += 1
 
     for root, dirs, files in os.walk(resolved, onerror=handle_error):
+        if truncated:
+            break
         # Filter directories to skip hidden ones (mimicking rglob behavior).
         # .git/ is always excluded; other dotdirs are skipped unless include_hidden=True.
         if include_hidden:
