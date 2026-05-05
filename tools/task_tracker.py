@@ -93,6 +93,16 @@ def _load_tasks():
                     str(p.resolve()),
                     f"element {i} has invalid 'status': expected a non-empty string, got {_status!r}",
                 )
+            # 'description' is optional but if present must be a string.
+            # A non-string description causes AttributeError in the auto-resolution
+            # logic which calls .strip().lower() on it (#958).
+            if "description" in item:
+                _desc = item["description"]
+                if not isinstance(_desc, str):
+                    return _Corrupted(
+                        str(p.resolve()),
+                        f"element {i} has invalid 'description': expected a string, got {_desc!r}",
+                    )
         return data
     except json.JSONDecodeError as exc:
         return _Corrupted(str(p.resolve()), str(exc))
