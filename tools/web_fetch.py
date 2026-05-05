@@ -142,10 +142,11 @@ def fn(url: str) -> str:
             # Validate the final URL after redirects — a server could redirect to an
             # internal address even though the original URL was external.
             final_url = resp.url
+            safe_final_url = _strip_credentials(final_url)
             if not final_url.startswith(("http://", "https://")):
-                return f"Error: redirect led to non-HTTP URL '{final_url}'"
+                return f"Error: redirect led to non-HTTP URL '{safe_final_url}'"
             if _is_private_address(final_url):
-                return f"Error: redirect to private/internal address is not allowed: '{final_url}'"
+                return f"Error: redirect to private/internal address is not allowed: '{safe_final_url}'"
 
             content_type = resp.headers.get("content-type", "").lower()
             

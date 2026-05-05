@@ -564,6 +564,25 @@ class TestWebFetchCredentialScrubbing(unittest.TestCase):
             f"Hostname was lost from tool result: {result!r}"
         )
 
+    def test_redirect_to_private_with_credentials_strips_creds(self):
+        """Redirect to private address with embedded credentials must not expose them (#970)."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response("http://user:s3cr3t@127.0.0.1/")
+            result = fn("http://example.com/redirect")
+        assert result.startswith("Error:"), f"Expected error: {result!r}"
+        assert "s3cr3t" not in result, f"Credential leaked in redirect error: {result!r}"
+        assert "user:s3cr3t" not in result, f"Credential pair leaked in redirect error: {result!r}"
+        assert "127.0.0.1" in result, f"Host address must still appear in error: {result!r}"
+
+    def test_redirect_non_http_with_credentials_strips_creds(self):
+        """Redirect to non-HTTP URL with embedded credentials must not expose them (#970)."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response("ftp://admin:p4ssw0rd@internal.host/file")
+            result = fn("http://example.com/redirect")
+        assert result.startswith("Error:"), f"Expected error: {result!r}"
+        assert "p4ssw0rd" not in result, f"Credential leaked in non-HTTP redirect error: {result!r}"
+        assert "admin:p4ssw0rd" not in result, f"Credential pair leaked: {result!r}"
+
 
 # ── Malformed Content-Length header (#831) ────────────────────────────────────
 
