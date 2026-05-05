@@ -1039,5 +1039,47 @@ class TestFileAppendAtomic(unittest.TestCase):
         self.assertEqual(open(path).read(), "existing\nappended")
 
 
+# ── Empty file read primes _accessed_files (#991) ─────────────────────────────
+
+class TestFileReadEmptyPrimesTracker(unittest.TestCase):
+    """Reading an empty file must add it to _accessed_files so writes can follow (#991)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._orig = os.getcwd()
+        os.chdir(self._tmpdir.name)
+
+    def tearDown(self):
+        os.chdir(self._orig)
+        self._tmpdir.cleanup()
+
+    def test_read_empty_file_returns_empty_notice(self):
+        """Reading an empty file must return the empty-file notice (#991)."""
+        path = os.path.join(self._tmpdir.name, "empty.txt")
+        open(path, "w").close()
+        result = file_tool.fn("read", path)
+        self.assertIn("0 lines of 0", result, f"Expected empty-file notice: {result!r}")
+        self.assertIn("empty file", result, f"Expected 'empty file': {result!r}")
+
+    def test_write_after_reading_empty_file_succeeds(self):
+        """Writing to an empty file after reading it must succeed, not return 'has not been read' (#991)."""
+        path = os.path.join(self._tmpdir.name, "empty.txt")
+        open(path, "w").close()
+        file_tool.fn("read", path)  # prime the tracker
+        result = file_tool.fn("write", path, content="hello")
+        self.assertFalse(result.startswith("Error:"), f"Should not error: {result!r}")
+        self.assertEqual(open(path).read(), "hello")
+
+    def test_bad_start_line_does_not_prime_tracker(self):
+        """A read with start_line past EOF must not prime _accessed_files (#991)."""
+        path = os.path.join(self._tmpdir.name, "small.txt")
+        with open(path, "w") as f:
+            f.write("one line\n")
+        file_tool.fn("read", path, start_line=100)  # bad start_line → error
+        result = file_tool.fn("write", path, content="new")
+        self.assertTrue(result.startswith("Error:"), f"Should still require read: {result!r}")
+        self.assertIn("has not been read", result)
+
+
 if __name__ == "__main__":
     unittest.main()
