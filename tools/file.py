@@ -76,6 +76,8 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
             f"Valid parameters are: action, path, content, start_line, end_line. "
             f"Valid actions are: read, write, insert, append, delete, list."
         )
+    if not isinstance(action, str):
+        return f"Error: 'action' must be a string, got {type(action).__name__!r}"
     if not isinstance(content, str):
         return (
             f"Error: 'content' must be a string, got {type(content).__name__!r}. "

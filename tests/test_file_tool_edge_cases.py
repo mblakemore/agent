@@ -871,5 +871,47 @@ class TestFileFloatLineNumberFormat(unittest.TestCase):
         self.assertIn("'float'", result, f"Type name must be quoted: {result!r}")
 
 
+# ── action type guard (#932) ──────────────────────────────────────────────────
+
+class TestFileActionTypeGuard(unittest.TestCase):
+    """file tool must reject non-string action with a clear type error (#932)."""
+
+    def test_integer_action_returns_type_error(self):
+        """action=42 must return a type error, not 'unknown action 42' (#932)."""
+        result = file_tool.fn(action=42, path=".")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'action'", result, f"Parameter name must appear: {result!r}")
+        self.assertIn("'int'", result, f"Type name must be quoted: {result!r}")
+        self.assertNotIn("unknown action", result, f"Must not say 'unknown action': {result!r}")
+
+    def test_none_action_returns_type_error(self):
+        """action=None must return a type error, not 'unknown action None' (#932)."""
+        result = file_tool.fn(action=None, path=".")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'action'", result, f"Parameter name must appear: {result!r}")
+        self.assertIn("'NoneType'", result, f"Type name must be quoted: {result!r}")
+        self.assertNotIn("unknown action", result, f"Must not say 'unknown action': {result!r}")
+
+    def test_bool_action_returns_type_error(self):
+        """action=True must return a type error, not 'unknown action True' (#932)."""
+        result = file_tool.fn(action=True, path=".")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'action'", result, f"Parameter name must appear: {result!r}")
+        self.assertIn("'bool'", result, f"Type name must be quoted: {result!r}")
+        self.assertNotIn("unknown action", result, f"Must not say 'unknown action': {result!r}")
+
+    def test_list_action_returns_type_error(self):
+        """action=[] must return a type error, not 'unknown action []' (#932)."""
+        result = file_tool.fn(action=[], path=".")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'action'", result, f"Parameter name must appear: {result!r}")
+        self.assertIn("'list'", result, f"Type name must be quoted: {result!r}")
+
+    def test_valid_string_action_still_works(self):
+        """action='list' must still work after the type guard is added (#932)."""
+        result = file_tool.fn(action="list", path=".")
+        self.assertFalse(result.startswith("Error:"), f"Should not error: {result!r}")
+
+
 if __name__ == "__main__":
     unittest.main()
