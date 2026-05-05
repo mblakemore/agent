@@ -1184,3 +1184,43 @@ def test_exec_command_non_string_cwd_names_the_type():
     assert result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}"
     assert "string" in result, f"Error must mention 'string': {result!r}"
     assert "int" in result, f"Error must name the bad type: {result!r}"
+
+
+# ── session_id=None and cwd=None treated as '' (#944) ────────────────────────
+
+def test_exec_command_session_id_none_treated_as_empty():
+    """session_id=None must be silently coerced to '' (not a type error) (#944)."""
+    result = fn("echo hi", session_id=None)
+    assert not result.startswith("Error:"), f"session_id=None must not error: {result!r}"
+    assert "exit=0" in result, f"Command must succeed: {result!r}"
+
+
+def test_exec_command_cwd_none_treated_as_empty():
+    """cwd=None must be silently coerced to '' (not a type error) (#944)."""
+    result = fn("echo hi", cwd=None)
+    assert not result.startswith("Error:"), f"cwd=None must not error: {result!r}"
+    assert "exit=0" in result, f"Command must succeed: {result!r}"
+
+
+def test_exec_command_cwd_false_returns_type_error():
+    """cwd=False must return a type error — False is not a valid cwd (#944)."""
+    result = fn("echo hi", cwd=False)
+    assert result.startswith("Error:"), f"cwd=False must return error: {result!r}"
+    assert "string" in result, f"Error must mention 'string': {result!r}"
+    assert "'bool'" in result, f"Error must name type 'bool': {result!r}"
+
+
+def test_exec_command_cwd_zero_returns_type_error():
+    """cwd=0 must return a type error — integer is not a valid cwd (#944)."""
+    result = fn("echo hi", cwd=0)
+    assert result.startswith("Error:"), f"cwd=0 must return error: {result!r}"
+    assert "string" in result, f"Error must mention 'string': {result!r}"
+    assert "'int'" in result, f"Error must name type 'int': {result!r}"
+
+
+def test_exec_command_session_id_integer_still_returns_type_error():
+    """session_id=42 must still return a type error (only None is special-cased) (#944)."""
+    result = fn("echo hi", session_id=42)
+    assert result.startswith("Error:"), f"session_id=42 must return error: {result!r}"
+    assert "string" in result, f"Error must mention 'string': {result!r}"
+    assert "'int'" in result, f"Error must name type 'int': {result!r}"
