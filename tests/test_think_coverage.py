@@ -405,5 +405,45 @@ class TestThinkContextNoneHandling(unittest.TestCase):
         mock_post.assert_not_called()
 
 
+# ── depth=None treated as "brief" (#972) ──────────────────────────────────────
+
+class TestThinkDepthNoneHandling(unittest.TestCase):
+    """depth=None must coerce to 'brief', not return a cryptic type error (#972)."""
+
+    def test_depth_none_does_not_return_type_error(self):
+        """depth=None must coerce to 'brief' and proceed normally (#972)."""
+        with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"):
+            with patch("requests.post") as mock_post:
+                mock_resp = MagicMock()
+                mock_resp.raise_for_status.return_value = None
+                mock_resp.iter_lines.return_value = [
+                    b'data: {"choices": [{"delta": {"content": "ok"}}]}',
+                    b"data: [DONE]",
+                ]
+                mock_post.return_value = mock_resp
+                result = think_mod.fn("test prompt", depth=None)
+        self.assertFalse(result.startswith("Error:"), f"depth=None must not return an error: {result!r}")
+        self.assertNotIn("NoneType", result, f"NoneType must not appear in result: {result!r}")
+
+    def test_depth_none_no_nonetyep_in_error(self):
+        """depth=None must not produce 'NoneType' in any output (#972)."""
+        with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"):
+            with patch("requests.post") as mock_post:
+                mock_resp = MagicMock()
+                mock_resp.raise_for_status.return_value = None
+                mock_resp.iter_lines.return_value = [b"data: [DONE]"]
+                mock_post.return_value = mock_resp
+                result = think_mod.fn("test prompt", depth=None)
+        self.assertNotIn("NoneType", result)
+
+    def test_depth_integer_still_returns_type_error(self):
+        """depth=3 must still return a clear type error (only None is special-cased) (#972)."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("test prompt", depth=3)
+        self.assertTrue(result.startswith("Error:"), f"depth=3 must return an error: {result!r}")
+        self.assertIn("'int'", result, f"Error must quote type name: {result!r}")
+        mock_post.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

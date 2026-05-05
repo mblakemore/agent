@@ -60,6 +60,8 @@ def fn(prompt: str, depth: str = "brief", context: str = "") -> str:
             return f"Error: context must be a string, got {type(context).__name__!r}"
     if "\x00" in context:
         return "Error: context must not contain null bytes"
+    if depth is None:
+        depth = "brief"
     if not isinstance(depth, str):
         return f"Error: depth must be a string, got {type(depth).__name__!r}"
     if depth not in DEPTH_MAX_TOKENS:
