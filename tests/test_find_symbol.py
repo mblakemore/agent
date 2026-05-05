@@ -1426,14 +1426,12 @@ class TestFindSymbolModeKindTypeValidation(unittest.TestCase):
         self.assertIn("string", error, f"Error must mention 'string': {error!r}")
         self.assertIn("'int'", error, f"Error must name the type: {error!r}")
 
-    def test_none_mode_returns_type_specific_error(self):
-        """mode=None must say 'must be a string, got \\'NoneType\\'', not 'Invalid mode None' (#923)."""
+    def test_none_mode_treated_as_definition(self):
+        """mode=None must coerce to 'definition' (the default), not return a type error (#947)."""
         result = find_symbol("fn", mode=None)
         self.assertIsInstance(result, list)
-        self.assertIn("error", result[0])
-        error = result[0]["error"]
-        self.assertIn("string", error, f"Error must mention 'string': {error!r}")
-        self.assertIn("'NoneType'", error, f"Error must name the type: {error!r}")
+        if result:
+            self.assertNotIn("error", result[0], f"mode=None should not error: {result[0]}")
 
     def test_integer_kind_returns_type_specific_error(self):
         """kind=99 must say 'kind must be a string or None, got \\'int\\'' (#923)."""

@@ -25,6 +25,8 @@ def subagent(
         return "Error: prompt must not be empty"
     if "\x00" in prompt:
         return "Error: prompt must not contain null bytes"
+    if timeout is None:
+        timeout = _DEFAULT_TIMEOUT
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
         return f"Error: timeout must be a number, got {type(timeout).__name__!r}"
     if not math.isfinite(timeout) or timeout <= 0:
