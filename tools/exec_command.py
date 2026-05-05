@@ -187,7 +187,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
         return f"Error: timeout must be a number, got {type(timeout).__name__!r}"
     if not math.isfinite(timeout) or timeout <= 0:
-        return "Error: timeout must be a positive number"
+        return "Error: timeout must be a finite positive number"
 
     # background and new_session must be actual booleans (or 0/1 integers).
     # Strings like "false" are non-empty and therefore truthy — an LLM passing
