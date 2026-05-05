@@ -95,6 +95,10 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
     # Booleans are a subclass of int in Python; reject them for line-number params
     # so that start_line=True (silently 1) or end_line=False (silently 0) don't
     # slip through as valid line numbers.
+    if start_line is None:
+        start_line = 0
+    if end_line is None:
+        end_line = 0
     if isinstance(start_line, bool):
         return (
             f"Error: 'start_line' must be a plain integer, got 'bool': {start_line!r}. "

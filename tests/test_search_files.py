@@ -1644,3 +1644,46 @@ class TestSearchFilesNoneParamCoercion(unittest.TestCase):
         result = search_files.fn(pattern="ZZZNOMATCH_PROBE_946", path=None)
         self.assertIsInstance(result, str)
         self.assertFalse(result.startswith("Error:"), f"Expected success: {result[:100]!r}")
+
+
+class TestSearchFilesBoolFlagNoneCoercion(unittest.TestCase):
+    """Issue #952: optional boolean flags with None must coerce to False, not return type errors."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        p = Path(self._tmpdir.name, "a.py")
+        p.write_text("HIT = 1\n")
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _check_success(self, result):
+        self.assertIsInstance(result, str)
+        self.assertFalse(result.startswith("Error:"), f"Expected success: {result!r}")
+        self.assertNotIn("NoneType", result, f"None must not produce type error: {result!r}")
+
+    def test_ignore_case_none_treated_as_false(self):
+        """ignore_case=None must coerce to False (the default), not return a type error (#952)."""
+        result = search_files.fn("HIT", path=self._tmpdir.name, ignore_case=None)
+        self._check_success(result)
+
+    def test_count_only_none_treated_as_false(self):
+        """count_only=None must coerce to False (the default), not return a type error (#952)."""
+        result = search_files.fn("HIT", path=self._tmpdir.name, count_only=None)
+        self._check_success(result)
+
+    def test_include_temp_none_treated_as_false(self):
+        """include_temp=None must coerce to False (the default), not return a type error (#952)."""
+        result = search_files.fn("HIT", path=self._tmpdir.name, include_temp=None)
+        self._check_success(result)
+
+    def test_include_hidden_none_treated_as_false(self):
+        """include_hidden=None must coerce to False (the default), not return a type error (#952)."""
+        result = search_files.fn("HIT", path=self._tmpdir.name, include_hidden=None)
+        self._check_success(result)
+
+    def test_ignore_case_string_still_returns_type_error(self):
+        """ignore_case='false' must still return a type error (only None is special-cased) (#952)."""
+        result = search_files.fn("HIT", path=self._tmpdir.name, ignore_case="false")
+        self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
+        self.assertIn("'str'", result)
