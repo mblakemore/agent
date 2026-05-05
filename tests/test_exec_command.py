@@ -1224,3 +1224,41 @@ def test_exec_command_session_id_integer_still_returns_type_error():
     assert result.startswith("Error:"), f"session_id=42 must return error: {result!r}"
     assert "string" in result, f"Error must mention 'string': {result!r}"
     assert "'int'" in result, f"Error must name type 'int': {result!r}"
+
+
+# ── Issue #950: None coercion for timeout, background, new_session ────────────
+
+
+def test_exec_command_timeout_none_treated_as_default():
+    """timeout=None must coerce to 120 (the default), not return a type error (#950)."""
+    result = fn("echo hi", timeout=None)
+    assert not result.startswith("Error:"), f"timeout=None should succeed: {result!r}"
+    assert "NoneType" not in result, f"timeout=None must not produce type error: {result!r}"
+
+
+def test_exec_command_background_none_treated_as_false():
+    """background=None must coerce to False (the default), not return a type error (#950)."""
+    result = fn("echo hi", background=None)
+    assert not result.startswith("Error:"), f"background=None should succeed: {result!r}"
+    assert "NoneType" not in result, f"background=None must not produce type error: {result!r}"
+
+
+def test_exec_command_new_session_none_treated_as_false():
+    """new_session=None must coerce to False (the default), not return a type error (#950)."""
+    result = fn("echo hi", new_session=None)
+    assert not result.startswith("Error:"), f"new_session=None should succeed: {result!r}"
+    assert "NoneType" not in result, f"new_session=None must not produce type error: {result!r}"
+
+
+def test_exec_command_timeout_string_still_returns_type_error():
+    """timeout='fast' must still return a type error (only None is special-cased) (#950)."""
+    result = fn("echo hi", timeout="fast")
+    assert result.startswith("Error:"), f"timeout='fast' must return error: {result!r}"
+    assert "'str'" in result, f"Error must name type 'str': {result!r}"
+
+
+def test_exec_command_background_string_still_returns_type_error():
+    """background='false' must still return a type error (only None is special-cased) (#950)."""
+    result = fn("echo hi", background="false")
+    assert result.startswith("Error:"), f"background='false' must return error: {result!r}"
+    assert "'str'" in result, f"Error must name type 'str': {result!r}"

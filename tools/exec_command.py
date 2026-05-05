@@ -187,6 +187,8 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     if '\x00' in command:
         return "Error: command contains a null byte, which is not allowed"
 
+    if timeout is None:
+        timeout = 120
     if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
         return f"Error: timeout must be a number, got {type(timeout).__name__!r}"
     if not math.isfinite(timeout) or timeout <= 0:
@@ -195,6 +197,10 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     # background and new_session must be actual booleans (or 0/1 integers).
     # Strings like "false" are non-empty and therefore truthy — an LLM passing
     # background="false" would silently start a background process (#885).
+    if background is None:
+        background = False
+    if new_session is None:
+        new_session = False
     for _param_name, _param_val in (("background", background), ("new_session", new_session)):
         if isinstance(_param_val, bool):
             pass  # correct type
