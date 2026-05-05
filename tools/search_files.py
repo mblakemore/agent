@@ -8,6 +8,9 @@ from collections import deque
 
 _MAX_RESULTS = 100
 _MAX_CONTEXT = 20
+# Individual match/context lines are truncated to this length to prevent minified
+# files or generated blobs from flooding the context window (#975).
+_MAX_LINE_LEN = 1000
 
 # Directories/patterns excluded by default to avoid noise from CICD
 # session artifacts and dependency caches.  Callers can pass
@@ -77,6 +80,8 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
                 for line_num, line in enumerate(f, 1):
                     text_line = line.rstrip()
                     if regex.search(text_line):
+                        if len(text_line) > _MAX_LINE_LEN:
+                            text_line = text_line[:_MAX_LINE_LEN] + f"…[{len(text_line)} chars]"
                         files_matched = 1
                         total_matches += 1
                         match_lines.append(f"{abs_path}:{line_num}: {text_line}")
@@ -90,6 +95,8 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
                 for line_num, line in enumerate(f, 1):
                     text_line = line.rstrip()
                     is_match = bool(regex.search(text_line))
+                    if len(text_line) > _MAX_LINE_LEN:
+                        text_line = text_line[:_MAX_LINE_LEN] + f"…[{len(text_line)} chars]"
                     if is_match:
                         files_matched = 1
                         total_matches += 1
@@ -407,6 +414,8 @@ def fn(
                         for line_num, line in enumerate(f, 1):
                             text_line = line.rstrip()
                             if regex.search(text_line):
+                                if len(text_line) > _MAX_LINE_LEN:
+                                    text_line = text_line[:_MAX_LINE_LEN] + f"…[{len(text_line)} chars]"
                                 file_has_match = True
                                 total_matches += 1
                                 match_lines.append(f"{abs_path}:{line_num}: {text_line}")
@@ -423,6 +432,8 @@ def fn(
                         for line_num, line in enumerate(f, 1):
                             text_line = line.rstrip()
                             is_match = bool(regex.search(text_line))
+                            if len(text_line) > _MAX_LINE_LEN:
+                                text_line = text_line[:_MAX_LINE_LEN] + f"…[{len(text_line)} chars]"
 
                             if is_match:
                                 file_has_match = True
