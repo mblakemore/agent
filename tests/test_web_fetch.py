@@ -854,3 +854,36 @@ class TestWebFetchUrlTypeValidation(unittest.TestCase):
         with patch("requests.get", return_value=mock_resp):
             result = fn("http://example.com/")
         self.assertFalse(result.startswith("Error:"), f"Valid URL should not return error: {result!r}")
+
+
+# ── Save-to-disk exception handling (#987) ────────────────────────────────────
+
+class TestWebFetchSaveException(unittest.TestCase):
+    """Save-to-disk failure must not raise an uncaught exception (#987)."""
+
+    def test_makedirs_failure_returns_string_not_exception(self):
+        """If os.makedirs raises PermissionError, fn must return a string, not propagate (#987)."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response("http://example.com/")
+            with patch("tools.web_fetch.os.makedirs", side_effect=PermissionError("no write")):
+                result = fn("http://example.com/")
+        self.assertIsInstance(result, str, "fn must always return a string")
+        self.assertNotIn("PermissionError", result, "Must not leak exception class name")
+        self.assertIn("Warning", result, f"Should include save warning: {result[:200]!r}")
+
+    def test_open_failure_returns_string_not_exception(self):
+        """If open() for saving raises OSError, fn must return a string, not propagate (#987)."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response("http://example.com/")
+            with patch("builtins.open", side_effect=OSError("disk full")):
+                result = fn("http://example.com/")
+        self.assertIsInstance(result, str, "fn must always return a string")
+        self.assertNotIn("OSError", result, "Must not leak exception class name")
+
+    def test_successful_save_still_includes_save_path(self):
+        """When save succeeds, result must include the saved-to path (#987)."""
+        with patch("tools.web_fetch.requests.get") as mock_get:
+            mock_get.return_value = _make_mock_response("http://example.com/")
+            result = fn("http://example.com/")
+        self.assertIsInstance(result, str, "fn must return a string")
+        self.assertNotIn("Warning", result, f"No warning expected on success: {result[:200]!r}")
