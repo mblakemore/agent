@@ -742,3 +742,31 @@ def test_read_pdf_tab_newline_path_returns_clear_error():
     result = fn("\t\n")
     assert result.startswith("Error:"), f"Expected error: {result!r}"
     assert "empty" in result.lower(), f"Error must mention 'empty': {result!r}"
+
+
+# ── None-coercion for optional page params (#960) ──────────────────────────────
+
+@patch("fitz.open")
+def test_read_pdf_start_page_none_coerces_to_1(mock_open):
+    """start_page=None must coerce to 1 (the default) rather than return a type error (#960)."""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=None)
+    assert not result.startswith("Error:"), f"Expected success, got: {result!r}"
+    assert "NoneType" not in result, f"Must not mention NoneType: {result!r}"
+
+
+@patch("fitz.open")
+def test_read_pdf_end_page_none_coerces_to_0(mock_open):
+    """end_page=None must coerce to 0 (last-page sentinel) rather than return a type error (#960)."""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", end_page=None)
+    assert not result.startswith("Error:"), f"Expected success, got: {result!r}"
+    assert "NoneType" not in result, f"Must not mention NoneType: {result!r}"
+
+
+@patch("fitz.open")
+def test_read_pdf_both_page_params_none_succeeds(mock_open):
+    """start_page=None and end_page=None together must succeed, reading the full document (#960)."""
+    mock_open.return_value = _mock_pdf_doc()
+    result = fn("dummy.pdf", start_page=None, end_page=None)
+    assert not result.startswith("Error:"), f"Expected success, got: {result!r}"
