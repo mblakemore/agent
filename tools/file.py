@@ -233,6 +233,7 @@ def _read(path, start_line, end_line):
     
     if not lines_to_return:
         if total == 0:
+            _accessed_files.add(str(p.resolve()))
             return f"[{path}: 0 lines of 0]\n(empty file)"
         if s > total:
             return f"Error: start_line ({s}) exceeds file length ({total} lines)"
