@@ -2725,6 +2725,32 @@ def test_task_null_status_returns_corrupted_error():
     assert "invalid 'status'" in result, f"Error must mention invalid status: {result!r}"
 
 
+def test_integer_description_returns_corrupted_error():
+    """A task with 'description': 42 (integer) must return a corrupted error, not AttributeError (#958)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps([{"id": 1, "status": "open", "description": 42}]),
+                 encoding="utf-8")
+
+    result = fn(action="list")
+    assert result.startswith("Error:"), f"Expected corrupted error: {result!r}"
+    assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
+    assert "invalid 'description'" in result, f"Error must mention invalid description: {result!r}"
+
+
+def test_integer_description_no_attributeerror_on_done():
+    """A non-string 'description' must not cause AttributeError on done action (#958)."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps([{"id": 1, "status": "open", "description": 42}]),
+                 encoding="utf-8")
+
+    result = fn(action="done", description="something")
+    assert result.startswith("Error:"), f"Expected error: {result!r}"
+    assert "corrupted" in result.lower(), f"Error must mention 'corrupted': {result!r}"
+    assert "AttributeError" not in result, f"Raw AttributeError must not be exposed: {result!r}"
+
+
 # ── Issue #956: task_id=None and limit=None coerce to defaults ────────────────
 
 
