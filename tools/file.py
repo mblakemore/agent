@@ -469,10 +469,21 @@ def _append(path, content):
             new_lines = lines[:guard_idx] + [insert_block] + lines[guard_idx:]
             new_content = ''.join(new_lines)
             try:
-                with open(p, 'w', encoding='utf-8') as f:
-                    f.write(new_content)
+                temp_fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
             except PermissionError:
                 return f"Error: permission denied: {path}"
+            try:
+                with os.fdopen(temp_fd, 'w', encoding='utf-8') as temp_f:
+                    temp_f.write(new_content)
+                os.replace(temp_path, p)
+            except PermissionError:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                return f"Error: permission denied: {path}"
+            except Exception as e:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                return f"Error: append failed: {e}"
             diff_text = _get_diff(old_content, new_content)
             return f"Appended to '{path}' ({len(content)} chars, inserted before __main__ guard)\n\nDiff:\n{diff_text}"
 
