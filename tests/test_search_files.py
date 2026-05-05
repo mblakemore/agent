@@ -1732,3 +1732,42 @@ class TestSearchFilesLineTruncation(unittest.TestCase):
             f.write("NEEDLE\n")           # match
         result = search_files.fn("NEEDLE", path=self._big_file, context=1)
         self.assertIn("…[", result, f"Long context line must be truncated: {result!r}")
+
+
+# ── os.walk early termination after truncation (#981) ────────────────────────
+
+class TestSearchFilesWalkTermination(unittest.TestCase):
+    """os.walk outer loop must break immediately when truncated (#981)."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def test_truncated_result_has_correct_header(self):
+        """When >_MAX_RESULTS matches exist, header must show truncation and exactly 100 results (#981)."""
+        root = self._tmpdir.name
+        for i in range(110):
+            sub = os.path.join(root, f"dir{i:03d}")
+            os.makedirs(sub, exist_ok=True)
+            with open(os.path.join(sub, "f.txt"), "w") as fh:
+                fh.write("NEEDLE\n")
+        result = search_files.fn("NEEDLE", path=root, context=0)
+        self.assertIn("truncated", result, f"Expected truncation notice: {result[:300]!r}")
+        self.assertIn("100 results", result, f"Header must show 100 results: {result[:300]!r}")
+
+    def test_walk_completes_after_truncation(self):
+        """search_files must complete (not hang) when truncation limit is hit early in a deep tree (#981)."""
+        import time
+        root = self._tmpdir.name
+        for i in range(200):
+            sub = os.path.join(root, f"d{i:03d}")
+            os.makedirs(sub, exist_ok=True)
+            with open(os.path.join(sub, "f.txt"), "w") as fh:
+                fh.write("HIT\n")
+        start = time.monotonic()
+        result = search_files.fn("HIT", path=root, context=0)
+        elapsed = time.monotonic() - start
+        self.assertIn("truncated", result)
+        self.assertLess(elapsed, 10.0, f"Walk took too long after truncation: {elapsed:.2f}s")
