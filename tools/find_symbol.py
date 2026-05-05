@@ -10,6 +10,9 @@ DEFAULT_EXCLUDES = [
     "node_modules/", "__pycache__/", ".git/",
 ]
 
+# Cap total results to prevent context flooding with very common symbol names (#989).
+_MAX_RESULTS = 200
+
 
 def _is_excluded(path_str: str) -> bool:
     """Return True if any exclude pattern appears in the path string."""
@@ -290,6 +293,19 @@ def find_symbol(
         if mode in ("callers", "both"):
             callers = _find_callers(tree, name, display_path)
             results.extend(callers)
+
+        if len(results) >= _MAX_RESULTS:
+            total_so_far = len(results)
+            results = results[:_MAX_RESULTS]
+            results.append({
+                "truncated": True,
+                "shown": _MAX_RESULTS,
+                "hint": (
+                    f"Results truncated at {_MAX_RESULTS}. "
+                    "Use a narrower search or pass a specific path= to see more."
+                ),
+            })
+            return results
 
     return results
 
