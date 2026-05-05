@@ -376,19 +376,19 @@ def test_exec_command_pythonpath_injected_when_cwd_outside_repo(tmp_path):
 def test_exec_command_negative_timeout_rejected():
     """A negative timeout must be rejected with a clear error, not silently kill the command."""
     result = fn(command="echo hello", timeout=-1)
-    assert result == "Error: timeout must be a positive number"
+    assert result == "Error: timeout must be a finite positive number"
 
 
 def test_exec_command_negative_timeout_large():
     """Very negative timeout values must also be rejected."""
     result = fn(command="echo hello", timeout=-9999)
-    assert result == "Error: timeout must be a positive number"
+    assert result == "Error: timeout must be a finite positive number"
 
 
 def test_exec_command_zero_timeout_rejected():
     """timeout=0 is physically impossible (no time to run anything) and must be rejected."""
     result = fn(command="echo hello", timeout=0)
-    assert result == "Error: timeout must be a positive number"
+    assert result == "Error: timeout must be a finite positive number"
 
 
 def test_exec_command_positive_timeout_still_works():
@@ -402,7 +402,7 @@ def test_exec_command_negative_timeout_does_not_kill_command():
     """With a negative timeout the command must NOT run at all — error returned immediately."""
     result = fn(command="sleep 0.1 && echo ran", timeout=-5)
     # Must be the validation error, not a timed-out or successful execution result
-    assert result == "Error: timeout must be a positive number"
+    assert result == "Error: timeout must be a finite positive number"
     assert "ran" not in result
     assert "timed out" not in result
 
@@ -412,19 +412,19 @@ def test_exec_command_negative_timeout_does_not_kill_command():
 def test_exec_command_nan_timeout_rejected():
     """float('nan') must be rejected — it would silently disable the deadline check."""
     result = fn(command="echo hello", timeout=float('nan'))
-    assert result == "Error: timeout must be a positive number"
+    assert result == "Error: timeout must be a finite positive number"
 
 
 def test_exec_command_inf_timeout_rejected():
     """float('inf') must be rejected — it would create an infinite deadline."""
     result = fn(command="echo hello", timeout=float('inf'))
-    assert result == "Error: timeout must be a positive number"
+    assert result == "Error: timeout must be a finite positive number"
 
 
 def test_exec_command_neg_inf_timeout_rejected():
     """float('-inf') must be rejected along with other non-finite values."""
     result = fn(command="echo hello", timeout=float('-inf'))
-    assert result == "Error: timeout must be a positive number"
+    assert result == "Error: timeout must be a finite positive number"
 
 
 # ── wrong-type timeout tests (#680) ───────────────────────────────────────────
@@ -452,14 +452,14 @@ def test_exec_command_list_timeout_returns_error():
 def test_exec_command_nan_timeout_does_not_run_command():
     """With a nan timeout the command must NOT run at all — error returned immediately."""
     result = fn(command="echo ran", timeout=float('nan'))
-    assert result == "Error: timeout must be a positive number"
+    assert result == "Error: timeout must be a finite positive number"
     assert "ran" not in result
 
 
 def test_exec_command_inf_timeout_does_not_run_command():
     """With an inf timeout the command must NOT run at all — error returned immediately."""
     result = fn(command="echo ran", timeout=float('inf'))
-    assert result == "Error: timeout must be a positive number"
+    assert result == "Error: timeout must be a finite positive number"
     assert "ran" not in result
 
 
