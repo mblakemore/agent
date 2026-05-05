@@ -280,14 +280,19 @@ class TestThinkCoverage(unittest.TestCase):
         self.assertIn("int", result, f"Error must name the bad type: {result!r}")
         mock_post.assert_not_called()
 
-    def test_non_string_context_none_returns_type_error(self):
-        """context=None must return a type-specific error (#907)."""
-        with patch("requests.post") as mock_post:
-            result = think_mod.fn("test prompt", depth="brief", context=None)
-        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix: {result!r}")
-        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
-        self.assertIn("NoneType", result, f"Error must name the bad type: {result!r}")
-        mock_post.assert_not_called()
+    def test_non_string_context_none_treated_as_empty(self):
+        """context=None must be treated as '' (not a type error) — same as description=None in task_tracker (#936)."""
+        with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"):
+            with patch("requests.post") as mock_post:
+                mock_resp = MagicMock()
+                mock_resp.raise_for_status.return_value = None
+                mock_resp.iter_lines.return_value = [
+                    b'data: {"choices": [{"delta": {"content": "ok"}}]}',
+                    b"data: [DONE]",
+                ]
+                mock_post.return_value = mock_resp
+                result = think_mod.fn("test prompt", depth="brief", context=None)
+        self.assertFalse(result.startswith("Error:"), f"context=None must not return a type error: {result!r}")
 
     def test_non_string_context_list_returns_type_error(self):
         """context=[] must return a type-specific error (#907)."""
@@ -362,6 +367,42 @@ class TestThinkCoverage(unittest.TestCase):
         self.assertIn("brief", result)
         self.assertIn("normal", result)
         self.assertIn("deep", result)
+
+
+# ── context=None treated as empty string (#936) ────────────────────────────────
+
+class TestThinkContextNoneHandling(unittest.TestCase):
+    """context=None must be treated as '' not rejected as a type error (#936)."""
+
+    def test_context_none_does_not_return_type_error(self):
+        """context=None must be silently treated as '' consistent with task_tracker's description=None (#936)."""
+        with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"):
+            with patch("requests.post") as mock_post:
+                mock_resp = MagicMock()
+                mock_resp.raise_for_status.return_value = None
+                mock_resp.iter_lines.return_value = [
+                    b'data: {"choices": [{"delta": {"content": "ok"}}]}',
+                    b"data: [DONE]",
+                ]
+                mock_post.return_value = mock_resp
+                result = think_mod.fn("test prompt", context=None)
+        self.assertFalse(result.startswith("Error:"), f"context=None must not return an error: {result!r}")
+
+    def test_context_integer_still_returns_type_error(self):
+        """context=42 must still return a clear type error (only None is special-cased) (#936)."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("test prompt", context=42)
+        self.assertTrue(result.startswith("Error:"), f"context=42 must return an error: {result!r}")
+        self.assertIn("'int'", result, f"Error must quote type name: {result!r}")
+        mock_post.assert_not_called()
+
+    def test_context_list_still_returns_type_error(self):
+        """context=['x'] must still return a clear type error (#936)."""
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("test prompt", context=["context"])
+        self.assertTrue(result.startswith("Error:"), f"context=['x'] must return an error: {result!r}")
+        self.assertIn("'list'", result, f"Error must quote type name: {result!r}")
+        mock_post.assert_not_called()
 
 
 if __name__ == "__main__":
