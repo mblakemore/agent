@@ -350,15 +350,21 @@ class TestThinkCoverage(unittest.TestCase):
         self.assertIn("'int'", result, f"Error must name the type: {result!r}")
         mock_post.assert_not_called()
 
-    def test_depth_none_returns_error_without_http_call(self):
-        """think.fn with None depth must return a type-specific error, not 'invalid depth' (#923)."""
-        with patch("requests.post") as mock_post:
-            result = think_mod.fn("test prompt", depth=None)
+    def test_depth_none_coerces_to_brief(self):
+        """think.fn with None depth coerces to 'brief' — no longer a type error (#972 supersedes #923)."""
+        with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"):
+            with patch("requests.post") as mock_post:
+                mock_resp = MagicMock()
+                mock_resp.raise_for_status.return_value = None
+                mock_resp.iter_lines.return_value = [
+                    b'data: {"choices": [{"delta": {"content": "ok"}}]}',
+                    b"data: [DONE]",
+                ]
+                mock_post.return_value = mock_resp
+                result = think_mod.fn("test prompt", depth=None)
         self.assertIsInstance(result, str)
-        self.assertTrue(result.startswith("Error:"), f"Expected 'Error:' prefix, got: {result!r}")
-        self.assertIn("string", result, f"Error must mention 'string' for None depth: {result!r}")
-        self.assertIn("'NoneType'", result, f"Error must name the type: {result!r}")
-        mock_post.assert_not_called()
+        self.assertFalse(result.startswith("Error:"), f"depth=None must not error: {result!r}")
+        self.assertNotIn("NoneType", result, f"NoneType must not appear in result: {result!r}")
 
     def test_depth_error_message_lists_valid_depths(self):
         """Error message for invalid string depth must list the valid options (#839)."""
