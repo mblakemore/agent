@@ -264,6 +264,10 @@ def _write(path, content, start_line, end_line):
                 f"You must read the file first (action='read') before writing to it, "
                 f"so you can verify your changes are accurate and won't overwrite important content.")
 
+    # Atomic rename bypasses file-level permissions; check explicitly
+    if p.exists() and not os.access(str(p), os.W_OK):
+        return f"Error: permission denied: {path}"
+
     # Line-range replacement
     if start_line > 0 or end_line > 0:
         if not p.exists():
@@ -463,6 +467,9 @@ def _append(path, content):
     err = _check_write_confinement(path, p)
     if err:
         return err
+
+    if p.exists() and not os.access(str(p), os.W_OK):
+        return f"Error: permission denied: {path}"
 
     if p.suffix.lower() == '.json':
         return (f"Error: cannot append to JSON file '{path}' — breaks structure. "
