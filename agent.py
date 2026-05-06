@@ -2590,7 +2590,6 @@ def _handle_auto_guidance(conversation_history, summary_state, initial_files, lo
     except (EOFError, KeyboardInterrupt):
         log.info("Session ended (operator cancelled) | %d messages", len(conversation_history))
         if telemetry_on:
-            import telemetry
             telemetry.record_cycle(status="cancelled", duration_s=time.time() - t0)
             telemetry.shutdown()
         _log_bedrock_session_spend(log)
