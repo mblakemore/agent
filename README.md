@@ -2,6 +2,8 @@
 
 A local, tool-driven coding assistant that talks to an OpenAI-compatible LLM endpoint (e.g. `llama-server` from `llama.cpp`) and runs an autonomous file/shell tool loop. It is built to survive long sessions: it checkpoints every turn, summarizes older history in the background, recovers from malformed tool calls, and catches common hallucinations before they poison context.
 
+![agent TUI screenshot](img/screenshot.png)
+
 ## Quick start
 
 1. Start an OpenAI-compatible LLM server locally. The default endpoint is `http://127.0.0.1:8080`:
