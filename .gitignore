@@ -12,6 +12,11 @@ plan/*
 state/
 agent_history/
 
+# Local work products and detached worktrees (never commit these)
+temp/
+worktrees/
+CICD/worktrees/
+
 # Python
 __pycache__/
 *.py[cod]
