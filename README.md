@@ -163,16 +163,52 @@ Equivalent legacy shape (still works, synthesized into the registry at load time
 
 The agent can talk to an AWS Bedrock Chat gateway (aws-samples/bedrock-chat) for either the main model, the summary model, or both. Main-on-bedrock uses prompt stuffing to deliver tool calls (see `plan/bedrock-integration.md` § 8); summary-on-bedrock is a straight one-shot call.
 
-### Env vars
+### Credentials
+
+The agent resolves Bedrock credentials in this order at startup:
+
+1. **Keystore** — first `up` entry in `~/.config/agent/bedrock_creds.json` (lowest `daily_spend_usd` wins, oldest `last_checked` breaks ties so stale entries get re-tested first). Override the path via `AGENT_BEDROCK_STORE`.
+2. **Env vars** — `BEDROCK_API_URL` + `BEDROCK_API_KEY` (back-compat fallback).
+3. Otherwise the agent fails fast.
+
+#### Keystore (recommended)
+
+The keystore lets you register multiple gateway/key pairs and rotate to a sibling when one saturates or 5xx's. The file is created with mode `0o600`, atomic writes, and process-level `flock` so concurrent CLI invocations don't tear the JSON.
+
+Manage it with the `bedrock` subcommand on `agent.py`:
+
+```bash
+# add — runs a health probe and stores the result alongside the entry
+python agent.py bedrock add --name prod --url "https://<gw>.execute-api.us-east-1.amazonaws.com/prod" --key "<api-key>"
+
+# list — table view (or --json for the raw file)
+python agent.py bedrock list
+
+# retest — re-probe one entry or every entry
+python agent.py bedrock retest prod
+python agent.py bedrock retest --all
+
+# rm — remove by name (--yes skips the prompt)
+python agent.py bedrock rm prod
+
+# prune — drop entries that have been down longer than N days (default 30)
+python agent.py bedrock prune --stale-days 14
+```
+
+`list` columns: `NAME`, `STATUS` (`up` / `down` / `unknown`), `SPEND` (today's `daily_spend_usd`), `LAST_CHECKED`, `LAST_ERROR`. The store auto-rotates from a saturating entry to the next eligible sibling at session start; explicit rotation isn't a CLI verb.
+
+#### Env vars (fallback)
 
 ```bash
 export BEDROCK_API_URL="https://<your-gateway-id>.execute-api.us-east-1.amazonaws.com/prod"
 export BEDROCK_API_KEY="<your-api-gateway-key>"
 ```
 
-Both must be set before the agent starts when any backend has `kind: "bedrock"`. Missing env + empty `api_url`/`api_key` in config fails fast at startup.
+Used only when the keystore has no `up` entries. Useful for CI or one-off runs where you don't want a persistent file.
 
-Optional override: `BEDROCK_DAILY_CAP_USD` caps the combined spend for the day across roles (useful for CI runs). Default caps are `$10/day` for main and `$1/day` for summary — set either via `backends.<role>.daily_cost_cap_usd` in `config.json`, or override both via the env var.
+#### Spend caps
+
+`BEDROCK_DAILY_CAP_USD` caps the combined spend for the day across roles (useful for CI). Default caps are `$10/day` for main and `$1/day` for summary — set either via `backends.<role>.daily_cost_cap_usd` in `config.json`, or override both via the env var. The keystore's per-entry `daily_spend_usd` is separate from these caps and feeds entry selection.
 
 ### Config — all four combinations
 
@@ -213,9 +249,10 @@ Per-run override: pass `--backend-main bedrock` / `--backend-summary bedrock` on
 
 ### Security
 
-- `config.json` should be `chmod 600` when it contains a non-empty `api_key`. At startup the agent logs a WARN if the file is world-readable.
+- The keystore at `~/.config/agent/bedrock_creds.json` is forced to mode `0o600` on every write (atomic `tempfile + os.replace`, `0o600` set on the temp fd so there's no widened-mode window).
+- `config.json` should be `chmod 600` if you put a non-empty `api_key` in it directly. At startup the agent logs a WARN if the file is world-readable.
 - The daily spend counter at `CICD/bedrock_spend.json` is written with mode `0o600` (no secrets, usage data only — but the mode is locked regardless).
-- `BEDROCK_API_KEY` is redacted at every `_config` log site (no sentinel-value leak — covered by `tests/test_bedrock_security.py`).
+- `BEDROCK_API_KEY` and stored entry keys are redacted at every `_config` log site (no sentinel-value leak — covered by `tests/test_bedrock_security.py`).
 
 ### Known limitations
 
