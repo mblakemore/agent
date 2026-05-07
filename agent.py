@@ -1262,7 +1262,7 @@ def _expand_file_refs(text):
             path_is_dir = p.is_dir() if path_exists else False
             resolved_ref = p.resolve()
         except OSError as exc:
-            return None, None, f"Error: '{ref}': {exc.strerror}"
+            return None, None, f"Error: '{ref}': {exc}"
         if not path_exists:
             return None, None, f"Error: file '{ref}' does not exist"
         if path_is_dir:
