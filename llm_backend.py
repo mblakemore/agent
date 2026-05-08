@@ -1270,8 +1270,9 @@ class FoundryBackend:
             )
 
         self.api_url = endpoint
+        self.base_url = endpoint  # alias expected by agent.py display/logging
         self.api_key = api_key
-        self.model = cfg.get("model") or os.environ.get(f"AZURE_FOUNDRY_MODEL_{role_upper}", "")
+        self.model = os.environ.get(f"AZURE_FOUNDRY_MODEL_{role_upper}", "") or cfg.get("model", "")
         if not self.model:
             raise ConfigError("Foundry backend requires a model deployment name.")
 
