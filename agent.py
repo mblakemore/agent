@@ -460,6 +460,10 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
 
     if main_kind:
         _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
+        # Keep _config["llm"]["model"] in sync so the TUI status bar shows the
+        # active model rather than the llamacpp default.
+        if getattr(_main_backend, "model", None):
+            _config["llm"]["model"] = _main_backend.model
     if summary_kind:
         _summary_backend = _build_backend(
             _cfg_with_role(_config["backends"], "summary")
