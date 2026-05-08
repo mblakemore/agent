@@ -1321,9 +1321,62 @@ class FoundryBackend:
             )
         return text
 
-    def stream_chat(self, *args, **kwargs):
-        from dev_mode_prompt import build_dev_prompt, parse_dev_response
+    @staticmethod
+    def _to_anthropic_messages(openai_messages: list[dict]) -> tuple[str | None, list[dict]]:
+        """Convert OpenAI-format messages to Anthropic format.
+        Returns (system_prompt_or_None, anthropic_messages).
+        """
+        system = None
+        out = []
+        for msg in openai_messages:
+            role = msg.get("role")
+            content = msg.get("content")
+            if role == "system":
+                system = content
+                continue
+            if role in ("user", "assistant"):
+                tool_calls = msg.get("tool_calls")
+                if tool_calls:
+                    blocks = []
+                    for tc in tool_calls:
+                        blocks.append({
+                            "type": "tool_use",
+                            "id": tc["id"],
+                            "name": tc["function"]["name"],
+                            "input": json.loads(tc["function"]["arguments"] or "{}"),
+                        })
+                    out.append({"role": "assistant", "content": blocks})
+                else:
+                    out.append({"role": role, "content": content or ""})
+            elif role == "tool":
+                result_block = {
+                    "type": "tool_result",
+                    "tool_use_id": msg.get("tool_call_id", ""),
+                    "content": content or "",
+                }
+                if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], list):
+                    out[-1]["content"].append(result_block)
+                else:
+                    out.append({"role": "user", "content": [result_block]})
+        return system, out
 
+    @staticmethod
+    def _to_anthropic_tools(openai_tools: list[dict] | None) -> list[dict] | None:
+        """Convert OpenAI-format tool definitions to Anthropic format."""
+        if not openai_tools:
+            return None
+        result = []
+        for tool in openai_tools:
+            if tool.get("type") == "function":
+                fn = tool["function"]
+                result.append({
+                    "name": fn["name"],
+                    "description": fn.get("description", ""),
+                    "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
+                })
+        return result or None
+
+    def stream_chat(self, *args, **kwargs):
         log = kwargs.pop("log", None)
         if log is None and args:
             log = args[0]
@@ -1331,28 +1384,45 @@ class FoundryBackend:
             log = logging.getLogger("llm_backend")
 
         body = kwargs.pop("json", None) or {}
-        messages = kwargs.pop("messages", None) or body.get("messages", [])
-        tools = kwargs.pop("tools", None) or body.get("tools")
+        openai_messages = kwargs.pop("messages", None) or body.get("messages", [])
+        openai_tools = kwargs.pop("tools", None) or body.get("tools")
         max_tokens = body.get("max_tokens", 4096)
 
-        # Convert OpenAI-format messages+tools to a single text prompt
-        # (same strategy as BedrockBackend — avoids streaming API requirement)
-        prompt = build_dev_prompt(messages, tools)
+        system, anthropic_messages = self._to_anthropic_messages(openai_messages)
+        anthropic_tools = self._to_anthropic_tools(openai_tools)
+
+        create_kwargs: dict = dict(
+            model=self.model,
+            max_tokens=max_tokens,
+            messages=anthropic_messages,
+        )
+        if system:
+            create_kwargs["system"] = system
+        if anthropic_tools:
+            create_kwargs["tools"] = anthropic_tools
 
         t0 = time.monotonic()
         ok = False
+        narrative = ""
+        tool_calls: list[dict] = []
         try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            full_text = response.content[0].text
-            narrative, tool_calls = parse_dev_response(full_text)
+            response = self.client.messages.create(**create_kwargs)
+            for i, block in enumerate(response.content):
+                if block.type == "text":
+                    narrative += block.text
+                elif block.type == "tool_use":
+                    tool_calls.append({
+                        "index": i,
+                        "id": block.id,
+                        "type": "function",
+                        "function": {
+                            "name": block.name,
+                            "arguments": json.dumps(block.input),
+                        },
+                    })
             ok = True
         except Exception as e:
             log.error("foundry.stream_chat.error: %s", e)
-            narrative, tool_calls = "", []
         finally:
             deltas = (1 if narrative else 0) + len(tool_calls)
             latency_ms = int((time.monotonic() - t0) * 1000)
