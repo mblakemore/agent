@@ -1262,12 +1262,19 @@ class FoundryBackend:
         role_upper = self.role.upper()
         endpoint = cfg.get("api_url") or os.environ.get(f"AZURE_FOUNDRY_ENDPOINT_{role_upper}", "")
         api_key = cfg.get("api_key") or os.environ.get(f"AZURE_FOUNDRY_API_KEY_{role_upper}", "")
-        
+
         if not endpoint or not api_key:
             raise ConfigError(
                 f"Foundry backend requires endpoint and key "
                 f"(either in config.json or AZURE_FOUNDRY_ENDPOINT_{role_upper}/AZURE_FOUNDRY_API_KEY_{role_upper})"
             )
+
+        # Azure portal gives the full messages URL; AnthropicFoundry expects
+        # the base URL only — strip any trailing /v1/messages path.
+        for _suffix in ("/v1/messages", "/v1"):
+            if endpoint.rstrip("/").endswith(_suffix):
+                endpoint = endpoint.rstrip("/")[: -len(_suffix)]
+                break
 
         self.api_url = endpoint
         self.base_url = endpoint  # alias expected by agent.py display/logging
