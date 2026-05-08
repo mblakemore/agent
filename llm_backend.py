@@ -1258,6 +1258,6 @@ def build_backend(cfg: dict) -> Backend:
     kind = cfg.get("kind", "llamacpp")
     if kind == "llamacpp":
         return LlamacppBackend(cfg)
-    if kind == "bedrock":
+    if kind == "bedrock" or kind == "anthropicfoundry":
         return BedrockBackend(cfg)
     raise ValueError(f"Unknown backend kind: {kind!r}")
