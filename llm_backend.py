@@ -1322,7 +1322,7 @@ class FoundryBackend:
         return text
 
     def stream_chat(self, *args, **kwargs):
-        from dev_mode_prompt import build_dev_prompt
+        from dev_mode_prompt import build_dev_prompt, parse_dev_response
 
         log = kwargs.pop("log", None)
         if log is None and args:
@@ -1347,17 +1347,24 @@ class FoundryBackend:
                 max_tokens=max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
-            text = response.content[0].text
+            full_text = response.content[0].text
+            narrative, tool_calls = parse_dev_response(full_text)
             ok = True
-            yield {"choices": [{"delta": {"content": text}}]}
         except Exception as e:
             log.error("foundry.stream_chat.error: %s", e)
+            narrative, tool_calls = "", []
         finally:
+            deltas = (1 if narrative else 0) + len(tool_calls)
             latency_ms = int((time.monotonic() - t0) * 1000)
             log.info(
-                "backend.stream_chat.latency_ms backend=%s model=%s role=%s latency_ms=%d ok=%s",
-                self.kind, self.model, self.role, latency_ms, ok,
+                "backend.stream_chat.latency_ms backend=%s model=%s role=%s latency_ms=%d deltas=%d ok=%s",
+                self.kind, self.model, self.role, latency_ms, deltas, ok,
             )
+
+        if narrative:
+            yield {"choices": [{"delta": {"content": narrative}}]}
+        for tc in tool_calls:
+            yield {"choices": [{"delta": {"tool_calls": [tc]}}]}
 
 
 # ── Factory ────────────────────────────────────────────────────────────
