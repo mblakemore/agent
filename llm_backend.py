@@ -1281,8 +1281,8 @@ class FoundryBackend:
         )
         self.enabled = cfg.get("enabled", True)
 
-    def health(self) -> bool:
-        return True
+    def health(self) -> tuple[bool, str]:
+        return True, self.api_url
 
     def detect_ctx_size(self) -> int:
         return 200000
