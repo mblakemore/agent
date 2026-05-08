@@ -1298,19 +1298,16 @@ class FoundryBackend:
 
     def list_models(self) -> list[str]:
         return [self.model]
+
     def complete(self, prompt: str, log=None) -> str:
         log = log or logging.getLogger("llm_backend")
         t0 = time.monotonic()
-        
-        def _do_call():
-            return self.client.messages.create(
+        try:
+            response = self.client.messages.create(
                 model=self.model,
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
             )
-
-        try:
-            response = foundry_retry_utils.retry_on_429(_do_call, log)
             text = response.content[0].text
             ok = True
         except Exception as e:
@@ -1430,12 +1427,8 @@ class FoundryBackend:
         ok = False
         narrative = ""
         tool_calls: list[dict] = []
-
-        def _do_call():
-            return self.client.messages.create(**create_kwargs)
-
         try:
-            response = foundry_retry_utils.retry_on_429(_do_call, log)
+            response = self.client.messages.create(**create_kwargs)
             for i, block in enumerate(response.content):
                 if block.type == "text":
                     narrative += block.text
@@ -1464,6 +1457,8 @@ class FoundryBackend:
             yield {"choices": [{"delta": {"content": narrative}}]}
         for tc in tool_calls:
             yield {"choices": [{"delta": {"tool_calls": [tc]}}]}
+
+
 # ── Factory ────────────────────────────────────────────────────────────
 
 
