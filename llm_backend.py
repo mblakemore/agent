@@ -1315,30 +1315,41 @@ class FoundryBackend:
         return text
 
     def stream_chat(self, *args, **kwargs):
-        # Simplified stream implementation for the cycle
-        log = kwargs.pop("log", None) or (args[0] if args else logging.getLogger("llm_backend"))
+        from dev_mode_prompt import build_dev_prompt
+
+        log = kwargs.pop("log", None)
+        if log is None and args:
+            log = args[0]
+        if log is None:
+            log = logging.getLogger("llm_backend")
+
         body = kwargs.pop("json", None) or {}
-        messages = body.get("messages", [])
-        
+        messages = kwargs.pop("messages", None) or body.get("messages", [])
+        tools = kwargs.pop("tools", None) or body.get("tools")
+        max_tokens = body.get("max_tokens", 4096)
+
+        # Convert OpenAI-format messages+tools to a single text prompt
+        # (same strategy as BedrockBackend — avoids streaming API requirement)
+        prompt = build_dev_prompt(messages, tools)
+
         t0 = time.monotonic()
+        ok = False
         try:
-            with self.client.messages.stream(
+            response = self.client.messages.create(
                 model=self.model,
-                max_tokens=4096,
-                messages=messages,
-            ) as stream:
-                for event in stream:
-                    if event.type == "content_block_delta":
-                        yield {"choices": [{"delta": {"content": event.delta.text}}]}
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = response.content[0].text
             ok = True
+            yield {"choices": [{"delta": {"content": text}}]}
         except Exception as e:
             log.error("foundry.stream_chat.error: %s", e)
-            ok = False
         finally:
             latency_ms = int((time.monotonic() - t0) * 1000)
             log.info(
                 "backend.stream_chat.latency_ms backend=%s model=%s role=%s latency_ms=%d ok=%s",
-                self.kind, self.model, self.role, latency_ms, ok
+                self.kind, self.model, self.role, latency_ms, ok,
             )
 
 
