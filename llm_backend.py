@@ -1325,39 +1325,60 @@ class FoundryBackend:
     def _to_anthropic_messages(openai_messages: list[dict]) -> tuple[str | None, list[dict]]:
         """Convert OpenAI-format messages to Anthropic format.
         Returns (system_prompt_or_None, anthropic_messages).
+
+        Handles orphaned tool_results (produced by context compression that
+        removes the preceding assistant+tool_use messages): any tool_result
+        whose tool_use_id has no matching tool_use in the conversation is
+        silently dropped to prevent 400 errors from the Anthropic API.
         """
         system = None
-        out = []
+        out: list[dict] = []
+        seen_tool_use_ids: set[str] = set()
+
         for msg in openai_messages:
             role = msg.get("role")
             content = msg.get("content")
+
             if role == "system":
                 system = content
                 continue
+
             if role in ("user", "assistant"):
                 tool_calls = msg.get("tool_calls")
                 if tool_calls:
-                    blocks = []
+                    blocks: list[dict] = []
+                    # Preserve any narrative text alongside tool_use blocks
+                    if content:
+                        blocks.append({"type": "text", "text": content})
                     for tc in tool_calls:
+                        tid = tc["id"]
+                        seen_tool_use_ids.add(tid)
                         blocks.append({
                             "type": "tool_use",
-                            "id": tc["id"],
+                            "id": tid,
                             "name": tc["function"]["name"],
                             "input": json.loads(tc["function"]["arguments"] or "{}"),
                         })
                     out.append({"role": "assistant", "content": blocks})
                 else:
                     out.append({"role": role, "content": content or ""})
+
             elif role == "tool":
+                tid = msg.get("tool_call_id", "")
+                if tid not in seen_tool_use_ids:
+                    # Orphaned result — its tool_use was compressed away; skip
+                    # to avoid "unexpected tool_use_id in tool_result" 400 error.
+                    continue
                 result_block = {
                     "type": "tool_result",
-                    "tool_use_id": msg.get("tool_call_id", ""),
+                    "tool_use_id": tid,
                     "content": content or "",
                 }
                 if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], list):
                     out[-1]["content"].append(result_block)
                 else:
                     out.append({"role": "user", "content": [result_block]})
+
         return system, out
 
     @staticmethod
