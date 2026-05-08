@@ -3953,12 +3953,12 @@ def main():
                              "running interactively and falls back to plain input() automatically "
                              "if `prompt_toolkit` isn't installed.")
     parser.add_argument("--backend-main", dest="backend_main",
-                        choices=["llamacpp", "bedrock"], default=None,
+                        choices=["llamacpp", "bedrock", "foundry"], default=None,
                         help="Override the main backend kind (see plan/bedrock-integration.md).")
     parser.add_argument("--result-file", dest="result_file",
                         help="Write the final assistant response to this file (for subagent use).")
     parser.add_argument("--backend-summary", dest="backend_summary",
-                        choices=["llamacpp", "bedrock"], default=None,
+                        choices=["llamacpp", "bedrock", "foundry"], default=None,
                         help="Override the summary backend kind.")
     parser.add_argument("prompt", nargs="*", help="Initial prompt")
     args = parser.parse_args()
