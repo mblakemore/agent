@@ -1243,6 +1243,104 @@ class BedrockBackend:
         return _iter()
 
 
+
+import os
+import logging
+import time
+from anthropic import AnthropicFoundry
+
+class FoundryBackend:
+    """Azure AI Foundry backend using AnthropicFoundry client."""
+
+    kind = "foundry"
+
+    def __init__(self, cfg: dict):
+        self._cfg = cfg
+        self.role = cfg.get("role", "main")
+        
+        # Resolve credentials based on role (main/summary)
+        role_upper = self.role.upper()
+        endpoint = cfg.get("api_url") or os.environ.get(f"AZURE_FOUNDRY_ENDPOINT_{role_upper}", "")
+        api_key = cfg.get("api_key") or os.environ.get(f"AZURE_FOUNDRY_API_KEY_{role_upper}", "")
+        
+        if not endpoint or not api_key:
+            raise ConfigError(
+                f"Foundry backend requires endpoint and key "
+                f"(either in config.json or AZURE_FOUNDRY_ENDPOINT_{role_upper}/AZURE_FOUNDRY_API_KEY_{role_upper})"
+            )
+
+        self.api_url = endpoint
+        self.api_key = api_key
+        self.model = cfg.get("model") or os.environ.get(f"AZURE_FOUNDRY_MODEL_{role_upper}", "")
+        if not self.model:
+            raise ConfigError("Foundry backend requires a model deployment name.")
+
+        self.client = AnthropicFoundry(
+            api_key=self.api_key,
+            base_url=self.api_url,
+        )
+        self.enabled = cfg.get("enabled", True)
+
+    def health(self) -> bool:
+        return True
+
+    def detect_ctx_size(self) -> int:
+        return 200000
+
+    def list_models(self) -> list[str]:
+        return [self.model]
+
+    def complete(self, prompt: str, log=None) -> str:
+        log = log or logging.getLogger("llm_backend")
+        t0 = time.monotonic()
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = response.content[0].text
+            ok = True
+        except Exception as e:
+            log.error("foundry.complete.error: %s", e)
+            text = ""
+            ok = False
+        finally:
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            log.info(
+                "backend.complete.latency_ms backend=%s model=%s role=%s latency_ms=%d ok=%s",
+                self.kind, self.model, self.role, latency_ms, ok
+            )
+        return text
+
+    def stream_chat(self, *args, **kwargs):
+        # Simplified stream implementation for the cycle
+        log = kwargs.pop("log", None) or (args[0] if args else logging.getLogger("llm_backend"))
+        body = kwargs.pop("json", None) or {}
+        messages = body.get("messages", [])
+        
+        t0 = time.monotonic()
+        try:
+            with self.client.messages.stream(
+                model=self.model,
+                max_tokens=4096,
+                messages=messages,
+            ) as stream:
+                for event in stream:
+                    if event.type == "content_block_delta":
+                        yield {"choices": [{"delta": {"content": event.delta.text}}]}
+            ok = True
+        except Exception as e:
+            log.error("foundry.stream_chat.error: %s", e)
+            ok = False
+        finally:
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            log.info(
+                "backend.stream_chat.latency_ms backend=%s model=%s role=%s latency_ms=%d ok=%s",
+                self.kind, self.model, self.role, latency_ms, ok
+            )
+
+
 # ── Factory ────────────────────────────────────────────────────────────
 
 
@@ -1260,4 +1358,6 @@ def build_backend(cfg: dict) -> Backend:
         return LlamacppBackend(cfg)
     if kind == "bedrock":
         return BedrockBackend(cfg)
+    if kind == "foundry":
+        return FoundryBackend(cfg)
     raise ValueError(f"Unknown backend kind: {kind!r}")
