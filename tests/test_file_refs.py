@@ -7,6 +7,7 @@ import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -85,6 +86,14 @@ class TestExpandFileRefs(unittest.TestCase):
         self.assertIsNone(err)
         self.assertIn("SYSTEM CONTEXT", files)
         self.assertIn("AGENT IDENTITY FILE", files)
+
+    def test_oserror_during_stat_returns_error(self):
+        """OSError during path.exists() is caught and returned as an error string."""
+        with patch.object(Path, 'exists', side_effect=OSError(5, "Input/output error")):
+            text, files, err = agent._expand_file_refs("@bad.txt")
+        self.assertIsNone(text)
+        self.assertIsNone(files)
+        self.assertIn("Input/output error", err)
 
     # ── Path-traversal confinement tests ──────────────────────────────
 
