@@ -151,6 +151,12 @@ Compare test count to PR's claimed before/after. Grep diff for new `skip`/`skipI
 git diff origin/main...HEAD | grep -iE "password|secret|token|api.?key|BEGIN.*PRIVATE KEY" || true
 git diff --stat origin/main...HEAD | awk '$3 ~ /[0-9]{4,}/ { print }'
 ```
+
+**Artifact files**:
+```bash
+gh pr diff <N> --name-only | grep -E "\.(bak|orig|tmp|pyc)$|\.bak\."
+```
+Artifacts → CLOSE immediately with "PR adds artifact file(s): `<list>`. These must not be committed. Builder must remove and re-push."
 Secrets → CLOSE immediately. Large binaries, out-of-scope files, stray non-ASCII → REQUEST_CHANGES.
 
 **Step 4 — Scope creep within in-scope files**: the existing destruction rule (`deletions > additions × 5 AND > 100 lines`) catches "rewrote from scratch" but misses *churn-balanced* scope creep — e.g. PR #563 added 118 lines and deleted 110 on `agent.py` while the issue only required ~5 lines of additions. Sweep the per-file diff:
@@ -180,6 +186,11 @@ git diff origin/main...HEAD | grep -F "<func_name>("
 ```
 
 If a new public helper is added but no call site exists in the same diff → **REQUEST_CHANGES** with: `<func_name> defined at <file>:<line> but never invoked anywhere in the diff. Add the call site or remove the function.` This catches the "framework-only PR" failure (PR #563 v1: defined `record_tool_call`/`record_tool_error`/`record_hallucination`/`record_summary` but no agent.py call sites — meters would have stayed at zero forever).
+
+
+**Step 5 — Error-string Verification**:
+If the issue body contains a quoted error message (e.g., "Invalid input: expected X, got Y"), verify that the string literal used in `if`/`except` blocks in the diff matches the quoted message exactly.
+Mismatch → REQUEST_CHANGES with "`<fix_string>` in diff does not match `<issue_string>` from the bug report. Verify which string the runtime actually raises."
 
 ## Phase 5 — ASSESS
 
