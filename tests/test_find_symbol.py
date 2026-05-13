@@ -30,9 +30,23 @@ _AGENT_PY = os.path.join(_REPO_ROOT, "agent.py")
 _LLM_BACKEND_PY = os.path.join(_REPO_ROOT, "llm_backend.py")
 
 
+def _expected_def_line(path: str, name: str) -> int:
+    """Return the 1-based line number of `def <name>(` in `path`.
+
+    Resolved from the live file so the test does not lock in a literal
+    that drifts every time the surrounding file is edited.
+    """
+    needle = f"def {name}("
+    with open(path, "r", encoding="utf-8") as f:
+        for i, line in enumerate(f, start=1):
+            if line.lstrip().startswith(needle):
+                return i
+    raise AssertionError(f"{name} not found in {path}")
+
+
 class TestFindSymbolAC1(unittest.TestCase):
     """AC1: find_symbol('_classify_turn_complexity', path='agent.py', mode='definition')
-    returns exactly 1 match at line 1167 with kind='function'.
+    returns exactly 1 match at the function's live definition line with kind='function'.
     """
 
     def test_single_definition_match(self):
@@ -43,7 +57,7 @@ class TestFindSymbolAC1(unittest.TestCase):
         )
         self.assertEqual(len(results), 1, f"Expected 1 match, got {len(results)}: {results}")
         m = results[0]
-        self.assertEqual(m["line"], 1166)
+        self.assertEqual(m["line"], _expected_def_line(_AGENT_PY, "_classify_turn_complexity"))
         self.assertEqual(m["kind"], "function")
         self.assertEqual(m["scope"], "_classify_turn_complexity")
         self.assertIn("_classify_turn_complexity", m["context"])
