@@ -547,7 +547,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
             if wt.exists() and wt.is_file():
                 text = wt.read_text(encoding='utf-8', errors='replace')
                 # Strip trailing heredoc terminators: EOF, EOF 2>&1, JSONEOF 2>&1, etc.
-                cleaned = re.sub(r'\n\s*(?:JSON|YAML|SH|PY)?EOF(?:\s+2>&1)?\s*$', '\n', text)
+                cleaned = re.sub(r'\n\s*\b[A-Z0-9_]*EOF(?:\s+2>&1)?\s*$', '\n', text, flags=re.IGNORECASE)
                 if cleaned != text:
                     wt.write_text(cleaned, encoding='utf-8')
         except Exception:
