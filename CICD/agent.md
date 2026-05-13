@@ -94,7 +94,8 @@ To address feedback on an inherited PR, follow these steps EXACTLY (do NOT use t
    ```
 4. Inside that worktree: edit, `git add`, `git commit`, then `git push origin "$BR"` (NOT `HEAD:<literal-branch-name>` — typing the branch literally invites typos when issue/PR numbers differ; let the variable carry the name).
 5. Do NOT run `gh pr create` — the PR already exists; the push above updates it. (`gh pr create --head <existing-branch>` will fail with "PR already exists at #<N>", which means you correctly noticed but should treat as expected — do not retry on a different head.)
-6. Re-request review with `gh pr ready <N>` only if reviewer asked for merge.
+6. **Update the PR body to match the new diff** — the inherited body describes the OLD fix and is now misleading. Write the corrected body (with the Phase 8 Acceptance Criteria checklist + Regression Evidence) to `/tmp/pr-body-${ISSUE}.md` and run `gh pr edit <N> --body "$(cat /tmp/pr-body-${ISSUE}.md)"`. **gh-deprecation quirk (run 1007 failure mode — turns 119-126 stuck loop):** `gh pr edit` and `gh pr view` often return exit code 1 with a "GraphQL: Projects (classic) is being deprecated ... (projectCards)" warning in stderr, **even when the operation succeeded**. Do NOT retry on this exit code. After ANY `gh pr edit --body` attempt, verify the result with `gh pr view <N> --json body --jq '.body' | head -5` — if the body shows the new content, the edit worked; treat exit-1-with-deprecation-warning as success and proceed. Retrying burns turns and the body never changes because every attempt "fails" identically.
+7. Re-request review with `gh pr ready <N>` only if reviewer asked for merge.
 
 Do NOT file a new issue until the inherited PR is resolved (merged, closed, or abandoned with a clear reason). Only one exception: if the reviewer's concern is fundamental (wrong approach), close the PR with a comment, reopen the issue, and pivot to a different target.
 
