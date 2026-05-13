@@ -14,10 +14,27 @@ DEFAULT_EXCLUDES = [
 _MAX_RESULTS = 200
 
 
-def _is_excluded(path_str: str) -> bool:
-    """Return True if any exclude pattern appears in the path string."""
+def _is_excluded(path: Path, root: Path) -> bool:
+    """Return True if any exclude pattern appears inside ``path`` relative to ``root``.
+
+    Excludes must describe path components **inside the search root**, not the
+    absolute path. Otherwise a search rooted at e.g. ``/foo/temp/bar`` would
+    silently drop every file because ``temp/`` is a substring of the ancestor
+    ``/foo/temp/`` (#1013).
+    """
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        # Path is not under root (e.g. a symlink resolved outside the tree).
+        # Fall back to the raw absolute string check — old behavior — so we
+        # don't accidentally include something the caller meant to skip.
+        rel_str = str(path)
+    else:
+        rel_str = str(rel)
+        if path.is_dir() or rel_str.endswith(os.sep):
+            rel_str = rel_str.rstrip(os.sep) + "/"
     for excl in DEFAULT_EXCLUDES:
-        if excl in path_str:
+        if excl in rel_str:
             return True
     return False
 
@@ -34,6 +51,7 @@ def _collect_py_files(root: Path) -> list[Path]:
     """
     results = []
     seen_real: set[str] = set()
+    root_path = Path(root)
     for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
         real_dirpath = os.path.realpath(dirpath)
         if real_dirpath in seen_real:
@@ -44,16 +62,26 @@ def _collect_py_files(root: Path) -> list[Path]:
         seen_real.add(real_dirpath)
         # Prune excluded directories and already-seen real paths in-place so
         # os.walk won't descend into them.
+        def _dir_excluded(d: str) -> bool:
+            dp = Path(dirpath) / d
+            try:
+                rel = dp.relative_to(root_path)
+            except ValueError:
+                rel_str = str(dp)
+            else:
+                rel_str = str(rel).rstrip(os.sep) + "/"
+            return any(excl in rel_str for excl in DEFAULT_EXCLUDES)
+
         dirnames[:] = [
             d for d in dirnames
-            if not _is_excluded(str(Path(dirpath) / d) + "/")
+            if not _dir_excluded(d)
             and os.path.realpath(str(Path(dirpath) / d)) not in seen_real
         ]
         for fname in filenames:
             if not fname.endswith(".py"):
                 continue
             fpath = Path(dirpath) / fname
-            if not _is_excluded(str(fpath)):
+            if not _is_excluded(fpath, root_path):
                 results.append(fpath)
     return results
 
