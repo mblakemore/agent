@@ -1569,5 +1569,84 @@ class TestFindSymbolResultCap(unittest.TestCase):
         )
 
 
+class TestFindSymbolExcludeIsRelativeToRoot(unittest.TestCase):
+    """#1013: DEFAULT_EXCLUDES tokens (temp/, worktrees/, .venv, ...) must match
+    path components **inside the search root**, not the absolute path. Previously
+    a search rooted at e.g. /foo/temp/bar returned [] because the parent's
+    "temp/" was a substring of every absolute path.
+    """
+
+    def setUp(self):
+        self.base = tempfile.mkdtemp()
+        # Build a root whose absolute path itself contains the literal "temp/"
+        # segment, mirroring CICD bot sessions where the clone lives under
+        # /<workspace>/temp/<stamp>/repo.
+        self.root = Path(self.base) / "temp" / "myroot"
+        self.root.mkdir(parents=True)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.base, ignore_errors=True)
+
+    def test_root_under_excluded_ancestor_still_finds_symbols(self):
+        """The fix: search root at /<...>/temp/myroot/ must return matches,
+        not [] because 'temp/' appears in the ancestor portion of the path.
+        """
+        (self.root / "module.py").write_text(
+            "def find_me_1013(): pass\n", encoding="utf-8"
+        )
+        results = find_symbol("find_me_1013", path=str(self.root), mode="definition")
+        self.assertEqual(
+            len(results), 1,
+            f"Expected 1 match under root with excluded ancestor, got: {results}"
+        )
+        self.assertEqual(results[0]["kind"], "function")
+
+    def test_subtree_excludes_still_apply(self):
+        """Regression guard: tokens still skip matching sub-paths *inside* the
+        search root. Without this, the fix would over-correct and stop honouring
+        the excludes entirely.
+        """
+        (self.root / "keep.py").write_text(
+            "def find_me_1013_sub(): pass\n", encoding="utf-8"
+        )
+        skipped = self.root / "temp" / "skip.py"
+        skipped.parent.mkdir(parents=True)
+        skipped.write_text("def find_me_1013_sub(): pass\n", encoding="utf-8")
+
+        results = find_symbol(
+            "find_me_1013_sub", path=str(self.root), mode="definition",
+        )
+        self.assertEqual(
+            len(results), 1,
+            f"Expected exactly 1 match — the temp/ sub-path must be excluded: {results}"
+        )
+        self.assertIn("keep.py", results[0]["path"])
+        self.assertNotIn("temp/skip.py", results[0]["path"])
+
+    def test_callers_mode_under_excluded_ancestor(self):
+        """The callers mode also has to work — exercises the same _collect_py_files
+        path. Without the fix, `find_symbol(... mode='callers')` returns [] for any
+        root that contains an exclude token.
+        """
+        (self.root / "module.py").write_text(
+            "def find_me_1013_call(): pass\n", encoding="utf-8"
+        )
+        (self.root / "caller.py").write_text(
+            "from module import find_me_1013_call\n"
+            "find_me_1013_call()\n",
+            encoding="utf-8",
+        )
+        results = find_symbol(
+            "find_me_1013_call", path=str(self.root), mode="callers",
+        )
+        self.assertGreater(
+            len(results), 0,
+            "Expected callers under root with 'temp/' in ancestor path; got []"
+        )
+        for r in results:
+            self.assertEqual(r["kind"], "call")
+
+
 if __name__ == "__main__":
     unittest.main()
