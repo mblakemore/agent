@@ -3371,7 +3371,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     if use_spinner:
                         tool_status = StreamStatus(emit=_emit)
                         if func_name == "exec_command":
-                            _cmd_preview = func_args.get("command", "").split("\n", 1)[0][:80]
+                            import shutil as _shutil
+                            _term_cols = _shutil.get_terminal_size((80, 24)).columns
+                            _budget = max(20, _term_cols - len("  -> exec_command () ⠋ 9.9s"))
+                            _cmd_preview = func_args.get("command", "").split("\n", 1)[0][:_budget]
                             prefix = f"  -> exec_command ({_cmd_preview}) "
                         else:
                             prefix = f"  -> {func_name} "
