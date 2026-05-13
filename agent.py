@@ -3370,7 +3370,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
                     if use_spinner:
                         tool_status = StreamStatus(emit=_emit)
-                        prefix = f"  -> {func_name} " if func_name != "exec_command" else f"  -> exec_command ({func_args.get("command", "")}) "
+                        if func_name == "exec_command":
+                            _cmd_preview = func_args.get("command", "").split("\n", 1)[0][:80]
+                            prefix = f"  -> exec_command ({_cmd_preview}) "
+                        else:
+                            prefix = f"  -> {func_name} "
                         tool_status.start(prefix)
 
                     # Cycle 24: pre-execute PRE-MERGE CHECK short-circuit.
