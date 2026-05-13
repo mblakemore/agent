@@ -68,3 +68,37 @@ def test_salvage_tool_args_fail():
     # Test case 6: Unsalvageable
     raw_args = 'completely broken string'
     assert _salvage_tool_args("unknown", raw_args, log) is None
+
+
+def test_salvage_exec_command_unescapes_heredoc_newlines():
+    # Issue #1007 Bug 1: the salvage path bypasses json.loads, so literal
+    # \n / \t / \\ pairs survive into the shell and break heredoc parsing.
+    log = MagicMock()
+    raw_args = r"command: cat > out.html << 'EOF'\n<!DOCTYPE html>\nhello\nEOF"
+    result = _salvage_tool_args("exec_command", raw_args, log)
+    assert result is not None
+    cmd = result["command"]
+    assert "\\n" not in cmd, "literal backslash-n must be unescaped"
+    assert "\n" in cmd, "real newlines must be present"
+    lines = cmd.splitlines()
+    assert any(line.strip() == "<!DOCTYPE html>" for line in lines)
+    assert any(line.strip() == "EOF" for line in lines)
+
+
+def test_salvage_exec_command_preserves_literal_backslash():
+    # \\n in the raw stream is a literal backslash followed by 'n' — must NOT
+    # become a newline (sentinel-based unescape guards this).
+    log = MagicMock()
+    raw_args = r"command: echo \\n"
+    result = _salvage_tool_args("exec_command", raw_args, log)
+    assert result is not None
+    assert result["command"] == r"echo \n"
+
+
+def test_salvage_exec_command_unescapes_tab():
+    log = MagicMock()
+    raw_args = r"command: printf 'a\tb'"
+    result = _salvage_tool_args("exec_command", raw_args, log)
+    assert result is not None
+    assert "\t" in result["command"]
+    assert "\\t" not in result["command"]

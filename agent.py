@@ -1146,6 +1146,20 @@ def _salvage_tool_args(func_name, raw_args, log):
             cmd_match = re.search(r'command["\s:]+(.+)', raw_args, re.DOTALL)
             if cmd_match:
                 cmd = cmd_match.group(1).strip('"\'').rstrip('}')
+                # Issue #1007 Bug 1: the salvage path bypasses json.loads, so JSON
+                # string escape sequences (\n, \t, \r, \\, \", \') survive as literal
+                # two-char pairs. Bash then sees ``cat > f << 'EOF'\n<!DOCTYPE...``
+                # as a single line and never finds the EOF delimiter (exit=127).
+                # Unescape via a sentinel for \\ so we don't double-decode \\n.
+                _SENT = "\x00"
+                cmd = (cmd
+                       .replace("\\\\", _SENT)
+                       .replace("\\n", "\n")
+                       .replace("\\t", "\t")
+                       .replace("\\r", "\r")
+                       .replace('\\"', '"')
+                       .replace("\\'", "'")
+                       .replace(_SENT, "\\"))
                 log.warning("Salvaged garbled exec_command: %s", cmd[:100])
                 return {"command": cmd}
 
@@ -2852,6 +2866,15 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             ):
                 _complexity = _classify_turn_complexity(messages_to_send)
                 request_body["max_tokens"] = _get_adaptive_max_tokens(_main_backend.model, _complexity)
+
+            # Issue #1007 Bug 2: llama.cpp degeneration loops eat the streaming
+            # deadline when repetition is unpenalised. The OpenAI-compatible
+            # endpoint llama.cpp exposes accepts these extension keys; Bedrock
+            # would 400 on them, so gate on backend kind.
+            if getattr(_main_backend, "kind", None) == "llamacpp":
+                _llama_gen = _config.get("llamacpp", {}).get("generation", {})
+                request_body.setdefault("repeat_penalty", _llama_gen.get("repeat_penalty", 1.1))
+                request_body.setdefault("repeat_last_n", _llama_gen.get("repeat_last_n", 256))
 
             try:
                 response = _llm_request(log, json=request_body, stream=True, timeout=(30, 300))
