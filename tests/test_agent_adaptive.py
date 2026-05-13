@@ -152,3 +152,63 @@ def test_get_adaptive_max_tokens_unknown_model():
     assert result == agent._COMPLEXITY_MAX_TOKENS["_default"]["extended"], (
         f"expected default extended budget, got {result}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Issue #1007 Bug 2: llama.cpp sampling guardrails
+# ---------------------------------------------------------------------------
+
+@patch("agent._llm_request")
+@patch("agent._main_backend")
+def test_llamacpp_request_has_repeat_penalty_guardrails(mock_backend, mock_llm):
+    """llamacpp backend → request body carries repeat_penalty + repeat_last_n
+    + finite max_tokens, so a degeneration loop can't burn the 600s deadline."""
+    mock_backend.kind = "llamacpp"
+    mock_backend.model = "gemma-4-31B"
+    mock_llm.return_value = _make_stream("done")
+
+    _run_with_mock_llm(mock_llm)
+
+    body = _get_request_body(mock_llm)
+    assert body.get("repeat_penalty", 1.0) >= 1.05, (
+        f"expected repeat_penalty >= 1.05 (issue #1007 acceptance), got {body.get('repeat_penalty')}"
+    )
+    assert body.get("repeat_last_n", 0) >= 64, (
+        f"expected repeat_last_n >= 64 (issue #1007 acceptance), got {body.get('repeat_last_n')}"
+    )
+    assert isinstance(body.get("max_tokens"), int) and body["max_tokens"] > 0, (
+        f"expected finite max_tokens (issue #1007 acceptance), got {body.get('max_tokens')}"
+    )
+
+
+@patch("agent._llm_request")
+@patch("agent._main_backend")
+def test_bedrock_request_omits_llamacpp_extension_keys(mock_backend, mock_llm):
+    """Bedrock backend → must NOT carry llama.cpp-specific keys (would 400)."""
+    mock_backend.kind = "bedrock"
+    mock_backend.model = "claude-v4.6-opus"
+    mock_llm.return_value = _make_stream("done")
+
+    with patch.dict("agent._config", {"bedrock": {"adaptive_max_tokens": True}}, clear=False):
+        _run_with_mock_llm(mock_llm)
+
+    body = _get_request_body(mock_llm)
+    assert "repeat_penalty" not in body
+    assert "repeat_last_n" not in body
+
+
+@patch("agent._llm_request")
+@patch("agent._main_backend")
+def test_llamacpp_guardrails_configurable(mock_backend, mock_llm):
+    """Config can override the guardrail defaults."""
+    mock_backend.kind = "llamacpp"
+    mock_backend.model = "gemma-4-31B"
+    mock_llm.return_value = _make_stream("done")
+
+    cfg = {"llamacpp": {"generation": {"repeat_penalty": 1.25, "repeat_last_n": 512}}}
+    with patch.dict("agent._config", cfg, clear=False):
+        _run_with_mock_llm(mock_llm)
+
+    body = _get_request_body(mock_llm)
+    assert body["repeat_penalty"] == 1.25
+    assert body["repeat_last_n"] == 512
