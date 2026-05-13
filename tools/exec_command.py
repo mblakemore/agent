@@ -1,3 +1,5 @@
+import os
+print(f"DEBUG: exec_command.py is being loaded from: {os.path.abspath(__file__)}")
 """Execute shell commands via subprocess.
 
 Each command runs in a fresh bash shell rooted at the agent's working
@@ -20,6 +22,7 @@ import threading
 from pathlib import Path
 
 from .file import _accessed_files
+import shlex
 
 
 def _find_git_root(start_dir: str) -> str | None:
@@ -56,33 +59,37 @@ def _build_env_with_pythonpath(cwd: str) -> dict | None:
     return env
 
 
+
 def _extract_write_target(command):
     """Extract target file path from a shell write command, or None if not a write."""
-    # Heredoc: cat > file.ext <<'EOF'  or  cat > file.ext << EOF
-    m = re.search(r'>\s*(\S+\.(?:py|json|md|txt|sh|yaml|yml|toml|cfg|jsonl))\b.*<<', command)
-    if m:
-        return m.group(1)
-    # Redirect: echo/printf/cat ... > file.ext  (but not 2> or >>)
-    m = re.match(r'^\s*(?:cat|echo|printf)\s+.*?[^2]>\s*(\S+)', command)
-    if m:
-        target = m.group(1)
-        # Skip things that look like /dev/null or pipes
-        if not target.startswith('/dev/'):
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    is_heredoc = any('<<' in t for t in tokens)
+    target = None
+    for i, token in enumerate(tokens):
+        if token == '>':
+            if i + 1 < len(tokens):
+                target = tokens[i + 1]
+                break
+        elif token.startswith('>') and not token.startswith('>>') and not token.startswith('2>'):
+            target = token[1:]
+            break
+    if not target:
+        return None
+    if is_heredoc:
+        allowed_exts = ('.py', '.json', '.md', '.txt', '.sh', '.yaml', '.yml', '.toml', '.cfg', '.jsonl')
+        if any(target.endswith(ext) for ext in allowed_exts):
             return target
+    else:
+        if tokens[0] in ('cat', 'echo', 'printf'):
+            if not target.startswith('/dev/'):
+                return target
     return None
 
-
-# Max temporary sessions per agent
-_MAX_TEMP_SESSIONS = 4
-
-# Maximum bytes of stdout returned to the LLM.  Beyond this the output is
-# truncated and a notice is appended so the model knows the cap was hit.
-_MAX_OUTPUT_BYTES = 32_768
-
-# Background sessions: {session_id: {"bg_proc": Popen|None, "bg_output": str}}
-_sessions = {}
-_main_session_id = None
-_temp_session_ids = []
 
 
 def _derive_main_session():
@@ -177,6 +184,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         command = ""
     elif not isinstance(command, str):
         return f"Error: command must be a string, got {type(command).__name__!r}"
+    command = command.replace("\\n", "\n")
     if not isinstance(session_id, str):
         if session_id is None:
             session_id = ""
@@ -547,7 +555,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
             if wt.exists() and wt.is_file():
                 text = wt.read_text(encoding='utf-8', errors='replace')
                 # Strip trailing heredoc terminators: EOF, EOF 2>&1, JSONEOF 2>&1, etc.
-                cleaned = re.sub(r'\n\s*\b[A-Z0-9_]*EOF(?:\s+2>&1)?\s*$', '\n', text, flags=re.IGNORECASE)
+                cleaned = text.replace('EOF 2>&1', '')
                 if cleaned != text:
                     wt.write_text(cleaned, encoding='utf-8')
         except Exception:
