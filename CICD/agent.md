@@ -111,6 +111,10 @@ Explore the codebase for issues. Run the test suite, check for warnings, look fo
 - Performance issues (redundant operations, slow paths)
 - Documentation gaps
 
+**Diagnosis-first probing (run 1007 failure mode — PR #1008 NULL).** If the issue text names a specific code path or data flow ("X→Y handoff", "request body in module M", "JSON→shell unescape", "deserialize then exec"), your first read is at that **entry point**, not at the symptom site. Locate where the data enters the named pipeline and trace forward. Do NOT grep the codebase for symptom keywords ("EOF", "newline") and patch the first match — that's how you end up "fixing" a post-write sanitizer when the bug is in the pre-exec deserializer. The fix lives where the data is transformed, not where the broken output is observed.
+
+Quick anti-drift check, mandatory before opening any file with intent to edit: re-read the issue's diagnosis paragraph. If your candidate file/function appears nowhere in the issue's named pipeline, you're in the wrong place — go back to the entry point. Drift during ACT is the #1 way a builder ships a PR that "looks like" a fix but doesn't satisfy acceptance.
+
 **File issues for every bug/friction found** (not just the one you'll work on). Dedupe first.
 
 **EXCEPT: probe-deferral (cycle 79 — runs 175/180 failure mode).** If PERCEIVE's `gh issue list --label cicd` returned ≥1 unclaimed CICD issue that pre-existed this cycle (i.e. `createdAt` < your `git fetch` timestamp), DO NOT file new probe-bug issues this cycle. Note them in a comment on the existing top-of-queue issue or in `progress-${BOT_ID}.md`, and proceed to REFLECT against the pre-existing queue only. Filing a probe-bug-issue this cycle creates a sibling that competes in REFLECT and lets cycle 73 be gamed (the builder pivots to its own newly-filed bug as a "more tractable" target). Probe-bug issues you DO file at any other time are queued for the *next* bot to claim, never for this cycle. The user's queue takes precedence over cycle-internal discoveries.
@@ -173,6 +177,13 @@ gh issue comment <ISSUE> --body "Picked up by CICD cycle NNN. Metric: <metric> (
    - The `in-progress-bot-${BOT_ID}` + `cicd-cycle-NNN` labels persist on the issue between cycles. Next cycle, this same bot (or its successor) reads PROBE → sees the issue is still claimed → goes to step 4 below.
 4. **Resuming a partial issue next cycle:** PERCEIVE should detect "this issue has prior partial PRs against it" by `gh pr list --search "Refs #<N>" --state merged`. Read the prior PR bodies to know which ACs are done, then pick the next chunk. Do NOT re-implement done ACs; build on top.
 5. **When does an issue close?** Only the cycle that delivers the LAST AC uses `Closes #N`. Until then, every cycle uses `Refs #N` and the issue keeps its in-progress label.
+
+**MULTI-BUG ISSUES — address every numbered bug or split explicitly (run 1007 failure mode — PR #1008 REQUEST_CHANGES).** If the issue body contains two or more `## Bug N` headings (or multiple `**Acceptance:**` blocks tied to distinct bugs), the cycle MUST either:
+
+1. **Address all bugs in one PR** — the diff touches each bug's named file/path, and the PR body's Acceptance Criteria checklist marks every bug ✅ with the commit/line evidence; or
+2. **Address a subset and split the rest** — pick the bugs you'll fix, comment on the parent issue with `Splitting: addressing Bug N here, filing Bug M as #<new>`, file a fresh issue per remaining bug (full body copied from the parent), and use `Refs #<parent>` (NOT `Closes`) in your PR. Parent issue stays open until the last bug lands.
+
+Silently shipping a PR that touches only one of N bugs is a hard fail — the reviewer will REQUEST_CHANGES. The trap: an issue's diagnosis often names multiple files (e.g., `tools/exec_command.py` for Bug 1 AND `llm_backend.py` for Bug 2). If your diff touches only a subset of the named files and you didn't explicitly split, you've dropped a bug. The PR-body Acceptance checklist (Phase 8) is the forcing function — fill it honestly and the gap is impossible to miss.
 
 ## Phase 5 — PLAN
 
@@ -335,6 +346,12 @@ This protocol turned a 4-cycle, 200-turn failure into a one-shot success. Use it
 
 In the worktree: run **targeted** tests for the file(s) you changed, then compute the metric delta. **Gate**: tests 100% green AND metric improved. If not, debug and retry (max 3 iterations). If still failing → null-result path.
 
+**Regression test must reproduce the issue's failure (run 1007 failure mode — PR #1008 NULL).** For any bug-fix cycle, the test you add MUST demonstrably fail at the parent commit and pass at HEAD. Don't test your own interpretation of the bug — test the exact failure mode the issue describes (the input that previously broke, producing the output the issue called wrong). Verify with:
+
+`git stash push -- tests/<new_test>.py && git checkout HEAD~1 -- <source files you changed> && git stash pop && python3 -m pytest tests/<new_test>.py -v` — this MUST FAIL (proves the test catches the bug). Then `git checkout HEAD -- <source files you changed> && python3 -m pytest tests/<new_test>.py -v` — this MUST PASS (proves the fix works).
+
+Capture both pytest outcomes (failing-before + passing-after, last 20 lines each) into the PR body under a `## Regression Evidence` heading. A test that passes both before and after the fix proves nothing — discard it and write one that actually fails on the parent commit. Skip this gate ONLY for pure-metric cycles (coverage %, perf benchmark) where there is no specific failure mode to reproduce; explicitly state "no regression test — pure-metric cycle" in the PR body when skipping.
+
 **TIMEOUT WARNING (cycle 91 — 14 timeouts in run 197)**: NEVER run bare `python3 -m pytest` — the full suite (865+ tests) always times out at 120s. Always target the file you changed:
 ```bash
 python3 -m pytest tests/test_<your_file>.py -v
@@ -365,6 +382,12 @@ git push -u origin cicd/NNN-slug
 ISSUE=NNN  # ← set to your actual issue number
 cat > /tmp/pr-body-${ISSUE}.md << 'PREOF'
 Summary: <describe what was changed>
+
+## Acceptance Criteria
+<MANDATORY — paste each `**Acceptance:**` block (or `## Bug N` requirement) from issue #ISSUE_PLACEHOLDER VERBATIM, one bullet per acceptance line. Mark each ✅ (addressed in this PR — one-line evidence: file path + commit hash + test name) or ❌ (not addressed — see Multi-bug rule, you must split before opening this PR). If ANY bullet is ❌, replace `Closes` with `Refs` at the bottom and confirm the parent issue stays open. Empty checklist = reviewer will REQUEST_CHANGES.>
+
+## Regression Evidence
+<MANDATORY for bug-fix cycles — paste last 20 lines of pytest output from VERIFY's failing-before run AND its passing-after run, demonstrating the new test fails on the parent commit and passes on this PR's HEAD. For pure-metric cycles only (coverage/perf, no specific failure mode), write: "no regression test — pure-metric cycle".>
 
 Before: <metric baseline e.g. 51% coverage>
 After: <metric result e.g. 85% coverage>
