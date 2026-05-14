@@ -323,6 +323,11 @@ def _write(path, content, start_line, end_line):
                 old_indent = old_first[:len(old_first) - len(old_first.lstrip())]
                 new_indent = new_first[:len(new_first) - len(new_first.lstrip())]
                 if old_indent != new_indent:
+                    try:
+                        import telemetry as _tel
+                        _tel.record_patch_event("indent_guard", kind="rejected")
+                    except Exception:
+                        pass
                     return (
                         f"Error: indent mismatch in slice-write to '{path}'. "
                         f"Existing line {start_line} starts with indent "
@@ -431,6 +436,11 @@ def _write(path, content, start_line, end_line):
             if isinstance(old_obj, dict) and isinstance(new_obj, dict):
                 dropped = [k for k in old_obj if k not in new_obj]
                 if dropped:
+                    try:
+                        import telemetry as _tel
+                        _tel.record_patch_event("schema_warning", kind="fired", value=len(dropped))
+                    except Exception:
+                        pass
                     _schema_warning = (
                         f"\n\n[schema-warning] this write dropped top-level keys "
                         f"that were present in the previous version: {dropped}. "

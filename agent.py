@@ -2856,6 +2856,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 len(_bootstrap_actions),
                 ", ".join(f"{p} ({a})" for p, a in _bootstrap_actions),
             )
+            for _ in _bootstrap_actions:
+                telemetry.record_patch_event("bootstrap_create", kind="created")
 
         # PERCEIVE preamble bundle (.agent/preamble.json): auto-load and inject
         # before the user's initial prompt. Saves the 6-8 boilerplate tool calls
@@ -3124,6 +3126,24 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _WRITE_LOOP_WINDOW = 8
     _WRITE_LOOP_THRESHOLD = 3
 
+    # Tier 5 — per-session patch-effectiveness counters. Mirrors the
+    # telemetry.record_patch_event calls so a verbose cycle-end log line
+    # gives the operator local visibility without grepping the OTEL/Grafana
+    # dashboard. Keys match the patch identifiers in telemetry docs.
+    _patch_telemetry = {
+        "harmony_reject": 0,        # T1.1 — Harmony control tokens in tool args
+        "dedup": 0,                  # T1.2 — exact-duplicate read calls deduped
+        "write_loop": 0,             # T1.2 — write-loop detector tripped
+        "indent_guard": 0,           # T4.10 — slice-write indent mismatch rejected
+        "schema_warning": 0,         # T4.11 — JSON overwrite dropped top-level keys
+        "think_launder": 0,          # T2.7 — think prompt re-included recent context
+        "stall_abort": 0,            # T3.8 — stream stall guard fired
+        "bootstrap_create": 0,       # T3.9 — placeholder file auto-created
+        "edit_nudge": 0,             # T5.14 — heredoc-write hint emitted
+        "summary_fired": 0,          # T5.13 — async summary launched
+        "summary_gated": 0,          # T5.13 — summary skipped (under threshold)
+    }
+
     # CICD phase tracking — module-level globals so _build_context_message()
     # can inject them into every context window, surviving summary compression.
     global _cicd_phase_state, _cicd_issue_number, _cicd_pr_number, _cicd_branch, _cicd_edited_files, _cicd_worktree_path
@@ -3146,6 +3166,17 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _cicd_issue_view_called = False  # tracks whether `gh issue view` was called before merge (PRE-MERGE CHECK)
 
     _async_summarizer = async_summarizer
+
+    # T5.15 — stall-retry budget (across the cycle, not per-turn). When the
+    # streaming stall guard (T3.8) trips, the framework adjusts sampling for
+    # the NEXT request and continues to retry. Two retries by default —
+    # first with -0.3 temp / +0.05 repeat_penalty; second with an additional
+    # -0.2 temp / +0.05 penalty (deeper escalation). Clears automatically
+    # once a turn produces deltas, so a single stall in a healthy session
+    # doesn't permanently degrade sampling for the rest of the cycle.
+    _stall_retries_budget = int(os.environ.get("AGENT_STALL_RETRIES", "2"))
+    _stall_retries_remaining = _stall_retries_budget
+    _stall_sampling_override = None  # set when stall detected; cleared on success
 
     while True:
         turn += 1
@@ -3217,15 +3248,40 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                 max_messages_override=_ctx_max_messages)
 
-            # Summarize dropped messages: async (background) or sync (blocking)
+            # Summarize dropped messages: async (background) or sync (blocking).
+            # T5.13 — gate the message-count trigger on actual context utilization
+            # so summaries don't fire on half-empty windows (c0rtana audit: 17%
+            # of all tool calls were summary fires, many at ~25% context usage).
+            # Both thresholds must be met: enough new messages AND enough
+            # context pressure. Env-tunable for backend-specific calibration.
             if _async_summarizer:
                 unsummarized = oldest_idx - summary_state["up_to"]
-                if unsummarized >= _SUMMARY_THRESHOLD and not _async_summarizer.is_running:
+                _summary_util_threshold = float(os.environ.get(
+                    "AGENT_SUMMARY_UTIL_THRESHOLD", "0.6"))
+                _ctx_tokens_used = sum(_estimate_tokens(m) for m in messages_to_send)
+                _ctx_utilization = _ctx_tokens_used / ctx_size if ctx_size else 0.0
+                _msg_threshold_met = unsummarized >= _SUMMARY_THRESHOLD
+                _util_threshold_met = _ctx_utilization >= _summary_util_threshold
+                if (
+                    _msg_threshold_met
+                    and _util_threshold_met
+                    and not _async_summarizer.is_running
+                ):
                     new_messages = conversation_history[summary_state["up_to"]:oldest_idx]
                     if new_messages:
                         _async_summarizer.kick(summary_state["text"], new_messages, oldest_idx)
-                        log.info("Kicked async summary for %d messages", len(new_messages))
+                        log.info(
+                            "Kicked async summary for %d messages (util=%.2f, threshold=%.2f)",
+                            len(new_messages), _ctx_utilization, _summary_util_threshold,
+                        )
+                        telemetry.record_patch_event("summary_fired", kind="fired")
+                        _patch_telemetry["summary_fired"] += 1
                         _emit("on_notice", "info", "[background summarization started]")
+                elif _msg_threshold_met and not _util_threshold_met:
+                    # Would have fired pre-T5.13; gating skipped it. Telemetry-
+                    # only — no log noise, since this is the COMMON case now.
+                    telemetry.record_patch_event("summary_gated", kind="skipped")
+                    _patch_telemetry["summary_gated"] += 1
             elif _maybe_resummarize(conversation_history, summary_state, oldest_idx, log):
                 messages_to_send, oldest_idx = _build_context(
                     conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
@@ -3245,9 +3301,28 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             # "2025-05-22T10:00:00Z" anchors — the framework owns the clock,
             # the model owns the work.
             _now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            _system_lines = [f"Current time (UTC, ISO8601): {_now_iso}"]
+
+            # T5.14 Option B — opt-in tool-selection guidance. When the agent's
+            # config has `preferences.tool_selection_hints: true`, prepend a
+            # one-paragraph directive recommending file(action='edit') over
+            # heredoc rewrites for existing-file modifications. Off by default
+            # — agents with rich AGENT.md that already cover this can opt
+            # out by leaving the flag unset.
+            if _config.get("preferences", {}).get("tool_selection_hints"):
+                _system_lines.append(
+                    "Tool-selection guidance: when modifying an EXISTING file, "
+                    "prefer file(action='edit', path=..., old_string=..., "
+                    "new_string=...) over exec_command 'cat > f <<EOF'. "
+                    "Surgical edits are atomic, validate that old_string "
+                    "exists exactly once, and won't lose neighbouring content. "
+                    "Use heredoc writes only when creating a NEW file or "
+                    "rewriting one in full."
+                )
+
             _outgoing_messages = [
                 {"role": "system",
-                 "content": f"Current time (UTC, ISO8601): {_now_iso}"}
+                 "content": "\n\n".join(_system_lines)}
             ] + messages_to_send
 
             # Call the model (streaming).
@@ -3288,6 +3363,24 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 _llama_gen = _config.get("llamacpp", {}).get("generation", {})
                 request_body.setdefault("repeat_penalty", _llama_gen.get("repeat_penalty", 1.1))
                 request_body.setdefault("repeat_last_n", _llama_gen.get("repeat_last_n", 256))
+
+            # T5.15 — apply stall-retry sampling override (set when a prior
+            # turn stalled). The override is per-cycle, escalates on each
+            # retry, and clears when a turn produces deltas successfully.
+            if _stall_sampling_override:
+                _orig_temp = request_body.get("temperature")
+                _orig_rp = request_body.get("repeat_penalty")
+                request_body.update(_stall_sampling_override)
+                log.warning(
+                    "Stall-retry sampling active: temp %s→%s, repeat_penalty %s→%s "
+                    "(retries_remaining=%d, escalation_level=%d)",
+                    _orig_temp, request_body.get("temperature"),
+                    _orig_rp, request_body.get("repeat_penalty"),
+                    _stall_retries_remaining,
+                    _stall_sampling_override.get("_escalation_level", 1),
+                )
+                # Strip internal-tracking keys before sending
+                request_body.pop("_escalation_level", None)
 
             try:
                 response = _llm_request(log, json=request_body, stream=True, timeout=(30, 300))
@@ -3388,6 +3481,43 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             time.monotonic() - _stream_t0, _STALL_TIMEOUT_S,
                         )
                         telemetry.record_error(kind="model_stall")
+                        telemetry.record_patch_event("stall_abort", kind="fired")
+                        _patch_telemetry["stall_abort"] += 1
+                        # T5.15 — set stricter sampling for the NEXT request.
+                        # Escalation: each retry deeper. Level 1: temp -0.3,
+                        # rp +0.05. Level 2+: additional temp -0.2, rp +0.05.
+                        if _stall_retries_remaining > 0:
+                            _stall_retries_remaining -= 1
+                            _prior_level = (_stall_sampling_override or {}).get("_escalation_level", 0)
+                            _new_level = _prior_level + 1
+                            if _new_level == 1:
+                                _new_temp = max(0.1, (request_body.get("temperature") or 0.6) - 0.3)
+                                _new_rp = max(1.15, (request_body.get("repeat_penalty") or 1.1) + 0.05)
+                            else:
+                                # Build on prior override, escalate further
+                                _new_temp = max(0.1,
+                                    (_stall_sampling_override.get("temperature") or 0.6) - 0.2)
+                                _new_rp = max(1.15,
+                                    (_stall_sampling_override.get("repeat_penalty") or 1.1) + 0.05)
+                            _stall_sampling_override = {
+                                "temperature": _new_temp,
+                                "repeat_penalty": _new_rp,
+                                "_escalation_level": _new_level,
+                            }
+                            log.warning(
+                                "Stall-retry queued (level=%d, remaining=%d): "
+                                "next turn temp=%.2f, repeat_penalty=%.2f",
+                                _new_level, _stall_retries_remaining,
+                                _new_temp, _new_rp,
+                            )
+                        else:
+                            log.warning(
+                                "Stall-retry budget exhausted (budget was %d); "
+                                "next turn uses default sampling — investigate via telemetry "
+                                "if stalls persist (likely backend / model-config issue, "
+                                "not a sampling pathology).",
+                                _stall_retries_budget,
+                            )
                         _emit("on_notice", "warn",
                               f"[model stalled — aborted after {_STALL_TIMEOUT_S:.0f}s of zero deltas]")
                         _safe_close(response)
@@ -3483,6 +3613,23 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         if content_parts and not receiving_tools:
             _emit("on_notice", "info", "")
         status.finish()
+
+        # T5.15 — if this turn produced deltas successfully (and a stall
+        # override was active from a prior turn), clear the override so the
+        # next turn returns to default sampling. A single stall in an
+        # otherwise-healthy session shouldn't permanently degrade quality.
+        if _deltas_received > 0 and _stall_sampling_override is not None:
+            log.info(
+                "Stall-retry succeeded: turn produced %d deltas — clearing "
+                "sampling override (was level=%d, temp=%.2f, rp=%.2f).",
+                _deltas_received,
+                _stall_sampling_override.get("_escalation_level", 0),
+                _stall_sampling_override.get("temperature", 0),
+                _stall_sampling_override.get("repeat_penalty", 0),
+            )
+            _stall_sampling_override = None
+            # Restore retry budget for any FUTURE stall in this cycle
+            _stall_retries_remaining = _stall_retries_budget
 
         full_content = _THINK_TAG_RE.sub('', "".join(content_parts)).strip()
         _emit("on_assistant_text", full_content)
@@ -3817,6 +3964,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             func_name, token, key_path or "(top-level)",
                         )
                         telemetry.record_tool_call(func_name + ":rejected_harmony_token")
+                        telemetry.record_patch_event("harmony_reject", kind="rejected")
+                        _patch_telemetry["harmony_reject"] += 1
                         _garbled_count += 1
                         conversation_history.append({
                             "role": "tool", "tool_call_id": tool_id,
@@ -3849,6 +3998,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 len(offender), src_idx, offender[:80],
                             )
                             telemetry.record_tool_call("think:rejected_laundering")
+                            telemetry.record_patch_event("think_launder", kind="rejected")
+                            _patch_telemetry["think_launder"] += 1
                             conversation_history.append({
                                 "role": "tool", "tool_call_id": tool_id,
                                 "name": func_name,
@@ -3925,6 +4076,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                     func_name, _gap, _args_md5[:8],
                                 )
                                 telemetry.record_tool_call(func_name + ":deduped")
+                                # Approximate tokens saved = the cached result's token estimate
+                                telemetry.record_patch_event("dedup", kind="saved", value=_cached.get("tokens", 1))
+                                _patch_telemetry["dedup"] += 1
                                 continue
 
                     # Track think tool usage for CICD phase-gate enforcement
@@ -4045,6 +4199,39 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     # loop visible without relying on model self-noticing.
                     _write_target = _extract_write_target(func_name, func_args)
                     if _write_target:
+                        # T5.14 Option A — heredoc→state-file write nudge.
+                        # When the model writes a tracked state file via
+                        # exec_command 'cat > f <<EOF', append a one-line
+                        # suggestion that file(action='edit', ...) is safer
+                        # for surgical changes. C0rtana C112 noted exactly
+                        # this failure mode ("accidentally purged multiple
+                        # edges due to incorrect range replacement") on a
+                        # heredoc-style state-file rewrite. Only fires once
+                        # per session per file to avoid noise.
+                        _heredoc_write = (
+                            func_name == "exec_command"
+                            and "<<" in func_args.get("command", "")
+                            and _write_target.endswith(".json")
+                        )
+                        if _heredoc_write:
+                            if "_edit_nudges_emitted" not in dir(run_agent_single):
+                                run_agent_single._edit_nudges_emitted = set()
+                            if _write_target not in run_agent_single._edit_nudges_emitted:
+                                run_agent_single._edit_nudges_emitted.add(_write_target)
+                                result_str = result_str + (
+                                    f"\n\n[suggestion] You wrote to {_write_target!r} via "
+                                    f"a heredoc. For surgical changes to an existing file, "
+                                    f"file(action='edit', path=..., old_string=..., "
+                                    f"new_string=...) is safer — it's atomic, validates "
+                                    f"that the target text exists exactly once (no silent "
+                                    f"miss), and won't clobber neighbouring content the way "
+                                    f"a heredoc full-rewrite can. Heredoc is fine for "
+                                    f"creating new files or wholesale replacement; for "
+                                    f"single-field updates, prefer edit."
+                                )
+                                telemetry.record_patch_event("edit_nudge", kind="fired")
+                                _patch_telemetry["edit_nudge"] += 1
+
                         _hist = _write_path_history.setdefault(_write_target, [])
                         _hist.append(_call_idx_counter)
                         # Prune outside window
@@ -4080,6 +4267,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 _write_target, _n_writes, _WRITE_LOOP_WINDOW,
                             )
                             telemetry.record_tool_call(func_name + ":write_loop")
+                            telemetry.record_patch_event("write_loop", kind="fired")
+                            _patch_telemetry["write_loop"] += 1
 
                     conversation_history.append({
                         "role": "tool",
@@ -4569,6 +4758,16 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         if _async_summarizer:
             _async_summarizer.harvest(summary_state)
         _save_checkpoint(conversation_history, summary_state, turn, initial_files)
+
+        # T5.17 — rolling per-session patch-effectiveness summary. Only emits
+        # when at least one counter is non-zero (no fires = no log noise).
+        # Cumulative within the session; OTEL metrics carry the per-event
+        # detail for cross-session aggregation on the telemetry server.
+        if any(v > 0 for v in _patch_telemetry.values()):
+            _summary = " | ".join(
+                f"{k}={v}" for k, v in _patch_telemetry.items() if v > 0
+            )
+            log.info("[patch-telemetry] %s", _summary)
 
 
 def main():
