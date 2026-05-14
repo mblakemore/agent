@@ -1040,6 +1040,169 @@ _HARMONY_TOKEN_RE = re.compile(
 )
 
 
+def _load_preamble_bundle(log):
+    """Load and execute `.agent/preamble.json` if it exists.
+
+    Schema:
+        {
+          "files": ["state/current-state.json", "state/focus.json", ...],
+          "commands": ["git log --oneline -10", "ls state/memories", ...],
+          "max_bytes_per_item": 8192   # optional, default 8192
+        }
+
+    All commands must match the read-only prefix regex used by the dedup
+    classifier (no side-effect commands, no network, no writes). This keeps
+    the preamble's behavior deterministic and side-effect-free.
+
+    Returns the bundled result as a single string, or None if no preamble
+    file or it failed to load. The agent-side caller wraps it in a system
+    message and prepends to conversation_history at session start.
+
+    Eliminates the 8-tool-call PERCEIVE boilerplate that both audit reports
+    (c0rtana #4, lyla #1) flagged as the highest-impact friction.
+    """
+    preamble_path = Path(".agent/preamble.json")
+    if not preamble_path.exists():
+        return None
+    try:
+        with open(preamble_path) as f:
+            cfg = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("Failed to load .agent/preamble.json: %s", e)
+        return None
+    if not isinstance(cfg, dict):
+        log.warning(".agent/preamble.json must be an object, got %s", type(cfg).__name__)
+        return None
+
+    max_bytes = int(cfg.get("max_bytes_per_item", 8192))
+    files_list = cfg.get("files", []) or []
+    cmds_list = cfg.get("commands", []) or []
+    if not isinstance(files_list, list) or not isinstance(cmds_list, list):
+        log.warning(".agent/preamble.json: 'files' and 'commands' must be arrays")
+        return None
+    if not files_list and not cmds_list:
+        log.debug(".agent/preamble.json is empty — no preamble to inject")
+        return None
+
+    sections = []
+
+    # ── Files ──────────────────────────────────────────────────────────
+    for entry in files_list:
+        if not isinstance(entry, str):
+            sections.append(f"## File: {entry!r}\n(skipped — must be a string path)")
+            continue
+        p = Path(entry)
+        if not p.exists():
+            sections.append(f"## File: {entry}\n(not present — agent may want to create or initialize)")
+            continue
+        try:
+            with open(p, encoding='utf-8', errors='replace') as f:
+                content = f.read(max_bytes + 1)
+        except OSError as e:
+            sections.append(f"## File: {entry}\n(read error: {e})")
+            continue
+        truncated = ""
+        if len(content) > max_bytes:
+            content = content[:max_bytes]
+            truncated = f"\n... [truncated at {max_bytes} bytes]"
+        sections.append(f"## File: {entry}\n```\n{content}\n```{truncated}")
+
+    # ── Commands ───────────────────────────────────────────────────────
+    for entry in cmds_list:
+        if not isinstance(entry, str):
+            sections.append(f"## Command: {entry!r}\n(skipped — must be a string)")
+            continue
+        # Same safety check the dedup classifier uses — read-only commands only,
+        # no `>` / `>>` / `|tee` redirects.
+        if not _is_safe_readonly_command(entry):
+            sections.append(
+                f"## Command: {entry}\n(skipped — preamble commands must be "
+                f"side-effect-free: must start with a read-only prefix and contain "
+                f"no `>` / `>>` / `|tee` redirects. Run writes via exec_command "
+                f"during the cycle instead.)"
+            )
+            log.warning("Preamble command %r failed read-only check — skipped", entry)
+            continue
+        # Run via subprocess; tight timeout because preamble shouldn't be slow.
+        try:
+            import subprocess
+            result = subprocess.run(
+                entry, shell=True, capture_output=True, text=True, timeout=20,
+            )
+            out = (result.stdout or "")[:max_bytes]
+            truncated = "\n... [truncated]" if len(result.stdout or "") > max_bytes else ""
+            err_tail = ""
+            if result.returncode != 0:
+                err_tail = f"\n(exit={result.returncode}; stderr: {(result.stderr or '')[:200]!r})"
+            sections.append(f"## Command: {entry}\n```\n{out}{truncated}\n```{err_tail}")
+        except subprocess.TimeoutExpired:
+            sections.append(f"## Command: {entry}\n(timed out at 20s — drop or simplify)")
+        except Exception as e:
+            sections.append(f"## Command: {entry}\n(error: {e})")
+
+    bundled = "PERCEIVE preamble (auto-loaded from .agent/preamble.json):\n\n" + "\n\n".join(sections)
+    log.info("Loaded preamble bundle: %d files, %d commands, %d chars total",
+             len(files_list), len(cmds_list), len(bundled))
+    return bundled
+
+
+# Minimum substring length to count as "context laundering" — empirically the
+# lyla failures used full paragraphs (300+ chars), so 50 is comfortably
+# conservative without false-positiving on short overlapping phrases.
+_THINK_LAUNDER_MIN_LEN = 50
+
+
+def _detect_context_laundering(text, history, lookback=3):
+    """Walk the last N assistant messages and check whether `text` re-includes
+    a substring of theirs verbatim at >= _THINK_LAUNDER_MIN_LEN chars.
+
+    Used to reject `think` calls whose prompt or context paraphrases the
+    conversation context (lyla's "I am Lyla, current state: cycle 10..."
+    pattern — pays the LLM cost to reason about content already in context).
+
+    Returns (offending_substring, source_msg_index) on hit, None if clean.
+    Substring matching is done in normalized form (collapsed whitespace) to
+    catch reformatted-but-still-verbatim copies.
+    """
+    if not text or not history:
+        return None
+
+    def _norm(s):
+        return re.sub(r'\s+', ' ', s).strip()
+
+    norm_text = _norm(text)
+    if len(norm_text) < _THINK_LAUNDER_MIN_LEN:
+        return None
+
+    # Walk newest → oldest, only consider assistant messages
+    seen = 0
+    for i in range(len(history) - 1, -1, -1):
+        msg = history[i]
+        if msg.get("role") != "assistant":
+            continue
+        seen += 1
+        if seen > lookback:
+            break
+        prior = msg.get("content") or ""
+        if isinstance(prior, list):
+            # Some message formats wrap content in [{type:text,text:...}, ...]
+            prior = " ".join(
+                c.get("text", "") for c in prior if isinstance(c, dict)
+            )
+        if not isinstance(prior, str) or not prior.strip():
+            continue
+        norm_prior = _norm(prior)
+        # Slide a window of size _THINK_LAUNDER_MIN_LEN across norm_text and
+        # check for membership in norm_prior. O(len(text) * len(prior)) worst
+        # case but bounded by typical sizes; cheap in practice.
+        step = max(1, _THINK_LAUNDER_MIN_LEN // 4)
+        for start in range(0, len(norm_text) - _THINK_LAUNDER_MIN_LEN + 1, step):
+            window = norm_text[start:start + _THINK_LAUNDER_MIN_LEN]
+            if window in norm_prior:
+                return (window, i)
+    return None
+
+
 # Read-only exec_command prefixes safe to dedup (no side effects, no network,
 # no wall-clock dependency). Conservative — anything not on this list is
 # treated as side-effectful and dispatched normally.
@@ -1050,6 +1213,23 @@ _READONLY_CMD_RE = re.compile(
     r'|gh\s+(?:pr|issue|repo|api)\s+(?:view|list|status))',
     re.IGNORECASE,
 )
+
+
+def _is_safe_readonly_command(cmd):
+    """True iff `cmd` is a side-effect-free shell command we can safely dedup
+    OR run in the preamble loader. Two checks: (1) starts with a known
+    read-only prefix; (2) contains no output redirects (`>`, `>>`, `|tee`)
+    that would convert an otherwise-read command into a write."""
+    if not cmd or not isinstance(cmd, str):
+        return False
+    if not _READONLY_CMD_RE.match(cmd):
+        return False
+    # Strip stderr redirects (`2>&1`, `2>/dev/null`) before the redirect check —
+    # those are typical and benign.
+    cmd_no_stderr = re.sub(r'2>\S+|2>&\d+', '', cmd)
+    if re.search(r'(?<!\\)>(?!=)|\btee\b', cmd_no_stderr):
+        return False
+    return True
 
 
 def _is_dedupable_call(func_name, func_args):
@@ -1073,16 +1253,7 @@ def _is_dedupable_call(func_name, func_args):
     if func_name == "task_tracker":
         return (func_args or {}).get("action") == "list"
     if func_name == "exec_command":
-        cmd = (func_args or {}).get("command", "")
-        if not _READONLY_CMD_RE.match(cmd):
-            return False
-        # Even read-prefixed commands can write via redirect (`cat > f`, `git
-        # log > out.txt`, `tee`). Reject if any unquoted `>` / `>>` / `|tee`
-        # appears outside of obviously-safe `2>&1` / `2>/dev/null` patterns.
-        cmd_no_stderr = re.sub(r'2>\S+|2>&\d+', '', cmd)
-        if re.search(r'(?<!\\)>(?!=)|\btee\b', cmd_no_stderr):
-            return False
-        return True
+        return _is_safe_readonly_command((func_args or {}).get("command", ""))
     return False  # default: do not dedup unknown tools
 
 
@@ -2596,6 +2767,15 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         if pinned:
             _pinned_instructions = pinned
             log.info("Pinned instructions extracted (%d chars)", len(pinned))
+
+        # PERCEIVE preamble bundle (.agent/preamble.json): auto-load and inject
+        # before the user's initial prompt. Saves the 6-8 boilerplate tool calls
+        # both audits flagged as the #1 friction source. Only on fresh starts;
+        # continue_mode picks up where it left off and shouldn't re-inject.
+        _preamble = _load_preamble_bundle(log)
+        if _preamble:
+            conversation_history.append({"role": "system", "content": _preamble})
+
         conversation_history.append({"role": "user", "content": expanded})
         log.debug("USER: %s", expanded)
         result = run_agent_single(conversation_history, summary_state, initial_files, log,
@@ -3527,6 +3707,42 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             ),
                         })
                         continue
+
+                    # Hard-reject `think` calls that paraphrase recent context.
+                    # Lyla's audit (C7/C11/C17/C22/C23) showed think prompts
+                    # full of "I am Lyla. Current State: - Cycle: 10, Mode:
+                    # Memory Curation..." — paraphrased context the model
+                    # already has, pays the LLM cost to reason about it again.
+                    # Framework owns the conversation history; check on the way
+                    # in, refuse on hit, force the model to frame the question
+                    # itself instead of the background.
+                    if func_name == "think" and isinstance(func_args, dict):
+                        _think_text = (func_args.get("prompt", "") or "") + "\n\n" + (func_args.get("context", "") or "")
+                        _launder = _detect_context_laundering(_think_text, conversation_history)
+                        if _launder:
+                            offender, src_idx = _launder
+                            log.warning(
+                                "Rejecting think call: %d-char verbatim overlap with msg[%d]: %r",
+                                len(offender), src_idx, offender[:80],
+                            )
+                            telemetry.record_tool_call("think:rejected_laundering")
+                            conversation_history.append({
+                                "role": "tool", "tool_call_id": tool_id,
+                                "name": func_name,
+                                "content": (
+                                    f"Error: think call rejected — your prompt/context "
+                                    f"re-includes a {len(offender)}-char verbatim chunk "
+                                    f"from your own recent message (msg[{src_idx}], "
+                                    f"starts with {offender[:60]!r}). The framework "
+                                    f"already has that content. Frame the reasoning "
+                                    f"question itself — what specifically you need to "
+                                    f"think through — not the background you already "
+                                    f"know. If you genuinely need extra constraints, "
+                                    f"summarize them abstractly in `context` (a few "
+                                    f"sentences, not paragraphs)."
+                                ),
+                            })
+                            continue
 
                     # Validate required fields — catch cases where sanitizer
                     # extracted the action but lost required params (empty garble)
