@@ -1040,6 +1040,83 @@ _HARMONY_TOKEN_RE = re.compile(
 )
 
 
+# DC-style agents reference a small set of well-known placeholder files in
+# their AGENT.md / CLAUDE.md. If the file is mentioned with read intent but
+# doesn't exist on disk, the agent's first PERCEIVE errors every cycle
+# (lyla audit: messages/from-creator.md errored 23 times across her C1-C23).
+# Auto-create empty placeholders so the bootstrap path is clean.
+_KNOWN_PLACEHOLDER_FILES = (
+    "messages/from-creator.md",
+    "messages/to-creator.md",
+)
+_KNOWN_PLACEHOLDER_DIRS = (
+    "messages",
+    "state",
+    "logs",
+)
+
+
+def _bootstrap_template_check(log):
+    """Run on fresh session start (NOT continue_mode). Find AGENT.md / CLAUDE.md
+    in cwd, scan for references to well-known DC-style placeholder files, and
+    auto-create empty placeholders for any that are referenced but missing.
+    Also creates standard directories if referenced.
+
+    Returns a list of (path, action) tuples for logging. Empty list when
+    nothing was done (either not a DC-style agent, or already complete).
+
+    Conservative: ONLY touches files explicitly referenced in the agent's own
+    cognitive instructions; never auto-creates anything the agent didn't
+    declare. Operator-side gaps (uncommitted tools/, missing config) are
+    surfaced as warnings, not silently fixed.
+    """
+    # Find the agent's cognitive instructions file
+    instructions_file = None
+    for candidate in ("AGENT.md", "CLAUDE.md"):
+        if Path(candidate).exists():
+            instructions_file = candidate
+            break
+    if not instructions_file:
+        return []  # not a DC-style agent
+
+    try:
+        with open(instructions_file, encoding='utf-8', errors='replace') as f:
+            instructions = f.read()
+    except OSError:
+        return []
+
+    actions = []
+
+    # Auto-create empty placeholder files referenced for reading
+    for known in _KNOWN_PLACEHOLDER_FILES:
+        if known in instructions and not Path(known).exists():
+            try:
+                Path(known).parent.mkdir(parents=True, exist_ok=True)
+                Path(known).touch()
+                actions.append((known, "created empty placeholder"))
+                log.info(
+                    "Bootstrap: %s referenced in %s but missing — created empty placeholder",
+                    known, instructions_file,
+                )
+            except OSError as e:
+                log.warning("Bootstrap: failed to create %s: %s", known, e)
+
+    # Auto-create well-known directories
+    for known_dir in _KNOWN_PLACEHOLDER_DIRS:
+        if f"{known_dir}/" in instructions and not Path(known_dir).exists():
+            try:
+                Path(known_dir).mkdir(parents=True, exist_ok=True)
+                actions.append((known_dir + "/", "created directory"))
+                log.info(
+                    "Bootstrap: %s/ referenced in %s but missing — created directory",
+                    known_dir, instructions_file,
+                )
+            except OSError as e:
+                log.warning("Bootstrap: failed to create %s/: %s", known_dir, e)
+
+    return actions
+
+
 def _load_preamble_bundle(log):
     """Load and execute `.agent/preamble.json` if it exists.
 
@@ -2768,6 +2845,18 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             _pinned_instructions = pinned
             log.info("Pinned instructions extracted (%d chars)", len(pinned))
 
+        # Bootstrap-template check (T3.9): auto-create empty placeholders for
+        # well-known DC-style files the agent's AGENT.md/CLAUDE.md references
+        # but don't exist on disk. Eliminates lyla's "from-creator.md errors
+        # every cycle" loop. Only runs on fresh starts (not continue_mode).
+        _bootstrap_actions = _bootstrap_template_check(log)
+        if _bootstrap_actions:
+            log.info(
+                "Bootstrap-template: %d placeholder(s) auto-created — %s",
+                len(_bootstrap_actions),
+                ", ".join(f"{p} ({a})" for p, a in _bootstrap_actions),
+            )
+
         # PERCEIVE preamble bundle (.agent/preamble.json): auto-load and inject
         # before the user's initial prompt. Saves the 6-8 boilerplate tool calls
         # both audits flagged as the #1 friction source. Only on fresh starts;
@@ -3250,6 +3339,16 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         receiving_tools = False
         _stream_t0 = time.monotonic()
         _stream_deadline = _stream_t0 + 600  # 10 minute wall-clock cap
+        # Stall detection: per c0rtana audit #3, long latencies with zero
+        # deltas (e.g. session_20260513_010952.log Turn 14: latency_ms=78377
+        # deltas=0) are strongly correlated with corrupted/garbled output.
+        # If the model stays silent past _STALL_TIMEOUT_S, abort the request
+        # rather than waiting for the inevitable malformed completion.
+        # Env-tunable; default 60s gives slow CPU backends headroom while
+        # cutting failure tails by ~10x. Set 0 to disable.
+        _STALL_TIMEOUT_S = float(os.environ.get("AGENT_STALL_TIMEOUT_S", "60"))
+        _deltas_received = 0
+        _stall_detected = False
         status = StreamStatus(emit=_emit)
         status.start("\nAssistant: ")
         renderer = _ReasoningRenderer(lambda t: _emit("on_stream_chunk", t))
@@ -3271,6 +3370,28 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     if time.monotonic() > _stream_deadline:
                         log.warning("Streaming wall-clock deadline exceeded (600s) — aborting response")
                         _safe_close(response)
+                        break
+                    # Stall guard: abort fast if no deltas arrive within the
+                    # configured timeout. Cuts the 78-second-to-corrupted-
+                    # output failure mode (c0rtana audit #3) by ~10x.
+                    if (
+                        _STALL_TIMEOUT_S > 0
+                        and _deltas_received == 0
+                        and (time.monotonic() - _stream_t0) > _STALL_TIMEOUT_S
+                    ):
+                        log.warning(
+                            "Model stall: 0 deltas after %.1fs — aborting "
+                            "(AGENT_STALL_TIMEOUT_S=%.1f). High-latency / "
+                            "zero-deltas streams are strongly correlated with "
+                            "corrupted output; failing fast lets the turn retry "
+                            "cleanly with a fresh request.",
+                            time.monotonic() - _stream_t0, _STALL_TIMEOUT_S,
+                        )
+                        telemetry.record_error(kind="model_stall")
+                        _emit("on_notice", "warn",
+                              f"[model stalled — aborted after {_STALL_TIMEOUT_S:.0f}s of zero deltas]")
+                        _safe_close(response)
+                        _stall_detected = True
                         break
 
                     # Capture per-chunk token usage. For the llamacpp path,
@@ -3304,8 +3425,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         renderer.feed(delta["content"])
                         content_parts.append(delta["content"])
                         status.count_token()
+                        _deltas_received += 1
 
                     if delta.get("tool_calls"):
+                        _deltas_received += 1
                         if not receiving_tools:
                             receiving_tools = True
                             if printed_header:
