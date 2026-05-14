@@ -308,6 +308,34 @@ def _write(path, content, start_line, end_line):
             if end_line < total_lines:
                 new_lines[-1] += "\n"
 
+        # Indent guard for Python slice-writes. Lyla C40 burned 4 turns on a
+        # slice-write that put 5 leading spaces where the surrounding block
+        # had 4, producing IndentationError after the write succeeded. Catch
+        # it upfront — compare the leading whitespace of the FIRST non-blank
+        # line in the existing replaced block to that of the new content.
+        # Only fires on .py files (whitespace-sensitive); other languages
+        # tolerate varied indentation.
+        if p.suffix == '.py' and new_lines:
+            existing_lines = old_content.splitlines(True)[start_line - 1:end_line]
+            old_first = next((ln for ln in existing_lines if ln.strip()), None)
+            new_first = next((ln for ln in new_lines if ln.strip()), None)
+            if old_first and new_first:
+                old_indent = old_first[:len(old_first) - len(old_first.lstrip())]
+                new_indent = new_first[:len(new_first) - len(new_first.lstrip())]
+                if old_indent != new_indent:
+                    return (
+                        f"Error: indent mismatch in slice-write to '{path}'. "
+                        f"Existing line {start_line} starts with indent "
+                        f"{old_indent!r} ({len(old_indent)} chars); your new "
+                        f"content's first non-blank line starts with indent "
+                        f"{new_indent!r} ({len(new_indent)} chars). Python is "
+                        f"whitespace-sensitive — this would produce IndentationError "
+                        f"after the write. Re-issue with matching leading whitespace. "
+                        f"(If you intend to change the indent level of the whole block, "
+                        f"do action='read' first to inspect the surrounding scope, then "
+                        f"adjust all replaced lines consistently.)"
+                    )
+
         # Streaming replace
         try:
             temp_fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
@@ -387,10 +415,39 @@ def _write(path, content, start_line, end_line):
         return f"Error: write failed: {e}"
     _accessed_files.add(str(p.resolve()))
 
+    # Schema-preservation warning for JSON object overwrites. Lyla C24→C26
+    # regression: she ported Elder's `theme_tracking` block into focus.json
+    # at C24, then at C26 rewrote focus.json from scratch (focusing on a
+    # different subset of keys), silently dropping theme_tracking. Never
+    # restored across 13+ cycles — pure schema-loss-via-overwrite.
+    # Surface dropped top-level keys so the agent sees the loss in the
+    # tool-result and can choose to restore.
+    _schema_warning = ""
+    if old_content and p.suffix == '.json':
+        try:
+            import json as _json
+            old_obj = _json.loads(old_content)
+            new_obj = _json.loads(content)
+            if isinstance(old_obj, dict) and isinstance(new_obj, dict):
+                dropped = [k for k in old_obj if k not in new_obj]
+                if dropped:
+                    _schema_warning = (
+                        f"\n\n[schema-warning] this write dropped top-level keys "
+                        f"that were present in the previous version: {dropped}. "
+                        f"If intentional, ignore. Otherwise these are likely "
+                        f"accidental losses from rewriting a structured-state "
+                        f"file without merging — lyla C26 lost theme_tracking "
+                        f"this way and regressed for 13+ cycles. Restore by "
+                        f"re-issuing the write with the dropped keys included, "
+                        f"or use file(action='edit') for surgical changes."
+                    )
+        except (ValueError, _json.JSONDecodeError):
+            pass  # not valid JSON — skip silently
+
     if old_content:
         diff_text = _get_diff(old_content, content)
-        return f"Wrote '{path}' ({len(content)} chars)\n\nDiff:\n{diff_text}"
-    return f"Wrote '{path}' ({len(content)} chars)"
+        return f"Wrote '{path}' ({len(content)} chars)\n\nDiff:\n{diff_text}{_schema_warning}"
+    return f"Wrote '{path}' ({len(content)} chars){_schema_warning}"
 
 
 def _edit(path, old_string, new_string, replace_all):

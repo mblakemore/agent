@@ -4052,7 +4052,20 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             t for t in _hist if (_call_idx_counter - t) <= _WRITE_LOOP_WINDOW
                         ]
                         _n_writes = len(_write_path_history[_write_target])
-                        if _n_writes >= _WRITE_LOOP_THRESHOLD:
+                        # Single-object state files (per DC-style CLAUDE.md
+                        # convention: "Single-object state is overwritten each
+                        # cycle") are SUPPOSED to be rewritten — c0rtana's
+                        # detector misfired with `current-state.json` written
+                        # 3 times in one cycle (correct behavior!). Bump the
+                        # threshold so the detector only complains when the
+                        # rewrite count is unambiguously a loop.
+                        _is_single_object_state = (
+                            _write_target.endswith(("current-state.json",
+                                                    "focus.json",
+                                                    "context.json"))
+                        )
+                        _effective_threshold = 5 if _is_single_object_state else _WRITE_LOOP_THRESHOLD
+                        if _n_writes >= _effective_threshold:
                             result_str = result_str + (
                                 f"\n\n[write-loop-detector] You have written to {_write_target!r} "
                                 f"{_n_writes} times in the last {_WRITE_LOOP_WINDOW} tool calls. "

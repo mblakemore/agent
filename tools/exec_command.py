@@ -56,6 +56,9 @@ def _build_env_with_pythonpath(cwd: str) -> dict | None:
     return env
 
 
+_SHELL_META_TOKENS = frozenset(('>', '>>', '<', '<<', '|', '&', ';', '&&', '||'))
+
+
 def _extract_write_target(command):
     """Extract target file path from a shell write command, or None if not a write."""
     # Heredoc: cat > file.ext <<'EOF'  or  cat > file.ext << EOF
@@ -66,9 +69,15 @@ def _extract_write_target(command):
     m = re.match(r'^\s*(?:cat|echo|printf)\s+.*?[^2]>\s*(\S+)', command)
     if m:
         target = m.group(1)
-        # Skip things that look like /dev/null or pipes
-        if not target.startswith('/dev/'):
-            return target
+        # Skip /dev/null and friends
+        if target.startswith('/dev/'):
+            return None
+        # Skip shell metacharacters that got captured as "target" — happens
+        # on malformed redirect chains like `cat > > foo.json`. C0rtana
+        # write-loop detector cried wolf on '>' as a filename (audit FP).
+        if target in _SHELL_META_TOKENS:
+            return None
+        return target
     return None
 
 
