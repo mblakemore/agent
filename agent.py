@@ -4117,6 +4117,28 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             prefix = f"  -> {func_name} "
                         tool_status.start(prefix)
 
+                    # T5.18 — pre-write content snapshot for similarity
+                    # detection. Captured before dispatch so the post-write
+                    # nudge can compare new vs. old. Only for file(action=
+                    # 'write') on existing files; cheap when the file is
+                    # small (state JSON / focus JSON), bounded by tool
+                    # result truncation cap when not.
+                    _prewrite_content = None
+                    if (func_name == "file"
+                            and isinstance(func_args, dict)
+                            and func_args.get("action") == "write"
+                            and isinstance(func_args.get("path"), str)
+                            and isinstance(func_args.get("content"), str)):
+                        try:
+                            import os as _os_t518
+                            _pw_path = func_args["path"]
+                            if _os_t518.path.isfile(_pw_path):
+                                with open(_pw_path, "r", encoding="utf-8",
+                                          errors="replace") as _pf:
+                                    _prewrite_content = _pf.read()
+                        except Exception:
+                            _prewrite_content = None
+
                     # Cycle 24: pre-execute PRE-MERGE CHECK short-circuit.
                     # When reviewer attempts `gh pr merge` without prior
                     # `gh issue view`, block execution (the merge is irreversible
@@ -4239,6 +4261,66 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 )
                                 telemetry.record_patch_event("edit_nudge", kind="fired")
                                 _patch_telemetry["edit_nudge"] += 1
+
+                        # T5.18 — file(action='write') high-similarity rewrite
+                        # nudge. The model has been bypassing the heredoc
+                        # nudge by routing through file(action='write')
+                        # instead of exec_command. C0rtana C131 + Lyla C57
+                        # both showed full-file rewrites where most lines
+                        # were identical to the previous version — surgical
+                        # changes wearing a full-write costume. Detection:
+                        # Jaccard line-set similarity vs pre-write snapshot;
+                        # ≥0.8 triggers the nudge. Tracked separately under
+                        # kind="similar_rewrite" so we can measure whether
+                        # the new nudge fires while the model continues to
+                        # avoid action='edit', or whether behavior shifts.
+                        _similar_rewrite = (
+                            not _heredoc_write
+                            and _prewrite_content is not None
+                            and func_name == "file"
+                            and isinstance(func_args, dict)
+                            and func_args.get("action") == "write"
+                        )
+                        if _similar_rewrite:
+                            _new_content = func_args.get("content", "")
+                            _old_lines = set(_prewrite_content.splitlines())
+                            _new_lines = set(_new_content.splitlines())
+                            if _old_lines and _new_lines:
+                                _inter = len(_old_lines & _new_lines)
+                                # MAX of two asymmetric ratios so both
+                                # "most-of-old-survived" (small edit to large
+                                # file → preserved_ratio high) and "most-of-
+                                # new-came-from-old" (some additions, rest
+                                # carried over → overlap_ratio high) trigger
+                                # the nudge. Symmetric Jaccard penalizes both
+                                # directions and would miss the c0rtana C131
+                                # "added 30 lines to a 200-line HTML" case.
+                                _preserved = _inter / len(_old_lines)
+                                _overlap = _inter / len(_new_lines)
+                                _sim = max(_preserved, _overlap)
+                                if _sim >= 0.8:
+                                    if "_edit_nudges_emitted" not in dir(run_agent_single):
+                                        run_agent_single._edit_nudges_emitted = set()
+                                    if _write_target not in run_agent_single._edit_nudges_emitted:
+                                        run_agent_single._edit_nudges_emitted.add(_write_target)
+                                        result_str = result_str + (
+                                            f"\n\n[suggestion] You used "
+                                            f"file(action='write') to rewrite "
+                                            f"{_write_target!r}, but {int(_sim*100)}% "
+                                            f"of the lines match the previous version "
+                                            f"— this is a surgical change in a "
+                                            f"full-rewrite costume. file(action='edit', "
+                                            f"path=..., old_string=..., new_string=...) "
+                                            f"is the right tool: atomic, validates the "
+                                            f"target text exists exactly once, and won't "
+                                            f"silently drop unrelated keys (lyla C26 lost "
+                                            f"theme_tracking this way and regressed for "
+                                            f"13 cycles). Use write only when creating a "
+                                            f"new file or rewriting one in full."
+                                        )
+                                        telemetry.record_patch_event(
+                                            "edit_nudge", kind="similar_rewrite")
+                                        _patch_telemetry["edit_nudge"] += 1
 
                         _hist = _write_path_history.setdefault(_write_target, [])
                         _hist.append(_call_idx_counter)
