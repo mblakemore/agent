@@ -62,22 +62,26 @@ def _get_diff(old_content, new_content):
     return "\n".join(result)
 
 
-def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end_line: int = 0, **kwargs) -> str:
+def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end_line: int = 0,
+       old_string: str = "", new_string: str = "", replace_all: bool = False, **kwargs) -> str:
     """Perform file operations.
 
     Args:
-        action: One of "read", "write", "insert", "append", "delete", "list".
+        action: One of "read", "write", "insert", "append", "delete", "list", "edit".
         path: File or directory path.
         content: Content for write/append/insert actions.
         start_line: For read: first line (1-indexed). For write: first line to replace. For insert: line number to insert BEFORE.
         end_line: For read: last line (1-indexed). For write: last line to replace (REQUIRED when start_line is set).
+        old_string: For edit: the exact string to replace. Must be unique in the file unless replace_all=True.
+        new_string: For edit: the replacement string.
+        replace_all: For edit: if True, replace every occurrence of old_string (default False — requires uniqueness).
     """
     if kwargs:
         unexpected = ", ".join(f"'{k}'" for k in sorted(kwargs))
         return (
             f"Error: unexpected argument(s) {unexpected}. "
-            f"Valid parameters are: action, path, content, start_line, end_line. "
-            f"Valid actions are: read, write, insert, append, delete, list."
+            f"Valid parameters are: action, path, content, start_line, end_line, old_string, new_string, replace_all. "
+            f"Valid actions are: read, write, insert, append, delete, list, edit."
         )
     if not isinstance(action, str):
         return f"Error: 'action' must be a string, got {type(action).__name__!r}"
@@ -153,8 +157,10 @@ def fn(action: str, path: str = ".", content: str = "", start_line: int = 0, end
             return _delete(resolved, start_line, end_line)
         elif action == "list":
             return _list(resolved)
+        elif action == "edit":
+            return _edit(resolved, old_string, new_string, replace_all)
         else:
-            return f"Error: unknown action '{action}'. Use: read, write, insert, append, delete, list."
+            return f"Error: unknown action '{action}'. Use: read, write, insert, append, delete, list, edit."
     except Exception as e:
         return f"Error: action '{action}' failed: {e}"
 
@@ -385,6 +391,106 @@ def _write(path, content, start_line, end_line):
         diff_text = _get_diff(old_content, content)
         return f"Wrote '{path}' ({len(content)} chars)\n\nDiff:\n{diff_text}"
     return f"Wrote '{path}' ({len(content)} chars)"
+
+
+def _edit(path, old_string, new_string, replace_all):
+    """Claude-Edit-style exact-string replacement with uniqueness guarantee.
+
+    Avoids the "full-rewrite for tiny diff" pattern that lyla hit (C2/C3/C7/C19
+    rewrote 1500-2000 chars of `visualization/lyla.html` per cycle for line-
+    level edits) by letting the agent specify the surgical change directly.
+    Atomic via tmp+rename so a partial write can't corrupt the target.
+
+    Args:
+        path: target file (must exist and have been read this session)
+        old_string: exact text to replace (verbatim — no regex)
+        new_string: replacement text
+        replace_all: if False, old_string must appear exactly once; if True,
+                     all occurrences are replaced.
+    """
+    if not isinstance(old_string, str):
+        return f"Error: 'old_string' must be a string, got {type(old_string).__name__!r}"
+    if not isinstance(new_string, str):
+        return f"Error: 'new_string' must be a string, got {type(new_string).__name__!r}"
+    if old_string == "":
+        return ("Error: 'old_string' cannot be empty for edit action. To create or "
+                "fully overwrite a file, use action='write' instead.")
+    if old_string == new_string:
+        return "Error: 'old_string' and 'new_string' are identical — no edit needed."
+    if '\x00' in new_string:
+        return "Error: new_string contains a null byte, which is not allowed"
+
+    p = Path(path)
+    if p.name in _BLOCKED_FILENAMES:
+        return f"Error: '{p.name}' is an internal runtime file and cannot be edited."
+
+    err = _check_write_confinement(path, p)
+    if err:
+        return err
+
+    if not p.exists():
+        return (f"Error: cannot edit '{path}' — file does not exist. "
+                f"Use action='write' to create a new file.")
+    if not p.is_file():
+        return f"Error: '{path}' is not a regular file."
+    if str(p.resolve()) not in _accessed_files:
+        return (f"Error: '{path}' exists but has not been read this session. "
+                f"Read the file first (action='read') before editing — this ensures "
+                f"your `old_string` matches the actual current content.")
+    if not os.access(str(p), os.W_OK):
+        return f"Error: permission denied: {path}"
+
+    with open(p, 'r', encoding='utf-8', errors='replace') as f:
+        old_content = f.read()
+
+    occurrences = old_content.count(old_string)
+    if occurrences == 0:
+        # Give a useful hint on common near-miss causes
+        first_line = old_string.splitlines()[0] if old_string else ""
+        hint = ""
+        if first_line and first_line in old_content:
+            hint = (f"\n\nHint: the first line of your `old_string` ({first_line!r}) is "
+                    f"present in the file, but the full string isn't — likely a trailing-"
+                    f"whitespace or line-ending mismatch. Re-read the section with "
+                    f"action='read' to copy the exact text.")
+        return f"Error: `old_string` not found in '{path}' (0 occurrences).{hint}"
+
+    if occurrences > 1 and not replace_all:
+        return (f"Error: `old_string` appears {occurrences} times in '{path}'. "
+                f"Either provide more surrounding context to make it unique, or pass "
+                f"replace_all=True to replace every occurrence.")
+
+    if replace_all:
+        new_content = old_content.replace(old_string, new_string)
+    else:
+        # Exactly one occurrence — do a single replace
+        new_content = old_content.replace(old_string, new_string, 1)
+
+    try:
+        temp_fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
+    except PermissionError:
+        return f"Error: permission denied: {path}"
+    try:
+        with os.fdopen(temp_fd, 'w', encoding='utf-8') as temp_f:
+            temp_f.write(new_content)
+        os.replace(temp_path, p)
+    except PermissionError:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return f"Error: permission denied: {path}"
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        return f"Error: edit write failed: {e}"
+
+    _accessed_files.add(str(p.resolve()))
+
+    n_replaced = occurrences if replace_all else 1
+    diff_text = _get_diff(old_content, new_content)
+    char_delta = len(new_content) - len(old_content)
+    delta_str = f"{'+' if char_delta >= 0 else ''}{char_delta} chars"
+    return (f"Edited '{path}' — {n_replaced} occurrence(s) of `old_string` replaced, "
+            f"{delta_str}.\n\nDiff:\n{diff_text}")
 
 
 import re as _re

@@ -325,18 +325,21 @@ class TestAppendMainGuard(unittest.TestCase):
 class TestFileUnexpectedKwargs(unittest.TestCase):
     """fn() must return a clean Error string for unexpected keyword arguments (#652)."""
 
-    def test_old_string_new_string_returns_error_not_typeerror(self):
-        """Passing old_string/new_string must not raise TypeError — must return Error string."""
+    def test_old_string_new_string_with_unknown_action_returns_error(self):
+        """old_string/new_string are now valid params (for action='edit'). Passing
+        them with an UNKNOWN action returns a clean Error string at the action
+        validation level — never raises TypeError."""
         result = file_tool.fn(
-            action="replace",
+            action="replace",  # not a valid action — 'edit' is the new replace
             path="/tmp/probe_replace.txt",
             old_string="hello",
             new_string="world",
         )
         self.assertIsInstance(result, str, "fn() must always return a string")
         self.assertTrue(result.startswith("Error:"), f"Expected Error:, got: {result!r}")
-        self.assertIn("old_string", result)
-        self.assertIn("new_string", result)
+        # Mentions the bad action and the valid-action list (including 'edit')
+        self.assertIn("replace", result)
+        self.assertIn("edit", result)
 
     def test_single_unexpected_kwarg_returns_error(self):
         """A single unexpected keyword argument must produce an Error string."""
@@ -347,12 +350,16 @@ class TestFileUnexpectedKwargs(unittest.TestCase):
 
     def test_error_message_lists_valid_parameters(self):
         """The error message must include the valid parameter names so callers can self-correct."""
-        result = file_tool.fn(action="write", path="/tmp/x.txt", old_string="a")
+        # Use a TRULY unknown kwarg so the unexpected-arg branch fires
+        result = file_tool.fn(action="write", path="/tmp/x.txt", bogus_param="a")
         self.assertIn("action", result)
         self.assertIn("path", result)
         self.assertIn("content", result)
         self.assertIn("start_line", result)
         self.assertIn("end_line", result)
+        # The newly-valid edit params should be listed too
+        self.assertIn("old_string", result)
+        self.assertIn("new_string", result)
 
     def test_valid_call_unaffected(self):
         """A well-formed call must still work correctly after adding **kwargs."""
