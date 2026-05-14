@@ -86,44 +86,6 @@ def _collect_py_files(root: Path) -> list[Path]:
     return results
 
 
-def _find_definitions(tree: ast.AST, name: str, kind: Optional[str], src_path: str) -> list[dict]:
-    """Walk AST and return definition matches."""
-    matches = []
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if node.name != name:
-                continue
-            node_kind = "function"
-            # Determine if this is a method (parent is a ClassDef).
-            # We check by seeing if there's a ClassDef ancestor — use a separate
-            # parent-aware walk below.
-        elif isinstance(node, ast.ClassDef):
-            if node.name != name:
-                continue
-            node_kind = "class"
-        else:
-            continue
-
-        if kind and node_kind != kind:
-            continue
-
-        # Build context line
-        if isinstance(node, ast.ClassDef):
-            context = f"class {node.name}:"
-        else:
-            args = ast.unparse(node.args) if hasattr(ast, "unparse") else "..."
-            context = f"def {node.name}({args}):"
-
-        matches.append({
-            "path": src_path,
-            "line": node.lineno,
-            "kind": node_kind,
-            "scope": node.name,
-            "context": context,
-        })
-    return matches
-
-
 def _find_definitions_with_scope(tree: ast.AST, name: str, kind: Optional[str], src_path: str) -> list[dict]:
     """Walk AST with parent tracking to distinguish methods from top-level functions."""
     matches = []
