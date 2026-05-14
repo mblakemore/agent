@@ -46,6 +46,7 @@ _tool_errors: Any = None
 _hallucinations: Any = None
 _summaries: Any = None
 _context_size: Any = None
+_patch_events: Any = None
 
 # Verbose-only meters. Created only when verbose is enabled.
 _turns: Any = None
@@ -86,6 +87,7 @@ def init() -> bool:
     global _cycles, _tokens, _errors, _cycle_duration
     global _turns, _turn_duration, _turn_tool_calls, _turn_tokens
     global _tool_calls, _tool_errors, _hallucinations, _summaries, _context_size
+    global _patch_events
 
     if not _truthy(os.environ.get("AGENTPY_TELEMETRY")):
         _enabled = False
@@ -160,6 +162,15 @@ def init() -> bool:
     _summaries = meter.create_counter(
         "agentpy_summaries",
         description="context summarization events",
+    )
+    # Tier 5 — patch-effectiveness counter. Each Tier 1-4 defensive patch
+    # bumps this with labels {name: "<patch>", kind: "fired"|"rejected"|
+    # "skipped"|"created"|"saved"}. Queryable as
+    # `sum by (name, kind) (rate(agentpy_patch_events_total[5m]))` for
+    # "is this patch worth keeping?" empirical answers (see docs/tier-5).
+    _patch_events = meter.create_counter(
+        "agentpy_patch_events",
+        description="Tier 1-4 defensive patch firings by name and kind",
     )
     _context_size = meter.create_histogram(
         "agentpy_context_size",
@@ -355,6 +366,30 @@ def record_summary() -> None:
         _summaries.add(1)
     except Exception:
         logger.debug("telemetry.record_summary failed", exc_info=True)
+
+def record_patch_event(name: str, kind: str = "fired", value: int = 1) -> None:
+    """Record a Tier 1-4 defensive patch firing.
+
+    Args:
+        name: patch identifier (e.g. "harmony_reject", "dedup", "write_loop",
+              "stall_abort", "think_launder", "indent_guard", "schema_warning",
+              "bootstrap_create", "summary_gate", "edit_nudge").
+        kind: "fired" (the patch took action), "rejected" (the patch refused a
+              call), "skipped" (the patch would have fired but a gate prevented
+              it — useful for utilization-gated patches), "created" (a side
+              effect was produced, e.g. bootstrap placeholder), "saved" (the
+              patch averted work, e.g. dedup cache hit).
+        value: count to add (default 1; pass token-savings estimates as larger
+              numbers if the operator cares about magnitude over count).
+
+    No-op when telemetry is disabled.
+    """
+    if not _enabled or _patch_events is None:
+        return
+    try:
+        _patch_events.add(value, {"name": name, "kind": kind})
+    except Exception:
+        logger.debug("telemetry.record_patch_event failed", exc_info=True)
 
 def record_context_size(size: int) -> None:
     """Record current context window size. No-op when telemetry is disabled."""
