@@ -7,10 +7,11 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tools.find_symbol import find_symbol
+from tools.find_symbol import find_symbol, _is_excluded
 
 # Absolute path to the repo root — resolved via git so this works correctly
 # regardless of whether the test runs from a worktree (where Path(__file__).parent.parent
@@ -1646,6 +1647,155 @@ class TestFindSymbolExcludeIsRelativeToRoot(unittest.TestCase):
         )
         for r in results:
             self.assertEqual(r["kind"], "call")
+
+
+class TestExceptionPathCoverage(unittest.TestCase):
+    """AC3 of #1015: cover the exception/fallback paths in tools/find_symbol.py
+    so coverage reaches >=95%. These paths are not exercised by the regular
+    happy-path tests because they fire only on malformed AST nodes, paths
+    outside the search root, or OS errors during Path resolution.
+    """
+
+    def test_is_excluded_value_error_falls_back_to_absolute(self):
+        """Path not under root -> Path.relative_to raises ValueError -> fallback
+        uses str(path) (lines 27-31). Returns False because the absolute string
+        does not match any DEFAULT_EXCLUDES pattern.
+        """
+        # Two unrelated absolute paths. Path.relative_to raises ValueError.
+        self.assertFalse(_is_excluded(Path("/usr/local/foo.py"), Path("/tmp/bar")))
+        # And returns True when the absolute fallback string contains an exclude
+        # token like "temp/".
+        self.assertTrue(_is_excluded(Path("/tmp/temp/foo.py"), Path("/different/root")))
+
+    def test_is_excluded_directory_gets_trailing_slash(self):
+        """When path.is_dir() is True, _is_excluded appends '/' to rel_str
+        (line 35). Use a real directory under cwd so .relative_to succeeds and
+        .is_dir() returns True.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sub = root / "subdir"
+            sub.mkdir()
+            # subdir is a real directory; "subdir/" is not in DEFAULT_EXCLUDES,
+            # so _is_excluded returns False — but line 35 is exercised.
+            self.assertFalse(_is_excluded(sub, root))
+
+    def test_is_excluded_returns_true_on_match(self):
+        """_is_excluded returns True at line 38 when an exclude pattern is
+        found inside the relative path string.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            tdir = root / "temp"
+            tdir.mkdir()
+            inside = tdir / "leaf.py"
+            inside.write_text("pass\n")
+            # rel_str = "temp/leaf.py", DEFAULT_EXCLUDES contains "temp/" -> True.
+            self.assertTrue(_is_excluded(inside, root))
+
+    def test_dir_excluded_value_error_falls_back(self):
+        """The _dir_excluded closure inside _collect_py_files handles
+        Path.relative_to raising ValueError by falling back to the absolute
+        directory string (lines 69-70).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "subdir").mkdir()
+            (root / "subdir" / "x.py").write_text("def fs_target(): pass\n")
+
+            real_relative_to = Path.relative_to
+
+            def fake_relative_to(self, *args, **kwargs):
+                # Force ValueError only for the directory pruning check
+                # (paths without a .py suffix). File-level _is_excluded calls
+                # see a real .py path and use the normal branch.
+                if self.suffix != ".py":
+                    raise ValueError("forced for test")
+                return real_relative_to(self, *args, **kwargs)
+
+            with patch.object(Path, "relative_to", fake_relative_to):
+                results = find_symbol(
+                    "fs_target", path=str(root), mode="definition",
+                )
+            # The fallback uses str(dp) which contains the absolute tmpdir
+            # path; "subdir" is not in DEFAULT_EXCLUDES, so the file is still
+            # discovered.
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["scope"], "fs_target")
+
+    def test_unparse_failures_use_placeholders(self):
+        """When ast.unparse raises Exception, the helpers fall back to
+        placeholder context strings: 'class Foo(...):' (lines 100-101),
+        'def fn(...):' (lines 119-120), and 'name(...)' (lines 155-156).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = Path(tmpdir) / "fail_unparse.py"
+            f.write_text(textwrap.dedent(
+                """
+                class FailFoo(Bar, Baz):
+                    def fail_method(self, x, y=1):
+                        pass
+
+                fail_method(1, 2)
+                """
+            ).lstrip())
+
+            with patch("tools.find_symbol.ast.unparse",
+                       side_effect=Exception("forced")):
+                class_results = find_symbol(
+                    "FailFoo", path=str(f), kind="class", mode="definition",
+                )
+                method_results = find_symbol(
+                    "fail_method", path=str(f), mode="definition",
+                )
+                call_results = find_symbol(
+                    "fail_method", path=str(f), mode="callers",
+                )
+
+        # Class with bases — line 101 sets bases_str = "..."
+        self.assertEqual(len(class_results), 1)
+        self.assertEqual(class_results[0]["context"], "class FailFoo(...):")
+        # Method args — line 120 sets args_str = "..."
+        self.assertEqual(len(method_results), 1)
+        self.assertEqual(method_results[0]["context"], "def fail_method(...):")
+        # Call expression — line 156 sets context = "fail_method(...)"
+        call_only = [r for r in call_results if r["kind"] == "call"]
+        self.assertGreaterEqual(len(call_only), 1)
+        self.assertEqual(call_only[0]["context"], "fail_method(...)")
+
+    def test_long_caller_context_truncated(self):
+        """A call expression whose unparsed form exceeds 120 chars is truncated
+        to 117 chars + '...' (line 159).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = Path(tmpdir) / "long_call.py"
+            long_arg = "x" * 200
+            f.write_text(
+                f"def long_target(*args): pass\n"
+                f"long_target('{long_arg}')\n"
+            )
+            results = find_symbol(
+                "long_target", path=str(f), mode="callers",
+            )
+        call_only = [r for r in results if r["kind"] == "call"]
+        self.assertEqual(len(call_only), 1)
+        ctx = call_only[0]["context"]
+        self.assertEqual(len(ctx), 120)
+        self.assertTrue(ctx.endswith("..."))
+
+    def test_cwd_resolve_oserror_is_swallowed(self):
+        """OSError from Path.cwd() is silently caught (lines 238-239); the
+        function continues to the existence check.
+        """
+        with patch.object(Path, "cwd", side_effect=OSError("forced")):
+            results = find_symbol(
+                "anything", path="/nonexistent/path/should/not/exist/xyz",
+            )
+        # The exception was swallowed; the existence check then reports the
+        # missing path as the user-visible error.
+        self.assertEqual(len(results), 1)
+        self.assertIn("error", results[0])
+        self.assertIn("does not exist", results[0]["error"])
 
 
 if __name__ == "__main__":
