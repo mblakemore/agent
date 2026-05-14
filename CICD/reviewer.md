@@ -168,7 +168,7 @@ gh pr diff <N> --name-only \
 
 For each production file, compare the change count to what the linked issue/plan actually requires. If a file shows more than ~30 changed lines and the plan's `In:` list does not enumerate that scope (refactor, restructure, rewrite), → **REQUEST_CHANGES** with the cite: `<file>: <N> lines changed; plan only requires <Y> lines for <stated scope>. Revert the unrelated changes.` Do NOT MERGE in this case even if tests are green — out-of-scope churn is how regressions sneak in (15 tests broken in PR #563's second cycle came from this exact pattern).
 
-**Step 5 — Closes-trailer + AC coverage**: when the PR body has `Closes #N` (vs `Partial: AC… Refs #N`), verify the PR actually addresses the *full* issue, not a slice:
+**Step 5 — Closes-trailer + AC coverage**: when the PR body has `Closes #N` (vs `Partial: AC… Refs #N`), verify the PR actually addresses the *full* issue, not a slice. **If Phase 5's Step 0 Partial-PR early-gate matched, SKIP this step entirely — its precondition (`Closes` trailer) is by definition false for a Partial PR, and applying it to a Partial PR is the cycle-1016 / issue #1018 deadlock.** Verify the trailer before running this step:
 
 ```bash
 gh issue view <N> --json body --jq '.body' | grep -E "^[-*] " | head -20
@@ -194,12 +194,53 @@ Mismatch → REQUEST_CHANGES with "`<fix_string>` in diff does not match `<issue
 
 ## Phase 5 — ASSESS
 
-Exactly one verdict from the decision matrix:
+### Step 0 — Partial-PR early gate (cycle 1016 — issue #1018)
+
+**Run this BEFORE the decision matrix.** It exists to stop the deadlock where a properly-framed cycle-79 Partial PR keeps getting REQUEST_CHANGES with "retitle as Partial Refs #N" feedback the PR has already addressed (live failure: PR #1016 R-0003 verdict).
+
+Partial-PR early-gate match — ALL of:
+1. PR body has a line starting with `Partial:` (case-insensitive, may be inside `**bold**`).
+2. PR body's trailer is `Refs #N` — NOT `Closes #N`. `git log -1 --format=%B HEAD` or `gh pr view <N> --json body` to verify.
+3. PR body enumerates BOTH landed (`✅`) and deferred (`❌`) ACs explicitly. A `Partial:` header without enumeration is invalid framing — fall through to the matrix.
+4. Tests are green for the partial scope (the targeted-file pytest passes).
+5. Diff against `origin/main` does not break existing tests.
+
+If all five hold → **MERGE verdict is locked in by this early gate.** Stop scanning the decision matrix below. Specifically:
+
+- Do NOT apply the AC-coverage / `Closes`-trailer rule (matrix row "PR body uses `Closes #N` AND the issue's bullet-pointed ACs are not all addressed by the diff") — it does not apply because the PR is using `Refs`, not `Closes`. Mis-applying it is the exact bug this gate fixes.
+- Do NOT REQUEST_CHANGES for deferred-AC metric shortfalls. The `❌` bullets are an explicit contract that those ACs are deferred to a future cycle. Their metrics may be below threshold by design.
+- DO still gate the LANDED ACs (`✅`) against their thresholds. If a ✅ AC's metric is short of its threshold, return REQUEST_CHANGES citing that landed AC — NOT a deferred one.
+- DO still apply the structural / scope rules (destructive rewrite, secrets, out-of-scope files, missing call site for new public helper, tests patching non-existent symbols). Partial framing does not exempt structural integrity.
+
+If any of the five conditions is missing, the early gate does NOT match — proceed to the decision matrix as normal.
+
+#### Worked example — PR #1016 (issue #1015, cycle 1014)
+
+This is the regression case the early gate must pass. Abridged PR body:
+
+```
+**Partial: AC1+AC2 (AC3 deferred to next cycle)** — addressing reviewer R-0003's REQUEST_CHANGES.
+
+## Acceptance Criteria
+- ✅ **AC1** — `_find_definitions` removed. Evidence: …
+- ✅ **AC2** — `py_compile` clean and all existing find_symbol tests pass unchanged.
+- ❌ **AC3 deferred** — coverage 82% → 91% (+9pp), below the issue's ≥95% target. …
+
+Refs #1015
+```
+
+State on disk: `Partial:` ✓, `Refs #1015` ✓, both ✅ and ❌ enumerated ✓, tests green ✓, no regressions ✓. **Expected verdict: MERGE** (issue #1015 stays open with `in-progress-bot-*` for the next cycle to land AC3).
+
+The R-0003 failure was: reviewer mis-classified the trailer as `Closes` and matrix-row "Closes #N AND ACs not all addressed" fired → REQUEST_CHANGES with "ask to retitle as Partial Refs #1015 or land remaining 15 lines". The PR was already retitled — the loop deadlocks. The early gate above catches this on step-2 (verifies `Refs`, not `Closes`) and locks MERGE before the matrix row can fire.
+
+### Decision matrix
+
+If the Step 0 Partial-PR early-gate did NOT match, scan the matrix below top-to-bottom and pick exactly one verdict. The Partial row near the top of the matrix is RETAINED as a defense-in-depth duplicate — it should rarely fire because Step 0 already handled true Partial PRs; if you find yourself selecting it, double-check Step 0 wasn't skipped.
 
 | Condition | Verdict |
 |---|---|
 | Tests green + metric verified ±5% + scope clean + issue matches | **MERGE** |
-| PR body has `Partial: AC<list>` + `Refs #N` (NOT `Closes`) + tests green for the partial scope + diff doesn't break existing tests | **MERGE** (issue stays open for next cycle, in-progress label persists — cycle 79 partial-delivery path). Verify the partial body lists which ACs landed AND which are deferred; reject `Partial: …` PRs that don't enumerate both. Do NOT require all the issue's ACs to land in this PR — partial-by-design is the contract. |
+| PR body has `Partial: AC<list>` + `Refs #N` (NOT `Closes`) + tests green for the partial scope + diff doesn't break existing tests | **MERGE** (issue stays open for next cycle, in-progress label persists — cycle 79 partial-delivery path; **Step 0 above should have already matched** — if you got here without Step 0 matching, verify the `Refs` trailer manually). Verify the partial body lists which ACs landed AND which are deferred; reject `Partial: …` PRs that don't enumerate both. Do NOT require all the issue's ACs to land in this PR — partial-by-design is the contract. |
 | Diff against main shows `deletions > additions × 5` AND deletions > 100 lines on any production file (`agent.py`, `llm_backend.py`, etc.) | **CLOSE** immediately (cycle 79 — run 182 destruction). The builder accidentally rewrote the file from scratch via `file action=write`, deleting working code. Comment cites the line count: `agent.py shrunk from <X> on main to <Y> on branch — unsalvageable, builder must restart additively from current main.` Run `git show origin/main:<file> \| wc -l` and `git show <branch>:<file> \| wc -l` to capture the numbers, paste both into the close comment. Do NOT attempt to fix forward — reviewer scope (`tests/**` only, cycle 75) means production code restoration is a builder responsibility. |
 | Any test fails | **REQUEST_CHANGES** (cite test names + errors) |
 | Metric off >5% wrong direction or command broken | **REQUEST_CHANGES** (cite measurements) |
