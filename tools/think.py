@@ -234,7 +234,7 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
         return f"[Consensus-extract failed: {err}; returning {len(samples)} raw samples]\n\n{joined}"
     _, consensus = _parse_answer(consensus_raw)
     log.info("THINK CONSENSUS (n=%d): %s", len(samples), consensus[:300])
-    _output("  " + theme.c(theme.GREEN, f"[Consensus across {len(samples)} samples]"))
+    _output("  " + theme.c(theme.MINT, f"[Consensus across {len(samples)} samples]"))
     _output(f"  {consensus}")
     return consensus if consensus else "Error: empty consensus response"
 

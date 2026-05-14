@@ -451,5 +451,163 @@ class TestThinkDepthNoneHandling(unittest.TestCase):
         mock_post.assert_not_called()
 
 
+# ── n_samples validation branches (lines 149–156) ─────────────────────────────
+
+class TestThinkNSamplesValidation(unittest.TestCase):
+    """Cover n_samples input-validation guard branches."""
+
+    def test_n_samples_bool_returns_error(self):
+        # Line 149: isinstance(n_samples, bool) guard
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("test", n_samples=True)
+        self.assertTrue(result.startswith("Error:"), f"Expected error, got: {result!r}")
+        self.assertIn("bool", result)
+        mock_post.assert_not_called()
+
+    def test_n_samples_string_coercible_proceeds(self):
+        # Lines 151–152: n_samples="2" coerces to 2, continues normally
+        with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"), \
+             patch("tools.think._single_call", side_effect=[
+                 ("answer1", None),
+                 ("answer2", None),
+                 ("consensus", None),
+             ]), \
+             patch("tools.think.check_cancelled"):
+            think_mod._output = MagicMock()
+            result = think_mod.fn("test prompt", n_samples="2")
+        # "2" coerces to int 2 → self-consistency path runs; expect non-error result
+        self.assertNotIn("Error: n_samples must be", result)
+
+    def test_n_samples_string_not_coercible_returns_error(self):
+        # Lines 153–154: n_samples="bad" → ValueError → error string
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("test", n_samples="bad")
+        self.assertTrue(result.startswith("Error:"), f"Expected error, got: {result!r}")
+        self.assertIn("integer", result)
+        mock_post.assert_not_called()
+
+    def test_n_samples_zero_returns_error(self):
+        # Line 156: n_samples=0 is out of range [1.._MAX_N_SAMPLES]
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("test", n_samples=0)
+        self.assertTrue(result.startswith("Error:"), f"Expected error, got: {result!r}")
+        self.assertIn("1..", result)
+        mock_post.assert_not_called()
+
+    def test_n_samples_too_large_returns_error(self):
+        # Line 156: n_samples=6 exceeds _MAX_N_SAMPLES=5
+        with patch("requests.post") as mock_post:
+            result = think_mod.fn("test", n_samples=6)
+        self.assertTrue(result.startswith("Error:"), f"Expected error, got: {result!r}")
+        self.assertIn("1..", result)
+        mock_post.assert_not_called()
+
+
+# ── _stream_response non-data line skip (line 78) ──────────────────────────────
+
+class TestThinkStreamNonDataLine(unittest.TestCase):
+    """Cover the `continue` branch for non-"data:"-prefixed SSE lines (line 78)."""
+
+    def setUp(self):
+        self.original_output = think_mod._output
+        think_mod._output = MagicMock()
+
+    def tearDown(self):
+        think_mod._output = self.original_output
+
+    @patch("tools.think._get_base_url")
+    @patch("requests.post")
+    def test_non_data_line_skipped(self, mock_post, mock_url):
+        # SSE comment lines (": ...") and event lines must be skipped; only data lines count
+        mock_url.return_value = "http://127.0.0.1:8080"
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+        mock_response.iter_lines.return_value = [
+            b": this is a comment",           # non-data line — triggers line 78 continue
+            b"event: message",                 # non-data line — triggers line 78 continue
+            b'data: {"choices": [{"delta": {"content": "ok"}}]}',
+            b"data: [DONE]",
+        ]
+        mock_post.return_value = mock_response
+        result = think_mod.fn("test prompt", depth="brief")
+        self.assertEqual(result, "ok")
+
+
+# ── self-consistency path (lines 191–239) ─────────────────────────────────────
+
+class TestThinkSelfConsistency(unittest.TestCase):
+    """Cover the n_samples > 1 self-consistency execution path."""
+
+    def setUp(self):
+        self.original_output = think_mod._output
+        think_mod._output = MagicMock()
+
+    def tearDown(self):
+        think_mod._output = self.original_output
+
+    def test_n_samples_2_happy_path_returns_consensus(self):
+        # Lines 191–239 main path: two samples succeed, consensus call returns answer
+        with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"), \
+             patch("tools.think._single_call", side_effect=[
+                 ("answer A", None),    # sample 1
+                 ("answer B", None),    # sample 2
+                 ("consensus C", None), # consensus extract
+             ]) as mock_call, \
+             patch("tools.think.check_cancelled"):
+            result = think_mod.fn("complex question", n_samples=2)
+        self.assertEqual(result, "consensus C")
+        self.assertEqual(mock_call.call_count, 3)
+
+    def test_n_samples_2_all_samples_fail_returns_error(self):
+        # Line 203–204: all samples fail → "all self-consistency samples failed"
+        with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"), \
+             patch("tools.think._single_call", side_effect=[
+                 ("", "server error"),  # sample 1 fails
+                 ("", "timeout"),       # sample 2 fails
+             ]), \
+             patch("tools.think.check_cancelled"):
+            result = think_mod.fn("complex question", n_samples=2)
+        self.assertIn("all self-consistency samples failed", result)
+
+    def test_n_samples_2_one_sample_fails_returns_single_answer(self):
+        # Lines 205–207: only one sample succeeds → return it directly (no consensus)
+        with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"), \
+             patch("tools.think._single_call", side_effect=[
+                 ("", "error"),         # sample 1 fails
+                 ("lone answer", None), # sample 2 succeeds
+             ]) as mock_call, \
+             patch("tools.think.check_cancelled"):
+            result = think_mod.fn("complex question", n_samples=2)
+        self.assertEqual(result, "lone answer")
+        # Only 2 calls (no consensus extract needed)
+        self.assertEqual(mock_call.call_count, 2)
+
+    def test_n_samples_2_consensus_fails_returns_fallback(self):
+        # Lines 231–234: consensus-extract call fails → fallback concatenation
+        with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"), \
+             patch("tools.think._single_call", side_effect=[
+                 ("answer A", None),           # sample 1 succeeds
+                 ("answer B", None),           # sample 2 succeeds
+                 ("", "consensus-extract err"),# consensus fails
+             ]), \
+             patch("tools.think.check_cancelled"):
+            result = think_mod.fn("complex question", n_samples=2)
+        self.assertIn("Consensus-extract failed", result)
+        self.assertIn("answer A", result)
+        self.assertIn("answer B", result)
+
+    def test_n_samples_2_empty_consensus_returns_error(self):
+        # Line 239: consensus call succeeds but returns empty string
+        with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"), \
+             patch("tools.think._single_call", side_effect=[
+                 ("answer A", None),   # sample 1
+                 ("answer B", None),   # sample 2
+                 ("", None),           # consensus returns empty
+             ]), \
+             patch("tools.think.check_cancelled"):
+            result = think_mod.fn("complex question", n_samples=2)
+        self.assertEqual(result, "Error: empty consensus response")
+
+
 if __name__ == "__main__":
     unittest.main()
