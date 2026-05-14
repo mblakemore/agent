@@ -272,6 +272,14 @@ _DEFAULT_CONFIG = {
     "bedrock": {
         "adaptive_max_tokens": True,
     },
+    "preferences": {
+        # T5.14 Option B — when true, the framework prepends a system-prompt
+        # directive recommending file(action='edit') over heredoc rewrites
+        # for existing-file modifications. Off by default so existing agents
+        # with rich AGENT.md aren't double-nudged. Operator turns on per
+        # agent when they want stronger tool-selection guidance.
+        "tool_selection_hints": False,
+    },
 }
 
 
