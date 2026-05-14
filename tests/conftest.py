@@ -18,7 +18,10 @@ cwd.  Most test_find_symbol.py tests use tempfile.mkdtemp() which lives under /t
 so we set cwd=/tmp for those tests.  TestFindSymbolPathConfinement tests the
 confinement boundary itself and needs cwd=/droid/repos/agent so relative happy-path
 lookups (path='.', path='tools/find_symbol.py') work correctly.  Classes that search
-real repo files (AC1–AC4, etc.) use _REPO_ROOT paths and run with the default cwd.
+real repo files (AC1–AC4, etc.) chdir to the resolved repo root so their absolute
+_REPO_ROOT / _AGENT_PY lookups satisfy path confinement when pytest is invoked from
+a linked worktree (#1013, where CICD builders run pytest from
+WORKTREE_ROOT/NNN-slug, a sibling of _REPO_ROOT rather than an ancestor).
 
 search_files path confinement (#863): search_files now refuses to search paths outside
 cwd.  Most test_search_files.py tests use tempfile.TemporaryDirectory() which lives
@@ -34,11 +37,35 @@ test_search_files.py cwd routing.
 """
 
 import os
+import subprocess
 import tempfile
+from pathlib import Path
 from unittest.mock import patch
 import pytest
 
 _AGENT_REPO = "/droid/repos/agent"
+
+
+def _resolve_repo_root() -> str:
+    """Return the absolute path of the main repo root.
+
+    Computed via ``git rev-parse --path-format=absolute --git-common-dir`` so
+    it resolves to the **main** repo path even when pytest is invoked from a
+    linked worktree (where ``--show-toplevel`` would return the worktree path
+    instead). Matches the resolution used by ``tests/test_find_symbol.py``'s
+    ``_REPO_ROOT``, so chdir'ing here makes the test file's absolute
+    ``_REPO_ROOT`` / ``_AGENT_PY`` paths satisfy ``find_symbol``'s
+    path-confinement check (#856).
+    """
+    common = subprocess.check_output(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=Path(__file__).parent,
+        text=True,
+    ).strip()
+    return str(Path(common).parent)
+
+
+_REPO_ROOT = _resolve_repo_root()
 
 # test_find_symbol classes that search real repo paths (agent.py, etc.) — these
 # must run with cwd = repo root so their _REPO_ROOT / _AGENT_PY paths are inside cwd.
@@ -117,8 +144,18 @@ def find_symbol_cwd(request):
         finally:
             os.chdir(orig)
     elif cls_name in _FIND_SYMBOL_REPO_PATH_CLASSES or cls_name is None:
-        # No cwd change — default cwd contains the repo paths used in these tests.
-        yield
+        # cwd = main repo root, so the test's absolute _REPO_ROOT / _AGENT_PY
+        # paths satisfy find_symbol's path-confinement check (#856). Without
+        # this chdir, pytest invoked from a linked worktree (CICD's typical
+        # invocation) has cwd that is a *sibling* of _REPO_ROOT, not an
+        # ancestor — every AC2/AC3/AC4 lookup is rejected before _is_excluded
+        # (#1013) is reached.
+        orig = os.getcwd()
+        os.chdir(_REPO_ROOT)
+        try:
+            yield
+        finally:
+            os.chdir(orig)
     else:
         # tempdir-using tests: set cwd=/tmp so /tmp/... paths are inside cwd.
         orig = os.getcwd()
