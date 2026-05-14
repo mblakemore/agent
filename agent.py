@@ -67,7 +67,7 @@ import threading
 import time
 import telemetry
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from cancel import cancellable, check_cancelled, CancelledError
@@ -1023,7 +1023,118 @@ class _ReasoningRenderer:
         self._write(theme.c(theme.VIOLET, "\n[/Reasoning]\n", bold=True))
 
 
-_FILE_ACTIONS = {"read", "write", "insert", "append", "delete", "list"}
+_FILE_ACTIONS = {"read", "write", "insert", "append", "delete", "list", "edit"}
+
+
+# Harmony/ChatML/Llama-style control tokens that leak from model output into
+# tool args when sampling goes wrong (typically under context pressure with a
+# fragile chat template). Observed in c0rtana C22 — both full `<|tool_call|>`
+# form and partial variants like `<tool_call|>`, `<|channel>`, `<|tool_call>`.
+# Letting these dispatch is dangerous: c0rtana's `file({path: "...<|tool_call|>..."})`
+# wrote a file with the tokens in its NAME, git committed it, and every cycle
+# since re-injects the tokens into context via `ls` (self-amplifying poison).
+_HARMONY_TOKEN_RE = re.compile(
+    r'<\|?(?:tool_call|channel|im_start|im_end|im_sep|message|return'
+    r'|end_of_turn|start_of_turn|reasoning|analysis|final|commentary|thought)\|?>',
+    re.IGNORECASE,
+)
+
+
+# Read-only exec_command prefixes safe to dedup (no side effects, no network,
+# no wall-clock dependency). Conservative — anything not on this list is
+# treated as side-effectful and dispatched normally.
+_READONLY_CMD_RE = re.compile(
+    r'^\s*(?:cd\s+\S+\s*&&\s*)?'  # tolerate a `cd X && ` prefix
+    r'(?:cat|ls|head|tail|grep|find|wc|pwd|stat|which|file\b|du|df|tree|sort'
+    r'|git\s+(?:status|log|diff|show|remote|branch|describe|rev-parse|ls-files|ls-remote|config\s+--get)'
+    r'|gh\s+(?:pr|issue|repo|api)\s+(?:view|list|status))',
+    re.IGNORECASE,
+)
+
+
+def _is_dedupable_call(func_name, func_args):
+    """Return True if this tool call is safe to dedup. Pure-read tools that
+    don't touch network/wallclock/external state and whose result doesn't
+    meaningfully change turn-over-turn within the dedup window.
+
+    NEVER dedup writes — the agent might be legitimately retrying after an
+    error with corrected args, and we don't want to mask that.
+    """
+    if func_name in ("sleep", "subagent", "web_fetch", "read_pdf"):
+        return False  # network or wall-clock dependent
+    if func_name == "think":
+        return False  # `think` is opaque enough to let through; loop-detector
+                      # at batch level catches think-spirals
+    if func_name == "file":
+        action = (func_args or {}).get("action", "")
+        return action in ("read", "list")  # writes/edits are legit-retryable
+    if func_name in ("find_symbol", "search_files"):
+        return True
+    if func_name == "task_tracker":
+        return (func_args or {}).get("action") == "list"
+    if func_name == "exec_command":
+        cmd = (func_args or {}).get("command", "")
+        if not _READONLY_CMD_RE.match(cmd):
+            return False
+        # Even read-prefixed commands can write via redirect (`cat > f`, `git
+        # log > out.txt`, `tee`). Reject if any unquoted `>` / `>>` / `|tee`
+        # appears outside of obviously-safe `2>&1` / `2>/dev/null` patterns.
+        cmd_no_stderr = re.sub(r'2>\S+|2>&\d+', '', cmd)
+        if re.search(r'(?<!\\)>(?!=)|\btee\b', cmd_no_stderr):
+            return False
+        return True
+    return False  # default: do not dedup unknown tools
+
+
+def _extract_write_target(func_name, func_args):
+    """Return the path being written by a tool call, or None.
+
+    Used by the write-loop detector to track repeated writes to the same
+    file across turns. Covers `file` mutating actions + `exec_command`
+    redirections (delegated to tools.exec_command._extract_write_target).
+    """
+    if not isinstance(func_args, dict):
+        return None
+    if func_name == "file":
+        action = func_args.get("action", "")
+        if action in ("write", "insert", "append", "delete", "edit"):
+            return func_args.get("path")
+    if func_name == "exec_command":
+        cmd = func_args.get("command", "")
+        if not cmd:
+            return None
+        try:
+            from tools.exec_command import _extract_write_target as _ext_xc
+            return _ext_xc(cmd)
+        except Exception:
+            return None
+    return None
+
+
+def _detect_harmony_token(args):
+    """Walk tool args recursively. Return (key_path, matched_token) on the first
+    Harmony control-token hit, or None if clean. Strings, lists, and nested
+    dicts are all scanned."""
+    if isinstance(args, str):
+        m = _HARMONY_TOKEN_RE.search(args)
+        if m:
+            return ("", m.group(0))
+        return None
+    if isinstance(args, dict):
+        for k, v in args.items():
+            r = _detect_harmony_token(v)
+            if r:
+                sub = r[0]
+                return (f"{k}.{sub}" if sub else k, r[1])
+        return None
+    if isinstance(args, list):
+        for i, v in enumerate(args):
+            r = _detect_harmony_token(v)
+            if r:
+                sub = r[0]
+                return (f"[{i}].{sub}" if sub else f"[{i}]", r[1])
+        return None
+    return None
 
 
 def _sanitize_tool_args(func_name, args, log):
@@ -2723,6 +2834,27 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _RESULT_LOOP_WINDOW = 8
     _RESULT_LOOP_THRESHOLD = 3
 
+    # Per-call dedup cache. Maps (func_name, args_md5) → {
+    #   "call_idx": int, "summary": str (first 80 chars), "tokens": int
+    # }. On exact-duplicate call within _DEDUP_WINDOW calls, return a synthetic
+    # tool result and skip dispatch — saves 30-40% of token budget per long
+    # cycle (c0rtana audit #2: `cat focus.json` x3, `git log -5` x5 in one
+    # session, lyla C11 Orphan Paradox audit-rewrite-audit loop). Only applied
+    # to tools that are SAFE to dedup (pure reads, no network/wallclock); see
+    # _is_dedupable_call() for the policy.
+    _call_dedup_cache = {}
+    _DEDUP_WINDOW = 8
+    _call_idx_counter = 0  # monotonic per-tool-call counter
+
+    # Per-path write tracker for the write-loop detector. Each entry maps
+    # `target_path` → list of call_idx values where it was written. On 3rd+
+    # write within _WRITE_LOOP_WINDOW, append a system reminder to that
+    # turn's tool result. Lyla C11's canonical loop: 3 write-audit-rewrite
+    # passes on state/memories/context.json in one cycle.
+    _write_path_history = {}
+    _WRITE_LOOP_WINDOW = 8
+    _WRITE_LOOP_THRESHOLD = 3
+
     # CICD phase tracking — module-level globals so _build_context_message()
     # can inject them into every context window, surviving summary compression.
     global _cicd_phase_state, _cicd_issue_number, _cicd_pr_number, _cicd_branch, _cicd_edited_files, _cicd_worktree_path
@@ -2837,11 +2969,23 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             log.info("--- Turn %d/%d | sending %d messages (history has %d total)",
                      turn, _MAX_TURNS, len(messages_to_send), len(conversation_history))
 
+            # Per-turn time-of-now injection. Prepended as a system message to
+            # the OUTGOING REQUEST only (not the persistent messages_to_send
+            # buffer, so overflow-recovery's message-count logic sees the same
+            # count as before this patch). Fixes lyla's hallucinated
+            # "2025-05-22T10:00:00Z" anchors — the framework owns the clock,
+            # the model owns the work.
+            _now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            _outgoing_messages = [
+                {"role": "system",
+                 "content": f"Current time (UTC, ISO8601): {_now_iso}"}
+            ] + messages_to_send
+
             # Call the model (streaming).
             # Plan task 1.5: model comes from the main backend.
             request_body = {
                 "model": _main_backend.model or _config["llm"]["model"],
-                "messages": messages_to_send,
+                "messages": _outgoing_messages,
                 "temperature": temperature,
                 "top_p": top_p,
                 "top_k": top_k,
@@ -3354,6 +3498,36 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         _garbled_count += 1
                         continue
 
+                    # Reject any tool call whose args contain Harmony/ChatML
+                    # control tokens (<|tool_call|>, <|channel|>, etc. — including
+                    # the partial-pipe variants like <tool_call|> and <|channel>).
+                    # These leak from model output under context pressure and have
+                    # caused self-amplifying state corruption (c0rtana C22: tokens
+                    # leaked into file path → file written with tokens in NAME →
+                    # git-committed → every cycle's `ls` re-injects them). Surface
+                    # as a tool-error so the model self-corrects; do NOT dispatch.
+                    _harmony_hit = _detect_harmony_token(func_args)
+                    if _harmony_hit:
+                        key_path, token = _harmony_hit
+                        log.warning(
+                            "Rejecting %s call: chat-template token %r in arg %r",
+                            func_name, token, key_path or "(top-level)",
+                        )
+                        telemetry.record_tool_call(func_name + ":rejected_harmony_token")
+                        _garbled_count += 1
+                        conversation_history.append({
+                            "role": "tool", "tool_call_id": tool_id,
+                            "name": func_name,
+                            "content": (
+                                f"Error: tool call rejected — chat-template control token "
+                                f"{token!r} appeared in arg {key_path or '(top-level)'}. "
+                                f"This indicates your output was garbled by chat-scaffolding "
+                                f"leaking into the JSON. Retry the tool call without those "
+                                f"tokens (and never use them in path, content, or command args)."
+                            ),
+                        })
+                        continue
+
                     # Validate required fields — catch cases where sanitizer
                     # extracted the action but lost required params (empty garble)
                     if func_name == "file" and isinstance(func_args, dict):
@@ -3374,6 +3548,45 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
                     log.debug("TOOL CALL: %s(%s) [id=%s]", func_name, json.dumps(func_args), tool_id)
                     telemetry.record_tool_call(func_name)
+
+                    # Per-call dedup: if this exact (tool_name, args) was dispatched
+                    # within the last _DEDUP_WINDOW calls AND the tool is safe to
+                    # dedup (pure reads — see _is_dedupable_call), short-circuit
+                    # with a synthetic result. Massive token-budget savings on the
+                    # PERCEIVE-boilerplate pattern both c0rtana and lyla audits
+                    # flagged as the #1 friction source.
+                    _call_idx_counter += 1
+                    _dedup_sig = None
+                    if _is_dedupable_call(func_name, func_args):
+                        try:
+                            _args_md5 = hashlib.md5(
+                                json.dumps(func_args, sort_keys=True, default=str).encode()
+                            ).hexdigest()
+                        except Exception:
+                            _args_md5 = None
+                        if _args_md5 is not None:
+                            _dedup_sig = (func_name, _args_md5)
+                            _cached = _call_dedup_cache.get(_dedup_sig)
+                            if _cached is not None and (_call_idx_counter - _cached["call_idx"]) <= _DEDUP_WINDOW:
+                                _gap = _call_idx_counter - _cached["call_idx"]
+                                _synthetic = (
+                                    f"[deduped: identical {func_name} call was issued {_gap} "
+                                    f"tool-call(s) ago — result was ~{_cached['tokens']} tokens, "
+                                    f"starting with: {_cached['summary']!r}. If state may have "
+                                    f"changed since, vary the arguments meaningfully and retry; "
+                                    f"otherwise act on the cached result.]"
+                                )
+                                conversation_history.append({
+                                    "role": "tool", "tool_call_id": tool_id,
+                                    "name": func_name,
+                                    "content": _synthetic,
+                                })
+                                log.info(
+                                    "Deduped %s call (last issued %d calls ago, sig %s)",
+                                    func_name, _gap, _args_md5[:8],
+                                )
+                                telemetry.record_tool_call(func_name + ":deduped")
+                                continue
 
                     # Track think tool usage for CICD phase-gate enforcement
                     if func_name == "think":
@@ -3463,6 +3676,58 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             + f"\n\n... [{len(result_str) - _MAX_TOOL_RESULT_CHARS} chars truncated] ...\n\n"
                             + result_str[-half:]
                         )
+
+                    # Store in dedup cache if this call was eligible (see
+                    # _is_dedupable_call). The synthetic result returned by a
+                    # later duplicate references this entry's `call_idx` and
+                    # summary; storing after truncation keeps the summary
+                    # consistent with what the model originally saw.
+                    if _dedup_sig is not None:
+                        _call_dedup_cache[_dedup_sig] = {
+                            "call_idx": _call_idx_counter,
+                            "summary": result_str[:80].replace("\n", " "),
+                            "tokens": max(1, len(result_str) // 4),
+                        }
+                        # Prune entries older than the window so the cache
+                        # doesn't grow without bound across long sessions.
+                        if len(_call_dedup_cache) > 256:
+                            _stale = [k for k, v in _call_dedup_cache.items()
+                                      if (_call_idx_counter - v["call_idx"]) > _DEDUP_WINDOW * 4]
+                            for k in _stale:
+                                _call_dedup_cache.pop(k, None)
+
+                    # Write-loop detector: if this tool wrote to a path that
+                    # we've already written 2+ times in the recent window,
+                    # append a system reminder to the tool result so the model
+                    # sees the pattern. Lyla C11 ("The Orphan Paradox") canonical
+                    # signature: 3 write-audit-rewrite passes on context.json
+                    # in one cycle because the model's mental model of the
+                    # audit tool was wrong. Framework-side detection makes the
+                    # loop visible without relying on model self-noticing.
+                    _write_target = _extract_write_target(func_name, func_args)
+                    if _write_target:
+                        _hist = _write_path_history.setdefault(_write_target, [])
+                        _hist.append(_call_idx_counter)
+                        # Prune outside window
+                        _write_path_history[_write_target] = [
+                            t for t in _hist if (_call_idx_counter - t) <= _WRITE_LOOP_WINDOW
+                        ]
+                        _n_writes = len(_write_path_history[_write_target])
+                        if _n_writes >= _WRITE_LOOP_THRESHOLD:
+                            result_str = result_str + (
+                                f"\n\n[write-loop-detector] You have written to {_write_target!r} "
+                                f"{_n_writes} times in the last {_WRITE_LOOP_WINDOW} tool calls. "
+                                f"If your incremental edits are being clobbered by full rewrites, "
+                                f"use file(action='edit', ...) to apply a surgical change instead "
+                                f"of rewriting the whole file. If you've genuinely needed this many "
+                                f"writes, ignore this note — but consider whether your mental model "
+                                f"of the file's state matches what's actually on disk."
+                            )
+                            log.info(
+                                "Write-loop detector tripped: %s written %d times in last %d calls",
+                                _write_target, _n_writes, _WRITE_LOOP_WINDOW,
+                            )
+                            telemetry.record_tool_call(func_name + ":write_loop")
 
                     conversation_history.append({
                         "role": "tool",
