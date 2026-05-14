@@ -172,3 +172,65 @@ def test_pr_edit_non_numeric_pr_number_no_verify():
         )
     assert rc == 0
     assert mock_run.call_count == 1
+
+
+def test_parse_pr_edit_body_returns_none_when_body_has_no_value():
+    # Lines 33-35 execute when `--body` is the last token in args (no value follows).
+    # `_parse_pr_edit_body` must return (None, None) so the wrapper falls through
+    # to the lenient deprecation path instead of raising IndexError.
+    edit_result = MagicMock(
+        returncode=1,
+        stdout="",
+        stderr=f"{tools.gh_wrapper.DEPRECATION_WARNING}\n",
+    )
+    with patch("subprocess.run", side_effect=[edit_result]) as mock_run:
+        rc, _, _ = tools.gh_wrapper.run_gh(["pr", "edit", "1234", "--body"])
+    # Fell through to lenient deprecation path: exit 0, no verify call.
+    assert rc == 0
+    assert mock_run.call_count == 1
+
+
+def test_verify_returns_false_when_verify_read_fails_without_deprecation():
+    # Line 56 executes when the verify `gh pr view` returns exit != 0 with stderr
+    # that does NOT contain the deprecation warning — a real verify-read error.
+    # End-to-end the wrapper must surface exit=1 with "post-write verification FAILED".
+    edit_result = MagicMock(
+        returncode=1,
+        stdout="",
+        stderr=f"GraphQL: {tools.gh_wrapper.DEPRECATION_WARNING} ... (projectCards)\n",
+    )
+    # Verify read fails with an unrelated error (not the deprecation warning).
+    verify_result = MagicMock(
+        returncode=1, stdout="", stderr="Error: Could not resolve to a PullRequest\n"
+    )
+
+    with patch("subprocess.run", side_effect=[edit_result, verify_result]):
+        rc, _, err = tools.gh_wrapper.run_gh(
+            ["pr", "edit", "1234", "--body", "new content"]
+        )
+
+    assert rc == 1, (rc, err)
+    assert "post-write verification FAILED" in err
+
+
+def test_run_gh_returns_error_when_gh_binary_missing():
+    # Lines 100-101 execute when `subprocess.run` raises FileNotFoundError
+    # (the `gh` CLI is not installed / not in $PATH).
+    with patch("subprocess.run", side_effect=FileNotFoundError("gh not found")):
+        rc, out, err = tools.gh_wrapper.run_gh(["pr", "view", "1"])
+
+    assert rc == 1
+    assert out == ""
+    assert "'gh' CLI not found in PATH" in err
+
+
+def test_run_gh_returns_error_on_unexpected_subprocess_exception():
+    # Lines 102-103 execute when `subprocess.run` raises any exception other
+    # than FileNotFoundError (e.g. PermissionError, OSError).
+    with patch("subprocess.run", side_effect=PermissionError("denied")):
+        rc, out, err = tools.gh_wrapper.run_gh(["pr", "view", "1"])
+
+    assert rc == 1
+    assert out == ""
+    assert "Unexpected error:" in err
+    assert "denied" in err
