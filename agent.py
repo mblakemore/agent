@@ -1407,8 +1407,9 @@ def _sanitize_tool_args(func_name, args, log):
     if func_name != "file" or not isinstance(args, dict):
         return args
 
-    # Check if any string value contains the **,key: pattern OR escape-token leakage
-    _GARBLE_PAT = re.compile(r'\*\*,\s*(\w+):')
+    # Check if any string value contains the **,key: or `,key: pattern OR escape-token leakage.
+    # Gemma 4 uses ** or a backtick as the delimiter before embedded key:value pairs.
+    _GARBLE_PAT = re.compile(r'(?:\*\*|`),\s*(\w+):')
     _ESCAPE_TOKEN = re.compile(r'<\|"\|>|»')  # <|"|> or »
     needs_fix = False
     for v in args.values():
@@ -1430,10 +1431,10 @@ def _sanitize_tool_args(func_name, args, log):
         if not isinstance(val, str):
             extracted[key] = val
             continue
-        # Split on **,key: boundaries to extract embedded params
+        # Split on **,key: or `,key: boundaries to extract embedded params
         parts = _GARBLE_PAT.split(val)
         # parts[0] is the clean prefix of this field's value
-        clean_val = parts[0].rstrip('*').strip()
+        clean_val = parts[0].rstrip('*`').strip()
         # Strip Gemma 4 escape-token artifacts: <|"|>, », surrounding quotes/backticks
         clean_val = _ESCAPE_TOKEN.sub('', clean_val).strip("'\"`")
         if clean_val:
