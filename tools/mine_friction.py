@@ -354,7 +354,16 @@ def detect_d01(turns: list[Turn], source: str) -> list[FrictionEvent]:
     return events
 
 
-HEREDOC_RE = re.compile(r"cat\s+(?:>>|>)\s+\S+\s+<<\s*['\"]?EOF")
+# Matches both heredoc forms:
+#   cat > file <<EOF  (output-redirect-first)
+#   cat <<EOF > file  (stdin-first — what lyla/cortana commonly use)
+HEREDOC_RE = re.compile(
+    r"cat\s+(?:>>|>)\s+\S+\s+<<\s*['\"]?EOF"   # cat >|>> file <<EOF
+    r"|cat\s+<<\s*['\"]?EOF['\"]?\s+(?:>>|>)"   # cat <<EOF >|>> file
+)
+# Path extraction — try output-redirect-first form, then stdin-first form
+_HEREDOC_PATH_RE1 = re.compile(r"cat\s+(?:>>|>)\s+(\S+)\s+<<")
+_HEREDOC_PATH_RE2 = re.compile(r"cat\s+<<[^>]+(?:>>|>)\s+(\S+)")
 
 def detect_h01(turns: list[Turn], source: str) -> list[FrictionEvent]:
     """H.01: exec_command heredoc write (should use file tool instead)."""
@@ -365,8 +374,8 @@ def detect_h01(turns: list[Turn], source: str) -> list[FrictionEvent]:
         cmd = t.args.get("command", "")
         if not HEREDOC_RE.search(cmd):
             continue
-        # Extract target path from the heredoc command
-        pm = re.search(r"cat\s+(?:>>|>)\s+(\S+)\s+<<", cmd)
+        # Extract target path — try both heredoc orderings
+        pm = _HEREDOC_PATH_RE1.search(cmd) or _HEREDOC_PATH_RE2.search(cmd)
         fp = pm.group(1) if pm else "unknown"
         action = "append" if ">>" in cmd else "write"
         ideal = _tc_json("file", {
