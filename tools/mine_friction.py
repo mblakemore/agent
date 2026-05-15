@@ -448,7 +448,7 @@ def event_to_example(event: FrictionEvent) -> dict:
             "content": [{"type": "text", "text": _tc_json(c.func, c.args or {})}],
         })
         convo.append({
-            "role": "tool",
+            "role": "user",  # Gemma 4 chat template has no 'tool' role; tool results come back as user turns
             "content": [{"type": "text", "text": (c.result or "")[:500]}],
         })
 
