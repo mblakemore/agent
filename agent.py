@@ -1399,16 +1399,20 @@ def _sanitize_tool_args(func_name, args, log):
     Gemma 4 concatenates **,key:value into field values, e.g.:
       {"action": "write**,content:some text"}
       {"action": "write", "path": "foo.json**,start_line:1", "end_line": 14}
+    Also catches Gemma 4 escape-token leakage: <|"|> or its decoded form »
+    appearing inside string values when the native tool-call JSON encoding
+    breaks on complex arguments (e.g. old_string/new_string with inner quotes).
     This extracts embedded params from ALL string fields.
     """
     if func_name != "file" or not isinstance(args, dict):
         return args
 
-    # Check if any string value contains the **,key: pattern
+    # Check if any string value contains the **,key: pattern OR escape-token leakage
     _GARBLE_PAT = re.compile(r'\*\*,(\w+):')
+    _ESCAPE_TOKEN = re.compile(r'<\|"\|>|»')  # <|"|> or »
     needs_fix = False
     for v in args.values():
-        if isinstance(v, str) and _GARBLE_PAT.search(v):
+        if isinstance(v, str) and (_GARBLE_PAT.search(v) or _ESCAPE_TOKEN.search(v)):
             needs_fix = True
             break
 
@@ -1430,12 +1434,15 @@ def _sanitize_tool_args(func_name, args, log):
         parts = _GARBLE_PAT.split(val)
         # parts[0] is the clean prefix of this field's value
         clean_val = parts[0].rstrip('*').strip()
+        # Strip Gemma 4 escape-token artifacts: <|"|>, », and surrounding quotes
+        clean_val = _ESCAPE_TOKEN.sub('', clean_val).strip("'\"")
         if clean_val:
             clean_vals[key] = clean_val
         # Remaining parts alternate: key_name, value_before_next_split
         for i in range(1, len(parts) - 1, 2):
             embed_key = parts[i]
             embed_val = parts[i + 1].rstrip('*').strip() if i + 1 < len(parts) else ""
+            embed_val = _ESCAPE_TOKEN.sub('', embed_val).strip("'\"")
             if embed_val:
                 # Try to parse integers for line numbers
                 if embed_key in ("start_line", "end_line"):
@@ -1482,8 +1489,9 @@ def _salvage_tool_args(func_name, raw_args, log):
     Returns a dict on success, None if unsalvageable.
     """
     try:
-        # Strip Gemma 4 special tokens that leak into args
-        cleaned = raw_args.replace('<|"|>', '"').replace('<|', '').replace('|>', '')
+        # Strip Gemma 4 thinking blocks and special tokens that leak into args
+        cleaned = re.sub(r'<\|channel>.*?<channel\|>', '', raw_args, flags=re.DOTALL)
+        cleaned = cleaned.replace('»', '"').replace('<|"|>', '"').replace('<|', '').replace('|>', '')
         # Try parsing again after cleanup
         try:
             return json.loads(cleaned)
@@ -2693,6 +2701,19 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         _main_backend.kind, _main_backend.model, _main_backend.base_url,
         _summary_backend.kind, _summary_backend.model, _summary_backend.base_url,
     )
+
+    # Warn if the main llamacpp backend's chat template doesn't support tool calls.
+    # Symptom: Gemma 4 native <|tool_call> tokens appear as content text, get stripped
+    # by HARMONY filter, and no tools ever fire. Fix: --chat-template-file interleaved.jinja
+    if getattr(_main_backend, 'kind', '') == 'llamacpp':
+        caps = _main_backend.check_tool_caps()
+        if caps and not caps.get('supports_tool_calls', True):
+            log.warning(
+                "TOOL CALLS DISABLED: main backend chat template does not support tool calls "
+                "(chat_template_caps.supports_tool_calls=false). Tools will not execute. "
+                "Add --chat-template-file models/templates/google-gemma-4-31B-it-interleaved.jinja "
+                "to your llama-server launch command."
+            )
 
     # Auto-detect context size from the main backend. Apply 85% buffer,
     # then hard-cap at 85K to avoid llama_decode crashes.

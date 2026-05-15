@@ -200,6 +200,16 @@ class LlamacppBackend:
         except (requests.RequestException, ValueError, KeyError):
             return []
 
+    def check_tool_caps(self, timeout: int = 3) -> dict:
+        """Query ``/props`` for ``chat_template_caps``. Returns ``{}`` on failure or non-llamacpp servers."""
+        try:
+            resp = requests.get(f"{self.base_url}/props", timeout=timeout)
+            if resp.status_code == 200:
+                return resp.json().get("chat_template_caps", {})
+        except (requests.RequestException, ValueError, KeyError):
+            pass
+        return {}
+
     # ── Main-path: streaming chat ──
 
     def stream_chat(
