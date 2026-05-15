@@ -20,6 +20,53 @@ A local, tool-driven coding assistant that talks to an OpenAI-compatible LLM end
    python agent.py "fix the failing test in tests/test_parser.py"
    ```
 
+## Recommended local model — Gemma 4 31B
+
+The agent was built and tuned against **Gemma 4 31B** served via `llama-server`. A fine-tuned variant is available on Hugging Face that reduces common tool-use friction patterns (over-writing existing files instead of editing, bash heredoc writes instead of `file()` calls, redundant re-reads):
+
+**[mblakemore/gemma-4-31B-agent-friction-phase2](https://huggingface.co/mblakemore/gemma-4-31B-agent-friction-phase2)**
+
+### Serving (llama.cpp)
+
+```bash
+# Download and quantize (one-time)
+hf download mblakemore/gemma-4-31B-agent-friction-phase2 --local-dir /your/path/phase2-merged
+python3 llama.cpp/convert_hf_to_gguf.py /your/path/phase2-merged --outtype bf16
+llama.cpp/build/bin/llama-quantize phase2-merged/...BF16.gguf phase2.Q4_K_M.gguf Q4_K_M
+
+# Serve
+export HIP_VISIBLE_DEVICES=0   # ROCm only — prevents segfault on Gemma 4 SWA
+llama-server \
+  -m phase2.Q4_K_M.gguf \
+  --chat-template-file llama.cpp/models/templates/google-gemma-4-31B-it-interleaved.jinja \
+  --port 8080 --parallel 1 --flash-attn on
+```
+
+### Critical: `--chat-template-file`
+
+Gemma 4's built-in GGUF chat template has **no tool-call support**. Without the interleaved Jinja template:
+
+- `llama-server` cannot inject tool definitions into the prompt.
+- The model's native `<|tool_call>...<tool_call|>` tokens come through as plain text in `delta.content`.
+- The agent's safety filter strips them and **no tools ever execute**.
+
+The correct template ships with `llama.cpp` at `models/templates/google-gemma-4-31B-it-interleaved.jinja`. The agent will log a `TOOL CALLS DISABLED` warning at startup if `chat_template_caps.supports_tool_calls` is false — that warning means this flag is missing.
+
+### Summary model
+
+For context summarization (port 8082) the smaller **Gemma 4 E4B** works well:
+
+```bash
+llama-server -hf unsloth/gemma-4-E4B-it-GGUF:Q8_0 \
+  --n-gpu-layers 0 --port 8082 --parallel 1
+```
+
+The summary path uses a plain-text completion call, so `--chat-template-file` is not required for the summarizer.
+
+### Base model alternative
+
+The untuned base model also works (`unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL`); it just produces the friction patterns more often. The `--chat-template-file` requirement applies equally to the base model.
+
 ## CLI
 
 ```
