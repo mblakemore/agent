@@ -71,8 +71,12 @@ def test_tool_validation_missing_path_v2(mock_config, mock_llm, mock_emit):
     
     # On retry, the agent resets the turn. The second request should not contain the garbled tool call.
     messages = get_messages_from_call(mock_llm.call_args_list[1])
-    # History should just be the initial prompt (1 message)
-    assert len(messages) == 1, f"Expected history to be reset on retry, but found {len(messages)} messages"
+    # History should be: 1 per-turn system message + 1 user message (initial prompt).
+    # No assistant tool-call or tool-result messages from the failed turn.
+    non_system = [m for m in messages if m.get("role") != "system"]
+    assert len(non_system) == 1, f"Expected only the initial prompt on retry, but found {len(non_system)} non-system messages"
+    has_tool_call = any(m.get("role") == "assistant" and m.get("tool_calls") for m in messages)
+    assert not has_tool_call, "Garbled tool call should have been removed from history on retry"
 
 @patch('agent._emit')
 @patch('agent._llm_request')

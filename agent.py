@@ -1408,7 +1408,7 @@ def _sanitize_tool_args(func_name, args, log):
         return args
 
     # Check if any string value contains the **,key: pattern OR escape-token leakage
-    _GARBLE_PAT = re.compile(r'\*\*,(\w+):')
+    _GARBLE_PAT = re.compile(r'\*\*,\s*(\w+):')
     _ESCAPE_TOKEN = re.compile(r'<\|"\|>|»')  # <|"|> or »
     needs_fix = False
     for v in args.values():
@@ -1434,15 +1434,17 @@ def _sanitize_tool_args(func_name, args, log):
         parts = _GARBLE_PAT.split(val)
         # parts[0] is the clean prefix of this field's value
         clean_val = parts[0].rstrip('*').strip()
-        # Strip Gemma 4 escape-token artifacts: <|"|>, », and surrounding quotes
-        clean_val = _ESCAPE_TOKEN.sub('', clean_val).strip("'\"")
+        # Strip Gemma 4 escape-token artifacts: <|"|>, », surrounding quotes/backticks
+        clean_val = _ESCAPE_TOKEN.sub('', clean_val).strip("'\"`")
         if clean_val:
             clean_vals[key] = clean_val
         # Remaining parts alternate: key_name, value_before_next_split
         for i in range(1, len(parts) - 1, 2):
             embed_key = parts[i]
             embed_val = parts[i + 1].rstrip('*').strip() if i + 1 < len(parts) else ""
-            embed_val = _ESCAPE_TOKEN.sub('', embed_val).strip("'\"")
+            # Split off trailing ", key:..." garbage (e.g. ", content:..." after a path value)
+            embed_val = re.split(r',\s*\w+:', embed_val)[0]
+            embed_val = _ESCAPE_TOKEN.sub('', embed_val).strip("'\"`")
             if embed_val:
                 # Try to parse integers for line numbers
                 if embed_key in ("start_line", "end_line"):
@@ -1505,13 +1507,13 @@ def _salvage_tool_args(func_name, raw_args, log):
                 if action in raw_args.lower():
                     result = {"action": action}
                     # Try to find path
-                    path_match = re.search(r'path["\s:]+([^\s,}"]+)', raw_args)
+                    path_match = re.search(r'path["\s:`]+([^\s,}"` ]+)', raw_args)
                     if path_match:
-                        result["path"] = path_match.group(1).strip('"\'')
+                        result["path"] = path_match.group(1).strip('"\' `')
                     # Try to find content
-                    content_match = re.search(r'content["\s:]+(.+?)(?:,\s*(?:path|start_line|end_line)|$)', raw_args, re.DOTALL)
+                    content_match = re.search(r'content["\s:`]+(.+?)(?:,\s*(?:path|start_line|end_line)|$)', raw_args, re.DOTALL)
                     if content_match:
-                        result["content"] = content_match.group(1).strip('"\'')
+                        result["content"] = content_match.group(1).strip('"\' `')
                     if "path" in result:
                         log.warning("Salvaged garbled tool args: %s → %s", raw_args[:100], result)
                         return result
