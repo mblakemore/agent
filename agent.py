@@ -3154,6 +3154,14 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _DEDUP_WINDOW = 8
     _call_idx_counter = 0  # monotonic per-tool-call counter
 
+    # Session-wide identical-call frequency for search_files / find_symbol.
+    # The dedup cache only covers _DEDUP_WINDOW=8 calls; the model can evade it
+    # by inserting other tool calls between retries.  This counter persists for
+    # the full session and fires a forced-think after _SEARCH_REPEAT_THRESHOLD
+    # real (non-deduped) dispatches of the same (func, args) pair.
+    _search_sig_counts: dict = {}   # (func_name, args_md5) → dispatch count
+    _SEARCH_REPEAT_THRESHOLD = 3
+
     # Per-path write tracker for the write-loop detector. Each entry maps
     # `target_path` → list of call_idx values where it was written. On 3rd+
     # write within _WRITE_LOOP_WINDOW, append a system reminder to that
@@ -4713,6 +4721,59 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 log.error("Failed to record cycle timestamp: %s", e)
 
                     log.debug("TOOL RESULT [%s]: %s", func_name, result_str)
+
+                    # Search/find slow-loop detector.
+                    # The dedup cache catches close-range repeats (within
+                    # _DEDUP_WINDOW calls) but the model can evade it by
+                    # inserting other tool calls between retries.  Count real
+                    # (non-deduped) dispatches of the same (func, args) and
+                    # fire a forced-think when the count hits the threshold.
+                    if func_name in ("search_files", "find_symbol") and _dedup_sig is not None:
+                        _search_sig_counts[_dedup_sig] = _search_sig_counts.get(_dedup_sig, 0) + 1
+                        _search_n = _search_sig_counts[_dedup_sig]
+                        if _search_n >= _SEARCH_REPEAT_THRESHOLD:
+                            _s_think_prompt = (
+                                f"MANDATORY REFLECTION: I have dispatched {func_name} with "
+                                f"the same arguments {_search_n} times this session "
+                                f"(the dedup cache also blocked earlier repeats).\n\n"
+                                f"Arguments: {json.dumps(func_args)}\n"
+                                f"Last result: {result_str[:200]}\n\n"
+                                f"I MUST answer:\n"
+                                f"1. Why is this search not finding what I need?\n"
+                                f"2. Have I already confirmed the answer is not here — "
+                                f"is this a dead end?\n"
+                                f"3. What DIFFERENT approach (different tool, different "
+                                f"path, or direct file read) would actually make progress?\n"
+                                f"4. Should I accept this target does not exist and move on?"
+                            )
+                            log.warning(
+                                "Search slow-loop: %s with same args dispatched %d times — forcing think",
+                                func_name, _search_n,
+                            )
+                            _emit("on_forced_think", func_name, _search_n)
+                            if "think" in MAP_FN:
+                                _s_think_result = MAP_FN["think"](prompt=_s_think_prompt)
+                                _s_think_id = f"forced_think_search_{turn}_{_search_n}"
+                                conversation_history.append({
+                                    "role": "assistant",
+                                    "content": None,
+                                    "tool_calls": [{
+                                        "id": _s_think_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": "think",
+                                            "arguments": json.dumps({"prompt": _s_think_prompt})
+                                        }
+                                    }]
+                                })
+                                conversation_history.append({
+                                    "role": "tool",
+                                    "tool_call_id": _s_think_id,
+                                    "name": "think",
+                                    "content": str(_s_think_result),
+                                })
+                            # Reset after intervention — allow one fresh attempt.
+                            _search_sig_counts[_dedup_sig] = 0
 
                     # Track repeated tool results (errors and identical results)
                     _result_sig = (func_name, result_str[:100])
