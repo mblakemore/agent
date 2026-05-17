@@ -400,6 +400,11 @@ _config = _load_config()
 # Apply configuration
 BASE_URL = _config["llm"]["base_url"]
 
+# Whitelist any extra paths the agent is allowed to access outside its working
+# directory (preferences.extra_allowed_paths in config.json).
+from tools.file import set_extra_allowed_paths as _set_extra_allowed_paths
+_set_extra_allowed_paths(_config.get("preferences", {}).get("extra_allowed_paths", []))
+
 # Backend instances (plan task 1.4). Phase 1 only wires LlamacppBackend;
 # Phase 2 adds BedrockBackend behind the same factory. Tests may monkeypatch
 # these module globals to swap backends without touching the factory.

@@ -20,6 +20,16 @@ _MAX_LIST_ENTRIES = 500
 # unread files are blocked to prevent blind overwrites.  Shared with exec_command.
 _accessed_files = set()
 
+# Extra paths the agent is allowed to access outside its working directory.
+# Populated at startup from preferences.extra_allowed_paths in config.json.
+_EXTRA_ALLOWED_PATHS: list = []
+
+
+def set_extra_allowed_paths(paths: list) -> None:
+    """Called once at agent startup to register whitelisted external paths."""
+    global _EXTRA_ALLOWED_PATHS
+    _EXTRA_ALLOWED_PATHS = [str(Path(p).resolve()) for p in paths if p]
+
 
 def _resolve_path(path):
     """Resolve path, stripping accidental cwd prefix duplications."""
@@ -181,7 +191,12 @@ def _check_write_confinement(path, p):
         return None  # let the write attempt fail naturally
     cwd_resolved = Path.cwd().resolve()
     cwd_prefix = str(cwd_resolved) + os.sep
-    if resolved != cwd_resolved and not str(resolved).startswith(cwd_prefix):
+    resolved_str = str(resolved)
+    if resolved != cwd_resolved and not resolved_str.startswith(cwd_prefix):
+        # Check whitelisted extra paths (preferences.extra_allowed_paths in config.json)
+        for allowed in _EXTRA_ALLOWED_PATHS:
+            if resolved_str == allowed or resolved_str.startswith(allowed + os.sep):
+                return None
         return (
             f"Error: path '{path}' resolves to '{resolved}' which is outside "
             f"the working directory '{cwd_resolved}'. "
