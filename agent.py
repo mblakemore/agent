@@ -3798,6 +3798,28 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             # Leaving hallucinated content in history poisons subsequent turns —
             # the model builds on its fabricated answer instead of using tools.
             if _consecutive_text_only == 1:
+                # Q.01 guard: if the response contains 2+ fenced code blocks, the
+                # model wrote bash/python in text instead of calling tools ("plan-
+                # in-text").  Stripping silently causes another identical wall on
+                # retry; instead keep the message and inject a targeted correction.
+                _q01_code_blocks = len(re.findall(r'```', full_content)) // 2
+                if _q01_code_blocks >= 2:
+                    nudge = (
+                        "You wrote code blocks in text but did not call any tools. "
+                        "You MUST execute each action by calling the appropriate "
+                        "tool directly — exec_command for shell commands, "
+                        "file(action='edit') for edits, file(action='append') for "
+                        "JSONL appends. Do not describe work in markdown — do the "
+                        "work with tool calls now, one action at a time."
+                    )
+                    conversation_history.append({"role": "user", "content": nudge})
+                    log.info(
+                        "Q.01 guard: plan-in-text detected (%d code blocks) — nudging to execute",
+                        _q01_code_blocks,
+                    )
+                    _emit("on_auto_nudge", _consecutive_text_only, _MAX_TEXT_ONLY)
+                    telemetry.record_patch_event("q01_plan_in_text", kind="fired")
+                    continue
                 conversation_history.pop()  # remove the hallucinated assistant msg
                 log.info("Hallucination guard: stripped text-only response, retrying")
                 _emit("on_hallucination_stripped", "text_only")
