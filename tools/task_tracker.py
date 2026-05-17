@@ -187,6 +187,22 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
     if '\x00' in action:
         return "Error: action contains a null byte, which is not allowed"
 
+    # Gemma 4 key-concatenation bug: the model sometimes emits a backtick as a
+    # string delimiter and runs the next argument name into the action value,
+    # e.g. action="add`,description:" or action="done`,task_id:3".  Extract the
+    # valid action prefix so the call can proceed rather than failing with
+    # "unknown action" and triggering a full recovery round-trip.
+    _VALID_ACTIONS = ("add", "done", "update", "drop", "list")
+    if action not in _VALID_ACTIONS:
+        for _a in _VALID_ACTIONS:
+            if action.startswith(_a):
+                import logging as _logging
+                _logging.getLogger(__name__).warning(
+                    "task_tracker: salvaged garbled action %r → %r", action, _a
+                )
+                action = _a
+                break
+
     # description=None means "not provided" — treat as empty string.
     # Any other non-string type is an error (same guard as task_id, limit, status).
     if not isinstance(description, str):
