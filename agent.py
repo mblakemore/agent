@@ -2418,14 +2418,21 @@ def _strip_checkpoint_reads(conversation_history):
     return cleaned
 
 
-def _save_checkpoint(conversation_history, summary_state, turn, initial_files):
-    """Save conversation state so a crashed cycle can be resumed with -c."""
+def _save_checkpoint(conversation_history, summary_state, turn, initial_files,
+                     clean_exit=False):
+    """Save conversation state so the session can be resumed with -c.
+
+    clean_exit=True means the session ended normally (text-only stop or
+    completion signal).  False means mid-turn (tool loop) or cancelled.
+    -c uses this flag to pick an appropriate resume message.
+    """
     try:
         checkpoint = {
             "conversation_history": _strip_checkpoint_reads(conversation_history),
             "summary_state": summary_state,
             "turn": turn,
             "initial_files": initial_files,
+            "clean_exit": clean_exit,
         }
         os.makedirs(os.path.dirname(_CHECKPOINT_PATH), exist_ok=True)
         with open(_CHECKPOINT_PATH, "w", encoding="utf-8") as f:
@@ -2435,7 +2442,8 @@ def _save_checkpoint(conversation_history, summary_state, turn, initial_files):
 
 
 def _load_checkpoint():
-    """Load a saved conversation checkpoint. Returns (history, summary, turn, files) or None."""
+    """Load a saved conversation checkpoint.
+    Returns (history, summary, turn, files, clean_exit) or None."""
     if not os.path.exists(_CHECKPOINT_PATH):
         return None
     try:
@@ -2446,6 +2454,7 @@ def _load_checkpoint():
             cp["summary_state"],
             cp.get("turn", 0),
             cp.get("initial_files"),
+            cp.get("clean_exit", False),
         )
     except Exception:
         return None
@@ -2801,17 +2810,26 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     if continue_mode:
         cp = _load_checkpoint()
         if cp:
-            conversation_history, summary_state, start_turn, initial_files = cp
-            log.info("CONTINUE: resuming from checkpoint (turn %d, %d messages)",
-                     start_turn, len(conversation_history))
+            conversation_history, summary_state, start_turn, initial_files, _clean_exit = cp
+            log.info("CONTINUE: resuming from checkpoint (turn %d, %d messages, clean_exit=%s)",
+                     start_turn, len(conversation_history), _clean_exit)
             # Cap summary from old checkpoints that may have bloated summaries
             if summary_state.get("text"):
                 summary_state["text"] = _condense_summary(summary_state["text"], log)
             _emit("on_continue_resumed", start_turn, len(conversation_history))
-            # Add a resume nudge so the model knows it's continuing
-            conversation_history.append({"role": "user", "content":
-                "Continue where you left off. The session was interrupted — "
-                "pick up from your current phase and finish the cycle."})
+            # Add a resume nudge — differentiate clean stop vs crash/interrupt
+            if _clean_exit:
+                _resume_msg = (
+                    "The last session ended normally but the cycle may be incomplete "
+                    "(e.g. work was done but not committed). Review what was accomplished "
+                    "and run PERSIST if the cycle did not commit."
+                )
+            else:
+                _resume_msg = (
+                    "Continue where you left off. The session was interrupted — "
+                    "pick up from your current phase and finish the cycle."
+                )
+            conversation_history.append({"role": "user", "content": _resume_msg})
             result = run_agent_single(conversation_history, summary_state, initial_files, log,
                                       gen["temperature"], gen["top_p"], gen["top_k"],
                                       gen["presence_penalty"], max_tokens, ctx_size,
@@ -2819,7 +2837,6 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                                       async_summarizer=_async_summarizer)
             if auto:
                 cleanup_temp_sessions()
-                _delete_checkpoint()
                 log.info("Session ended (continue mode) | %d messages", len(conversation_history))
                 if _telemetry_on:
                     telemetry.record_cycle(status="continue_completed", duration_s=time.time() - t0)
@@ -2917,7 +2934,6 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                                                gen, max_tokens, ctx_size, _async_summarizer,
                                                _telemetry_on, t0)
             cleanup_temp_sessions()
-            _delete_checkpoint()
             log.info("Session ended (auto mode) | %d messages in history", len(conversation_history))
             if _telemetry_on:
                 telemetry.record_cycle(status="auto_completed", duration_s=time.time() - t0)
@@ -2993,7 +3009,6 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     if tui_session is not None:
         tui_session.close()
     cleanup_temp_sessions()
-    _delete_checkpoint()
     log.info("Session ended | %d messages in history", len(conversation_history))
     if _telemetry_on:
         telemetry.record_cycle(status="completed", duration_s=time.time() - t0)
@@ -3757,6 +3772,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
             if not _NUDGE_ENABLED:
                 log.info("Stopping: text-only response (no tool calls)")
+                if _async_summarizer:
+                    _async_summarizer.harvest(summary_state)
+                _save_checkpoint(conversation_history, summary_state, turn, initial_files,
+                                 clean_exit=True)
                 return "done"
 
             # Detect completion-intent responses FIRST — a clean stop phrase
