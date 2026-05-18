@@ -2817,12 +2817,12 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             if summary_state.get("text"):
                 summary_state["text"] = _condense_summary(summary_state["text"], log)
             _emit("on_continue_resumed", start_turn, len(conversation_history))
-            result = run_agent_single(conversation_history, summary_state, initial_files, log,
-                                      gen["temperature"], gen["top_p"], gen["top_k"],
-                                      gen["presence_penalty"], max_tokens, ctx_size,
-                                      start_turn=start_turn,
-                                      async_summarizer=_async_summarizer)
             if auto:
+                result = run_agent_single(conversation_history, summary_state, initial_files, log,
+                                          gen["temperature"], gen["top_p"], gen["top_k"],
+                                          gen["presence_penalty"], max_tokens, ctx_size,
+                                          start_turn=start_turn,
+                                          async_summarizer=_async_summarizer)
                 cleanup_temp_sessions()
                 log.info("Session ended (continue mode) | %d messages", len(conversation_history))
                 if _telemetry_on:
@@ -2830,7 +2830,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                     telemetry.shutdown()
                 _log_bedrock_session_spend(log)
                 return
-            # Fall through to interactive loop if not auto
+            # Non-auto: restore state and fall through to interactive loop
         else:
             _emit("on_continue_none")
             log.debug("CONTINUE: no checkpoint found, starting fresh")
