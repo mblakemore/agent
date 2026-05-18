@@ -3726,6 +3726,35 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 return "done"
 
         if not tool_calls:
+            # Q.01 guard: fires regardless of _NUDGE_ENABLED.  In no-nudge
+            # mode the session stops immediately on any text-only response,
+            # so this must run before that early exit.  Budget: 2 retries
+            # via _consecutive_text_only (incremented here so the loop
+            # terminates if the model keeps writing text walls).
+            if full_content:
+                _q01_blocks = len(re.findall(r'```', full_content)) // 2
+                if _q01_blocks >= 2 and _consecutive_text_only < 2:
+                    _consecutive_text_only += 1
+                    conversation_history.append({
+                        "role": "user",
+                        "content": (
+                            "You wrote code blocks in text but did not call any "
+                            "tools. You MUST execute each action by calling the "
+                            "appropriate tool directly — exec_command for shell "
+                            "commands, file(action='edit') for edits, "
+                            "file(action='append') for JSONL appends. "
+                            "Do not describe work in markdown — do the work with "
+                            "tool calls now, one action at a time."
+                        ),
+                    })
+                    log.info(
+                        "Q.01 guard: plan-in-text (%d code blocks), "
+                        "retry %d/2",
+                        _q01_blocks, _consecutive_text_only,
+                    )
+                    telemetry.record_patch_event("q01_plan_in_text", kind="fired")
+                    continue
+
             if not _NUDGE_ENABLED:
                 log.info("Stopping: text-only response (no tool calls)")
                 return "done"
