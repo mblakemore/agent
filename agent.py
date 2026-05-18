@@ -293,6 +293,13 @@ _DEFAULT_CONFIG = {
         # so the agent picks up from where it left off.
         # Intended for agents with a fixed phase loop (e.g. PERCEIVE→PERSIST).
         "initial_tasks": [],
+        # Restrict the tool schema sent to the LLM to this exact list of names.
+        # null (default) = all tools available. Use to reduce schema tokens and
+        # context pressure for agents that don't need read_pdf / subagent / etc.
+        # Example: ["read_file", "write_file", "edit_file", "append_file",
+        #           "list_files", "exec_command", "search_files", "find_symbol",
+        #           "think", "task_tracker"]
+        "tools_whitelist": None,
     },
 }
 
@@ -792,6 +799,16 @@ def _cicd_verify_gh_mutation(command: str, result: str, log) -> str:
 _agent_tools_dir = os.path.join(os.getcwd(), ".agent", "tools")
 if os.path.isdir(_agent_tools_dir):
     load_extra_tools(_agent_tools_dir)
+
+# Apply tools whitelist from config (preferences.tools_whitelist).
+# Filters both the schema list (tools) and the dispatch map (MAP_FN) so that
+# the LLM only sees the tools the agent actually needs. Reduces schema tokens
+# and context pressure without touching tool implementations.
+_tools_whitelist = _config.get("preferences", {}).get("tools_whitelist")
+if _tools_whitelist and isinstance(_tools_whitelist, list):
+    _wl_set = set(_tools_whitelist)
+    tools[:] = [t for t in tools if t["function"]["name"] in _wl_set]
+    # Don't remove from MAP_FN — harness-internal calls (think, etc.) still need them
 
 
 # ── Retry logic ────────────────────────────────────────────────────────
@@ -1352,6 +1369,8 @@ def _is_dedupable_call(func_name, func_args):
     if func_name == "file":
         action = (func_args or {}).get("action", "")
         return action in ("read", "list")  # writes/edits are legit-retryable
+    if func_name in ("read_file", "list_files"):
+        return True  # per-action read tools are always dedupable
     if func_name in ("find_symbol", "search_files"):
         return True
     if func_name == "task_tracker":
@@ -1374,6 +1393,8 @@ def _extract_write_target(func_name, func_args):
         action = func_args.get("action", "")
         if action in ("write", "insert", "append", "delete", "edit"):
             return func_args.get("path")
+    if func_name in ("write_file", "edit_file", "append_file"):
+        return func_args.get("path")
     if func_name == "exec_command":
         cmd = func_args.get("command", "")
         if not cmd:
@@ -2775,13 +2796,17 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
 
     # Auto-detect context size from the main backend. Apply 85% buffer,
     # then hard-cap at 85K to avoid llama_decode crashes.
+    # If the agent's config.json sets context.ctx_size to a value lower than
+    # the default (114688), that value is used as an additional cap — letting
+    # operators trade context depth for less fill pressure per turn.
     _CTX_HARD_CAP = 85_000
+    _CTX_CONFIG_CAP = _config["context"]["ctx_size"]  # explicit agent cap (may be default 114688)
     detected = _main_backend.detect_ctx_size()
     if detected:
-        ctx_size = min(int(detected * 0.85), _CTX_HARD_CAP)
+        ctx_size = min(int(detected * 0.85), _CTX_HARD_CAP, _CTX_CONFIG_CAP)
         _config["context"]["ctx_size"] = ctx_size
-        log.info("Auto-detected main model n_ctx=%d, using ctx_size=%d (85%% / cap %dk)",
-                 detected, ctx_size, _CTX_HARD_CAP // 1000)
+        log.info("Auto-detected main model n_ctx=%d, using ctx_size=%d (85%% / cap %dk / config cap %d)",
+                 detected, ctx_size, _CTX_HARD_CAP // 1000, _CTX_CONFIG_CAP)
 
     # Probe summary health BEFORE on_session_start so the banner can
     # render main + summary indicators together in a single header.
@@ -3131,7 +3156,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
     # Read-only tools: calls to these don't reset the consecutive text-only
     # counter because they don't represent substantive progress.
-    _READ_ONLY_TOOLS = {"think", "search_files", "read_pdf", "task_tracker"}
+    _READ_ONLY_TOOLS = {"think", "search_files", "read_pdf", "task_tracker", "read_file", "list_files"}
 
     # After 'git push', allow a few more turns for TRACK work (results file,
     # progress row, issue comments) before stopping on text-only response.
@@ -4326,9 +4351,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     # small (state JSON / focus JSON), bounded by tool
                     # result truncation cap when not.
                     _prewrite_content = None
-                    if (func_name == "file"
+                    if (func_name in ("write_file", "file")
                             and isinstance(func_args, dict)
-                            and func_args.get("action") == "write"
+                            and (func_name == "write_file" or func_args.get("action") == "write")
                             and isinstance(func_args.get("path"), str)
                             and isinstance(func_args.get("content"), str)):
                         try:
@@ -4479,9 +4504,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         _similar_rewrite = (
                             not _heredoc_write
                             and _prewrite_content is not None
-                            and func_name == "file"
+                            and func_name in ("file", "write_file")
                             and isinstance(func_args, dict)
-                            and func_args.get("action") == "write"
+                            and (func_name == "write_file" or func_args.get("action") == "write")
                         )
                         if _similar_rewrite:
                             _new_content = func_args.get("content", "")
@@ -4507,18 +4532,18 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                         run_agent_single._edit_nudges_emitted.add(_write_target)
                                         result_str = result_str + (
                                             f"\n\n[suggestion] You used "
-                                            f"file(action='write') to rewrite "
+                                            f"write_file to rewrite "
                                             f"{_write_target!r}, but {int(_sim*100)}% "
                                             f"of the lines match the previous version "
                                             f"— this is a surgical change in a "
-                                            f"full-rewrite costume. file(action='edit', "
+                                            f"full-rewrite costume. edit_file("
                                             f"path=..., old_string=..., new_string=...) "
                                             f"is the right tool: atomic, validates the "
                                             f"target text exists exactly once, and won't "
                                             f"silently drop unrelated keys (lyla C26 lost "
                                             f"theme_tracking this way and regressed for "
-                                            f"13 cycles). Use write only when creating a "
-                                            f"new file or rewriting one in full."
+                                            f"13 cycles). Use write_file only when creating "
+                                            f"a new file or rewriting one in full."
                                         )
                                         telemetry.record_patch_event(
                                             "edit_nudge", kind="similar_rewrite")
@@ -4533,9 +4558,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         # file per session to avoid noise.
                         _log_overwrite = (
                             not _heredoc_write
-                            and func_name == "file"
+                            and func_name in ("file", "write_file")
                             and isinstance(func_args, dict)
-                            and func_args.get("action") == "write"
+                            and (func_name == "write_file" or func_args.get("action") == "write")
                             and _write_target.endswith(".log")
                         )
                         if _log_overwrite:
@@ -4544,10 +4569,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             if _write_target not in run_agent_single._edit_nudges_emitted:
                                 run_agent_single._edit_nudges_emitted.add(_write_target)
                                 result_str = result_str + (
-                                    f"\n\n[suggestion] file(action='write') on "
+                                    f"\n\n[suggestion] write_file on "
                                     f"{_write_target!r} overwrote all prior log "
                                     f"content. Log files are append-only — use "
-                                    f"file(action='append', path={_write_target!r}, "
+                                    f"append_file(path={_write_target!r}, "
                                     f"content=...) to add new entries without "
                                     f"destroying history."
                                 )
@@ -4583,7 +4608,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 f"\n\n[write-loop-detector] You have written to {_write_target!r} "
                                 f"{_n_writes} times in the last {_WRITE_LOOP_WINDOW} tool calls. "
                                 f"If your incremental edits are being clobbered by full rewrites, "
-                                f"use file(action='edit', ...) to apply a surgical change instead "
+                                f"use edit_file(...) to apply a surgical change instead "
                                 f"of rewriting the whole file. If you've genuinely needed this many "
                                 f"writes, ignore this note — but consider whether your mental model "
                                 f"of the file's state matches what's actually on disk."
@@ -4603,8 +4628,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         "content": result_str,
                     })
 
-                    # Track file edits (file tool with action=write/create)
-                    if func_name == "file" and isinstance(func_args, dict) and func_args.get("action") in ("write", "create"):
+                    # Track file edits (file tool with action=write/create, or new per-action tools)
+                    if isinstance(func_args, dict) and (
+                        (func_name == "file" and func_args.get("action") in ("write", "create"))
+                        or func_name in ("write_file", "edit_file")
+                    ):
                         _has_edited, _has_reviewer_persisted = _handle_cicd_file_edit(
                             func_args, conversation_history, _cicd_worktree_path, _cicd_phase_state, 
                             _cicd_edited_files, _has_edited, _has_reviewer_persisted, turn, log
