@@ -4637,8 +4637,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             _cycle_persisted = True
                             _cycle_persisted_turn = _cycle_persisted_turn or turn
                             _cicd_phase_state["verify"] = True
-                            # Cycle 37: block direct push to main — builder must use feature branches
-                            if re.search(r"git\s+push\b.*\borigin\s+main\b", _cmd_normalized):
+                            # Cycle 37: block direct push to main — builder must use feature branches.
+                            # Only enforce for CICD builder sessions; regular agents push to main normally.
+                            if _is_cicd_builder and re.search(r"git\s+push\b.*\borigin\s+main\b", _cmd_normalized):
                                 log.warning("CICD: git push origin main — builder pushed directly to main")
                                 conversation_history.append({
                                     "role": "user",
