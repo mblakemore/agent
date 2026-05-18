@@ -4103,6 +4103,26 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             })
                             continue
 
+                    # R.01 — node runtime used to execute a .py file.
+                    # The model confuses Python CLI tools with the Node-based
+                    # discord/email skills that live nearby.  Intercept before
+                    # dispatch and return a clear correction.
+                    if func_name == "exec_command" and isinstance(func_args, dict):
+                        _r01_cmd = func_args.get("command", "")
+                        if re.match(r'\bnode\b.*\.py\b', _r01_cmd):
+                            _garbled_count += 1
+                            conversation_history.append({
+                                "role": "tool", "tool_call_id": tool_id,
+                                "name": func_name,
+                                "content": (
+                                    f"Error: used 'node' to run a Python file. "
+                                    f"Python scripts must be run with 'python3', not 'node'. "
+                                    f"Replace 'node' with 'python3' and retry."
+                                ),
+                            })
+                            log.warning("R.01: node used on .py file — %r", _r01_cmd[:80])
+                            continue
+
                     log.debug("TOOL CALL: %s(%s) [id=%s]", func_name, json.dumps(func_args), tool_id)
                     telemetry.record_tool_call(func_name)
 
@@ -4380,6 +4400,40 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                         telemetry.record_patch_event(
                                             "edit_nudge", kind="similar_rewrite")
                                         _patch_telemetry["edit_nudge"] += 1
+
+                        # T5.18-log — file(action='write') on a .log file destroys
+                        # all prior entries.  Lyla/c0rtana treat logs as episodic
+                        # memory; wiping them with write is high-damage (observed 9%
+                        # of Phase 7 sessions, including the lyla C132 spiral that
+                        # wiped consciousness.log).  Logs are append-only by design;
+                        # action='append' is always correct here.  Fires once per
+                        # file per session to avoid noise.
+                        _log_overwrite = (
+                            not _heredoc_write
+                            and func_name == "file"
+                            and isinstance(func_args, dict)
+                            and func_args.get("action") == "write"
+                            and _write_target.endswith(".log")
+                        )
+                        if _log_overwrite:
+                            if "_edit_nudges_emitted" not in dir(run_agent_single):
+                                run_agent_single._edit_nudges_emitted = set()
+                            if _write_target not in run_agent_single._edit_nudges_emitted:
+                                run_agent_single._edit_nudges_emitted.add(_write_target)
+                                result_str = result_str + (
+                                    f"\n\n[suggestion] file(action='write') on "
+                                    f"{_write_target!r} overwrote all prior log "
+                                    f"content. Log files are append-only — use "
+                                    f"file(action='append', path={_write_target!r}, "
+                                    f"content=...) to add new entries without "
+                                    f"destroying history."
+                                )
+                                log.warning(
+                                    "T5.18-log: write on log file %r — nudging append",
+                                    _write_target,
+                                )
+                                telemetry.record_patch_event("log_write_nudge", kind="fired")
+                                _patch_telemetry["edit_nudge"] += 1
 
                         _hist = _write_path_history.setdefault(_write_target, [])
                         _hist.append(_call_idx_counter)
