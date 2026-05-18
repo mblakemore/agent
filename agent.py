@@ -4123,6 +4123,28 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             log.warning("R.01: node used on .py file — %r", _r01_cmd[:80])
                             continue
 
+                    # G.01-exec — garbled exec_command args under context pressure.
+                    # Model produces {"command=\"...reasoning...\"": <number>} instead
+                    # of {"command": "..."}. No reliable salvage — return clear error.
+                    if func_name == "exec_command" and isinstance(func_args, dict):
+                        _cmd_val = func_args.get("command")
+                        if _cmd_val is None or not isinstance(_cmd_val, str):
+                            _garbled_count += 1
+                            conversation_history.append({
+                                "role": "tool", "tool_call_id": tool_id,
+                                "name": func_name,
+                                "content": (
+                                    "Error: exec_command received garbled arguments "
+                                    "(missing or non-string 'command' value). "
+                                    "Call with a single string: "
+                                    "exec_command(command='your shell command here')."
+                                ),
+                            })
+                            log.warning("G.01-exec: garbled exec_command — keys=%r",
+                                        list(func_args.keys())[:3])
+                            telemetry.record_patch_event("g01_exec", kind="fired")
+                            continue
+
                     log.debug("TOOL CALL: %s(%s) [id=%s]", func_name, json.dumps(func_args), tool_id)
                     telemetry.record_tool_call(func_name)
 
