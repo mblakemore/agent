@@ -3735,7 +3735,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             # terminates if the model keeps writing text walls).
             if full_content:
                 _q01_blocks = len(re.findall(r'```', full_content)) // 2
-                if _q01_blocks >= 2 and _consecutive_text_only < 2:
+                if _q01_blocks >= 1 and _consecutive_text_only < 2:
                     _consecutive_text_only += 1
                     conversation_history.append({
                         "role": "user",
