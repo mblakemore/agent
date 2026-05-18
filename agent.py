@@ -279,6 +279,13 @@ _DEFAULT_CONFIG = {
         # with rich AGENT.md aren't double-nudged. Operator turns on per
         # agent when they want stronger tool-selection guidance.
         "tool_selection_hints": False,
+        # When true, the harness checks git status before accepting a
+        # text-only stop: if there are uncommitted changes and no commit
+        # happened this session, it injects one nudge to run PERSIST.
+        # Budget: 2 retries (shared with _consecutive_text_only).
+        # Intended for git-native agents (lyla, c0rtana) that must commit
+        # every cycle. Off by default.
+        "persist_nudge": False,
     },
 }
 
@@ -3758,6 +3765,27 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     continue
 
             if not _NUDGE_ENABLED:
+                if (not _has_committed
+                        and _config.get("preferences", {}).get("persist_nudge")
+                        and _consecutive_text_only < 2):
+                    _gs = subprocess.run(
+                        ["git", "status", "--porcelain"],
+                        capture_output=True, text=True, cwd=os.getcwd(),
+                    )
+                    if _gs.returncode == 0 and _gs.stdout.strip():
+                        _consecutive_text_only += 1
+                        conversation_history.append({
+                            "role": "user",
+                            "content": (
+                                "You have uncommitted changes but have not run PERSIST. "
+                                "Complete the cycle: git add the changed files, "
+                                "commit with the C{N} message format, and push."
+                            ),
+                        })
+                        log.info("persist_nudge: dirty tree, no commit — nudging (%d/2)",
+                                 _consecutive_text_only)
+                        telemetry.record_patch_event("persist_nudge", kind="fired")
+                        continue
                 log.info("Stopping: text-only response (no tool calls)")
                 if _async_summarizer:
                     _async_summarizer.harvest(summary_state)
