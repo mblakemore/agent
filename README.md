@@ -16,7 +16,7 @@ A local, tool-driven coding assistant that talks to an OpenAI-compatible LLM end
    python agent.py "fix the failing test in tests/test_parser.py"
    ```
 
-**Recommended model:** Gemma 4 31B via `llama-server`. A fine-tuned variant ([mblakemore/gemma-4-31B-agent-friction-phase3](https://huggingface.co/mblakemore/gemma-4-31B-agent-friction-phase3)) reduces common tool-use friction patterns. See [docs/local-model.md](docs/local-model.md) for download, quantize, and serve instructions.
+**Recommended model:** Gemma 4 31B via `llama-server`. A fine-tuned variant ([mblakemore/gemma-4-31B-agent-friction-phase9](https://huggingface.co/mblakemore/gemma-4-31B-agent-friction-phase9)) reduces common tool-use friction patterns. See [docs/local-model.md](docs/local-model.md) for download, quantize, and serve instructions.
 
 ## CLI
 
