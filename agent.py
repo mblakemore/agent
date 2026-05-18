@@ -286,6 +286,13 @@ _DEFAULT_CONFIG = {
         # Intended for git-native agents (lyla, c0rtana) that must commit
         # every cycle. Off by default.
         "persist_nudge": False,
+        # List of task descriptions to pre-seed into task_tracker at session
+        # start. Seeding only fires when there are no open tasks — either the
+        # first run ever, or the previous cycle fully completed all tasks.
+        # If open tasks remain (interrupted cycle) the list is left untouched
+        # so the agent picks up from where it left off.
+        # Intended for agents with a fixed phase loop (e.g. PERCEIVE→PERSIST).
+        "initial_tasks": [],
     },
 }
 
@@ -2476,6 +2483,33 @@ def _delete_checkpoint():
         pass
 
 
+def _seed_phase_tasks(config, log):
+    """Pre-load phase tasks from config if no open tasks exist.
+
+    If preferences.initial_tasks is set and there are no currently open
+    tasks (either first run or previous cycle fully completed), seeds the
+    task list from the config so the agent starts every cycle with a
+    structured checklist.  If open tasks remain (interrupted cycle), does
+    nothing — the agent continues from where it left off.
+    """
+    task_descs = config.get("preferences", {}).get("initial_tasks", [])
+    if not task_descs:
+        return
+    try:
+        from tools.task_tracker import get_tasks, fn as _tt_fn
+        existing = get_tasks()
+        open_tasks = [t for t in existing if t.get("status") not in ("done", "completed")]
+        if open_tasks:
+            log.debug("seed_phase_tasks: %d open task(s) remain — skipping seed", len(open_tasks))
+            return
+        for desc in task_descs:
+            result = _tt_fn("add", description=desc)
+            log.debug("seed_phase_tasks: %s", result)
+        log.info("seed_phase_tasks: seeded %d phase task(s)", len(task_descs))
+    except Exception as exc:
+        log.warning("seed_phase_tasks: failed — %s", exc)
+
+
 # ── Cycle auto-increment ─────────────────────────────────────────────
 
 def _auto_increment_cycle(log):
@@ -2825,6 +2859,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 summary_state["text"] = _condense_summary(summary_state["text"], log)
             _emit("on_continue_resumed", start_turn, len(conversation_history))
             if auto:
+                _seed_phase_tasks(_config, log)
                 result = run_agent_single(conversation_history, summary_state, initial_files, log,
                                           gen["temperature"], gen["top_p"], gen["top_k"],
                                           gen["presence_penalty"], max_tokens, ctx_size,
@@ -2849,6 +2884,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     conversation_history = conversation_history if continue_mode and start_turn > 0 else []
     summary_state = summary_state if continue_mode and start_turn > 0 else {"text": "", "up_to": 0}
     initial_files = initial_files if continue_mode and start_turn > 0 else None
+
+    _seed_phase_tasks(_config, log)
 
     # ── TUI front-end (default in interactive mode) ──
     # Now that history / summary / initial_files have stable identities,
