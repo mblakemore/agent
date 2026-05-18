@@ -1446,6 +1446,22 @@ def _detect_harmony_token(args):
     return None
 
 
+def _harmony_retry_hint(func_name: str) -> str:
+    """Return a one-line correct-call example for the given tool name.
+    Used in harmony-token rejection messages to guide the model's retry."""
+    hints = {
+        "task_tracker": "task_tracker(action='done', description='PERCEIVE')",
+        "exec_command": "exec_command(command='ls -la')",
+        "read_file":    "read_file(path='state/current-state.json')",
+        "write_file":   "write_file(path='state/context.json', content='{}')",
+        "edit_file":    "edit_file(path='file.py', old_string='x', new_string='y')",
+        "append_file":  "append_file(path='logs/activity.log', content='entry\\n')",
+        "list_files":   "list_files(path='.')",
+        "search_files": "search_files(pattern='TODO', path='.', glob='*.py')",
+    }
+    return hints.get(func_name, f"{func_name}(...) — use only plain quoted string args.")
+
+
 def _sanitize_tool_args(func_name, args, log):
     """Fix garbled args that parsed as valid JSON but have bogus values.
 
@@ -4246,9 +4262,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             "content": (
                                 f"Error: tool call rejected — chat-template control token "
                                 f"{token!r} appeared in arg {key_path or '(top-level)'}. "
-                                f"This indicates your output was garbled by chat-scaffolding "
-                                f"leaking into the JSON. Retry the tool call without those "
-                                f"tokens (and never use them in path, content, or command args)."
+                                f"Your JSON was garbled (the end-of-tool-call delimiter leaked "
+                                f"into an argument value). Make ONE clean tool call now with "
+                                f"simple quoted string arguments. "
+                                f"Example for {func_name}: "
+                                + _harmony_retry_hint(func_name)
                             ),
                         })
                         continue
