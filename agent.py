@@ -2817,19 +2817,6 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             if summary_state.get("text"):
                 summary_state["text"] = _condense_summary(summary_state["text"], log)
             _emit("on_continue_resumed", start_turn, len(conversation_history))
-            # Add a resume nudge — differentiate clean stop vs crash/interrupt
-            if _clean_exit:
-                _resume_msg = (
-                    "The last session ended normally but the cycle may be incomplete "
-                    "(e.g. work was done but not committed). Review what was accomplished "
-                    "and run PERSIST if the cycle did not commit."
-                )
-            else:
-                _resume_msg = (
-                    "Continue where you left off. The session was interrupted — "
-                    "pick up from your current phase and finish the cycle."
-                )
-            conversation_history.append({"role": "user", "content": _resume_msg})
             result = run_agent_single(conversation_history, summary_state, initial_files, log,
                                       gen["temperature"], gen["top_p"], gen["top_k"],
                                       gen["presence_penalty"], max_tokens, ctx_size,
