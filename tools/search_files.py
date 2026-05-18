@@ -153,7 +153,7 @@ def _search_single_file(file_path, base_dir, regex, context, count_only):
 
 
 def fn(
-    pattern: str,
+    pattern: str = None,
     path: str = ".",
     glob=None,
     ignore_case: bool = False,
@@ -187,6 +187,13 @@ def fn(
     """
     import fnmatch as _fnmatch
 
+    if pattern is None:
+        return (
+            "Error: pattern (required) was not provided. "
+            "search_files searches FILE CONTENTS for a regex — pattern= is the regex, not a filename. "
+            "Example: search_files(pattern='HANDLER|pointer', path='.', glob='*.py')\n"
+            "If you want to find files by name use list_files() or exec_command with find/ls."
+        )
     if not isinstance(pattern, str):
         return f"Error: pattern must be a string, got {type(pattern).__name__!r}"
     if not pattern.strip():
