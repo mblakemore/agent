@@ -4196,9 +4196,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 "role": "tool", "tool_call_id": tool_id,
                                 "name": func_name,
                                 "content": (
-                                    f"Error: your tool call was garbled — 'path' is missing. "
-                                    f"Use exec_command to write files instead. Example: "
-                                    f'{{\"command\": \"cat > .agent/state/current-state.json << \'EOF\'\\n{{content}}\\nEOF\"}}'
+                                    f"Error: file({action!r}) call is missing the 'path' argument. "
+                                    f"Call with separate string arguments: "
+                                    f"file(action={action!r}, path='the/file/path'). "
+                                    f"Do not concatenate arguments with backticks or commas inside a string."
                                 ),
                             })
                             continue
