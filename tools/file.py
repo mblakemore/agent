@@ -282,7 +282,7 @@ def _write(path, content, start_line, end_line):
     # If file exists but hasn't been read this session, force a read first
     if p.exists() and str(p.resolve()) not in _accessed_files:
         return (f"Error: '{path}' exists but has not been read this session. "
-                f"You must read the file first (action='read') before writing to it, "
+                f"You must read the file first with read_file(path='{path}') before writing to it, "
                 f"so you can verify your changes are accurate and won't overwrite important content.")
 
     # Atomic rename bypasses file-level permissions; check explicitly
@@ -352,7 +352,7 @@ def _write(path, content, start_line, end_line):
                         f"whitespace-sensitive — this would produce IndentationError "
                         f"after the write. Re-issue with matching leading whitespace. "
                         f"(If you intend to change the indent level of the whole block, "
-                        f"do action='read' first to inspect the surrounding scope, then "
+                        f"do read_file(path='{path}') first to inspect the surrounding scope, then "
                         f"adjust all replaced lines consistently.)"
                     )
 
@@ -517,8 +517,8 @@ def _edit(path, old_string, new_string, replace_all):
         return f"Error: '{path}' is not a regular file."
     if str(p.resolve()) not in _accessed_files:
         return (f"Error: '{path}' exists but has not been read this session. "
-                f"Read the file first (action='read') before editing — this ensures "
-                f"your `old_string` matches the actual current content.")
+                f"Read the file first with read_file(path='{path}') before editing — this ensures "
+                f"your old_string matches the actual current content.")
     if not os.access(str(p), os.W_OK):
         return f"Error: permission denied: {path}"
 
@@ -534,7 +534,7 @@ def _edit(path, old_string, new_string, replace_all):
             hint = (f"\n\nHint: the first line of your `old_string` ({first_line!r}) is "
                     f"present in the file, but the full string isn't — likely a trailing-"
                     f"whitespace or line-ending mismatch. Re-read the section with "
-                    f"action='read' to copy the exact text.")
+                    f"read_file(path='{path}') to copy the exact text.")
         return f"Error: `old_string` not found in '{path}' (0 occurrences).{hint}"
 
     if occurrences > 1 and not replace_all:
@@ -746,7 +746,7 @@ def _insert(path, content, start_line):
 
     if p.exists() and str(p.resolve()) not in _accessed_files:
         return (f"Error: '{path}' exists but has not been read this session. "
-               f"You must read the file first (action='read') before inserting.")
+               f"You must read the file first with read_file(path='{path}') before inserting.")
 
     with open(p, 'r', encoding='utf-8', errors='replace') as f:
         old_content = f.read()
@@ -809,7 +809,7 @@ def _delete(path, start_line=0, end_line=0):
     if start_line > 0 or end_line > 0:
         if str(p.resolve()) not in _accessed_files:
             return (f"Error: '{path}' exists but has not been read this session. "
-                    f"You must read the file first (action='read') before deleting lines from it, "
+                    f"You must read the file first with read_file(path='{path}') before deleting lines from it, "
                     f"so you can verify you are removing the correct content.")
         if start_line < 0:
             return f"Error: start_line must be >= 1 (got {start_line})"
