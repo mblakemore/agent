@@ -300,6 +300,12 @@ _DEFAULT_CONFIG = {
         # ~6000 chars ≈ 1500 tokens — generous for any real decision, but cuts off
         # infinite loops well before they eat the context window.
         "max_text_response_chars": 6000,
+        # Cap on text content generated AFTER tool calls in the same turn.
+        # Prevents post-tool prose spirals (c0rtana C207: garbled task_tracker
+        # adds set receiving_tools=True, bypassing the pre-tool cap, then 50K
+        # chars of post-tool prose filled the context).
+        # 2000 chars is generous for any legitimate wrap-up text.
+        "max_post_tool_text_chars": 2000,
         # Restrict the tool schema sent to the LLM to this exact list of names.
         # null (default) = all tools available. Use to reduce schema tokens and
         # context pressure for agents that don't need read_pdf / subagent / etc.
@@ -3565,7 +3571,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             _config.get("preferences", {}).get("max_text_response_chars", 6000)
         )
         _content_chars = 0
+        _post_tool_chars = 0
+        _MAX_POST_TOOL_TEXT_CHARS = int(
+            _config.get("preferences", {}).get("max_post_tool_text_chars", 2000)
+        )
         _text_cap_exceeded = False
+        _text_cap_limit_fired = _MAX_TEXT_RESPONSE_CHARS  # updated when post-tool cap fires
         # Stall detection: per c0rtana audit #3, long latencies with zero
         # deltas (e.g. session_20260513_010952.log Turn 14: latency_ms=78377
         # deltas=0) are strongly correlated with corrupted/garbled output.
@@ -3689,9 +3700,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         renderer.feed(delta["content"])
                         content_parts.append(delta["content"])
                         _content_chars += len(delta["content"])
+                        if receiving_tools:
+                            _post_tool_chars += len(delta["content"])
                         status.count_token()
                         _deltas_received += 1
-                        # Text-only response cap: if the model is generating pure prose
+                        # Pre-tool text cap: if the model is generating pure prose
                         # (no tool calls yet) and exceeds the per-turn character limit,
                         # truncate immediately to prevent context overflow.
                         if (not receiving_tools
@@ -3703,6 +3716,22 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             _text_cap_exceeded = True
                             telemetry.record_patch_event("text_cap", kind="fired",
                                                          value=_content_chars)
+                            _safe_close(response)
+                            break
+                        # Post-tool text cap: prose generated AFTER tool calls have
+                        # started is also capped — prevents c0rtana C207 pattern where
+                        # garbled tool calls set receiving_tools=True then 50K chars of
+                        # spiral prose followed with no cap applied.
+                        if (receiving_tools
+                                and _post_tool_chars > _MAX_POST_TOOL_TEXT_CHARS):
+                            log.warning(
+                                "Post-tool text cap: %d chars after tools exceeds limit %d — truncating",
+                                _post_tool_chars, _MAX_POST_TOOL_TEXT_CHARS,
+                            )
+                            _text_cap_exceeded = True
+                            _text_cap_limit_fired = _MAX_POST_TOOL_TEXT_CHARS
+                            telemetry.record_patch_event("text_cap", kind="fired_post_tool",
+                                                         value=_post_tool_chars)
                             _safe_close(response)
                             break
 
@@ -3795,11 +3824,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         # turn (not a modification of the truncated content).
         if _text_cap_exceeded:
             _emit("on_notice", "warn",
-                  f"[text cap: response truncated at {_MAX_TEXT_RESPONSE_CHARS} chars — injecting tool nudge]")
+                  f"[text cap: response truncated at {_text_cap_limit_fired} chars — injecting tool nudge]")
             _cap_correction = (
-                f"[SYSTEM: your response was cut off at {_MAX_TEXT_RESPONSE_CHARS} characters because it exceeded "
+                f"[SYSTEM: your response was cut off at {_text_cap_limit_fired} characters because it exceeded "
                 f"the per-turn text limit. Text walls fill the context window and crash the session "
-                f"(this happened in C206: a 50K-char monologue caused 10 context-overflow errors). "
+                f"(this happened in C206/C207: prose spirals caused 10 context-overflow errors). "
                 f"Analysis belongs in short decisions, not prose. "
                 f"Call a tool now — if marking a phase done: "
                 f"task_tracker(action='done', description='PERCEIVE') or task_tracker(action='done', task_id=1). "
