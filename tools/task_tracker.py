@@ -489,7 +489,12 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
         elif action == "done":
             if task_id <= 0:
                 available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] not in ("done", "completed")]
-                return f"Error: task_id required for 'done'. Example: task_tracker(action=\"done\", task_id=1)\nOpen tasks:\n" + ("\n".join(available) if available else "(none)")
+                return (
+                    f"Error: task_id (or description=) required for 'done'. "
+                    f"Examples: task_tracker(action=\"done\", task_id=1) "
+                    f"or task_tracker(action=\"done\", description=\"PERCEIVE\")\n"
+                    f"Open tasks:\n" + ("\n".join(available) if available else "(none)")
+                )
             for t in tasks:
                 if t["id"] == task_id:
                     if t["status"] in ("done", "completed"):
