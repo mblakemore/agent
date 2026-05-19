@@ -195,7 +195,14 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
         _output(f"  [Answer] {answer}")
         log.info("THINK REASONING: %s", reasoning[:200])
         log.info("THINK ANSWER: %s", answer[:300])
-        return answer if answer else "Error: empty response from model"
+        if answer:
+            return answer
+        if reasoning:
+            # Qwen3: token budget exhausted during reasoning phase — answer never generated.
+            # Return reasoning as fallback rather than a hard error.
+            log.warning("THINK: answer empty, returning reasoning trace as fallback (budget exhausted?)")
+            return reasoning
+        return "Error: empty response from model"
 
     # ── Self-consistency path ──────────────────────────────────────────
     # N independent runs at varied temperatures, then a consensus-extract
@@ -206,11 +213,13 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
     for i in range(n_samples):
         check_cancelled()
         temp = _TEMP_SPREAD[i % len(_TEMP_SPREAD)]
-        _, ans, err = _single_call(base_messages, max_tokens, temp, base_url, log,
-                                   label=f" {i+1}/{n_samples}@T={temp}")
+        rsn, ans, err = _single_call(base_messages, max_tokens, temp, base_url, log,
+                                    label=f" {i+1}/{n_samples}@T={temp}")
         if err:
             log.warning("Self-consistency sample %d failed: %s", i + 1, err)
             continue
+        if not ans and rsn:
+            ans = rsn  # token budget exhausted in reasoning phase — use trace as fallback
         if ans:
             samples.append({"temp": temp, "answer": ans})
     if not samples:
