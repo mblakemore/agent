@@ -17,7 +17,7 @@ from spinner import StreamStatus
 _output = print  # type: ignore[assignment]
 
 DEPTH_MAX_TOKENS = {
-    "brief": 1024,
+    "brief": 2048,   # bumped: Qwen3 spends ~800-1000 tokens on reasoning_content alone
     "normal": 8192,
     "deep": 32768,
 }
@@ -66,8 +66,9 @@ def _single_call(messages, depth_max_tokens, temperature, base_url, log, label="
         )
         response.raise_for_status()
     except requests.exceptions.RequestException as e:
-        return ("", f"Error: calling server: {e}")
+        return ("", "", f"Error: calling server: {e}")
 
+    reasoning_parts = []
     content_parts = []
     status = StreamStatus()
     status.start("  " + theme.c(theme.SKY, f"[Thinking{label}] "))
@@ -87,15 +88,29 @@ def _single_call(messages, depth_max_tokens, temperature, base_url, log, label="
         if not choices:
             continue
         delta = choices[0].get("delta", {})
+        # Qwen3 / llama-server --reasoning on: thinking goes to reasoning_content,
+        # final answer goes to content. Gemma 4: everything in content with
+        # <|channel>thought\n...<channel\|> markers. Handle both.
+        if delta.get("reasoning_content"):
+            if not reasoning_parts and not content_parts:
+                status.first_token()
+            reasoning_parts.append(delta["reasoning_content"])
+            status.count_token()
         if delta.get("content"):
-            if not content_parts:
+            if not content_parts and not reasoning_parts:
                 status.first_token()
             content_parts.append(delta["content"])
             status.count_token()
     status.finish()
 
-    raw = "".join(content_parts)
-    return (raw, None)
+    reasoning_raw = "".join(reasoning_parts)
+    answer_raw = "".join(content_parts)
+
+    if not reasoning_raw and answer_raw:
+        # Gemma mode: thinking markers embedded in content — parse them out
+        reasoning_raw, answer_raw = _parse_answer(answer_raw)
+
+    return (reasoning_raw, answer_raw, None)
 
 
 def _parse_answer(raw):
@@ -159,7 +174,7 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
     max_tokens = DEPTH_MAX_TOKENS[depth]
     base_url = _get_base_url()
 
-    # <|think|> in system prompt enables Gemma 4 thinking
+    # <|think|> triggers Gemma 4 thinking; harmless no-op on Qwen3 (server --reasoning handles it)
     base_messages = [{"role": "system", "content": "<|think|>"}]
     if context:
         base_messages.append({"role": "user", "content": context})
@@ -171,10 +186,9 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
 
     # ── Single-shot path ───────────────────────────────────────────────
     if n_samples == 1:
-        raw, err = _single_call(base_messages, max_tokens, 0.6, base_url, log)
+        reasoning, answer, err = _single_call(base_messages, max_tokens, 0.6, base_url, log)
         if err:
             return err
-        reasoning, answer = _parse_answer(raw)
         if reasoning:
             _output("  " + theme.dim("[Reasoning]"))
             _output("  " + theme.dim(reasoning))
@@ -192,12 +206,11 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
     for i in range(n_samples):
         check_cancelled()
         temp = _TEMP_SPREAD[i % len(_TEMP_SPREAD)]
-        raw, err = _single_call(base_messages, max_tokens, temp, base_url, log,
-                                label=f" {i+1}/{n_samples}@T={temp}")
+        _, ans, err = _single_call(base_messages, max_tokens, temp, base_url, log,
+                                   label=f" {i+1}/{n_samples}@T={temp}")
         if err:
             log.warning("Self-consistency sample %d failed: %s", i + 1, err)
             continue
-        _, ans = _parse_answer(raw)
         if ans:
             samples.append({"temp": temp, "answer": ans})
     if not samples:
@@ -225,14 +238,13 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
             + "\n\nConsensus answer:"
         )},
     ]
-    consensus_raw, err = _single_call(
+    _, consensus, err = _single_call(
         consensus_messages, max_tokens, 0.3, base_url, log, label=" consensus"
     )
     if err:
         # Fallback: return all samples concatenated
         joined = "\n\n".join(f"[Sample {i+1}] {s['answer']}" for i, s in enumerate(samples))
         return f"[Consensus-extract failed: {err}; returning {len(samples)} raw samples]\n\n{joined}"
-    _, consensus = _parse_answer(consensus_raw)
     log.info("THINK CONSENSUS (n=%d): %s", len(samples), consensus[:300])
     _output("  " + theme.c(theme.MINT, f"[Consensus across {len(samples)} samples]"))
     _output(f"  {consensus}")
