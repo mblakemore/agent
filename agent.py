@@ -300,6 +300,9 @@ _DEFAULT_CONFIG = {
         # ~6000 chars ≈ 1500 tokens — generous for any real decision, but cuts off
         # infinite loops well before they eat the context window.
         "max_text_response_chars": 6000,
+        # Enable auto-nudge on text-only responses. Off by default.
+        # Also settable via --nudge CLI flag (either enables it).
+        "nudge": False,
         # Cap on text content generated AFTER tool calls in the same turn.
         # Prevents post-tool prose spirals (c0rtana C207: garbled task_tracker
         # adds set receiving_tools=True, bypassing the pre-tool cap, then 50K
@@ -532,8 +535,8 @@ _WIND_DOWN_TURNS = _config["cycle"]["wind_down_turns"]
 _MAX_TEXT_ONLY = _config["cycle"]["max_text_only"]
 _MAX_TOTAL_NUDGES = _config["cycle"]["max_total_nudges"]
 
-# Auto-nudge on text-only responses. Off by default; enable with --nudge.
-_NUDGE_ENABLED = False
+# Auto-nudge on text-only responses. Off by default; enable with --nudge or config.json preferences.nudge.
+_NUDGE_ENABLED = _config.get("preferences", {}).get("nudge", False)
 
 # Cap tool result strings stored in conversation_history to limit context pressure.
 # ~20K chars ≈ 5K tokens.  Keeps head + tail so the model sees start and end.
@@ -3899,7 +3902,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             # so this must run before that early exit.  Budget: 2 retries
             # via _consecutive_text_only (incremented here so the loop
             # terminates if the model keeps writing text walls).
-            if full_content:
+            if full_content and _NUDGE_ENABLED:
                 _q01_blocks = len(re.findall(r'```', full_content)) // 2
                 if _q01_blocks >= 1 and _consecutive_text_only < 2:
                     _consecutive_text_only += 1
@@ -5324,7 +5327,7 @@ def main():
     _apply_backend_overrides(args.backend_main, args.backend_summary)
 
     global _NUDGE_ENABLED
-    _NUDGE_ENABLED = args.nudge
+    _NUDGE_ENABLED = _NUDGE_ENABLED or args.nudge
 
     initial_prompt = " ".join(args.prompt).strip() or None
 
