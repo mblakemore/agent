@@ -247,7 +247,7 @@ _DEFAULT_CONFIG = {
         "preview_lines": 200,
         "summary_threshold": 5,
         "summary_max_chars": 3000,
-        "max_context_messages": 20,
+        "max_context_messages": 30,
         "ctx_size": 114688,
         "max_tokens": 16384,
     },
