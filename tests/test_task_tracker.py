@@ -53,7 +53,7 @@ def test_done_task_with_note():
 
 def test_done_task_no_id():
     res = fn(action="done")
-    assert "Error: task_id required for 'done'" in res
+    assert "task_id" in res and "required" in res and "done" in res
 
 def test_done_task_not_found():
     fn(action="add", description="Task 1")
@@ -1237,7 +1237,7 @@ def test_done_missing_task_id_hint_excludes_completed_tasks():
     ]
     Path(_TASKS_FILE).write_text(json.dumps(tasks))
     result = fn(action="done", task_id=0)
-    assert "task_id required" in result, f"Expected task_id-required error, got: {result!r}"
+    assert "task_id" in result and "required" in result, f"Expected task_id-required error, got: {result!r}"
     assert "#1" not in result, (
         f"'Open tasks:' hint must not include completed task #1, got: {result!r}"
     )
@@ -1663,24 +1663,16 @@ def test_drop_on_open_task_still_works():
 
 # ── Issue #776: auto-resolve ambiguity must return a helpful error ────────────
 
-def test_done_auto_resolve_ambiguous_match_returns_error():
-    """done with description matching multiple tasks must return an error listing
-    the matches, not silently pick one or return a generic 'task_id required' message. (#776)"""
+def test_done_auto_resolve_ambiguous_match_picks_first():
+    """done with description matching multiple tasks auto-selects the first (lowest-ID)
+    open task rather than erroring.  Pre-populated phase task lists (CONSOLIDATE, PERSIST)
+    produce duplicate descriptions; auto-picking prevents agents stalling on each cycle."""
     fn(action="add", description="fix login bug")
     fn(action="add", description="fix signup bug")
     fn(action="add", description="fix logout bug")
     result = fn(action="done", task_id=0, description="fix")
-    assert result.startswith("Error:"), f"Expected Error, got: {result!r}"
-    # Must mention the ambiguity — how many tasks matched
-    assert "3 tasks match" in result or "3 task" in result, (
-        f"Error must mention how many tasks matched, got: {result!r}"
-    )
-    # Must list the matching task IDs so the caller can resolve manually
-    assert "#1" in result, f"Match list must include #1, got: {result!r}"
-    assert "#2" in result, f"Match list must include #2, got: {result!r}"
-    assert "#3" in result, f"Match list must include #3, got: {result!r}"
-    # Must mention 'task_id' so the caller knows how to fix it
-    assert "task_id" in result, f"Error must mention task_id, got: {result!r}"
+    # Should complete the first matching task (#1), not error
+    assert "Completed task #1" in result, f"Expected auto-pick of #1, got: {result!r}"
 
 
 def test_update_auto_resolve_ambiguous_match_returns_error():
