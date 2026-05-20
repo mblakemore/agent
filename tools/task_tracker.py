@@ -427,13 +427,21 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
                         task_id = matches[0]["id"]
                         _description_used_for_resolution = True
                     elif len(matches) > 1:
-                        match_list = ", ".join(
-                            f"#{t['id']} {t.get('description', '')!r}" for t in matches
-                        )
-                        return (
-                            f"Error: {len(matches)} tasks match {description!r} — "
-                            f"use task_id to specify: {match_list}"
-                        )
+                        if action == "done":
+                            # done: auto-select the first (lowest-ID) match rather than
+                            # erroring.  Pre-populated task lists often contain duplicate
+                            # phase names (CONSOLIDATE, PERSIST); picking the lowest-ID
+                            # open task is always the right next one to complete.
+                            task_id = matches[0]["id"]
+                            _description_used_for_resolution = True
+                        else:
+                            match_list = ", ".join(
+                                f"#{t['id']} {t.get('description', '')!r}" for t in matches
+                            )
+                            return (
+                                f"Error: {len(matches)} tasks match {description!r} — "
+                                f"use task_id to specify: {match_list}"
+                            )
 
         if action == "add":
             # task_id is not a valid parameter for 'add' — IDs are assigned automatically.
@@ -488,6 +496,21 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
 
         elif action == "done":
             if task_id <= 0:
+                # Before erroring: check if description matches an already-done task.
+                # Pre-populated task lists and cognitive-loop agents often re-mark
+                # phases (REFLECT, ACT, …) that completed in a prior round — treat
+                # this as an idempotent success rather than an error.
+                if description:
+                    _desc_lo = description.lower()
+                    _already = [
+                        t for t in tasks
+                        if t["status"] in ("done", "completed")
+                        and (_desc_lo in t.get("description", "").lower()
+                             or t.get("description", "").lower() in _desc_lo)
+                    ]
+                    if _already:
+                        _t = _already[0]
+                        return f"Task #{_t['id']} already done: {_t.get('description', '')}"
                 available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] not in ("done", "completed")]
                 return (
                     f"Error: task_id (or description=) required for 'done'. "
