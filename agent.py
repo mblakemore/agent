@@ -258,7 +258,7 @@ _DEFAULT_CONFIG = {
         "max_total_nudges": 6,
     },
     "generation": {
-        "temperature": 1.0,
+        "temperature": 0.6,
         "top_p": 0.95,
         "top_k": 64,
         "presence_penalty": 0.0,
@@ -2805,6 +2805,16 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     )
     ok, detail = _main_backend.health()
 
+    # Auto-detect the model name from /v1/models so the TUI shows the actual
+    # loaded model rather than the config default ("gemma-4-31B").  Only update
+    # when the server returns exactly one model — ambiguous lists are left alone.
+    if ok and getattr(_main_backend, "kind", None) == "llamacpp":
+        _detected_models = _main_backend.list_models(timeout=3)
+        if len(_detected_models) == 1:
+            _main_backend.model = _detected_models[0]
+            _config["llm"]["model"] = _detected_models[0]
+            log.info("Auto-detected main model name from /v1/models: %s", _detected_models[0])
+
     # Backend banner (plan task 1.5) — one-line log noting which kinds are active.
     log.info(
         "backends: main=%s(%s@%s) summary=%s(%s@%s)",
@@ -2854,6 +2864,11 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             summary_ok, summary_detail = _summary_backend.health()
         except (requests.ConnectionError, requests.Timeout):
             summary_ok, summary_detail = False, "unreachable"
+        if summary_ok and getattr(_summary_backend, "kind", None) == "llamacpp":
+            _det = _summary_backend.list_models(timeout=3)
+            if len(_det) == 1:
+                _summary_backend.model = _det[0]
+                log.info("Auto-detected summary model name from /v1/models: %s", _det[0])
 
     _emit("on_session_start", {
         "version": __version__,
