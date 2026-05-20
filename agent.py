@@ -293,13 +293,12 @@ _DEFAULT_CONFIG = {
         # so the agent picks up from where it left off.
         # Intended for agents with a fixed phase loop (e.g. PERCEIVE→PERSIST).
         "initial_tasks": [],
-        # Per-turn text-only response cap (characters). If the model generates
-        # more than this many characters of prose without a tool call, the stream
-        # is truncated and a correction is injected.  Prevents context-filling
+        # Per-turn text-only response cap (characters). Only enforced when nudge
+        # is enabled — has no effect when nudge is off.  Prevents context-filling
         # spirals (c0rtana C206: 50K-char monologue → 10 ctx-overflow errors).
-        # ~6000 chars ≈ 1500 tokens — generous for any real decision, but cuts off
-        # infinite loops well before they eat the context window.
-        "max_text_response_chars": 6000,
+        # ~24000 chars ≈ 6000 tokens — allows long reasoning/analysis turns while
+        # still cutting runaway loops well before they exhaust the context window.
+        "max_text_response_chars": 24000,
         # Enable auto-nudge on text-only responses. Off by default.
         # Also settable via --nudge CLI flag (either enables it).
         "nudge": False,
@@ -3723,10 +3722,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             _post_tool_chars += len(delta["content"])
                         status.count_token()
                         _deltas_received += 1
-                        # Pre-tool text cap: if the model is generating pure prose
-                        # (no tool calls yet) and exceeds the per-turn character limit,
-                        # truncate immediately to prevent context overflow.
-                        if (not receiving_tools
+                        # Pre-tool text cap: if nudge is enabled and the model is
+                        # generating pure prose (no tool calls yet) and exceeds the
+                        # per-turn character limit, truncate to prevent context overflow.
+                        if (_NUDGE_ENABLED
+                                and not receiving_tools
                                 and _content_chars > _MAX_TEXT_RESPONSE_CHARS):
                             log.warning(
                                 "Text-only response cap: %d chars exceeds limit %d — truncating",
@@ -3737,11 +3737,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                                          value=_content_chars)
                             _safe_close(response)
                             break
-                        # Post-tool text cap: prose generated AFTER tool calls have
-                        # started is also capped — prevents c0rtana C207 pattern where
-                        # garbled tool calls set receiving_tools=True then 50K chars of
-                        # spiral prose followed with no cap applied.
-                        if (receiving_tools
+                        # Post-tool text cap: when nudge is enabled, prose generated
+                        # AFTER tool calls is also capped — prevents c0rtana C207
+                        # pattern where garbled tool calls set receiving_tools=True
+                        # then 50K chars of spiral prose followed with no cap applied.
+                        if (_NUDGE_ENABLED
+                                and receiving_tools
                                 and _post_tool_chars > _MAX_POST_TOOL_TEXT_CHARS):
                             log.warning(
                                 "Post-tool text cap: %d chars after tools exceeds limit %d — truncating",
