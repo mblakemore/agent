@@ -1462,3 +1462,69 @@ class TestFileReadListPathConfinement(unittest.TestCase):
         self.assertFalse(result.startswith("Error:"),
                          msg=f"List inside cwd must succeed, got: {result!r}")
         self.assertIn("a.txt", result)
+
+
+class TestEditFuzzyTrailingWhitespace(unittest.TestCase):
+    """edit_file fuzzy fallback: trailing whitespace on blank lines must not
+    cause a spurious old_string-not-found failure.
+
+    The common crash: model reads a file, copies a block that contains blank
+    lines with trailing spaces (e.g. indented blank lines in Python), writes
+    the old_string with clean blank lines (\n instead of '    \n'), and the
+    exact-string match fails.  The fuzzy path should silently recover.
+    """
+
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        self._target = Path(self._tmpdir) / "sample.py"
+        # Write a file where the blank line inside the method carries 4
+        # trailing spaces — the exact pattern that triggered the crash.
+        self._target.write_text(
+            "def foo():\n"
+            "    x = 1\n"
+            "    \n"           # <-- trailing spaces on blank line
+            "    return x\n",
+            encoding="utf-8",
+        )
+        file_tool.fn(action="read", path=str(self._target))
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def test_fuzzy_match_applies_edit_when_blank_line_has_trailing_spaces(self):
+        """edit succeeds even when old_string has clean \\n where file has '    \\n'."""
+        result = file_tool.fn(
+            action="edit",
+            path=str(self._target),
+            old_string="def foo():\n    x = 1\n\n    return x\n",  # clean blank line
+            new_string="def foo():\n    x = 2\n\n    return x\n",
+        )
+        self.assertFalse(result.startswith("Error:"),
+                         msg=f"Fuzzy edit must succeed, got: {result!r}")
+        content = self._target.read_text(encoding="utf-8")
+        self.assertIn("x = 2", content)
+
+    def test_exact_match_still_works(self):
+        """Exact old_string (with trailing spaces) still matches as before."""
+        result = file_tool.fn(
+            action="edit",
+            path=str(self._target),
+            old_string="def foo():\n    x = 1\n    \n    return x\n",  # exact
+            new_string="def foo():\n    x = 3\n    \n    return x\n",
+        )
+        self.assertFalse(result.startswith("Error:"),
+                         msg=f"Exact edit must succeed, got: {result!r}")
+        content = self._target.read_text(encoding="utf-8")
+        self.assertIn("x = 3", content)
+
+    def test_genuinely_missing_old_string_still_errors(self):
+        """old_string with wrong content (not just whitespace) still returns Error."""
+        result = file_tool.fn(
+            action="edit",
+            path=str(self._target),
+            old_string="def bar():\n    x = 99\n",  # doesn't exist
+            new_string="def bar():\n    x = 0\n",
+        )
+        self.assertTrue(result.startswith("Error:"),
+                        msg=f"Missing old_string must still error, got: {result!r}")
