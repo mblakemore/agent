@@ -2562,6 +2562,33 @@ def _seed_phase_tasks(config, log):
         log.warning("seed_phase_tasks: failed — %s", exc)
 
 
+def _build_open_task_nudge():
+    """Return a reminder string if open tasks remain in task_tracker, else None."""
+    try:
+        from tools.task_tracker import get_tasks
+        open_tasks = [
+            t for t in get_tasks()
+            if t.get("status") not in ("done", "completed")
+        ]
+        if not open_tasks:
+            return None
+        lines = [
+            f"You signalled cycle completion but {len(open_tasks)} task(s) are still open:"
+        ]
+        for t in open_tasks:
+            tid = t.get("id", "?")
+            desc = t.get("description", "(no description)")
+            status = t.get("status", "pending")
+            lines.append(f"  #{tid} [{status}] {desc}")
+        lines.append(
+            "Do not end the cycle yet — address the remaining tasks above. "
+            "Use task_tracker(action='list') to review them, then take the next action."
+        )
+        return "\n".join(lines)
+    except Exception:
+        return None
+
+
 # ── Cycle auto-increment ─────────────────────────────────────────────
 
 def _auto_increment_cycle(log):
@@ -3229,6 +3256,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _has_edited = False
     _EDIT_DEADLINE_TURN = 20
     _edit_nudge_sent = False
+    # Open-task reminder fires at most once per cycle (at completion signal or
+    # grace-period exhaustion) to surface remaining task_tracker items.
+    _open_task_nudge_sent = False
 
     # Reviewer sessions rarely make code edits (they verify and merge), so the
     # edit-deadline nudge is a false positive for that role.  Detect by
@@ -4002,6 +4032,16 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 or (full_content and any(re.search(p, _fc_lower) for p in _completion_signal_patterns))
             )
             if _has_persisted_work and _completion_matched:
+                if _NUDGE_ENABLED and not _open_task_nudge_sent:
+                    _open_reminder = _build_open_task_nudge()
+                    if _open_reminder:
+                        _open_task_nudge_sent = True
+                        _total_nudges += 1
+                        conversation_history.append({"role": "user", "content": _open_reminder})
+                        log.info("open-task nudge: completion signal intercepted, %d nudges used",
+                                 _total_nudges)
+                        telemetry.record_patch_event("open_task_nudge", kind="fired")
+                        continue
                 log.info("Stopping: model signalled cycle completion (work persisted)")
                 return "done"
             if not _has_persisted_work and _completion_matched:
@@ -4012,6 +4052,16 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             if _cycle_persisted:
                 grace_used = turn - (_cycle_persisted_turn or turn)
                 if grace_used >= _CYCLE_GRACE_TURNS:
+                    if _NUDGE_ENABLED and not _open_task_nudge_sent:
+                        _open_reminder = _build_open_task_nudge()
+                        if _open_reminder:
+                            _open_task_nudge_sent = True
+                            _total_nudges += 1
+                            conversation_history.append({"role": "user", "content": _open_reminder})
+                            log.info("open-task nudge: grace period intercepted, %d nudges used",
+                                     _total_nudges)
+                            telemetry.record_patch_event("open_task_nudge", kind="fired")
+                            continue
                     log.info("Stopping: cycle persisted %d turns ago, grace period exhausted", grace_used)
                     return "done"
                 log.info("Cycle persisted but grace period active (%d/%d turns) — nudging for TRACK work",
