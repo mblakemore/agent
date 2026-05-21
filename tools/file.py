@@ -1,6 +1,7 @@
 """Unified file operations tool — read, write, insert, append, delete, list."""
 
 import os
+import re
 import tempfile
 import difflib
 from pathlib import Path
@@ -15,6 +16,11 @@ _MAX_READ_LINES = 500
 
 # Cap directory listings to prevent node_modules / build-output floods (#977).
 _MAX_LIST_ENTRIES = 500
+
+
+def _strip_trailing_ws(s: str) -> str:
+    """Strip trailing whitespace from every line (used for fuzzy edit matching)."""
+    return '\n'.join(line.rstrip() for line in s.split('\n'))
 
 # Track files that have been read or written this session — writes to existing
 # unread files are blocked to prevent blind overwrites.  Shared with exec_command.
@@ -526,27 +532,48 @@ def _edit(path, old_string, new_string, replace_all):
         old_content = f.read()
 
     occurrences = old_content.count(old_string)
-    if occurrences == 0:
-        # Give a useful hint on common near-miss causes
-        first_line = old_string.splitlines()[0] if old_string else ""
-        hint = ""
-        if first_line and first_line in old_content:
-            hint = (f"\n\nHint: the first line of your `old_string` ({first_line!r}) is "
-                    f"present in the file, but the full string isn't — likely a trailing-"
-                    f"whitespace or line-ending mismatch. Re-read the section with "
-                    f"read_file(path='{path}') to copy the exact text.")
-        return f"Error: `old_string` not found in '{path}' (0 occurrences).{hint}"
+    new_content = None  # set by whichever match path succeeds
 
-    if occurrences > 1 and not replace_all:
+    if occurrences == 0:
+        # Fuzzy fallback: strip trailing whitespace from each line and retry.
+        # Handles the common case where blank lines in the file carry trailing
+        # spaces (e.g. indented blank lines in Python) that the model strips
+        # when copying the old_string — causing a spurious mismatch.
+        _norm_content = _strip_trailing_ws(old_content)
+        _norm_old    = _strip_trailing_ws(old_string)
+        _norm_occ    = _norm_content.count(_norm_old) if _norm_old else 0
+
+        if _norm_occ == 1:
+            # Build a regex that allows optional trailing whitespace on each
+            # line, then splice new_string in place of the matched span.
+            _pat = '\n'.join(re.escape(line.rstrip()) + r'[ \t]*'
+                             for line in old_string.split('\n'))
+            _m = re.search(_pat, old_content)
+            if _m:
+                new_content = old_content[:_m.start()] + new_string + old_content[_m.end():]
+
+        if new_content is None:
+            # No match even after normalization — give a useful hint
+            first_line = old_string.splitlines()[0] if old_string else ""
+            hint = ""
+            if first_line and first_line in old_content:
+                hint = (f"\n\nHint: the first line of your `old_string` ({first_line!r}) is "
+                        f"present in the file, but the full string isn't — likely a trailing-"
+                        f"whitespace or line-ending mismatch. Re-read the section with "
+                        f"read_file(path='{path}') to copy the exact text.")
+            return f"Error: `old_string` not found in '{path}' (0 occurrences).{hint}"
+
+    elif occurrences > 1 and not replace_all:
         return (f"Error: `old_string` appears {occurrences} times in '{path}'. "
                 f"Either provide more surrounding context to make it unique, or pass "
                 f"replace_all=True to replace every occurrence.")
 
-    if replace_all:
-        new_content = old_content.replace(old_string, new_string)
-    else:
-        # Exactly one occurrence — do a single replace
-        new_content = old_content.replace(old_string, new_string, 1)
+    if new_content is None:
+        # Exact match path
+        if replace_all:
+            new_content = old_content.replace(old_string, new_string)
+        else:
+            new_content = old_content.replace(old_string, new_string, 1)
 
     try:
         temp_fd, temp_path = tempfile.mkstemp(dir=p.parent, text=True)
