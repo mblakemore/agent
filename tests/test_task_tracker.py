@@ -2823,3 +2823,76 @@ def test_unique_task_ids_still_load_correctly():
     result = fn(action="list")
     assert not result.startswith("Error:"), f"Unique IDs must not be flagged as corrupted: {result!r}"
     assert "task one" in result
+
+
+# ── #1028 persistent-flag plumbing (AC1, AC2, AC8, AC9) ──────────────────────
+
+def test_add_persistent_true_stores_flag():
+    """AC1: persistent=True on add stores the flag on the task dict."""
+    res = fn(action="add", description="long-running ship", persistent=True)
+    assert "Added task #1" in res, res
+    with open(_TASKS_FILE, "r") as f:
+        tasks = json.load(f)
+    assert tasks[0].get("persistent") is True, tasks[0]
+
+
+def test_add_default_is_ephemeral():
+    """AC2: omitting persistent results in an ephemeral task — no persistent key written."""
+    res = fn(action="add", description="quick scratch task")
+    assert "Added task #1" in res, res
+    with open(_TASKS_FILE, "r") as f:
+        tasks = json.load(f)
+    assert "persistent" not in tasks[0], (
+        "default-ephemeral must NOT write the persistent key — caller passed nothing"
+    )
+
+
+def test_add_persistent_false_explicit_does_not_store_key():
+    """Explicit persistent=False is equivalent to the default — no key written."""
+    res = fn(action="add", description="explicit ephemeral", persistent=False)
+    assert "Added task #1" in res, res
+    with open(_TASKS_FILE, "r") as f:
+        tasks = json.load(f)
+    assert "persistent" not in tasks[0]
+
+
+def test_add_rejects_non_bool_persistent():
+    """Type guard: non-bool persistent returns a clear error and does NOT create a task."""
+    res = fn(action="add", description="bad input", persistent="yes")
+    assert res.startswith("Error: persistent must be a boolean"), res
+    assert not Path(_TASKS_FILE).exists(), "no task should have been written"
+
+
+def test_list_shows_persistent_marker():
+    """AC8: list output marks persistent tasks with [persistent], plain tasks without."""
+    fn(action="add", description="ephemeral one")
+    fn(action="add", description="long-lived two", persistent=True)
+    out = fn(action="list")
+    # Ephemeral task line has no marker; persistent task line does.
+    ephem_line = next(l for l in out.splitlines() if "ephemeral one" in l)
+    persist_line = next(l for l in out.splitlines() if "long-lived two" in l)
+    assert "[persistent]" not in ephem_line, ephem_line
+    assert "[persistent]" in persist_line, persist_line
+
+
+def test_backwards_compat_tasks_without_persistent_field_load():
+    """AC9: tasks.json entries missing the persistent field load cleanly and behave as non-persistent."""
+    p = Path(_TASKS_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    # Legacy shape — no persistent key on any entry. Must NOT trigger _Corrupted.
+    p.write_text(json.dumps([
+        {"id": 1, "status": "open", "description": "legacy task"},
+    ]), encoding="utf-8")
+    out = fn(action="list")
+    assert not out.lower().startswith("error"), out
+    assert "legacy task" in out
+    assert "[persistent]" not in out, "missing-field default must read as non-persistent"
+
+
+def test_persistent_flag_definition_schema():
+    """The exposed tool schema declares the persistent parameter so callers can discover it."""
+    from tools.task_tracker import definition
+    props = definition["function"]["parameters"]["properties"]
+    assert "persistent" in props, props.keys()
+    assert props["persistent"]["type"] == "boolean"
+    assert props["persistent"].get("default") is False
