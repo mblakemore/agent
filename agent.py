@@ -2544,14 +2544,36 @@ def _seed_phase_tasks(config, log):
     task list from the config so the agent starts every cycle with a
     structured checklist.  If open tasks remain (interrupted cycle), does
     nothing — the agent continues from where it left off.
+
+    Seeded tasks are ephemeral by default (AC5 of #1028). Set
+    ``preferences.seed_tasks_persistent: true`` in ``.agent/config.json``
+    to make phase tasks persistent across sessions (AC6); in that mode
+    seeding is idempotent — descriptions already present as open tasks
+    are skipped instead of duplicated (AC7).
     """
     task_descs = config.get("preferences", {}).get("initial_tasks", [])
     if not task_descs:
         return
+    seed_persistent = bool(config.get("preferences", {}).get("seed_tasks_persistent", False))
     try:
         from tools.task_tracker import get_tasks, fn as _tt_fn
         existing = get_tasks()
         open_tasks = [t for t in existing if t.get("status") not in ("done", "completed")]
+
+        if seed_persistent:
+            open_descs = {t.get("description") for t in open_tasks}
+            seeded = 0
+            for desc in task_descs:
+                if desc in open_descs:
+                    log.debug("seed_phase_tasks: skip duplicate persistent task %r", desc)
+                    continue
+                result = _tt_fn("add", description=desc, persistent=True)
+                log.debug("seed_phase_tasks: %s", result)
+                seeded += 1
+            if seeded:
+                log.info("seed_phase_tasks: seeded %d persistent phase task(s)", seeded)
+            return
+
         if open_tasks:
             log.debug("seed_phase_tasks: %d open task(s) remain — skipping seed", len(open_tasks))
             return
