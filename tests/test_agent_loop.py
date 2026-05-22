@@ -33,6 +33,41 @@ def create_mock_response(content=None, tool_calls=None, side_effect=None):
         mock_resp.iter_lines.return_value = lines
     return mock_resp
 
+
+def _setup_mock_config(mock_config, overrides=None):
+    """Configure mock_config so BOTH __getitem__ and .get behave like a dict.
+
+    Without this, ``mock_config.get("preferences", {}).get("persist_nudge")``
+    returns a fresh MagicMock (truthy), which spuriously triggers
+    run_agent_single's persist_nudge path — manifesting as an extra LLM
+    call and StopIteration once the test's side_effect list is exhausted.
+    See issue #1026.
+    """
+    cfg = {
+        "llm": {"model": "test-model"},
+        "generation": {"temperature": 0.7, "top_p": 0.9,
+                       "top_k": 40, "presence_penalty": 0.0},
+        "context": {"max_tokens": 4096, "ctx_size": 32768},
+        "preferences": {
+            "nudge": False,
+            "persist_nudge": False,
+            "max_text_response_chars": 6000,
+            "max_post_tool_text_chars": 2000,
+            "max_total_nudges": 6,
+        },
+        "summary": {"enabled": False, "base_url": "http://localhost:8082"},
+    }
+    if overrides:
+        for k, v in overrides.items():
+            if isinstance(v, dict) and isinstance(cfg.get(k), dict):
+                cfg[k] = {**cfg[k], **v}
+            else:
+                cfg[k] = v
+    mock_config.__getitem__.side_effect = lambda k: cfg.get(k)
+    mock_config.get.side_effect = lambda k, default=None: cfg.get(k, default)
+    return cfg
+
+
 @patch('agent._emit')
 @patch('agent._llm_request')
 @patch('agent._config')
@@ -52,11 +87,7 @@ def test_run_agent_single_direct_answer(mock_config, mock_llm, mock_emit):
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_run_agent_single_tool_loop(mock_config, mock_llm, mock_emit):
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768}
-    }.get(k)
+    _setup_mock_config(mock_config)
     tool_call = {"index": 0, "id": "call_1", "function": {"name": "search_files", "arguments": '{"pattern": "test"}'}}
     mock_resp = create_mock_response(tool_calls=[tool_call])
     mock_llm.side_effect = [mock_resp, mock_resp, mock_resp, mock_resp, create_mock_response(content="Loop detected!")]
@@ -128,11 +159,7 @@ def test_streaming_unexpected_exception(mock_config, mock_llm, mock_emit):
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_tool_call_json_decode_error(mock_config, mock_llm, mock_emit):
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768}
-    }.get(k)
+    _setup_mock_config(mock_config)
     tool_calls = [
         {"index": 0, "id": "call_valid", "function": {"name": "search_files", "arguments": '{"pattern": "test"}'}},
         {"index": 1, "id": "call_garbled", "function": {"name": "search_files", "arguments": '{"pattern": "test"'}},
@@ -150,11 +177,7 @@ def test_tool_call_json_decode_error(mock_config, mock_llm, mock_emit):
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_tool_call_generic_exception(mock_config, mock_llm, mock_emit):
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768}
-    }.get(k)
+    _setup_mock_config(mock_config)
     mock_llm.return_value = create_mock_response(tool_calls=[
         {"index": 0, "id": "call_1", "function": {"name": "fail_tool", "arguments": "{}"}}
     ])
@@ -251,7 +274,7 @@ def test_completion_signal_ignored_no_work(mock_config, mock_llm, mock_emit):
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_hallucinated_file_read_correction(mock_config, mock_llm, mock_emit):
-    mock_config.__getitem__.side_s_effect = _mock_cfg_nudge
+    _setup_mock_config(mock_config)
     mock_llm.side_effect = [
         create_mock_response(tool_calls=[_think_tool_nudge]),
         create_mock_response(content="Still thinking."),
@@ -323,12 +346,8 @@ def test_auto_guidance_keyboard_interrupt(mock_input):
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_run_agent_single_empty_tool_output(mock_config, mock_llm, mock_emit):
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768}
-    }.get(k)
-    
+    _setup_mock_config(mock_config)
+
     tool_call = {"index": 0, "id": "call_1", "function": {"name": "search_files", "arguments": '{"pattern": "test"}'}}
     mock_resp = create_mock_response(tool_calls=[tool_call])
     
@@ -416,12 +435,7 @@ def test_run_agent_interactive_init_and_exit(mock_logger, mock_summary, mock_mai
 @patch('agent._config')
 def test_context_overflow_recovery_success(mock_config, mock_llm, mock_emit):
     """Tests that the agent successfully recovers from context overflow by reducing history."""
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768},
-        "summary": {"enabled": True, "base_url": "http://localhost:8082"}
-    }.get(k)
+    _setup_mock_config(mock_config, {"summary": {"enabled": True}})
     
     from agent import ContextOverflowError
     
@@ -476,12 +490,7 @@ def test_context_overflow_max_retries_failure(mock_config, mock_llm, mock_emit):
 @patch('agent._config')
 def test_context_overflow_summary_truncation(mock_config, mock_llm, mock_emit):
     """Tests that the agent truncates the summary when history is already minimal."""
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768},
-        "summary": {"enabled": True, "base_url": "http://localhost:8082"}
-    }.get(k)
+    _setup_mock_config(mock_config, {"summary": {"enabled": True}})
     
     from agent import ContextOverflowError
     
@@ -541,11 +550,7 @@ def test_coverage_gap_tool_parsing_exception(mock_config, mock_llm, mock_emit):
 @patch('agent._config')
 def test_coverage_gap_circuit_breaker(mock_config, mock_llm, mock_emit):
     """Targets lines 3267-3268: Circuit breaker trigger."""
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768}
-    }.get(k)
+    _setup_mock_config(mock_config)
     
     # To trigger circuit breaker, we need a tool to fail repeatedly or be marked as unavailable.
     # The circuit breaker logic usually depends on consecutive failures or specific error types.
@@ -574,11 +579,7 @@ def test_coverage_gap_circuit_breaker(mock_config, mock_llm, mock_emit):
 @patch('agent._config')
 def test_coverage_gap_pr_trailer_warning(mock_config, mock_llm, mock_emit):
     """Targets lines 3462-3463: Warning for missing 'Closes #N' in PR creation."""
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768}
-    }.get(k)
+    _setup_mock_config(mock_config)
     
     # Trigger gh pr create without Closes #N
     tool_call = {"index": 0, "id": "call_1", "function": {"name": "gh_pr_create", "arguments": '{"title": "Test PR", "body": "No trailer here"}'}}
@@ -600,27 +601,18 @@ def test_coverage_gap_pr_trailer_warning(mock_config, mock_llm, mock_emit):
 @patch('agent._config')
 def test_coverage_gap_overtime_repeated_result(mock_config, mock_llm, mock_emit):
     """Targets lines 3646-3649: Overtime + repeated tool result."""
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768}
-    }.get(k)
-    
+    _setup_mock_config(mock_config)
+
     # Trigger overtime by having many turns
     # And trigger repeated result by having the tool return the same value
     tool_call = {"index": 0, "id": "call_1", "function": {"name": "repeat_tool", "arguments": "{}"}}
-    
+
 @patch('agent._emit')
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_coverage_gap_overtime_repeated_result(mock_config, mock_llm, mock_emit):
     """Targets lines 3646-3649: Overtime + repeated tool result."""
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
-        "context": {"max_tokens": 4096, "ctx_size": 32768},
-        "summary": {"enabled": False, "base_url": "http://localhost:8082"}
-    }.get(k)
+    _setup_mock_config(mock_config)
     
     # Trigger overtime by having many turns
     # And trigger repeated result by having the tool return the same value
