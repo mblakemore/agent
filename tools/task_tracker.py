@@ -171,6 +171,47 @@ def _next_id(tasks):
     return max((t.get("id", 0) for t in tasks), default=0) + 1
 
 
+def auto_close_ephemeral():
+    """Transition all open non-persistent tasks to status ``auto_closed``.
+
+    Called once at new-session startup so a fresh session begins with a clean
+    scaffold by default (AC3 of #1028). Tasks flagged ``persistent: True``
+    survive; everything else is closed in place with a ``closed`` timestamp.
+
+    Returns a tuple ``(closed, persistent_open)`` of task-dict lists captured
+    from the in-memory state BEFORE the save. ``closed`` carries the
+    pre-mutation snapshot so callers can render an accurate
+    "was open, now auto_closed" summary; ``persistent_open`` lists open
+    persistent tasks that remain (for the summary's "still open" section).
+
+    If the tasks file is missing, corrupted, or unreadable, returns
+    ``([], [])`` and writes nothing — never raise during startup.
+    """
+    with _write_lock:
+        loaded = _load_tasks()
+        if isinstance(loaded, _Corrupted):
+            return ([], [])
+        tasks = loaded
+        closed = []
+        persistent_open = []
+        mutated = False
+        for t in tasks:
+            if t.get("status") in ("done", "completed", "auto_closed"):
+                continue
+            if t.get("persistent"):
+                persistent_open.append(dict(t))
+                continue
+            closed.append(dict(t))
+            t["status"] = "auto_closed"
+            t["closed"] = datetime.now().isoformat(timespec="seconds")
+            mutated = True
+        if mutated:
+            err = _save_tasks(tasks)
+            if err:
+                return ([], persistent_open)
+        return (closed, persistent_open)
+
+
 def fn(action: str, description: str = "", task_id: int = 0, status: str = "", limit: int = 0, persistent: bool = False) -> str:
     """Manage persistent tasks.
 
