@@ -64,8 +64,11 @@ Call `task_tracker(action="list")` once to confirm. **Do NOT add the standard ta
 ```bash
 git fetch origin && git status && git log --oneline -10 && \
 gh issue list --state open --label cicd --limit 20 --json number,title,labels,updatedAt && \
+gh issue list --state open --no-assignee --limit 10 --json number,title,labels,createdAt && \
 gh pr list --state open --limit 10 --json number,title,isDraft,headRefName,labels
 ```
+
+The second `gh issue list` (no label filter) surfaces user-filed issues that lack the `cicd` label. Treat any issue returned by either query as a candidate — see DECIDE for label-remediation rules.
 
 Then in a second turn, check if main is green. **TIMEOUT WARNING (cycle 91)**: the full test suite (865+ tests) takes >120s and will time out. NEVER run bare `python3 -m pytest` or `python3 -m pytest tests/` — it always times out. Use a targeted subset:
 ```bash
@@ -158,11 +161,17 @@ gh issue comment <ISSUE> --body "Picked up by CICD cycle NNN. Metric: <metric> (
 
 **Hard rule**: the issue `Closes #N` references must carry `in-progress-bot-${BOT_ID}` OR `cicd-cycle-*` label by the time the PR is opened. Reviewer's PRE-MERGE CHECK (reviewer.md §4) CLOSEs the PR if the label is absent — treating a missing label as evidence that DECIDE was skipped.
 
-**CRITICAL (cycle 69 — run 122 NULL cause):** Do NOT use existing issues without `cicd` label as your CICD target. If `gh issue list` shows an open issue with only `documentation` or other non-CICD labels, SKIP IT — file a new issue via `gh issue create --label cicd ...`. Before using any existing issue as target: verify `"cicd" in labels`.
+**CRITICAL (cycle 69 — run 122 NULL cause):** Before claiming any existing issue, check its labels:
+
+- **Has `cicd` label** → valid target, proceed normally.
+- **Has no labels, or neutral labels only** (e.g. `enhancement`, `bug` filed by the user) → add `cicd` before proceeding: `gh issue edit <N> --add-label cicd`. Do NOT file a duplicate issue.
+- **Has only incompatible labels** (`documentation`, `question`, `wontfix`, `invalid`) and no `cicd` → SKIP IT, file a new issue via `gh issue create --label cicd ...`.
+
+User-filed issues often lack the `cicd` label — that is not a reason to skip them. The label-remediation step (`gh issue edit --add-label cicd`) is the correct fix, not duplication.
 
 **CRITICAL (cycle 73 — run 135 failure mode):** If any open CICD-labeled issue exists unclaimed by another bot, **you MUST work on it** — regardless of whether you believe a different target (coverage, refactor, new tests) would be higher impact. REFLECT scoring does not apply when a queued CICD issue is present. Filing a sibling issue to pivot scope (e.g. "README update is lower impact than coverage, so I'll file #329 for coverage instead") is **prohibited** — it bypasses the user's prioritization and wastes a cycle building on a rejected premise. Concretely:
 
-1. After PERCEIVE's `gh issue list --state open --label cicd`, if ≥1 unclaimed CICD issue exists, REFLECT selects from that list ONLY. Do not file a new issue.
+1. After PERCEIVE's issue queries (labeled + unlabeled), if ≥1 unclaimed CICD-eligible issue exists (has `cicd` label, or has no incompatible labels and can receive it), REFLECT selects from that combined list ONLY. Do not file a new issue.
 2. "Unclaimed" means: no `in-progress-bot-N` label for a DIFFERENT bot. Issues with no bot label, or with `in-progress-bot-${BOT_ID}` (your prior interrupted cycle), ARE available to you.
 3. Ties among unclaimed CICD issues: pick oldest by `createdAt`. Do NOT skip an issue because its task type (docs, config, refactor) is outside your usual pattern — the task type does not grant exemption.
 4. Only exception: if a candidate issue is demonstrably already resolved on HEAD (tests green, feature present, docs already match), comment "Cannot reproduce on HEAD" and move to the next-oldest. Do NOT use scope-pivot language ("lower impact than …") as a reason to skip.
