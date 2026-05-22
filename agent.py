@@ -2585,13 +2585,58 @@ def _seed_phase_tasks(config, log):
         log.warning("seed_phase_tasks: failed — %s", exc)
 
 
+def _auto_close_ephemeral_tasks(log):
+    """Close ephemeral open tasks at session-start and return a resume summary.
+
+    Implements AC3 + AC4 of #1028. Open tasks without ``persistent: True``
+    are transitioned to ``auto_closed`` (AC3). If anything was closed or
+    any persistent tasks remain open, a formatted "[Session resume]"
+    block is returned (AC4); otherwise ``None``.
+
+    Never raises — failures are logged at WARNING so a corrupted or
+    locked tasks file cannot break agent startup.
+    """
+    try:
+        from tools.task_tracker import auto_close_ephemeral
+        closed, persistent_open = auto_close_ephemeral()
+    except Exception as exc:
+        log.warning("auto_close_ephemeral_tasks: failed — %s", exc)
+        return None
+    if closed:
+        log.info("auto_close_ephemeral_tasks: closed %d ephemeral task(s)", len(closed))
+    return _build_session_resume_summary(closed, persistent_open)
+
+
+def _build_session_resume_summary(closed, persistent_open):
+    """Format the [Session resume] block, or return None if nothing to report."""
+    if not closed and not persistent_open:
+        return None
+    lines = ["[Session resume]"]
+    if closed:
+        lines.append(f"{len(closed)} ephemeral task(s) auto-closed from last session:")
+        for t in closed:
+            tid = t.get("id", "?")
+            desc = t.get("description", "(no description)")
+            lines.append(f"  #{tid} [auto_closed] {desc}")
+    if persistent_open:
+        if closed:
+            lines.append("")
+        lines.append(f"{len(persistent_open)} persistent task(s) still open:")
+        for t in persistent_open:
+            tid = t.get("id", "?")
+            desc = t.get("description", "(no description)")
+            status = t.get("status", "open")
+            lines.append(f"  #{tid} [{status}] {desc}")
+    return "\n".join(lines)
+
+
 def _build_open_task_nudge():
     """Return a reminder string if open tasks remain in task_tracker, else None."""
     try:
         from tools.task_tracker import get_tasks
         open_tasks = [
             t for t in get_tasks()
-            if t.get("status") not in ("done", "completed")
+            if t.get("status") not in ("done", "completed", "auto_closed")
         ]
         if not open_tasks:
             return None
@@ -3006,6 +3051,18 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     summary_state = summary_state if continue_mode and start_turn > 0 else {"text": "", "up_to": 0}
     initial_files = initial_files if continue_mode and start_turn > 0 else None
 
+    # AC3/AC4 of #1028 — close ephemeral tasks left open from a prior session
+    # and build a [Session resume] preamble for the first user message.
+    # Skipped on continue-mode resumes (start_turn > 0) since the whole
+    # point of continue is to pick up the prior session intact. Runs
+    # BEFORE _seed_phase_tasks so idempotent seeding sees the post-close
+    # state, not stale ephemeral tasks from the previous abandoned cycle.
+    _session_resume_summary = (
+        _auto_close_ephemeral_tasks(log)
+        if not (continue_mode and start_turn > 0)
+        else None
+    )
+
     _seed_phase_tasks(_config, log)
 
     # ── TUI front-end (default in interactive mode) ──
@@ -3072,6 +3129,12 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         _preamble = _load_preamble_bundle(log)
         if _preamble:
             conversation_history.append({"role": "system", "content": _preamble})
+
+        # AC4 of #1028 — prepend [Session resume] block to the first user
+        # message so the agent immediately sees what was auto-closed and
+        # what persistent work remains, without an extra task_tracker call.
+        if _session_resume_summary:
+            expanded = f"{_session_resume_summary}\n\n---\n\n{expanded}"
 
         conversation_history.append({"role": "user", "content": expanded})
         log.debug("USER: %s", expanded)
