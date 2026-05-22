@@ -35,7 +35,8 @@ def _discover_tools():
         if hasattr(module, "fn") and hasattr(module, "definition"):
             tool_name = module.definition["function"]["name"]
             MAP_FN[tool_name] = module.fn
-            tools.append(module.definition)
+            if not getattr(module, "_auto_exclude", False):
+                tools.append(module.definition)
 
 
 def _validate_definition(defn, filename):

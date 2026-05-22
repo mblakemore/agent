@@ -80,6 +80,7 @@ except ImportError:
 from spinner import StreamStatus
 from token_utils import count_tokens_from_message, count_tools_tokens
 from tools import MAP_FN, tools, load_extra_tools
+import tools.end_cycle as _end_cycle_tool
 from tools.exec_command import cleanup_temp_sessions
 # Import CycleFrequencyTracker for cycle timestamp tracking
 try:
@@ -3260,6 +3261,13 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # grace-period exhaustion) to surface remaining task_tracker items.
     _open_task_nudge_sent = False
 
+    # Per-session tools list — starts as a copy of the module-level tools so
+    # we can add end_cycle without mutating the shared list across sessions.
+    _session_tools = list(tools)
+    # end_cycle is unlocked (appended to _session_tools) after the first nudge
+    # fires so the agent can't skip the cycle by calling it before doing work.
+    _end_cycle_unlocked = False
+
     # Reviewer sessions rarely make code edits (they verify and merge), so the
     # edit-deadline nudge is a false positive for that role.  Detect by
     # scanning the initial prompt for the reviewer-template marker.
@@ -3517,6 +3525,14 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                  "content": "\n\n".join(_system_lines)}
             ] + messages_to_send
 
+            # Unlock end_cycle after the first nudge so the agent can exit cleanly
+            # without calling it before doing any real work.
+            if _total_nudges >= 1 and not _end_cycle_unlocked:
+                _end_cycle_unlocked = True
+                _session_tools.append(_end_cycle_tool.definition)
+                log.info("end_cycle tool unlocked (nudges=%d)", _total_nudges)
+                telemetry.record_patch_event("end_cycle_unlocked", kind="fired")
+
             # Call the model (streaming).
             # Plan task 1.5: model comes from the main backend.
             request_body = {
@@ -3529,7 +3545,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 "max_tokens": max_tokens,
                 "chat_template_kwargs": {"enable_thinking": False},
                 "cache_prompt": True,
-                "tools": tools,
+                "tools": _session_tools,
                 "tool_choice": "auto",
                 "stream": True,
                 # OpenAI streaming protocol (which llama.cpp implements) only
@@ -4556,6 +4572,13 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         except Exception as e:
                             result_str = f"Error executing tool: {str(e)}"
                             telemetry.record_tool_error(func_name, "execution_error")
+                        # end_cycle sentinel — agent requested clean exit.
+                        if result_str == _end_cycle_tool.SENTINEL:
+                            _summary = func_args.get("summary", "") if isinstance(func_args, dict) else ""
+                            log.info("end_cycle called — exiting cleanly: %s",
+                                     _summary or "(no summary)")
+                            telemetry.record_patch_event("end_cycle", kind="fired")
+                            return "done"
                         # Conversational tool recovery: on error, try to fix params
                         if result_str.startswith("Error"):
                             try:
