@@ -265,7 +265,7 @@ If the Step 0 Partial-PR early-gate did NOT match, scan the matrix below top-to-
 ```bash
 gh issue view <N> --json state,labels,title,createdAt
 ```
-Verify: `state == "OPEN"`, labels include `cicd` AND `in-progress`, title matches PR scope.
+Verify: `state == "OPEN"`, labels include `cicd` AND (`in-progress-bot-${BOT_ID}` OR `cicd-cycle-*`), title matches PR scope.
 
 **Step 2 (VERIFY — think):** Call `think(...)` — confirm tests passed, metric verified ±5%, scope clean, issue valid.
 
