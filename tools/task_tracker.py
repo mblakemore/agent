@@ -171,7 +171,7 @@ def _next_id(tasks):
     return max((t.get("id", 0) for t in tasks), default=0) + 1
 
 
-def fn(action: str, description: str = "", task_id: int = 0, status: str = "", limit: int = 0) -> str:
+def fn(action: str, description: str = "", task_id: int = 0, status: str = "", limit: int = 0, persistent: bool = False) -> str:
     """Manage persistent tasks.
 
     Args:
@@ -180,7 +180,17 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
         task_id: Task ID (for done, update, drop).
         status: New status string (for update). Common: "in_progress", "blocked", "deferred".
         limit: For "list": maximum number of tasks to return (0 = no limit).
+        persistent: For "add" only — if True, mark the task as persistent so it
+            survives session-boundary auto-close. Default False (ephemeral).
     """
+    # Validate persistent type — must be a bool (or the default False). None → False.
+    if persistent is None:
+        persistent = False
+    if not isinstance(persistent, bool):
+        return (
+            f"Error: persistent must be a boolean, got {type(persistent).__name__!r}: {persistent!r}. "
+            f"Pass persistent=True or persistent=False (default)."
+        )
     # Validate action type and content before anything else.
     if not isinstance(action, str):
         return f"Error: action must be a string, got {type(action).__name__!r}"
@@ -352,6 +362,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
         for t in display:
             marker = "x" if t["status"] in _DONE_STATUSES else " "
             line = f"[{marker}] #{t['id']} ({t['status']}): {t.get('description', '')}"
+            if t.get("persistent"):
+                line += " [persistent]"
             if t.get("note"):
                 line += f" — {t['note']}"
             lines.append(line)
@@ -488,6 +500,12 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
                 "status": "open",
                 "created": datetime.now().isoformat(timespec="seconds"),
             }
+            # Only set the persistent key when explicitly True so that the
+            # default-ephemeral case writes the same JSON shape as before —
+            # backwards-compat: existing tasks without the field read as
+            # persistent=False (see list-marker logic and _load_tasks schema).
+            if persistent:
+                task["persistent"] = True
             tasks.append(task)
             err = _save_tasks(tasks)
             if err:
@@ -614,6 +632,14 @@ definition = {
                     "type": "integer",
                     "description": "For 'list': maximum number of tasks to return. 0 (default) means no limit.",
                     "default": 0,
+                },
+                "persistent": {
+                    "type": "boolean",
+                    "description": (
+                        "For 'add' only — if true, mark the task as persistent so it survives "
+                        "session-boundary auto-close. Default false (ephemeral)."
+                    ),
+                    "default": False,
                 },
             },
             "required": ["action"],
