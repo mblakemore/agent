@@ -261,7 +261,8 @@ _DEFAULT_CONFIG = {
     "generation": {
         "temperature": 0.6,
         "top_p": 0.95,
-        "top_k": 64,
+        "top_k": 20,
+        "min_p": 0.0,
         "presence_penalty": 0.0,
     },
     "summary": {

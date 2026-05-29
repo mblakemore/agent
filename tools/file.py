@@ -544,11 +544,25 @@ def _edit(path, old_string, new_string, replace_all):
         _norm_occ    = _norm_content.count(_norm_old) if _norm_old else 0
 
         if _norm_occ == 1:
-            # Build a regex that allows optional trailing whitespace on each
-            # line, then splice new_string in place of the matched span.
-            _pat = '\n'.join(re.escape(line.rstrip()) + r'[ \t]*'
-                             for line in old_string.split('\n'))
-            _m = re.search(_pat, old_content)
+            # Build a regex that matches the normalized content but allows
+            # optional trailing whitespace on each line in the actual file.
+            # This handles cases where blank lines have trailing spaces, or
+            # indented lines have extra spaces before the newline.
+            _pattern_parts = []
+            for line in old_string.split('\n'):
+                # Strip trailing whitespace from the template line for matching
+                base_line = line.rstrip()
+                if base_line:
+                    # Non-empty line: match text followed by optional trailing whitespace
+                    _pattern_parts.append(re.escape(base_line) + r'[ \t]*')
+                else:
+                    # Empty line: match empty string (will match blank lines)
+                    _pattern_parts.append('')
+            
+            # Join with flexible newline pattern (handles \r\n, \n, or mixed)
+            # Each segment can optionally have trailing whitespace before the newline
+            _pat = r'\r?\n'.join(_pattern_parts)
+            _m = re.search(_pat, old_content, flags=re.MULTILINE)
             if _m:
                 new_content = old_content[:_m.start()] + new_string + old_content[_m.end():]
 
