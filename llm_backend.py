@@ -159,13 +159,47 @@ class LlamacppBackend:
         self._retry_cfg = cfg.get("retry", _DEFAULT_RETRY_CFG)
         self.enabled = cfg.get("enabled", True)
         self.max_wait_on_save = cfg.get("max_wait_on_save", 10)
+        # OpenAI-compatible endpoints (OpenAI, OpenRouter, Together, …) require
+        # a bearer token. Config takes precedence; OPENAI_API_KEY is the
+        # fallback. Empty/absent → no Authorization header (local llama.cpp).
+        self.api_key = cfg.get("api_key") or os.environ.get("OPENAI_API_KEY", "")
+
+    def _auth_headers(self) -> dict:
+        """Authorization header for API-keyed endpoints; empty dict otherwise."""
+        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
     # ── Introspection probes ──
 
     def health(self, timeout: int = 3) -> tuple[bool, str]:
-        """Probe the LLM endpoint. Return ``(ok, detail)``."""
+        """Probe the LLM endpoint. Return ``(ok, detail)``.
+
+        llama.cpp exposes ``/health``; generic OpenAI-compatible servers do
+        not. When ``/health`` is missing (404) or rejects the request (401/405),
+        fall back to ``/v1/models`` so a keyed remote endpoint still reports
+        healthy.
+        """
         try:
-            resp = requests.get(f"{self.base_url}/health", timeout=timeout)
+            resp = requests.get(
+                f"{self.base_url}/health", headers=self._auth_headers(), timeout=timeout
+            )
+            if resp.status_code == 200:
+                return True, "ok"
+            if resp.status_code in (401, 404, 405):
+                return self._health_via_models(timeout)
+            return False, f"HTTP {resp.status_code}"
+        except requests.Timeout:
+            return False, "timeout"
+        except requests.ConnectionError:
+            return False, "unreachable"
+        except requests.RequestException as e:
+            return False, str(e)[:60]
+
+    def _health_via_models(self, timeout: int = 3) -> tuple[bool, str]:
+        """Fallback health check for servers without ``/health``."""
+        try:
+            resp = requests.get(
+                f"{self.base_url}/v1/models", headers=self._auth_headers(), timeout=timeout
+            )
             if resp.status_code == 200:
                 return True, "ok"
             return False, f"HTTP {resp.status_code}"
@@ -179,7 +213,9 @@ class LlamacppBackend:
     def detect_ctx_size(self, timeout: int = 3) -> int | None:
         """Query llama-server ``/slots`` endpoint and return n_ctx for slot 0, or None."""
         try:
-            resp = requests.get(f"{self.base_url}/slots", timeout=timeout)
+            resp = requests.get(
+                f"{self.base_url}/slots", headers=self._auth_headers(), timeout=timeout
+            )
             if resp.status_code != 200:
                 return None
             slots = resp.json()
@@ -192,7 +228,9 @@ class LlamacppBackend:
     def list_models(self, timeout: int = 3) -> list[str]:
         """Query ``/v1/models`` and return a list of model id strings, or ``[]``."""
         try:
-            resp = requests.get(f"{self.base_url}/v1/models", timeout=timeout)
+            resp = requests.get(
+                f"{self.base_url}/v1/models", headers=self._auth_headers(), timeout=timeout
+            )
             if resp.status_code != 200:
                 return []
             data = resp.json()
@@ -203,7 +241,9 @@ class LlamacppBackend:
     def check_tool_caps(self, timeout: int = 3) -> dict:
         """Query ``/props`` for ``chat_template_caps``. Returns ``{}`` on failure or non-llamacpp servers."""
         try:
-            resp = requests.get(f"{self.base_url}/props", timeout=timeout)
+            resp = requests.get(
+                f"{self.base_url}/props", headers=self._auth_headers(), timeout=timeout
+            )
             if resp.status_code == 200:
                 return resp.json().get("chat_template_caps", {})
         except (requests.RequestException, ValueError, KeyError):
@@ -233,6 +273,10 @@ class LlamacppBackend:
         cfg = self._retry_cfg
         max_retries = cfg["max_retries"]
         consecutive_500s = 0
+
+        _headers = {**self._auth_headers(), **extra_kwargs.pop("headers", {})}
+        if _headers:
+            extra_kwargs["headers"] = _headers
 
         t0 = time.monotonic()
         ok = False
@@ -332,6 +376,7 @@ class LlamacppBackend:
             response = requests.post(
                 f"{self.base_url}/v1/chat/completions",
                 json=request_body,
+                headers=self._auth_headers(),
                 timeout=timeout,
             )
             response.raise_for_status()
