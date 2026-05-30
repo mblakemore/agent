@@ -4,6 +4,18 @@ A local, tool-driven coding assistant that talks to an OpenAI-compatible LLM end
 
 ![agent TUI screenshot](img/screenshot.png)
 
+## Install
+
+```bash
+pip install --user -r requirements.txt
+```
+
+On Ubuntu 24.04+ (PEP 668 / externally-managed system python), add `--break-system-packages`, or install into a venv:
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+```
+
 ## Quick start
 
 1. Start an OpenAI-compatible LLM server locally (default endpoint `http://127.0.0.1:8080`):
