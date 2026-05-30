@@ -39,6 +39,7 @@ import json
 import logging
 import os
 import random
+import sys
 import tempfile
 import threading
 import time
@@ -95,6 +96,70 @@ def _calc_retry_delay(attempt: int, cfg: dict) -> float:
         span = delay * jitter
         delay = max(0.0, delay + random.uniform(-span, span))
     return round(delay, 2)
+
+
+def _debug_dump_payload(direction: str, body, *, kind: str = "request") -> None:
+    """Dump a request/response payload when ``AGENT_DEBUG_PAYLOAD`` is set.
+
+    Truthy values: ``1``, ``true``, ``stderr`` → pretty-print to stderr.
+    Any other value is treated as a file path; JSONL is appended.
+    """
+    setting = os.environ.get("AGENT_DEBUG_PAYLOAD", "")
+    if not setting:
+        return
+    try:
+        text = json.dumps(body, indent=2, default=str) if isinstance(body, (dict, list)) else str(body)
+    except Exception as e:
+        text = f"<unserializable payload: {e}>"
+    if setting.lower() in ("1", "true", "yes", "stderr"):
+        sys.stderr.write(f"\n--- AGENT_DEBUG_PAYLOAD {direction} ({kind}) ---\n{text}\n--- end ---\n")
+        sys.stderr.flush()
+    else:
+        try:
+            with open(setting, "a", encoding="utf-8") as fh:
+                fh.write(f"--- {direction} ({kind}) ---\n{text}\n--- end ---\n\n")
+        except OSError as e:
+            sys.stderr.write(f"AGENT_DEBUG_PAYLOAD write failed ({setting}): {e}\n")
+
+
+def _synthesize_delta_stream(payload: dict):
+    """Convert a non-streaming chat-completion JSON body into delta chunks.
+
+    Lets the agent loop's SSE parser (path b in ``_iter_stream_chunks``)
+    consume non-streamed responses unchanged. Emits, in order:
+      - one ``delta.content`` chunk if the message has text content
+      - one ``delta.tool_calls`` chunk per tool call (with stable ``index``,
+        ``id``, ``function.name``, and full ``function.arguments`` string)
+      - a final ``usage`` chunk if the response carried usage stats
+    """
+    choices = payload.get("choices") or []
+    if choices:
+        msg = choices[0].get("message", {}) or {}
+        content = msg.get("content")
+        if content:
+            yield {"choices": [{"index": 0, "delta": {"content": content}}]}
+        tool_calls = msg.get("tool_calls") or []
+        for i, tc in enumerate(tool_calls):
+            fn = tc.get("function", {}) or {}
+            yield {
+                "choices": [{
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [{
+                            "index": i,
+                            "id": tc.get("id", ""),
+                            "type": tc.get("type", "function"),
+                            "function": {
+                                "name": fn.get("name", ""),
+                                "arguments": fn.get("arguments", ""),
+                            },
+                        }],
+                    },
+                }],
+            }
+    usage = payload.get("usage")
+    if usage:
+        yield {"choices": [], "usage": usage}
 
 
 # ── Protocol ───────────────────────────────────────────────────────────
@@ -163,6 +228,11 @@ class LlamacppBackend:
         # a bearer token. Config takes precedence; OPENAI_API_KEY is the
         # fallback. Empty/absent → no Authorization header (local llama.cpp).
         self.api_key = cfg.get("api_key") or os.environ.get("OPENAI_API_KEY", "")
+        # Some OpenAI-compatible gateways collapse `stream:true` + `tools` into
+        # a single non-SSE JSON response, breaking the streamed tool-call path.
+        # Setting ``"stream": false`` in the backend config forces non-streaming
+        # POSTs and synthesizes a one-shot delta stream from the JSON body.
+        self.stream_enabled = bool(cfg.get("stream", True))
 
     def _auth_headers(self) -> dict:
         """Authorization header for API-keyed endpoints; empty dict otherwise."""
@@ -270,6 +340,9 @@ class LlamacppBackend:
 
         Raises ``ContextOverflowError`` after 3 consecutive 500s.
         """
+        if not self.stream_enabled:
+            return self._nonstream_chat(log, json_body=json, timeout=timeout, **extra_kwargs)
+
         cfg = self._retry_cfg
         max_retries = cfg["max_retries"]
         consecutive_500s = 0
@@ -277,6 +350,8 @@ class LlamacppBackend:
         _headers = {**self._auth_headers(), **extra_kwargs.pop("headers", {})}
         if _headers:
             extra_kwargs["headers"] = _headers
+
+        _debug_dump_payload("→ POST /v1/chat/completions", json, kind="request")
 
         t0 = time.monotonic()
         ok = False
@@ -336,6 +411,100 @@ class LlamacppBackend:
                 self.model,
                 latency_ms,
                 deltas,
+                ok,
+            )
+
+    # ── Non-streaming main-path fallback ──
+
+    def _nonstream_chat(
+        self,
+        log: logging.Logger,
+        *,
+        json_body: dict | None,
+        timeout: tuple[int, int] | int = (30, 300),
+        **extra_kwargs,
+    ):
+        """Post non-streaming and yield synthetic OpenAI delta chunks.
+
+        Used when ``stream_enabled`` is False (gateways that mishandle
+        ``stream:true`` + ``tools``). Same retry/500 semantics as
+        ``stream_chat`` minus the SSE path. Returns a generator of
+        OpenAI-shape ``{"choices":[{"delta":{...}}]}`` dicts plus an
+        optional usage chunk — consumed by ``agent._iter_stream_chunks``
+        via the iterable branch (path b).
+        """
+        cfg = self._retry_cfg
+        max_retries = cfg["max_retries"]
+        consecutive_500s = 0
+
+        _headers = {**self._auth_headers(), **extra_kwargs.pop("headers", {})}
+        if _headers:
+            extra_kwargs["headers"] = _headers
+
+        body = dict(json_body or {})
+        body["stream"] = False
+        body.pop("stream_options", None)
+
+        _debug_dump_payload("→ POST /v1/chat/completions (nonstream)", body, kind="request")
+
+        t0 = time.monotonic()
+        ok = False
+        try:
+            for attempt in range(max_retries + 1):
+                try:
+                    response = requests.post(
+                        f"{self.base_url}/v1/chat/completions",
+                        json=body,
+                        timeout=timeout,
+                        **extra_kwargs,
+                    )
+                    if response.status_code >= 500:
+                        if response.status_code == 500:
+                            consecutive_500s += 1
+                            if consecutive_500s >= 3:
+                                raise ContextOverflowError(
+                                    "3 consecutive HTTP 500 errors — likely context overflow"
+                                )
+                        else:
+                            consecutive_500s = 0
+                        raise requests.exceptions.HTTPError(
+                            f"Server error {response.status_code}", response=response
+                        )
+                    response.raise_for_status()
+                    payload = response.json()
+                    _debug_dump_payload("← response (nonstream)", payload, kind="response")
+                    ok = True
+                    return _synthesize_delta_stream(payload)
+                except ContextOverflowError:
+                    raise
+                except (
+                    requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout,
+                    requests.exceptions.HTTPError,
+                ) as e:
+                    if attempt == max_retries:
+                        raise
+                    if isinstance(e, requests.exceptions.HTTPError):
+                        resp = getattr(e, "response", None)
+                        if resp is None or resp.status_code < 500:
+                            raise
+                    delay = _calc_retry_delay(attempt, cfg)
+                    log.warning(
+                        "LLM request failed (attempt %d/%d): %s — retrying in %ds",
+                        attempt + 1,
+                        max_retries + 1,
+                        e,
+                        delay,
+                    )
+                    time.sleep(delay)
+        finally:
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            log.info(
+                "backend.stream_chat.latency_ms backend=%s model=%s latency_ms=%d deltas=%d ok=%s nonstream=1",
+                self.kind,
+                self.model,
+                latency_ms,
+                0,
                 ok,
             )
 
