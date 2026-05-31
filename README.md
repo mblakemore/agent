@@ -32,7 +32,7 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 | Role | Model |
 | --- | --- |
-| Main (GPU) | [Qwen3.6-27B](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF) or [gemma-4-31B-it](https://huggingface.co/google/gemma-4-31b-it) via `llama-server` |
+| Main (GPU) | [Qwen3.6-27B](https://huggingface.co/unsloth/Qwen3.6-27B-MTP-GGUF) or [gemma-4-31B-it](https://huggingface.co/google/gemma-4-31b-it) via `llama-server` |
 | Summary (CPU) | [Qwen3-4B](https://huggingface.co/unsloth/Qwen3-4B-GGUF) or [gemma-4-E4B-it](https://huggingface.co/google/gemma-4-e4b-it) |
 
 Run a second `llama-server` instance on CPU for the summary backend (see [Configuration](#configuration)) — it handles short summarisation calls so the main GPU model stays free for reasoning.
