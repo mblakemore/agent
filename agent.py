@@ -4127,6 +4127,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 r"cycle\s+\S+\s+is\s+(now\s+)?complete",  # "cycle 249 is complete", "cycle N is now complete"
                 r"cycle\s+is\s+now\s+complete",             # "cycle is now complete"
                 r"improvement\s+cycle\s+\S*\s*is\s+complete",  # "improvement cycle is complete"
+                r"cycle\s+\w+\s+complete",  # "cycle 543 complete" (without "is")
             )
             _fc_lower = full_content.lower() if full_content else ""
             _completion_matched = (
@@ -4191,6 +4192,26 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             # Leaving hallucinated content in history poisons subsequent turns —
             # the model builds on its fabricated answer instead of using tools.
             if _consecutive_text_only == 1:
+                # Completion signal takes priority even on the first text-only.
+                # When work has already been persisted (git push) and the model
+                # says "cycle NNN complete" / "committed and pushed", stripping
+                # and retrying causes the agent to start the NEXT cycle rather
+                # than exit cleanly.  Check here before the unconditional strip.
+                if _has_persisted_work and _completion_matched:
+                    if _NUDGE_ENABLED and not _open_task_nudge_sent:
+                        _open_reminder = _build_open_task_nudge()
+                        if _open_reminder:
+                            _open_task_nudge_sent = True
+                            _total_nudges += 1
+                            conversation_history.append({"role": "user", "content": _open_reminder})
+                            log.info("open-task nudge (first text-only): completion signal, %d nudges used",
+                                     _total_nudges)
+                            telemetry.record_patch_event("open_task_nudge", kind="fired")
+                            continue
+                    log.info("Stopping: first-text-only completion signal with persisted work")
+                    telemetry.record_patch_event("completion_signal_first_textonly", kind="fired")
+                    return "done"
+
                 # Q.01 guard: if the response contains 2+ fenced code blocks, the
                 # model wrote bash/python in text instead of calling tools ("plan-
                 # in-text").  Stripping silently causes another identical wall on
