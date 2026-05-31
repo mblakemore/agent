@@ -573,8 +573,11 @@ def _edit(path, old_string, new_string, replace_all):
             if first_line and first_line in old_content:
                 hint = (f"\n\nHint: the first line of your `old_string` ({first_line!r}) is "
                         f"present in the file, but the full string isn't — likely a trailing-"
-                        f"whitespace or line-ending mismatch. Re-read the section with "
-                        f"read_file(path='{path}') to copy the exact text.")
+                        f"whitespace, line-ending mismatch, or non-ASCII character difference "
+                        f"(e.g. Unicode em-dash — vs ASCII hyphen, or curly quotes). "
+                        f"Re-read the section with read_file(path='{path}') to copy the exact text. "
+                        f"If that still fails, use exec_command with `cat -A {path}` "
+                        f"to reveal hidden or multi-byte characters.")
             return f"Error: `old_string` not found in '{path}' (0 occurrences).{hint}"
 
     elif occurrences > 1 and not replace_all:

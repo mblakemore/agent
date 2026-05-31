@@ -108,7 +108,11 @@ def _get_or_create_session(session_id=None, new_session=False):
 
     if session_id:
         if session_id not in _sessions:
-            return None, f"Error: session '{session_id}' does not exist"
+            return None, (
+                f"Error: session '{session_id}' does not exist — it either "
+                f"expired or belongs to a previous agent.py process. "
+                f"Omit session_id to start a fresh default session."
+            )
         return session_id, None
 
     if new_session:

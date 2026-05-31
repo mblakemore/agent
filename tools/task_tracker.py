@@ -580,7 +580,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
             for t in tasks:
                 if t["id"] == task_id:
                     if t["status"] in ("done", "completed"):
-                        return f"Error: task #{task_id} is already done"
+                        return f"Task #{task_id} already completed: {t.get('description', '')}"
                     t["status"] = "done"
                     t["completed"] = datetime.now().isoformat(timespec="seconds")
                     if description and not _description_used_for_resolution:
@@ -608,7 +608,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
             for t in tasks:
                 if t["id"] == task_id:
                     if t["status"] in ("done", "completed"):
-                        return f"Error: task #{task_id} is already done"
+                        return f"Task #{task_id} already completed: {t.get('description', '')}"
                     if status:
                         t["status"] = status
                     if _effective_description:
