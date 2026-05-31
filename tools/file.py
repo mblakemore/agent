@@ -203,10 +203,12 @@ def _check_write_confinement(path, p):
         for allowed in _EXTRA_ALLOWED_PATHS:
             if resolved_str == allowed or resolved_str.startswith(allowed + os.sep):
                 return None
+        suggestion = cwd_resolved / resolved.name
         return (
             f"Error: path '{path}' resolves to '{resolved}' which is outside "
             f"the working directory '{cwd_resolved}'. "
-            f"Only files inside the current working directory can be accessed."
+            f"Only files inside the current working directory can be accessed. "
+            f"To write '{resolved.name}' here, use path='{suggestion}'."
         )
     return None
 

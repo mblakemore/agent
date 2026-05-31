@@ -130,8 +130,8 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
             hard-rejects prompts that contain 50+ char verbatim overlap with
             recent assistant messages — frame the *question*, not the
             *background*).
-        depth: Reasoning budget preset — "brief" (~1K tokens),
-            "normal" (~8K), "deep" (~32K). Pick based on complexity, not
+        depth: Reasoning budget preset — "brief" (~2K tokens),
+            "normal" (~4K), "deep" (~16K). Pick based on complexity, not
             ambition.
         context: Optional summarized constraints. Same anti-laundering check
             applies — keep it short and abstract, not verbatim.
@@ -199,9 +199,18 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
             return answer
         if reasoning:
             # Qwen3: token budget exhausted during reasoning phase — answer never generated.
-            # Return reasoning as fallback rather than a hard error.
+            # Truncate the raw trace so it doesn't flood the context window, then
+            # return with a clear prefix so the model knows to proceed without re-calling.
             log.warning("THINK: answer empty, returning reasoning trace as fallback (budget exhausted?)")
-            return reasoning
+            _TRACE_CAP = 3000
+            trace = reasoning if len(reasoning) <= _TRACE_CAP else reasoning[:_TRACE_CAP] + "\n...[truncated — budget reached]"
+            return (
+                "[THINK BUDGET EXHAUSTED — token limit was reached before the answer "
+                "was completed. The partial reasoning trace below captures the key design "
+                "decisions. Use it as context and proceed with implementation directly. "
+                "Do NOT call think again for this task.]\n\n"
+                + trace
+            )
         return "Error: empty response from model"
 
     # ── Self-consistency path ──────────────────────────────────────────
