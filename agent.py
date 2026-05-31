@@ -4980,6 +4980,26 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                     ),
                                 })
 
+                        # Warn when git add stages Python cache files.
+                        # CC agents always name files explicitly; agent.py agents
+                        # use `git add -A` which silently picks up __pycache__ and
+                        # *.pyc files, polluting git history.
+                        if (re.search(r"git\s+add\b", _cmd_normalized)
+                                and ("__pycache__" in result_str or ".pyc" in result_str)):
+                            log.warning("git add staged __pycache__/.pyc files — injecting cleanup hint")
+                            conversation_history.append({
+                                "role": "user",
+                                "content": (
+                                    "[SYSTEM: Your git add staged Python cache files "
+                                    "(__pycache__/ or *.pyc). These should not be committed. "
+                                    "Fix before committing:\n"
+                                    "  git rm -r --cached __pycache__/ scripts/__pycache__/ bin/__pycache__/ 2>/dev/null || true\n"
+                                    "  echo '__pycache__/' >> .gitignore && echo '*.pyc' >> .gitignore\n"
+                                    "  git add .gitignore\n"
+                                    "Then re-add only your actual changed files by name (not git add -A).]"
+                                ),
+                            })
+
                         # ── CICD phase detection ──
                         if "gh issue list" in _cmd or "gh issue search" in _cmd:
                             _cicd_phase_state["perceive"] = True

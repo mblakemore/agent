@@ -216,7 +216,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
     """Manage persistent tasks.
 
     Args:
-        action: One of "add", "done", "update", "drop", "list".
+        action: One of "add", "done", "update", "drop", "list", "prune".
         description: Task description (for add) or note (for update). Optional — omit for list/done/drop.
         task_id: Task ID (for done, update, drop).
         status: New status string (for update). Common: "in_progress", "blocked", "deferred".
@@ -243,7 +243,7 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
     # e.g. action="add`,description:" or action="done`,task_id:3".  Extract the
     # valid action prefix so the call can proceed rather than failing with
     # "unknown action" and triggering a full recovery round-trip.
-    _VALID_ACTIONS = ("add", "done", "update", "drop", "list")
+    _VALID_ACTIONS = ("add", "done", "update", "drop", "list", "prune")
     if action not in _VALID_ACTIONS:
         for _a in _VALID_ACTIONS:
             if action.startswith(_a):
@@ -424,10 +424,63 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
                 parts.append(f"{active_counts[s]} {s}")
         parts.append(f"{done_count} done")
         lines.append("\n" + ", ".join(parts))
+        # Warn when there are many stale open tasks — signals accumulation from prior sessions.
+        _stale_open = [t for t in tasks if t.get("status") == "open" and not t.get("persistent")]
+        if len(_stale_open) > 20:
+            try:
+                from datetime import timezone, timedelta
+                _cutoff = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat(timespec="seconds")
+                _old_count = sum(1 for t in _stale_open if t.get("created", "") < _cutoff)
+            except Exception:
+                _old_count = 0
+            if _old_count > 5:
+                lines.append(
+                    f"\n[HINT: {_old_count} open tasks are >6h old (likely from prior sessions). "
+                    f"Run task_tracker(action='prune') to remove them.]"
+                )
         return "\n".join(lines)
 
+    elif action == "prune":
+        # Drop all non-persistent open/in_progress/blocked/deferred tasks created
+        # more than PRUNE_HOURS ago.  Completed tasks are left in place.
+        # Designed to clean up stale tasks from prior sessions that were never closed.
+        PRUNE_HOURS = 6
+        cutoff_str = None
+        try:
+            from datetime import timezone, timedelta
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=PRUNE_HOURS)
+            cutoff_str = cutoff.isoformat(timespec="seconds")
+        except Exception:
+            pass
+        with _write_lock:
+            tasks = _load_tasks()
+            if isinstance(tasks, _Corrupted):
+                return tasks.error_msg()
+            _STALE_STATUSES = {"open", "in_progress", "blocked", "deferred"}
+            pruned = []
+            kept = []
+            for t in tasks:
+                if t.get("persistent"):
+                    kept.append(t)
+                    continue
+                if t.get("status") not in _STALE_STATUSES:
+                    kept.append(t)
+                    continue
+                created = t.get("created", "")
+                if cutoff_str and created and created < cutoff_str:
+                    pruned.append(t)
+                else:
+                    kept.append(t)
+            if not pruned:
+                return f"No stale open tasks found (threshold: {PRUNE_HOURS}h old)."
+            err = _save_tasks(kept)
+            if err:
+                return err
+            return (f"Pruned {len(pruned)} stale task(s) created >{PRUNE_HOURS}h ago. "
+                    f"{len(kept)} task(s) remain.")
+
     elif action not in ("add", "done", "update", "drop"):
-        return f"Error: unknown action '{action}'. Use: add, done, update, drop, list."
+        return f"Error: unknown action '{action}'. Use: add, done, update, drop, list, prune."
 
     # ── Write actions — serialised under _write_lock ──────────────────────────
     # Acquire the lock before _load_tasks() so the entire read-modify-write
@@ -654,7 +707,7 @@ definition = {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["add", "done", "update", "drop", "list"],
+                    "enum": ["add", "done", "update", "drop", "list", "prune"],
                     "description": "The operation to perform.",
                 },
                 "description": {
