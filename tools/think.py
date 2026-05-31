@@ -18,8 +18,8 @@ _output = print  # type: ignore[assignment]
 
 DEPTH_MAX_TOKENS = {
     "brief": 2048,   # bumped: Qwen3 spends ~800-1000 tokens on reasoning_content alone
-    "normal": 8192,
-    "deep": 32768,
+    "normal": 4096,  # halved: 8192 was excessive for routine cycle decisions (78-91s observed)
+    "deep": 16384,   # halved: 32768 was rarely needed and consumed too much context
 }
 
 # Gemma 4 thinking block pattern
@@ -290,7 +290,12 @@ definition = {
                 "depth": {
                     "type": "string",
                     "enum": ["brief", "normal", "deep"],
-                    "description": "Token budget preset. brief=~1K, normal=~8K, deep=~32K.",
+                    "description": (
+                        "Token budget preset. brief=~2K (DEFAULT, fast, use for most decisions), "
+                        "normal=~4K (complex multi-step reasoning only), "
+                        "deep=~16K (rare: deep architectural decisions). "
+                        "Omit to use the default (brief). brief is almost always sufficient."
+                    ),
                 },
                 "context": {
                     "type": "string",
@@ -310,7 +315,7 @@ definition = {
                     "maximum": 5,
                 },
             },
-            "required": ["prompt", "depth"],
+            "required": ["prompt"],
         },
     },
 }
