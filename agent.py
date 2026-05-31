@@ -3481,8 +3481,22 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _gateway_timeout_recovery_count = 0
     _GATEWAY_TIMEOUT_RECOVERY_MAX = 2
 
+    # Action-inertia detection: count consecutive turns where the model only reads
+    # files without writing or executing anything. After the threshold, inject a
+    # nudge to commit to the fix rather than reading more files.
+    _read_only_turns = 0
+    _READ_ONLY_NUDGE_THRESHOLD = 5
+    _turn_had_action = False  # set True when write/edit/exec called this turn
+
     while True:
         turn += 1
+        # Update read-only counter from the previous turn
+        if turn > 1:
+            if _turn_had_action:
+                _read_only_turns = 0
+            else:
+                _read_only_turns += 1
+        _turn_had_action = False  # reset for this turn
         _turn_t0 = time.monotonic()
         _turn_in_tokens = 0
         _turn_out_tokens = 0
@@ -3623,6 +3637,16 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     "exists exactly once, and won't lose neighbouring content. "
                     "Use heredoc writes only when creating a NEW file or "
                     "rewriting one in full."
+                )
+
+            # Action-inertia hint: if the model has been reading without writing
+            # for several turns, remind it to act on what it's found.
+            if _read_only_turns >= _READ_ONLY_NUDGE_THRESHOLD:
+                _system_lines.append(
+                    f"[SYSTEM NOTICE: You have spent {_read_only_turns} consecutive turns "
+                    f"reading files without writing, editing, or executing anything. "
+                    f"If you have identified what needs to change, apply the fix now "
+                    f"rather than reading more files.]"
                 )
 
             _outgoing_messages = [
@@ -4617,6 +4641,17 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
                     log.debug("TOOL CALL: %s(%s) [id=%s]", func_name, json.dumps(func_args), tool_id)
                     telemetry.record_tool_call(func_name)
+
+                    # Track whether this turn has any "action" (write/exec) tool calls
+                    # for the action-inertia nudge (fires after _READ_ONLY_NUDGE_THRESHOLD
+                    # consecutive read-only turns).
+                    _ACTION_TOOLS = {"write_file", "edit_file", "append_file", "delete_file",
+                                     "exec_command", "gh_wrapper"}
+                    if func_name in _ACTION_TOOLS or (
+                        func_name == "file" and isinstance(func_args, dict)
+                        and func_args.get("action") in ("write", "insert", "append", "delete", "create")
+                    ):
+                        _turn_had_action = True
 
                     # Per-call dedup: if this exact (tool_name, args) was dispatched
                     # within the last _DEDUP_WINDOW calls AND the tool is safe to
