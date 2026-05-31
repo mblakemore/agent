@@ -633,9 +633,9 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
                         return f"Task #{_t['id']} already done: {_t.get('description', '')}"
                 available = [f"#{t['id']} ({t['status']}): {t.get('description', '')}" for t in tasks if t["status"] not in ("done", "completed")]
                 return (
-                    f"Error: task_id (or description=) required for 'done'. "
-                    f"Examples: task_tracker(action=\"done\", task_id=1) "
-                    f"or task_tracker(action=\"done\", description=\"PERCEIVE\")\n"
+                    f"Error: task_id required for 'done' — provide the numeric ID from the list below. "
+                    f"If matching by description, it must exactly match an existing task's text. "
+                    f"Simplest: task_tracker(action=\"done\", task_id=N)\n"
                     f"Open tasks:\n" + ("\n".join(available) if available else "(none)")
                 )
             for t in tasks:

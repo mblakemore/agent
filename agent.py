@@ -2460,9 +2460,20 @@ def _state_path(*parts):
 
 
 def _ensure_agent_dirs():
-    """Create .agent/state and .agent/history on first use."""
+    """Create .agent/state and .agent/history on first use.
+    Also ensure .agent/ is in .gitignore so runtime state never lands in commits.
+    """
     os.makedirs(_STATE_DIR, exist_ok=True)
     os.makedirs(_HISTORY_DIR, exist_ok=True)
+    # Add .agent/ to .gitignore if this is a git repo and the entry isn't there yet.
+    gitignore = os.path.join(os.getcwd(), ".gitignore")
+    try:
+        existing = open(gitignore).read() if os.path.exists(gitignore) else ""
+        if ".agent/" not in existing:
+            with open(gitignore, "a") as f:
+                f.write("\n.agent/\n")
+    except OSError:
+        pass  # non-fatal; best-effort only
 
 
 _ensure_agent_dirs()
@@ -4994,7 +5005,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                     "(__pycache__/ or *.pyc). These should not be committed. "
                                     "Fix before committing:\n"
                                     "  git rm -r --cached __pycache__/ scripts/__pycache__/ bin/__pycache__/ 2>/dev/null || true\n"
-                                    "  echo '__pycache__/' >> .gitignore && echo '*.pyc' >> .gitignore\n"
+                                    "  printf '__pycache__/\\n*.pyc\\n.agent/\\n' >> .gitignore\n"
                                     "  git add .gitignore\n"
                                     "Then re-add only your actual changed files by name (not git add -A).]"
                                 ),
