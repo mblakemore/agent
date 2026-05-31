@@ -3475,6 +3475,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _stall_retries_remaining = _stall_retries_budget
     _stall_sampling_override = None  # set when stall detected; cleared on success
 
+    # Gateway-timeout recovery: when every retry on a turn returns 504, inject a
+    # size-reduction hint and retry the turn rather than immediately aborting.
+    # Capped at 2 recoveries per cycle so a persistently slow model doesn't loop forever.
+    _gateway_timeout_recovery_count = 0
+    _GATEWAY_TIMEOUT_RECOVERY_MAX = 2
+
     while True:
         turn += 1
         _turn_t0 = time.monotonic()
@@ -3539,6 +3545,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         # Build context window, with overflow reduction loop
         _ctx_max_messages = None  # None = use default _MAX_CONTEXT_MESSAGES
         _CTX_REDUCE_MAX = 10     # max number of message-reduction attempts
+        _gateway_timeout_recovered = False
 
         for _ctx_attempt in range(_CTX_REDUCE_MAX + 1):
             telemetry.record_context_size(ctx_size)
@@ -3633,6 +3640,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
             # Call the model (streaming).
             # Plan task 1.5: model comes from the main backend.
+            # After a gateway timeout recovery, cap max_tokens to force shorter
+            # individual responses so each write fits within the server timeout.
+            _effective_max_tokens = max_tokens
+            if _gateway_timeout_recovery_count > 0:
+                _effective_max_tokens = min(max_tokens, 1024)
+
             request_body = {
                 "model": _main_backend.model or _config["llm"]["model"],
                 "messages": _outgoing_messages,
@@ -3640,7 +3653,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 "top_p": top_p,
                 "top_k": top_k,
                 "presence_penalty": presence_penalty,
-                "max_tokens": max_tokens,
+                "max_tokens": _effective_max_tokens,
                 "chat_template_kwargs": {"enable_thinking": False},
                 "cache_prompt": True,
                 "tools": _session_tools,
@@ -3726,10 +3739,36 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True)
                 continue
             except requests.exceptions.RequestException as e:
+                err_str = str(e)
+                if "504" in err_str and _gateway_timeout_recovery_count < _GATEWAY_TIMEOUT_RECOVERY_MAX:
+                    _gateway_timeout_recovery_count += 1
+                    log.warning(
+                        "Gateway timeout (504) after all retries — injecting size-reduction hint "
+                        "(recovery %d/%d)",
+                        _gateway_timeout_recovery_count, _GATEWAY_TIMEOUT_RECOVERY_MAX,
+                    )
+                    _emit("on_notice", "warn",
+                          f"[Gateway timeout — response may be too large; retrying with size-reduction hint "
+                          f"({_gateway_timeout_recovery_count}/{_GATEWAY_TIMEOUT_RECOVERY_MAX})]")
+                    conversation_history.append({
+                        "role": "user",
+                        "content": (
+                            "[SYSTEM: The previous response timed out at the gateway — likely because "
+                            "the response was too large to generate within the server time limit. "
+                            "Please break your work into smaller pieces: write shorter individual "
+                            "outputs, one file or section at a time, rather than generating "
+                            "everything in a single large response.]"
+                        ),
+                    })
+                    _gateway_timeout_recovered = True
+                    break
                 log.error("Request failed after retries: %s", e)
                 telemetry.record_error(kind=type(e).__name__)
                 _emit("on_error", f"Error calling server: {e}")
                 return "error"
+
+        if _gateway_timeout_recovered:
+            continue  # restart this turn with size-reduction hint in history
 
         # Accumulate streamed response
         content_parts = []

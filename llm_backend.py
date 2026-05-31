@@ -254,7 +254,7 @@ class LlamacppBackend:
             )
             if resp.status_code == 200:
                 return True, "ok"
-            if resp.status_code in (401, 404, 405):
+            if resp.status_code in (401, 403, 404, 405):
                 return self._health_via_models(timeout)
             return False, f"HTTP {resp.status_code}"
         except requests.Timeout:
@@ -272,6 +272,9 @@ class LlamacppBackend:
             )
             if resp.status_code == 200:
                 return True, "ok"
+            if resp.status_code == 403:
+                # Can't verify — endpoint restricted but server is reachable
+                return True, "assumed ok (403 on health)"
             return False, f"HTTP {resp.status_code}"
         except requests.Timeout:
             return False, "timeout"
@@ -346,6 +349,8 @@ class LlamacppBackend:
         cfg = self._retry_cfg
         max_retries = cfg["max_retries"]
         consecutive_500s = 0
+        consecutive_504s = 0
+        _force_bail = False  # set when consecutive 504s exceed threshold
 
         _headers = {**self._auth_headers(), **extra_kwargs.pop("headers", {})}
         if _headers:
@@ -369,12 +374,22 @@ class LlamacppBackend:
                     if response.status_code >= 500:
                         if response.status_code == 500:
                             consecutive_500s += 1
+                            consecutive_504s = 0
                             if consecutive_500s >= 3:
                                 raise ContextOverflowError(
                                     "3 consecutive HTTP 500 errors — likely context overflow"
                                 )
+                        elif response.status_code == 504:
+                            consecutive_504s += 1
+                            consecutive_500s = 0
+                            # Gateway timeout is persistent — bail early so agent.py can
+                            # inject a size-reduction hint instead of burning ~5 min on
+                            # retries that will all fail the same way.
+                            if consecutive_504s >= 4:
+                                _force_bail = True
                         else:
                             consecutive_500s = 0
+                            consecutive_504s = 0
                         raise requests.exceptions.HTTPError(
                             f"Server error {response.status_code}", response=response
                         )
@@ -388,7 +403,7 @@ class LlamacppBackend:
                     requests.exceptions.Timeout,
                     requests.exceptions.HTTPError,
                 ) as e:
-                    if attempt == max_retries:
+                    if attempt == max_retries or _force_bail:
                         raise
                     if isinstance(e, requests.exceptions.HTTPError):
                         resp = getattr(e, "response", None)
@@ -436,6 +451,8 @@ class LlamacppBackend:
         cfg = self._retry_cfg
         max_retries = cfg["max_retries"]
         consecutive_500s = 0
+        consecutive_504s = 0
+        _force_bail = False
 
         _headers = {**self._auth_headers(), **extra_kwargs.pop("headers", {})}
         if _headers:
@@ -461,12 +478,19 @@ class LlamacppBackend:
                     if response.status_code >= 500:
                         if response.status_code == 500:
                             consecutive_500s += 1
+                            consecutive_504s = 0
                             if consecutive_500s >= 3:
                                 raise ContextOverflowError(
                                     "3 consecutive HTTP 500 errors — likely context overflow"
                                 )
+                        elif response.status_code == 504:
+                            consecutive_504s += 1
+                            consecutive_500s = 0
+                            if consecutive_504s >= 4:
+                                _force_bail = True
                         else:
                             consecutive_500s = 0
+                            consecutive_504s = 0
                         raise requests.exceptions.HTTPError(
                             f"Server error {response.status_code}", response=response
                         )
@@ -482,7 +506,7 @@ class LlamacppBackend:
                     requests.exceptions.Timeout,
                     requests.exceptions.HTTPError,
                 ) as e:
-                    if attempt == max_retries:
+                    if attempt == max_retries or _force_bail:
                         raise
                     if isinstance(e, requests.exceptions.HTTPError):
                         resp = getattr(e, "response", None)
