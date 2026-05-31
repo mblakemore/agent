@@ -4691,7 +4691,6 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         if result_str.startswith("Error"):
                             try:
                                 from tool_recovery import attempt_recovery
-                                _emit("on_tool_recovery", func_name, 1)
                                 recovered = attempt_recovery(
                                     func_name, func_args, result_str,
                                     map_fn=MAP_FN,
@@ -4700,6 +4699,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 )
                                 if recovered is not None:
                                     result_str = recovered
+                                    _emit("on_tool_recovery", func_name, 1)
                                     _emit("on_notice", "info", f"[recovered: {func_name} succeeded]")
                             except Exception as e:
                                 log.debug("Tool recovery unavailable: %s", e)
