@@ -3757,7 +3757,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             "the response was too large to generate within the server time limit. "
                             "Please break your work into smaller pieces: write shorter individual "
                             "outputs, one file or section at a time, rather than generating "
-                            "everything in a single large response.]"
+                            "everything in a single large response. "
+                            "Do NOT re-add tasks you have already added — check task_tracker(action='list') "
+                            "first and continue from where you left off.]"
                         ),
                     })
                     _gateway_timeout_recovered = True
