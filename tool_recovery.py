@@ -14,19 +14,19 @@ import json
 RECOVERY_PATTERNS = [
     {
         "pattern": r"outside the working directory '(.+?)'",
-        "tool": "file",
+        # No tool restriction — applies to write_file, read_file, edit_file, etc.
         "recovery_action": "fix_path_to_cwd",
         # No LLM call needed — extract CWD from error, rebuild path, retry.
     },
     {
         "pattern": r"exists but has not been read this session",
-        "tool": "file",
+        # No tool restriction — applies to write_file, edit_file, append_file, etc.
         "recovery_action": "auto_read_first",
         # No LLM call needed — automatically read the file, then retry.
     },
     {
         "pattern": r"start_line \((\d+)\) > end_line \((\d+)\)",
-        "tool": "file",
+        # No tool restriction — applies to read_file, edit_file, etc.
         "param": "end_line",
         "question": (
             "Your file tool call had start_line={start_line} but end_line={end_line} "
@@ -38,7 +38,7 @@ RECOVERY_PATTERNS = [
     },
     {
         "pattern": r"end_line \((\d+)\) exceeds file length \((\d+) lines\)",
-        "tool": "file",
+        # No tool restriction — applies to read_file, edit_file, etc.
         "param": "end_line",
         "question": (
             "Your file tool call had end_line={end_line} but the file only has "
@@ -50,7 +50,7 @@ RECOVERY_PATTERNS = [
     },
     {
         "pattern": r"start_line \((\d+)\) exceeds file length \((\d+) lines\)",
-        "tool": "file",
+        # No tool restriction — applies to read_file, edit_file, etc.
         "param": "start_line",
         "question": (
             "Your file tool call had start_line={start_line} but the file only has "
@@ -125,7 +125,11 @@ def _auto_read_first(tool_name, func_args, map_fn, log):
 
     log.info("Recovery: auto-reading '%s' before write", path)
     try:
-        map_fn["file"](action="read", path=path)
+        # Try the dedicated read_file tool first; fall back to consolidated 'file' tool.
+        if "read_file" in map_fn:
+            map_fn["read_file"](path=path)
+        else:
+            map_fn["file"](action="read", path=path)
     except Exception as e:
         log.warning("Recovery: auto-read failed: %s", e)
         return None
