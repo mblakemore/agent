@@ -395,7 +395,12 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
             if not filtered:
                 return f"No tasks with status '{status_filter}'."
         else:
-            filtered = tasks
+            # Exclude auto_closed tasks from the default view — they are terminal
+            # (cleaned up at session start), identical to done for practical purposes,
+            # and showing them with a [ ] marker alongside open tasks confuses agents
+            # into thinking they represent unfinished work from the current session.
+            # Use status='auto_closed' to see them explicitly.
+            filtered = [t for t in tasks if t.get("status") != "auto_closed"]
         _DONE_STATUSES = {"done", "completed"}
         # Apply limit to the filtered view (0 means no limit)
         display = filtered[:limit] if limit > 0 else filtered
@@ -423,6 +428,9 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
             if active_counts[s]:
                 parts.append(f"{active_counts[s]} {s}")
         parts.append(f"{done_count} done")
+        auto_closed_count = sum(1 for t in tasks if t.get("status") == "auto_closed")
+        if auto_closed_count:
+            parts.append(f"{auto_closed_count} auto_closed (prior sessions, hidden)")
         lines.append("\n" + ", ".join(parts))
         # Warn when there are many stale open tasks — signals accumulation from prior sessions.
         _stale_open = [t for t in tasks if t.get("status") == "open" and not t.get("persistent")]
