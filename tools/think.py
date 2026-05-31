@@ -17,10 +17,14 @@ from spinner import StreamStatus
 _output = print  # type: ignore[assignment]
 
 DEPTH_MAX_TOKENS = {
-    "brief": 2048,   # bumped: Qwen3 spends ~800-1000 tokens on reasoning_content alone
-    "normal": 4096,  # halved: 8192 was excessive for routine cycle decisions (78-91s observed)
-    "deep": 16384,   # halved: 32768 was rarely needed and consumed too much context
+    "brief": 2048,   # ~30-60s — default, sufficient for most decisions
+    "normal": 4096,  # ~120-180s — use sparingly, only for complex multi-step reasoning
+    "deep": 16384,   # ~5-10 min — very rarely needed; prefer brief or normal
 }
+
+# Per-session call counter. Injected into fn() results when overuse is detected.
+_session_call_count = 0
+_OVERUSE_THRESHOLD = 2  # warn after this many calls
 
 # Gemma 4 thinking block pattern
 _THINK_RE = re.compile(r'<\|channel>thought\n(.*?)<channel\|>', re.DOTALL)
@@ -140,6 +144,9 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
             Trades tokens for reliability on borderline reasoning tasks
             (Wang et al. 2022). Costs (N + 1) LLM calls.
     """
+    global _session_call_count
+    _session_call_count += 1
+
     if not isinstance(prompt, str):
         return f"Error: prompt must be a string, got {type(prompt).__name__!r}"
     if not prompt.strip():
@@ -184,6 +191,18 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
     log.info("THINK [depth=%s, max_tokens=%d, context=%d chars, n_samples=%d]: %s",
              depth, max_tokens, len(context), n_samples, prompt[:200])
 
+    # Build overuse warning prefix — appended to the result when called too often.
+    _overuse_prefix = ""
+    if _session_call_count > _OVERUSE_THRESHOLD:
+        est_seconds = _session_call_count * 150
+        _overuse_prefix = (
+            f"[SYSTEM NOTE: think() has been called {_session_call_count} times this "
+            f"session (estimated {est_seconds}s total thinking time). Each call blocks "
+            f"execution for ~120-180s. Unless this decision is genuinely complex, skip "
+            f"think() for subsequent steps and reason inline.]\n\n"
+        )
+        log.warning("THINK overuse: call #%d this session", _session_call_count)
+
     # ── Single-shot path ───────────────────────────────────────────────
     if n_samples == 1:
         reasoning, answer, err = _single_call(base_messages, max_tokens, 0.6, base_url, log)
@@ -196,7 +215,7 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
         log.info("THINK REASONING: %s", reasoning[:200])
         log.info("THINK ANSWER: %s", answer[:300])
         if answer:
-            return answer
+            return _overuse_prefix + answer
         if reasoning:
             # Qwen3: token budget exhausted during reasoning phase — answer never generated.
             # Truncate the raw trace so it doesn't flood the context window, then
@@ -275,9 +294,9 @@ definition = {
         "name": "think",
         "description": (
             "Invoke a separate reasoning call with chain-of-thought enabled. "
+            "Each call blocks execution for ~30-180s — use sparingly. "
             "Reasoning and answer stream to console; only the conclusion goes back "
             "into the conversation. "
-            "Depth: 'brief' (~1K) | 'normal' (~8K) | 'deep' (~32K). "
             "IMPORTANT: frame the QUESTION, not the background. The dispatch layer "
             "rejects prompts that paraphrase recent context (50+ char verbatim "
             "overlap with the last 3 assistant turns). Pass summarized "
@@ -300,10 +319,12 @@ definition = {
                     "type": "string",
                     "enum": ["brief", "normal", "deep"],
                     "description": (
-                        "Token budget preset. brief=~2K (DEFAULT, fast, use for most decisions), "
-                        "normal=~4K (complex multi-step reasoning only), "
-                        "deep=~16K (rare: deep architectural decisions). "
-                        "Omit to use the default (brief). brief is almost always sufficient."
+                        "Token budget preset. "
+                        "brief=~2K (~30-60s, DEFAULT — use for most decisions), "
+                        "normal=~4K (~120-180s — sparingly, complex multi-step only), "
+                        "deep=~16K (~5-10min — very rarely; prefer normal). "
+                        "Omit to use the default (brief). brief is almost always sufficient. "
+                        "Avoid calling think() more than twice per session."
                     ),
                 },
                 "context": {
