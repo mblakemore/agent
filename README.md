@@ -28,7 +28,21 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
    python agent.py "fix the failing test in tests/test_parser.py"
    ```
 
-**Recommended model:** Gemma 4 31B via `llama-server`. A fine-tuned variant ([mblakemore/gemma-4-31B-agent-friction-phase9](https://huggingface.co/mblakemore/gemma-4-31B-agent-friction-phase9)) reduces common tool-use friction patterns. See [docs/local-model.md](docs/local-model.md) for download, quantize, and serve instructions.
+**Recommended models:**
+
+| Role | Model |
+| --- | --- |
+| Main (GPU) | [Qwen3.6-27B](https://huggingface.co/llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF) or [gemma-4-31B-it](https://huggingface.co/google/gemma-4-31b-it) via `llama-server` |
+| Summary (CPU) | [Qwen3-4B](https://huggingface.co/unsloth/Qwen3-4B-GGUF) or [gemma-4-E4B-it](https://huggingface.co/google/gemma-4-e4b-it) |
+
+Run a second `llama-server` instance on CPU for the summary backend (see [Configuration](#configuration)) — it handles short summarisation calls so the main GPU model stays free for reasoning.
+
+**Fine-tuned variants** (optional) — trained to reduce common tool-use friction patterns:
+
+- Qwen3.6-based: [mblakemore/qwen3.6-35b-agent-friction-phase1](https://huggingface.co/mblakemore/qwen3.6-35b-agent-friction-phase1)
+- Gemma 4-based: [mblakemore/gemma-4-31B-agent-friction-phase9](https://huggingface.co/mblakemore/gemma-4-31B-agent-friction-phase9)
+
+See [docs/local-model.md](docs/local-model.md) for download, quantize, and serve instructions.
 
 ## CLI
 
