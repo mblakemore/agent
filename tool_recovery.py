@@ -5,12 +5,19 @@ makes a lightweight LLM call to recover the corrected value and re-executes
 the tool. Only triggers on errors — the happy path is unchanged.
 """
 
+import os
 import re
 import json
 
 # ── Recovery pattern registry ─────────────────────────────────────────
 
 RECOVERY_PATTERNS = [
+    {
+        "pattern": r"outside the working directory '(.+?)'",
+        "tool": "file",
+        "recovery_action": "fix_path_to_cwd",
+        # No LLM call needed — extract CWD from error, rebuild path, retry.
+    },
     {
         "pattern": r"exists but has not been read this session",
         "tool": "file",
@@ -74,6 +81,38 @@ def _extract_line_count(error_str):
     """Try to extract file line count from error message."""
     m = re.search(r"(\d+) lines", error_str)
     return int(m.group(1)) if m else None
+
+
+# ── Path-to-CWD correction (no LLM needed) ───────────────────────────
+
+def _fix_path_to_cwd(tool_name, func_args, error_str, map_fn, log):
+    """Model wrote to a path outside the CWD (e.g. /home/user/foo.py).
+    Extract the CWD from the error message, rebuild as <cwd>/<basename>, retry.
+    """
+    m = re.search(r"outside the working directory '(.+?)'", error_str)
+    if not m:
+        return None
+    cwd = m.group(1)
+    orig_path = func_args.get("path", "")
+    if not orig_path:
+        return None
+    basename = os.path.basename(orig_path)
+    if not basename:
+        return None
+    corrected = os.path.join(cwd, basename)
+    log.info("Recovery: correcting path '%s' → '%s'", orig_path, corrected)
+    corrected_args = dict(func_args)
+    corrected_args["path"] = corrected
+    try:
+        result = str(map_fn[tool_name](**corrected_args))
+        if result.startswith("Error"):
+            log.info("Recovery: path-correction retry still failed: %s", result[:100])
+            return None
+        log.info("Recovery: path correction succeeded")
+        return f"[auto-corrected path to '{corrected}']\n{result}"
+    except Exception as e:
+        log.warning("Recovery: path correction raised: %s", e)
+        return None
 
 
 # ── Auto-read recovery (no LLM needed) ───────────────────────────────
@@ -181,7 +220,9 @@ def attempt_recovery(tool_name, func_args, error_str, map_fn, llm_call_fn, confi
 
     log.info("Recovery: matched pattern '%s' for %s error", pattern["pattern"][:50], tool_name)
 
-    # Special: auto-read recovery (no LLM call)
+    # Special: no-LLM recoveries
+    if pattern.get("recovery_action") == "fix_path_to_cwd":
+        return _fix_path_to_cwd(tool_name, func_args, error_str, map_fn, log)
     if pattern.get("recovery_action") == "auto_read_first":
         return _auto_read_first(tool_name, func_args, map_fn, log)
 
