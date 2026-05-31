@@ -3485,7 +3485,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         # Reviewers don't edit — suppress the nudge for that role.
         if (turn == _EDIT_DEADLINE_TURN and not _has_edited
                 and not _edit_nudge_sent and _NUDGE_ENABLED
-                and not _is_reviewer_role):
+                and not _is_reviewer_role
+                and _is_cicd_builder):  # only meaningful for CICD builder sessions
             _edit_nudge_sent = True
             _edit_nudge = (
                 f"[SYSTEM: You have spent {turn} turns without making a code change. "
