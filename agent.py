@@ -5054,8 +5054,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                     f"'{_epath}' until you have read the file.]"
                                 ),
                             })
-                    elif func_name in ("edit_file", "file") and isinstance(func_args, dict):
-                        # Successful edit — reset failure counter for this path
+                    elif func_name in ("edit_file", "file", "write_file") and isinstance(func_args, dict):
+                        # Successful edit or full rewrite — reset failure counter for this path.
+                        # write_file changes file content entirely so prior old_string mismatches
+                        # are no longer relevant for the new version.
                         _epath = func_args.get("path", "")
                         _edit_fail_counts.pop(_epath, None)
 
