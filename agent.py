@@ -3494,6 +3494,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _READ_ONLY_NUDGE_THRESHOLD = 5
     _turn_had_action = False  # set True when write/edit/exec called this turn
 
+    # Consecutive edit_file failures per path — after 2 consecutive failures on
+    # the same file, inject a user turn telling the model to stop and rewrite.
+    _edit_fail_counts: dict = {}
+
     while True:
         turn += 1
         # Update read-only counter from the previous turn
@@ -5022,6 +5026,38 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         "name": func_name,
                         "content": result_str,
                     })
+
+                    # Consecutive edit_file failure guard: after 2 consecutive
+                    # old_string-not-found failures on the same file, inject a
+                    # user turn directing the model to switch strategy. The
+                    # existing error hint says "re-read the file" but models
+                    # often ignore it and retry with equally-wrong content.
+                    _is_edit_fail = (
+                        func_name in ("edit_file", "file")
+                        and "`old_string` not found" in result_str
+                        and isinstance(func_args, dict)
+                    )
+                    if _is_edit_fail:
+                        _epath = func_args.get("path", "")
+                        _edit_fail_counts[_epath] = _edit_fail_counts.get(_epath, 0) + 1
+                        if _edit_fail_counts[_epath] >= 2:
+                            conversation_history.append({
+                                "role": "user",
+                                "content": (
+                                    f"[SYSTEM: edit_file has failed {_edit_fail_counts[_epath]} "
+                                    f"consecutive times for '{_epath}' — the old_string does not "
+                                    f"match the actual file content. STOP using edit_file for this "
+                                    f"file. Instead: call read_file(path='{_epath}') to get the "
+                                    f"EXACT current content, then use write_file to rewrite the "
+                                    f"relevant section, or use exec_command with a Python script "
+                                    f"to patch it in-place. Do not attempt edit_file again for "
+                                    f"'{_epath}' until you have read the file.]"
+                                ),
+                            })
+                    elif func_name in ("edit_file", "file") and isinstance(func_args, dict):
+                        # Successful edit — reset failure counter for this path
+                        _epath = func_args.get("path", "")
+                        _edit_fail_counts.pop(_epath, None)
 
                     # Track file edits (file tool with action=write/create, or new per-action tools)
                     if isinstance(func_args, dict) and (
