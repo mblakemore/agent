@@ -306,6 +306,14 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
             f"Use relative paths or absolute paths under '{home_cwd}'."
         )
 
+    # Rewrite bare `python` to `python3` when `python` is not on PATH.
+    # Many systems only have python3; `python` is a training-data default that
+    # generates "command not found" on the first try and wastes a round-trip.
+    if re.search(r'(?<![/\w])python\s', command) and not os.path.exists('/usr/bin/python'):
+        import shutil
+        if not shutil.which('python') and shutil.which('python3'):
+            command = re.sub(r'(?<![/\w])python(\s)', r'python3\1', command)
+
     # Block cd to paths outside the repo tree.
     # Relative cd (cd ../shared && ...) is fine — only block absolute paths and ~ expansion
     # that leave the repo.
@@ -529,17 +537,23 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
 
     if timed_out:
         partial = "".join(output_parts).rstrip('\n')
+        _is_pytest = 'pytest' in command or 'py.test' in command
+        _pytest_hint = (
+            " If running a large test suite, split into per-file runs "
+            "(e.g. `python3 -m pytest tests/test_foo.py`) or add `-x` to stop on first failure."
+            if _is_pytest else ""
+        )
         if partial:
             return (
                 f"[session: {sid}] (timed out after {timeout}s — partial output below)\n"
                 f"{partial}\n"
                 f"The command is no longer running. Try a shorter operation or "
-                f"use background=true for long-running commands."
+                f"use background=true for long-running commands.{_pytest_hint}"
             )
         return (
             f"[session: {sid}] (timed out after {timeout}s)\n"
             f"The command is no longer running. Try a shorter operation or "
-            f"use background=true for long-running commands."
+            f"use background=true for long-running commands.{_pytest_hint}"
         )
 
     proc.wait()
