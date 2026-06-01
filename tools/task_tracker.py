@@ -650,7 +650,10 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
                     if err:
                         return err
                     return f"Completed task #{task_id}: {t.get('description', '')}"
-            return f"Error: task #{task_id} not found"
+            _open_ids = [str(t['id']) for t in tasks if t["status"] not in ("done", "completed")]
+            return (f"Error: task #{task_id} not found. "
+                    f"Open task IDs: {', '.join(_open_ids) or 'none'}. "
+                    f"Use action='list' to see all tasks.")
 
         elif action == "update":
             if task_id <= 0:
@@ -681,7 +684,10 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
                     if _effective_description:
                         msg += f", note={_effective_description!r}"
                     return msg
-            return f"Error: task #{task_id} not found"
+            _open_ids = [str(t['id']) for t in tasks if t["status"] not in ("done", "completed")]
+            return (f"Error: task #{task_id} not found. "
+                    f"Open task IDs: {', '.join(_open_ids) or 'none'}. "
+                    f"Use action='list' to see all tasks.")
 
         elif action == "drop":
             if task_id <= 0:
@@ -696,7 +702,10 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
                     if err:
                         return err
                     return f"Dropped task #{task_id}: {removed.get('description', '')}"
-            return f"Error: task #{task_id} not found"
+            _open_ids = [str(t['id']) for t in tasks if t["status"] not in ("done", "completed")]
+            return (f"Error: task #{task_id} not found. "
+                    f"Open task IDs: {', '.join(_open_ids) or 'none'}. "
+                    f"Use action='list' to see all tasks.")
 
 
 definition = {

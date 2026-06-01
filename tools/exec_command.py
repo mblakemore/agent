@@ -297,6 +297,15 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     home_cwd = os.getcwd()
     run_cwd = str(Path(cwd).resolve()) if cwd else home_cwd
 
+    # Catch /home/user path hallucination before the shell wastes a round-trip.
+    # /home/user is a training-data placeholder that doesn't exist on this system.
+    if '/home/user' in command and not os.path.exists('/home/user'):
+        return (
+            f"Error: '/home/user' does not exist on this system. "
+            f"Your working directory is '{home_cwd}'. "
+            f"Use relative paths or absolute paths under '{home_cwd}'."
+        )
+
     # Block cd to paths outside the repo tree.
     # Relative cd (cd ../shared && ...) is fine — only block absolute paths and ~ expansion
     # that leave the repo.
