@@ -197,7 +197,7 @@ def _emit(method, *args, **kwargs):
     return safe_cb(_cb, method, *args, log=_cb_log, **kwargs)
 
 
-_FILE_REF = re.compile(r"(?<!\w)@(\.{0,2}/\S+|(?![^\s@]*[@:])[A-Za-z_]\S*)")
+_FILE_REF = re.compile(r"(?<!\w)@(\.{0,2}/[^\s,;)]+|(?![^\s@]*[@:])[A-Za-z_][^\s,;:)}\]]*)")
 _EXIT_ONLY_RE = re.compile(r'^\[session:[^\]]+\]\s+exit=0\s*$')
 
 # ── Pinned instructions ───────────────────────────────────────────────
@@ -1733,6 +1733,12 @@ def _expand_file_refs(text):
         except OSError as exc:
             return None, None, f"Error: '{ref}': {exc.strerror}"
         if not path_exists:
+            # Bare identifiers with no path separator or extension (e.g. @state,
+            # @transition) are Python decorators or @-mentions — not file refs.
+            # Silently skip rather than erroring so prompts mentioning decorator
+            # names don't abort before the first LLM call.
+            if '/' not in ref and '.' not in ref:
+                continue
             return None, None, f"Error: file '{ref}' does not exist"
         if path_is_dir:
             return None, None, f"Error: '{ref}' is a directory, not a file"
