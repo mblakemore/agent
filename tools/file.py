@@ -568,6 +568,25 @@ def _edit(path, old_string, new_string, replace_all):
             if _m:
                 new_content = old_content[:_m.start()] + new_string + old_content[_m.end():]
 
+        # Third fuzzy pass: normalize common Unicode lookalikes (em-dash,
+        # curly quotes) to ASCII equivalents in both sides, then match.
+        # All substitutions are 1:1 code-point replacements, so the match
+        # index in the normalized string maps directly to the original.
+        if new_content is None:
+            _UNICODE_TABLE = str.maketrans({
+                '—': '-',   # em-dash → hyphen
+                '–': '-',   # en-dash → hyphen
+                '“': '"',   # left double quote → straight
+                '”': '"',   # right double quote → straight
+                '‘': "'",   # left single quote → straight
+                '’': "'",   # right single quote → straight
+            })
+            _uc = old_content.translate(_UNICODE_TABLE)
+            _uo = old_string.translate(_UNICODE_TABLE)
+            if _uo and _uc.count(_uo) == 1:
+                _ui = _uc.index(_uo)
+                new_content = old_content[:_ui] + new_string + old_content[_ui + len(_uo):]
+
         if new_content is None:
             # No match even after normalization — give a useful hint
             first_line = old_string.splitlines()[0] if old_string else ""
