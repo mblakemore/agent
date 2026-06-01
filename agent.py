@@ -3620,7 +3620,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             # "2025-05-22T10:00:00Z" anchors — the framework owns the clock,
             # the model owns the work.
             _now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            _system_lines = [f"Current time (UTC, ISO8601): {_now_iso}"]
+            _system_lines = [
+                f"Current time (UTC, ISO8601): {_now_iso}",
+                f"Working directory: {os.getcwd()} — use this for all file paths, not /home/user.",
+            ]
 
             # T5.14 Option B — opt-in tool-selection guidance. When the agent's
             # config has `preferences.tool_selection_hints: true`, prepend a
