@@ -93,6 +93,47 @@ _sessions = {}
 _main_session_id = None
 _temp_session_ids = []
 
+# Config-based command guards — loaded once from config.json on first use.
+_command_guards: list | None = None
+_command_guards_loaded = False
+
+
+def _load_command_guards() -> list:
+    """Load command_guards from CWD/config.json. Returns compiled guard list, cached."""
+    global _command_guards, _command_guards_loaded
+    if _command_guards_loaded:
+        return _command_guards or []
+    _command_guards_loaded = True
+    try:
+        import json as _json
+        config_path = Path(os.getcwd()) / "config.json"
+        if not config_path.exists():
+            return []
+        with open(config_path, "r", encoding="utf-8") as _f:
+            cfg = _json.load(_f)
+        raw = cfg.get("command_guards", [])
+        if not isinstance(raw, list):
+            return []
+        compiled = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            pattern = entry.get("pattern")
+            message = entry.get("message")
+            if not pattern or not message:
+                continue
+            try:
+                compiled.append({
+                    "regex": re.compile(str(pattern), re.IGNORECASE | re.DOTALL),
+                    "message": str(message),
+                })
+            except re.error:
+                pass  # skip malformed patterns
+        _command_guards = compiled
+    except Exception:
+        pass
+    return _command_guards or []
+
 
 def _derive_main_session():
     """Derive a stable main session name from the agent's working directory."""
@@ -313,6 +354,11 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         import shutil
         if not shutil.which('python') and shutil.which('python3'):
             command = re.sub(r'(?<![/\w])python(\s)', r'python3\1', command)
+
+    # Config-based command guards: patterns from config.json["command_guards"].
+    for _guard in _load_command_guards():
+        if _guard["regex"].search(command):
+            return _guard["message"]
 
     # Block cd to paths outside the repo tree.
     # Relative cd (cd ../shared && ...) is fine — only block absolute paths and ~ expansion
