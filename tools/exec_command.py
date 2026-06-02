@@ -360,6 +360,27 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         if _guard["regex"].search(command):
             return _guard["message"]
 
+    # Detect trailing shell `&` (background operator) in a foreground exec_command call.
+    # When a command ends with `&`, bash forks the child but the child process inherits
+    # exec_command's stdout pipe.  Bash exits immediately, but exec_command's reader
+    # thread blocks on that pipe until the child exits — which for a server means
+    # blocking for the full timeout (120s) even though the process started successfully.
+    # Solution: use background=true in exec_command instead of `&` in the command.
+    # Guard: match `&` at end of last non-empty line, excluding `&&`, `2>&1`, `>&`, `&>`.
+    if not background:
+        _last_line = command.rstrip().split('\n')[-1].rstrip()
+        if re.search(r'(?<![&>])(?<!\d>)&\s*$', _last_line) and not re.search(r'&&\s*$', _last_line):
+            _bg_example = re.sub(r'\s*&\s*$', '', _last_line).strip()
+            return (
+                "Error: command ends with '&' (shell background operator) but "
+                "exec_command is in foreground mode. The backgrounded process inherits "
+                "exec_command's stdout pipe, so exec_command blocks for the full timeout "
+                "waiting for that pipe to close — even though the process started fine.\n"
+                "Use background=true in exec_command instead:\n"
+                f"  exec_command(command='{_bg_example}', background=true)\n"
+                "Then poll with the returned session_id to check output."
+            )
+
     # Block cd to paths outside the repo tree.
     # Relative cd (cd ../shared && ...) is fine — only block absolute paths and ~ expansion
     # that leave the repo.
