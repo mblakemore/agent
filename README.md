@@ -148,23 +148,164 @@ Agent-specific tools in `./tools/` alongside your working directory are auto-dis
 
 ## Configuration
 
-Drop a `config.json` in the working directory to override defaults. Top-level sections:
+Drop a `config.json` in the working directory (i.e. wherever you run `agent.py` from) to override defaults. All sections are optional; omitted keys use the defaults listed below.
 
-- **`backends`** — `main` and `summary` entries; each has `kind` (`"llamacpp"` or `"bedrock"`) plus kind-specific keys. Preferred shape.
-- **`llm`**, **`summary`** — legacy flat blocks; synthesized into `backends` at load time. Old configs need no change.
-- **`generation`** — `temperature`, `top_p`, `top_k`, `presence_penalty`.
-- **`context`** — `ctx_size`, `max_tokens`, `summary_threshold`, `max_context_messages`, and related sizing controls.
-- **`cycle`** — `max_turns`, `wind_down_turns`, `max_text_only`.
-- **`retry`** — `max_retries`, `base_delay_seconds`, `backoff_multiplier`, and related exponential-backoff tuning.
+### `backends`
+
+Preferred shape. Replaces the legacy `llm` / `summary` flat blocks (which still work — they are synthesized into `backends` at load time).
 
 ```json
 {
   "backends": {
-    "main":    { "kind": "llamacpp", "base_url": "http://127.0.0.1:8080", "model": "gemma-4-31B" },
-    "summary": { "kind": "llamacpp", "base_url": "http://127.0.0.1:8082", "model": "gemma-4-E4B", "enabled": true }
+    "main": {
+      "kind":     "llamacpp",
+      "base_url": "http://127.0.0.1:8080",
+      "model":    "my-model-name",
+      "api_key":  "",
+      "stream":   true
+    },
+    "summary": {
+      "kind":     "llamacpp",
+      "base_url": "http://127.0.0.1:8082",
+      "model":    "my-summary-model",
+      "enabled":  true
+    }
+  }
+}
+```
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `kind` | `"llamacpp"` | Backend type: `"llamacpp"`, `"bedrock"`, or `"foundry"`. |
+| `base_url` | `"http://127.0.0.1:8080"` | OpenAI-compatible endpoint. |
+| `model` | `"gemma-4-31B"` | Model name passed to the endpoint (informational for llamacpp; selects the Bedrock model ID for bedrock). |
+| `api_key` | `""` | Bearer token sent as `Authorization: Bearer <key>`. Keep this file `chmod 600`. |
+| `stream` | `true` | Set `false` to use non-streaming completions (useful for debugging). |
+| `enabled` | `true` (main) / `true` (summary) | Set `false` to disable the summary backend entirely. |
+
+For **Bedrock**-specific keys (`api_url`, spend caps, keystore) see [docs/bedrock.md](docs/bedrock.md).
+
+### `generation`
+
+Inference parameters forwarded to the LLM on every request.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `temperature` | `0.6` | Sampling temperature. |
+| `top_p` | `0.95` | Nucleus sampling threshold. |
+| `top_k` | `20` | Top-K sampling. |
+| `min_p` | `0.0` | Min-P sampling (0 = disabled). |
+| `presence_penalty` | `0.0` | Penalise tokens already present in context. |
+
+### `context`
+
+Controls context-window sizing and compaction.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `ctx_size` | `114688` | Context window size in tokens. Auto-detected from the server's `/props` endpoint when available; this value is the fallback cap. |
+| `max_tokens` | `16384` | Maximum tokens in a single completion. |
+| `max_full_lines` | `800` | Lines of tool output kept verbatim before compaction. |
+| `preview_lines` | `200` | Lines shown in the compacted preview. |
+| `summary_threshold` | `5` | Messages beyond which background summarisation fires. |
+| `summary_max_chars` | `3000` | Maximum characters in a generated summary chunk. |
+| `max_context_messages` | `30` | Hard cap on messages sent to the LLM per turn. |
+
+### `cycle`
+
+Per-session run limits.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `max_turns` | `250` | Stop (or wind down) after this many turns. |
+| `wind_down_turns` | `10` | Turns of grace period after `max_turns` before a hard stop. |
+| `max_text_only` | `3` | Consecutive text-only responses that trigger a halt (loop detection). |
+| `max_total_nudges` | `6` | Total auto-nudges allowed before giving up (requires `preferences.nudge` or `--nudge`). |
+
+### `retry`
+
+Exponential-backoff settings for failed LLM requests.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `max_retries` | `10` | Maximum retry attempts before the request fails. |
+| `base_delay_seconds` | `2` | Initial retry wait. |
+| `max_delay_seconds` | `60` | Cap on retry wait. |
+| `backoff_multiplier` | `2.0` | Multiplier applied to delay each retry. |
+| `jitter_factor` | `0.1` | Random jitter added to each delay (fraction of current delay). |
+
+### `bedrock`
+
+Bedrock-specific tuning (only relevant when `backends.main.kind` or `backends.summary.kind` is `"bedrock"`).
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `adaptive_max_tokens` | `true` | Dynamically adjust `max_tokens` per request based on detected prompt complexity, staying within the model's limit. |
+
+### `preferences`
+
+Behavioural knobs that don't fit elsewhere.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `nudge` | `false` | Auto-nudge the model when it returns a text-only response. Also settable with `--nudge` CLI flag. |
+| `persist_nudge` | `false` | After a text-only stop, check `git status`; if uncommitted changes exist and no commit happened this session, inject one nudge to commit. Intended for git-native agents. |
+| `tool_selection_hints` | `false` | Prepend a system-prompt directive recommending `file(action='edit')` over heredoc rewrites for existing-file edits. |
+| `max_text_response_chars` | `24000` | Cap on text-only response length per turn (characters). Only enforced when `nudge` is on. Prevents context-filling monologue spirals. |
+| `max_post_tool_text_chars` | `2000` | Cap on prose generated after tool calls in the same turn. |
+| `extra_allowed_paths` | `[]` | List of absolute directory paths the `file` tool is allowed to read/write outside the working directory. |
+| `tools_whitelist` | `null` | Restrict the tool schema sent to the LLM to this list of tool names. `null` = all tools. Example: `["file", "exec_command", "search_files", "think", "task_tracker"]`. |
+| `initial_tasks` | `[]` | Task descriptions pre-seeded into `task_tracker` at session start (only when the task list is empty — does not overwrite an in-progress cycle). |
+| `seed_tasks_persistent` | `false` | Re-seed `initial_tasks` at the start of every cycle, not just on a fresh task list. |
+
+### `command_guards`
+
+A list of regex-pattern / message pairs that intercept `exec_command` calls before the shell sees them. When a command matches a pattern, execution is blocked and the message is returned to the agent as a tool error — the agent can then reason about it and try something else.
+
+Patterns are case-insensitive regexes matched against the full command string.
+
+```json
+{
+  "command_guards": [
+    {
+      "pattern": "\\b8080\\b",
+      "message": "BLOCKED: Port 8080 is used by the llama.cpp main inference server. Do not start processes on it or kill processes using it. Use a different port (e.g. 8765) for http.server."
+    },
+    {
+      "pattern": "\\b8082\\b",
+      "message": "BLOCKED: Port 8082 is used by the llama.cpp summary inference server. Do not use it."
+    },
+    {
+      "pattern": "rm\\s+-rf\\s+/",
+      "message": "BLOCKED: Refusing to run recursive delete from filesystem root."
+    }
+  ]
+}
+```
+
+Guards fire after the built-in hallucination guards (`/home/user`, `python`→`python3`) but before the command runs.
+
+### Full example
+
+```json
+{
+  "backends": {
+    "main":    { "kind": "llamacpp", "base_url": "http://127.0.0.1:8080" },
+    "summary": { "kind": "llamacpp", "base_url": "http://127.0.0.1:8082", "enabled": true }
   },
-  "context": { "ctx_size": 32768 },
-  "cycle":   { "max_turns": 50 }
+  "generation": { "temperature": 0.8 },
+  "context":    { "ctx_size": 32768 },
+  "cycle":      { "max_turns": 50 },
+  "preferences": {
+    "nudge": true,
+    "tools_whitelist": ["file", "exec_command", "search_files", "think", "task_tracker"]
+  },
+  "command_guards": [
+    {
+      "pattern": "\\b8080\\b",
+      "message": "BLOCKED: Port 8080 is reserved for the llama.cpp server."
+    }
+  ]
 }
 ```
 
