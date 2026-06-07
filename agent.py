@@ -1965,6 +1965,57 @@ def _build_summary_prompt(old_summary, new_messages):
     )
 
 
+# Number of same-tool occurrences in history before older ones are compressed.
+_TOOL_RESULT_COMPRESS_AFTER = 3
+# Don't compress results shorter than this — short results are cheap to keep.
+_TOOL_RESULT_COMPRESS_MIN   = 200
+
+
+def _summarize_for_compression(content: str, func_name: str, log) -> str:
+    """Compress one tool result to key facts.  Tries summary backend; falls back to head+tail."""
+    try:
+        prompt = (
+            f"Compress this {func_name} result to 1-3 lines. "
+            f"Preserve all key values: progress percentages, step counts, "
+            f"file paths, error messages, exit codes.\n\n{content[:3000]}"
+        )
+        summary = _summary_request(prompt, log=log).strip()
+        return f"[compressed by summary: {summary}]"
+    except Exception as e:
+        log.debug("summary compression unavailable (%s) — using head+tail", e)
+        lines = content.strip().split("\n")
+        if len(lines) <= 4:
+            return f"[compressed: {content[:300]}]"
+        head = "\n".join(lines[:2])
+        tail = "\n".join(lines[-2:])
+        return f"[compressed: {head}\n... ({len(lines)} lines) ...\n{tail}]"
+
+
+def _compress_repeated_tool_results(conversation_history: list, func_name: str, log) -> None:
+    """When the same tool appears _TOOL_RESULT_COMPRESS_AFTER+ times in history,
+    compress all but the most recent occurrence.  Targets polling patterns
+    (e.g. exec_command(cat log) × N turns) that would otherwise fill the context
+    window with near-identical large results.
+    """
+    indices = [
+        i for i, m in enumerate(conversation_history)
+        if m.get("role") == "tool" and m.get("name") == func_name
+    ]
+    if len(indices) < _TOOL_RESULT_COMPRESS_AFTER:
+        return
+    changed = 0
+    for idx in indices[:-1]:          # keep the most recent entry intact
+        content = conversation_history[idx].get("content", "")
+        if len(content) < _TOOL_RESULT_COMPRESS_MIN:
+            continue
+        if content.startswith("[compressed"):
+            continue
+        conversation_history[idx]["content"] = _summarize_for_compression(content, func_name, log)
+        changed += 1
+    if changed:
+        log.info("history compression: %d older %s result(s) compressed", changed, func_name)
+
+
 def _generate_summary(old_summary, new_messages, log):
     """Call the LLM to produce an updated conversation summary.
 
@@ -5026,6 +5077,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         "name": func_name,
                         "content": result_str,
                     })
+                    _compress_repeated_tool_results(conversation_history, func_name, log)
 
                     # Consecutive edit_file failure guard: after 2 consecutive
                     # old_string-not-found failures on the same file, inject a
