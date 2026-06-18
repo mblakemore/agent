@@ -33,7 +33,14 @@ time, and only stdlib + ``requests`` (for the health probe) at runtime.
 from __future__ import annotations
 
 import errno
-import fcntl
+try:
+    import fcntl  # POSIX advisory file locks
+except ImportError:  # Windows / non-POSIX
+    fcntl = None
+try:
+    import msvcrt  # Windows file locking
+except ImportError:  # non-Windows
+    msvcrt = None
 import json
 import logging
 import os
@@ -150,6 +157,50 @@ def write_store(data: dict[str, Any], path: Path | None = None) -> None:
         pass
 
 
+def _acquire_lock(lock_fd: int, timeout: float) -> bool:
+    """Acquire an exclusive advisory lock on ``lock_fd``.
+
+    POSIX uses ``fcntl.flock``; Windows uses ``msvcrt.locking``. Both
+    auto-release when the fd is closed or the owning process dies, so a crash
+    never leaves a stale lock (an ``O_EXCL`` lockfile would not have this
+    property). Retries on contention until ``timeout`` seconds elapse; returns
+    True if the lock was taken, False on timeout. If neither primitive is
+    available, proceeds unlocked (single-process correctness only).
+    """
+    if fcntl is None and msvcrt is None:
+        return True
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        try:
+            if fcntl is not None:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            else:
+                os.lseek(lock_fd, 0, os.SEEK_SET)
+                msvcrt.locking(lock_fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError as e:
+            # POSIX flock: EAGAIN/EACCES means another process holds it — retry.
+            # Any other errno is a real error. Windows msvcrt raises OSError
+            # (EDEADLOCK/EACCES) on contention, which we also treat as retry.
+            if fcntl is not None and e.errno not in (errno.EAGAIN, errno.EACCES):
+                raise
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
+
+def _release_lock(lock_fd: int) -> None:
+    """Release a lock taken by :func:`_acquire_lock`. Best-effort."""
+    try:
+        if fcntl is not None:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            os.lseek(lock_fd, 0, os.SEEK_SET)
+            msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+
+
 @contextmanager
 def with_locked_store(
     path: Path | None = None,
@@ -172,20 +223,8 @@ def with_locked_store(
         os.O_RDWR | os.O_CREAT,
         0o600,
     )
-    deadline = time.monotonic() + max(0.0, timeout)
-    locked = False
+    locked = _acquire_lock(lock_fd, timeout)
     try:
-        while True:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                locked = True
-                break
-            except OSError as e:
-                if e.errno not in (errno.EAGAIN, errno.EACCES):
-                    raise
-                if time.monotonic() >= deadline:
-                    break
-                time.sleep(0.05)
         if not locked:
             yield None
             return
@@ -193,10 +232,7 @@ def with_locked_store(
         yield (data, p)
     finally:
         if locked:
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            except OSError:
-                pass
+            _release_lock(lock_fd)
         os.close(lock_fd)
 
 
