@@ -36,6 +36,7 @@ def _cmd_help(ctx: SimpleNamespace, args: str) -> None:
         "  /clear         — clear conversation history and start a fresh session log",
         "  /context       — show current context usage (bar + token counts)",
         "  /model         — pick a different model from the server",
+        "  /alias         — install an `agent` shell alias for this checkout",
         "  /verbose       — toggle compact/full tool output",
         "  /tools [N|all] — show buffered tool calls (default: all; N = last N only)",
         "  /phase         — show current phase checkpoint",
@@ -74,6 +75,43 @@ def _cmd_model(ctx: SimpleNamespace, args: str) -> None:
                 theme.c(theme.MINT,
                         f"Model set to {new_model} (summarizer keeps its original model)"))
         ctx.log.info("Model changed via /model: %s", new_model)
+
+
+def _cmd_alias(ctx: SimpleNamespace, args: str) -> None:
+    """Detect the working python and install an `agent` shell alias mapping
+    `<python> /path/to/agent.py` → `agent`."""
+    _warn_extra_args(ctx, "/alias", args)
+    import alias_setup as A
+
+    py = A.detect_python_cmd()
+    agent_path = A.agent_script_path()
+    cmds = A.build_alias_commands(py, agent_path)
+    kind = A.current_shell_kind()
+    rc = A.rc_file_for(kind)
+
+    def note(level, msg):
+        safe_cb(ctx.cb, "on_notice", level, msg)
+
+    note("info", theme.c(theme.SKY, f"Detected python: {py}"))
+    note("info", f"agent.py: {agent_path}")
+
+    if rc:
+        try:
+            status = A.install_alias_block(rc, cmds["bash"])
+            note("info", theme.c(theme.MINT, f"alias written to {rc} ({status})"))
+            note("info", f"  {cmds['bash']}")
+            note("info", f"Activate now with:  source {rc}   (or open a new shell), then run `agent`.")
+            ctx.log.info("/alias installed agent alias in %s (%s)", rc, status)
+        except OSError as e:
+            note("warn", f"Could not write {rc}: {e}. Add this line manually:")
+            note("info", f"  {cmds['bash']}")
+    else:
+        # Pure Windows shell (cmd / PowerShell) — can't safely edit a profile blind.
+        note("info", "PowerShell — add to your $PROFILE:")
+        note("info", f"  {cmds['powershell']}")
+        note("info", "cmd — define a doskey macro (or drop a small agent.bat on PATH):")
+        note("info", f"  {cmds['cmd']}")
+        ctx.log.info("/alias printed Windows (cmd/PowerShell) alias instructions")
 
 
 def _cmd_verbose(ctx: SimpleNamespace, args: str) -> None:
@@ -342,6 +380,7 @@ _COMMANDS: dict[str, Callable[[SimpleNamespace, str], None]] = {
     "/clear": _cmd_clear,
     "/context": _cmd_context,
     "/model": _cmd_model,
+    "/alias": _cmd_alias,
     "/verbose": _cmd_verbose,
     "/tools": _cmd_tools,
     "/phase": _cmd_phase,
