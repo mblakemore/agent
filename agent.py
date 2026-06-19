@@ -371,6 +371,12 @@ def _warn_if_world_readable_with_key(config_path, user_config):
 
     Plan § 18.75 security checklist. Don't enforce; just warn.
     """
+    if os.name == "nt":
+        # Windows uses NTFS ACLs, not POSIX mode bits — os.stat().st_mode is
+        # synthetic (typically 0o666) and `chmod 600` is a no-op here, so the
+        # warning is a false positive. The redistributable protection against
+        # committing keys is the .gitignore entry (see _ensure_agent_dirs).
+        return
     if not isinstance(user_config, dict):
         return
     # Walk backends → {main,summary} → api_key to check for a non-empty key.
@@ -404,7 +410,12 @@ def _load_config():
     """
     config = json.loads(json.dumps(_DEFAULT_CONFIG))  # deep copy
 
-    config_path = Path(os.getcwd()) / "config.json"
+    # Prefer .agent/config.json (keeps local, key-bearing config out of the repo
+    # root and alongside the other .agent/ runtime files); fall back to the
+    # legacy ./config.json so existing setups keep working unchanged.
+    _agent_cfg = Path(os.getcwd()) / ".agent" / "config.json"
+    _legacy_cfg = Path(os.getcwd()) / "config.json"
+    config_path = _agent_cfg if _agent_cfg.exists() else _legacy_cfg
     user_config = None
     if config_path.exists():
         try:
@@ -2527,21 +2538,54 @@ def _state_path(*parts):
     return os.path.join(_STATE_DIR, *parts)
 
 
+def _in_git_repo(start=None) -> bool:
+    """True if *start* (default cwd) is inside a git working tree."""
+    d = os.path.abspath(start or os.getcwd())
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            return True
+        parent = os.path.dirname(d)
+        if parent == d:
+            return False
+        d = parent
+
+
+def _ensure_gitignored(entries) -> None:
+    """Best-effort: ensure each of *entries* is a line in ./.gitignore — but
+    only when inside a git repo, so we never litter a .gitignore into a plain
+    working directory. Matches whole lines (a substring check would be fooled
+    by comments or longer paths).
+    """
+    if not _in_git_repo():
+        return
+    gitignore = os.path.join(os.getcwd(), ".gitignore")
+    try:
+        existing = (
+            open(gitignore, encoding="utf-8", errors="replace").read()
+            if os.path.exists(gitignore) else ""
+        )
+        present = set(existing.splitlines())
+        missing = [e for e in entries if e not in present]
+        if not missing:
+            return
+        with open(gitignore, "a", encoding="utf-8") as f:
+            if not existing:
+                f.write("# agent runtime state & local config\n")
+            elif not existing.endswith("\n"):
+                f.write("\n")
+            f.write("\n".join(missing) + "\n")
+    except OSError:
+        pass  # non-fatal; best-effort only
+
+
 def _ensure_agent_dirs():
-    """Create .agent/state and .agent/history on first use.
-    Also ensure .agent/ is in .gitignore so runtime state never lands in commits.
+    """Create .agent/state and .agent/history on first use, and — when inside a
+    git repo — gitignore .agent/ and config.json so runtime state and the
+    (possibly key-bearing) local config never land in commits.
     """
     os.makedirs(_STATE_DIR, exist_ok=True)
     os.makedirs(_HISTORY_DIR, exist_ok=True)
-    # Add .agent/ to .gitignore if this is a git repo and the entry isn't there yet.
-    gitignore = os.path.join(os.getcwd(), ".gitignore")
-    try:
-        existing = open(gitignore).read() if os.path.exists(gitignore) else ""
-        if ".agent/" not in existing:
-            with open(gitignore, "a") as f:
-                f.write("\n.agent/\n")
-    except OSError:
-        pass  # non-fatal; best-effort only
+    _ensure_gitignored((".agent/", "config.json"))
 
 
 _ensure_agent_dirs()
@@ -3307,7 +3351,10 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 log_path=log_path,
                 ctx_size=ctx_size,
                 config=_config,
-                base_url=BASE_URL,
+                # Point /model at the active main backend (e.g. the configured
+                # gateway), not the hardcoded llama-server default — otherwise
+                # the picker probes 127.0.0.1:8080 and lists nothing.
+                base_url=getattr(_main_backend, "base_url", None) or BASE_URL,
                 setup_logger=_setup_logger,
                 pick_model=_pick_model_interactive,
                 render_context_bar=_render_context_bar,
