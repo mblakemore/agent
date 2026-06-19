@@ -33,6 +33,14 @@ def _bash_exe() -> str:
     ``/tmp/...`` under the MSYS2 view) run unchanged. Override with the
     ``AGENT_BASH_EXE`` env var. Falls back to bare ``bash`` (Popen surfaces a
     clear error) if Git-Bash can't be located.
+
+    On Windows we must NOT trust ``shutil.which('bash')`` blindly: the first
+    ``bash.exe`` on PATH is usually the WSL launcher stub at
+    ``C:\\Windows\\System32\\bash.exe`` (and there may be a Store alias under
+    ``WindowsApps``). If no WSL distro is installed, that stub fails *every*
+    command with "Windows Subsystem for Linux has no installed distributions".
+    So we check known Git-Bash locations first and reject any System32/
+    WindowsApps result from ``which``.
     """
     global _BASH_EXE_CACHE
     if _BASH_EXE_CACHE is not None:
@@ -44,15 +52,21 @@ def _bash_exe() -> str:
         _BASH_EXE_CACHE = "bash"
     else:
         import shutil
-        found = shutil.which("bash")
+        candidates = [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+        ]
+        localapp = os.environ.get("LOCALAPPDATA")
+        if localapp:  # per-user Git for Windows install
+            candidates.append(os.path.join(localapp, "Programs", "Git", "bin", "bash.exe"))
+        found = next((c for c in candidates if os.path.exists(c)), None)
         if not found:
-            for cand in (
-                r"C:\Program Files\Git\bin\bash.exe",
-                r"C:\Program Files (x86)\Git\bin\bash.exe",
+            which = shutil.which("bash")
+            # Reject the WSL stub / Store alias — they shadow Git-Bash on PATH.
+            if which and not any(
+                seg in which.lower() for seg in ("system32", "windowsapps")
             ):
-                if os.path.exists(cand):
-                    found = cand
-                    break
+                found = which
         _BASH_EXE_CACHE = found or "bash"
     return _BASH_EXE_CACHE
 

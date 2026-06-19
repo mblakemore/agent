@@ -22,10 +22,10 @@ The runtime is cross-platform Python. The `exec_command` tool shells out to `bas
 
 1. **Install [Git for Windows](https://git-scm.com/download/win).** It bundles a standalone `bash.exe` (MSYS2) and `git` — no WSL required.
 2. **Install Python 3.10+** for Windows, then `pip install -r requirements.txt`. (Install the GitHub CLI `gh` too if you run the CICD pipeline.)
-3. **Make `bash` resolvable**, in the order the runtime probes:
-   - set `AGENT_BASH_EXE` to the full path (e.g. `C:\Program Files\Git\bin\bash.exe`), **or**
-   - put Git's `bin` (or `usr\bin`) on `PATH` so `where bash` finds it, **or**
-   - rely on the default probe of `C:\Program Files\Git\bin\bash.exe`.
+3. **Make `bash` resolvable.** The runtime probes Git-Bash directly (known install paths) and **deliberately ignores `C:\Windows\System32\bash.exe`** — that's the WSL launcher stub, which fails every command with *"Windows Subsystem for Linux has no installed distributions"* if you don't run WSL. Resolution order:
+   - `AGENT_BASH_EXE` env var pointing at the full path (e.g. `C:\Program Files\Git\bin\bash.exe`, or `%LOCALAPPDATA%\Programs\Git\bin\bash.exe` for a per-user Git install) — **set this if auto-detection fails**, **then**
+   - the known Git-Bash install locations (`C:\Program Files\Git\bin\bash.exe`, the `(x86)` variant, and the per-user `%LOCALAPPDATA%` path), **then**
+   - `where bash` on `PATH`, excluding the System32 WSL stub and any `WindowsApps` Store alias.
 4. **Run from a Git-Bash shell**, not `cmd`/PowerShell:
    ```bash
    python agent.py "fix the failing test in tests/test_parser.py"
