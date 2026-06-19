@@ -2844,6 +2844,20 @@ def _startup_health_timeout() -> int:
         return 10
 
 
+def _sync_config_model(backend, config) -> None:
+    """Sync ``config['llm']['model']`` to the backend's active model name.
+
+    The startup banner shows ``backend.model`` (an auto-detected gateway model,
+    say), but the TUI footer reads ``config['llm']['model']`` — which stays the
+    llamacpp config default unless kept in sync. This makes the footer match the
+    banner. No-op when the backend has no model name (banner falls back to the
+    config value too, so they still agree).
+    """
+    model = getattr(backend, "model", None)
+    if model:
+        config.setdefault("llm", {})["model"] = model
+
+
 def _check_api_health(base_url, timeout=3):
     """Probe the LLM endpoint. Return (ok: bool, detail: str)."""
     return _backend_for_url(base_url).health(timeout=timeout)
@@ -3059,6 +3073,11 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             if len(_det) == 1:
                 _summary_backend.model = _det[0]
                 log.info("Auto-detected summary model name from /v1/models: %s", _det[0])
+
+    # Footer ↔ banner parity: the banner uses _main_backend.model, the TUI
+    # footer reads _config["llm"]["model"]. Sync them before the banner renders
+    # and before the TuiSession is built so both show the active model name.
+    _sync_config_model(_main_backend, _config)
 
     _emit("on_session_start", {
         "version": __version__,
