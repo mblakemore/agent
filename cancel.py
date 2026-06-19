@@ -14,10 +14,23 @@ import io
 import os
 import select
 import sys
-import termios
 import threading
 import time
-import tty
+
+# termios/tty are POSIX-only — they raise ImportError on Windows. select
+# itself imports fine everywhere, but select.select() on os.pipe()/stdin fds
+# raises OSError on Windows (WinError 10038 — not a socket), which would
+# busy-loop the monitor. So we gate the whole cbreak+monitor machinery on a
+# capability flag: on non-POSIX, double-Escape cancel degrades to a no-op
+# (CICD runs are non-interactive, and TUI hosts cancel via request_cancel()).
+try:
+    import termios
+    import tty
+    _POSIX_TTY = True
+except ImportError:  # Windows / non-POSIX
+    termios = None
+    tty = None
+    _POSIX_TTY = False
 
 
 class CancelledError(Exception):
@@ -40,10 +53,16 @@ _tui_mode = False
 # (line-166 "consume it" path). Writing a byte to _wake_w makes the select
 # return immediately; the reader drains the pipe and returns None without
 # consuming stdin.
-try:
-    _wake_r, _wake_w = os.pipe()
-except OSError:
-    # Non-POSIX or restricted environment — fall back to race-prone behaviour.
+if _POSIX_TTY:
+    try:
+        _wake_r, _wake_w = os.pipe()
+    except OSError:
+        # Restricted POSIX environment — fall back to race-prone behaviour.
+        _wake_r, _wake_w = None, None
+else:
+    # Non-POSIX: the monitor is never activated (see cancellable.__enter__),
+    # so the wake pipe is unnecessary — and select() on these fds would raise
+    # on Windows. Leave both ends None.
     _wake_r, _wake_w = None, None
 
 
@@ -109,7 +128,7 @@ class cbreak_mode:
 
     def __enter__(self):
         global _original_termios
-        if not sys.stdin.isatty():
+        if not _POSIX_TTY or not sys.stdin.isatty():
             return self
         self.saved = termios.tcgetattr(sys.stdin)
         _original_termios = self.saved
@@ -132,6 +151,8 @@ def _read_byte(timeout):
     stdin byte — lets the real keyboard owner (prompt_toolkit, etc.) pick up
     the next keypress.
     """
+    if not _POSIX_TTY:
+        return None
     try:
         if not hasattr(sys.stdin, 'fileno'):
             return None
@@ -226,7 +247,7 @@ class cancellable:
         if _tui_mode:
             # A TUI host owns the keyboard; it will call request_cancel().
             return self
-        if sys.stdin.isatty():
+        if _POSIX_TTY and sys.stdin.isatty():
             self._cbreak = cbreak_mode()
             self._cbreak.__enter__()
             _monitor_active.set()
@@ -244,6 +265,8 @@ class cancellable:
 def _restore_terminal():
     """atexit handler — restore terminal settings if we crashed in cbreak mode."""
     global _original_termios
+    if not _POSIX_TTY:
+        return
     if _original_termios is not None:
         try:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, _original_termios)

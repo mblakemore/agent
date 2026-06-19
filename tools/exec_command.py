@@ -22,6 +22,41 @@ from pathlib import Path
 from .file import _accessed_files
 
 
+_BASH_EXE_CACHE = None
+
+
+def _bash_exe() -> str:
+    """Resolve the bash executable used to run exec_command shell strings.
+
+    POSIX: plain ``bash`` on PATH. Windows (C1 strategy): Git-Bash's
+    ``bash.exe`` so the CICD templates' bash idioms (heredocs, pipes, ``&&``,
+    ``/tmp/...`` under the MSYS2 view) run unchanged. Override with the
+    ``AGENT_BASH_EXE`` env var. Falls back to bare ``bash`` (Popen surfaces a
+    clear error) if Git-Bash can't be located.
+    """
+    global _BASH_EXE_CACHE
+    if _BASH_EXE_CACHE is not None:
+        return _BASH_EXE_CACHE
+    override = os.environ.get("AGENT_BASH_EXE")
+    if override:
+        _BASH_EXE_CACHE = override
+    elif os.name != "nt":
+        _BASH_EXE_CACHE = "bash"
+    else:
+        import shutil
+        found = shutil.which("bash")
+        if not found:
+            for cand in (
+                r"C:\Program Files\Git\bin\bash.exe",
+                r"C:\Program Files (x86)\Git\bin\bash.exe",
+            ):
+                if os.path.exists(cand):
+                    found = cand
+                    break
+        _BASH_EXE_CACHE = found or "bash"
+    return _BASH_EXE_CACHE
+
+
 def _find_git_root(start_dir: str) -> str | None:
     """Walk up from start_dir and return the first directory containing a .git entry."""
     try:
@@ -508,7 +543,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     if background:
         try:
             proc = subprocess.Popen(
-                ['bash', '-c', f'exec 2>&1; {command}'],
+                [_bash_exe(), '-c', f'exec 2>&1; {command}'],
                 cwd=run_cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
