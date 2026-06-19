@@ -17,6 +17,7 @@ Rules (see plan/ui-upgrade-from-llmbox-cli.md § 7):
 
 from __future__ import annotations
 
+import re
 from collections import deque
 from typing import Any, Optional
 
@@ -153,6 +154,19 @@ _COMPACT_LIMIT_DEFAULT = 400  # chars shown per tool result when compact
 def _nplural(n: int, singular: str, plural: str) -> str:
     """Return 'N singular' when n==1, else 'N plural' — proper English count phrase."""
     return f"{n} {singular}" if n == 1 else f"{n} {plural}"
+
+
+_EXIT_RE = re.compile(r"\bexit=(\d+)")
+
+
+def _exec_succeeded(result: str) -> bool:
+    """True only when an exec_command result reports an explicit ``exit=0``.
+
+    Non-zero exits, and results with no ``exit=`` marker (e.g. background-start
+    notices or error strings), return False so they still print in full.
+    """
+    m = _EXIT_RE.search(result or "")
+    return m is not None and m.group(1) == "0"
 
 
 class TerminalCallbacks(NullCallbacks):
@@ -327,6 +341,15 @@ class TerminalCallbacks(NullCallbacks):
         # history by the loop; compacting here never touches either.
         self.tool_history.append((name, dict(args) if isinstance(args, dict) else args,
                                   result, is_error))
+
+        # Collapse a successful exec_command to a terse "OK" — the raw output is
+        # already in history (the model sees it) and in the log; the console
+        # just doesn't need it. Failures (is_error or non-zero exit) and other
+        # tools still print in full. `/verbose` shows everything.
+        if (not self.verbose and name == "exec_command"
+                and not is_error and _exec_succeeded(result)):
+            self._print(f"    {theme.c(theme.MINT, 'OK')}")
+            return
 
         if self.verbose or len(result) <= self.compact_limit:
             display = result
