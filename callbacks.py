@@ -225,12 +225,9 @@ class TerminalCallbacks(NullCallbacks):
         self._print(title)
         self._print(bar)
 
-        # Config source line (shown in place of backend URLs — we deliberately
-        # don't print endpoint URLs so private gateways / localhost don't leak
-        # into screenshots or logs; the URLs stay in the debug log).
-        config_path = info.get("config_path", "")
-        if config_path:
-            self._print(theme.dim(f"config: {config_path}"))
+        # Endpoint URLs are deliberately not printed so private gateways /
+        # localhost don't leak into screenshots or logs; they stay in the
+        # debug log only.
 
         # Main indicator — kind tag ([aws]/[llamacpp]/...) + model, no URL.
         ok = info.get("api_ok", False)

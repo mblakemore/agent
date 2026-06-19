@@ -365,20 +365,6 @@ def _redact_api_keys(cfg):
     return result
 
 
-_ACTIVE_CONFIG_PATH = None  # set by _load_config to the loaded config file (or None)
-
-
-def _config_path_display() -> str:
-    """Human-facing description of which config is active — shown in the banner
-    in place of backend URLs."""
-    if not _ACTIVE_CONFIG_PATH:
-        return "built-in defaults"
-    try:
-        return os.path.relpath(_ACTIVE_CONFIG_PATH, os.getcwd())
-    except ValueError:  # different drive on Windows
-        return _ACTIVE_CONFIG_PATH
-
-
 def _display_backend_kind(kind, base_url) -> str:
     """Display label for a backend's ``kind``. AWS gateways are configured as
     ``llamacpp`` but live behind ``*.amazonaws.com`` — surface those as ``aws``
@@ -440,9 +426,6 @@ def _load_config():
     _agent_cfg = Path(os.getcwd()) / ".agent" / "config.json"
     _legacy_cfg = Path(os.getcwd()) / "config.json"
     config_path = _agent_cfg if _agent_cfg.exists() else _legacy_cfg
-
-    global _ACTIVE_CONFIG_PATH
-    _ACTIVE_CONFIG_PATH = str(config_path) if config_path.exists() else None
     user_config = None
     if config_path.exists():
         try:
@@ -3156,7 +3139,6 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         "api_ok": ok,
         "api_detail": detail,
         "base_url": getattr(_main_backend, "base_url", None) or BASE_URL,
-        "config_path": _config_path_display(),
         "model": _main_backend.model or _config["llm"]["model"],
         "main_kind": _display_backend_kind(getattr(_main_backend, "kind", ""), getattr(_main_backend, "base_url", "")),
         "summary_enabled": summary_cfg["enabled"],
