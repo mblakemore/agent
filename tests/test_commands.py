@@ -13,6 +13,12 @@ import commands
 import callbacks
 
 
+def _set_model_default(ctx, role, model):
+    """Mirror agent._set_model_for_role's config mutation for ctx defaults."""
+    section = "llm" if role == "main" else "summary"
+    ctx.config.setdefault(section, {})["model"] = model
+
+
 def _make_ctx(**overrides):
     log = SimpleNamespace(info=lambda *a, **kw: None,
                           warning=lambda *a, **kw: None,
@@ -26,10 +32,13 @@ def _make_ctx(**overrides):
         log=log,
         log_path="/tmp/a.log",
         ctx_size=4096,
-        config={"llm": {"model": "old-model"}},
+        config={"llm": {"model": "old-model"},
+                "summary": {"model": "old-summary"}},
         base_url="http://127.0.0.1:8080",
+        summary_base_url="http://127.0.0.1:8082",
         setup_logger=lambda: (log, "/tmp/new.log", "/tmp/err.log"),
         pick_model=lambda current, base_url: "new-model",
+        set_model=lambda role, model: _set_model_default(base, role, model),
         render_context_bar=lambda h, s, c: f"context-bar({len(h)})",
         refresh_cb_log=lambda l: None,
     )
@@ -92,6 +101,57 @@ class TestHandleCommand(unittest.TestCase):
         with redirect_stdout(buf):
             commands.handle_command("/model", ctx)
         self.assertEqual(ctx.config["llm"]["model"], "old-model")
+
+    def test_parse_model_args_roles(self):
+        self.assertEqual(commands._parse_model_args(""), ("main", None))
+        self.assertEqual(commands._parse_model_args("main"), ("main", None))
+        self.assertEqual(commands._parse_model_args("MAIN"), ("main", None))
+        self.assertEqual(commands._parse_model_args("summary"), ("summary", None))
+        self.assertEqual(commands._parse_model_args("main foo-1"), ("main", "foo-1"))
+        self.assertEqual(commands._parse_model_args("summary bar-2"), ("summary", "bar-2"))
+        self.assertEqual(commands._parse_model_args("bogus"), (None, None))
+
+    def test_model_bare_defaults_to_main(self):
+        picked = {}
+        def _picker(cur, url):
+            picked["url"] = url
+            return "new-model"
+        ctx = _make_ctx(pick_model=_picker)
+        with redirect_stdout(io.StringIO()):
+            commands.handle_command("/model", ctx)
+        # bare /model targets main → uses ctx.base_url, sets llm.model
+        self.assertEqual(picked["url"], "http://127.0.0.1:8080")
+        self.assertEqual(ctx.config["llm"]["model"], "new-model")
+
+    def test_model_summary_uses_summary_url_and_sets_summary(self):
+        picked = {}
+        def _picker(cur, url):
+            picked["url"] = url
+            return "sum-model"
+        ctx = _make_ctx(pick_model=_picker)
+        with redirect_stdout(io.StringIO()):
+            commands.handle_command("/model summary", ctx)
+        self.assertEqual(picked["url"], "http://127.0.0.1:8082")
+        self.assertEqual(ctx.config["summary"]["model"], "sum-model")
+        self.assertEqual(ctx.config["llm"]["model"], "old-model")  # main untouched
+
+    def test_model_direct_set_skips_picker(self):
+        called = {"n": 0}
+        def _picker(cur, url):
+            called["n"] += 1
+            return "PICKED"
+        ctx = _make_ctx(pick_model=_picker)
+        with redirect_stdout(io.StringIO()):
+            commands.handle_command("/model main gemma-direct", ctx)
+        self.assertEqual(called["n"], 0)
+        self.assertEqual(ctx.config["llm"]["model"], "gemma-direct")
+
+    def test_model_unknown_role_warns_and_no_change(self):
+        ctx = _make_ctx()
+        with redirect_stdout(io.StringIO()):
+            commands.handle_command("/model bogus", ctx)
+        self.assertEqual(ctx.config["llm"]["model"], "old-model")
+        self.assertEqual(ctx.config["summary"]["model"], "old-summary")
 
     def test_verbose_toggles_flag(self):
         ctx = _make_ctx()

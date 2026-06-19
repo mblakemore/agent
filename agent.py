@@ -2971,6 +2971,58 @@ def _pick_model_interactive(current_model, base_url):
     return None
 
 
+def _persist_config_value(section, key, value):
+    """Persist ``config[section][key] = value`` to ``./.agent/config.json``.
+
+    Deep-merges into any existing file: pre-existing sections/keys are
+    preserved, only ``section.key`` is updated. Creates ``.agent/`` and the
+    file if missing. Writes UTF-8 with ``indent=2``. This is the same path
+    ``_load_config`` prefers, so the choice survives a restart.
+
+    A corrupt existing file is treated as empty (so a bad on-disk config never
+    kills the session); the freshly-written file then contains just the merged
+    section.
+    """
+    cfg_path = Path(os.getcwd()) / ".agent" / "config.json"
+    data = {}
+    if cfg_path.exists():
+        try:
+            with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
+        except (json.JSONDecodeError, IOError):
+            data = {}
+    sect = data.get(section)
+    if not isinstance(sect, dict):
+        sect = {}
+        data[section] = sect
+    sect[key] = value
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    return cfg_path
+
+
+def _set_model_for_role(role, new_model):
+    """Apply ``new_model`` to the given role (``"main"`` / ``"summary"``).
+
+    Updates the in-memory ``_config`` (``llm.model`` / ``summary.model``) AND
+    the live backend object (``_main_backend.model`` / ``_summary_backend.model``)
+    so the banner/footer reflect it immediately, then persists the change to
+    ``./.agent/config.json``.
+    """
+    section = "llm" if role == "main" else "summary"
+    _config.setdefault(section, {})["model"] = new_model
+    backend = _main_backend if role == "main" else _summary_backend
+    if backend is not None:
+        try:
+            backend.model = new_model
+        except AttributeError:
+            pass
+    return _persist_config_value(section, "model", new_model)
+
+
 def _log_bedrock_session_spend(log):
     """Emit an INFO line summarizing today's Bedrock spend per role.
 
@@ -3365,8 +3417,15 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 # gateway), not the hardcoded llama-server default — otherwise
                 # the picker probes 127.0.0.1:8080 and lists nothing.
                 base_url=getattr(_main_backend, "base_url", None) or BASE_URL,
+                # Summary backend's URL so /model summary lists from (and uses
+                # the auth of) the summary backend, mirroring main listing.
+                summary_base_url=getattr(_summary_backend, "base_url", None),
                 setup_logger=_setup_logger,
                 pick_model=_pick_model_interactive,
+                # Applies a chosen model to a role (main/summary): updates the
+                # in-memory config + live backend object, then persists to
+                # .agent/config.json. Keeps commands.py free of business logic.
+                set_model=_set_model_for_role,
                 render_context_bar=_render_context_bar,
                 refresh_cb_log=_refresh_cb_log,
             )
