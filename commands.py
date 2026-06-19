@@ -35,7 +35,7 @@ def _cmd_help(ctx: SimpleNamespace, args: str) -> None:
         "  /help          — show this message",
         "  /clear         — clear conversation history and start a fresh session log",
         "  /context       — show current context usage (bar + token counts)",
-        "  /model         — pick a different model from the server",
+        "  /model [main|summary] [name] — set+persist the main/summary model",
         "  /alias         — install an `agent` shell alias for this checkout",
         "  /verbose       — toggle compact/full tool output",
         "  /tools [N|all] — show buffered tool calls (default: all; N = last N only)",
@@ -66,15 +66,51 @@ def _cmd_context(ctx: SimpleNamespace, args: str) -> None:
     ctx.cb._print(ctx.render_context_bar(ctx.conversation_history, ctx.summary_state, ctx.ctx_size))
 
 
+def _parse_model_args(args: str):
+    """Parse ``/model`` args into ``(role, direct_name)``.
+
+    ``""`` → main (bare /model keeps current muscle memory); ``"main"`` /
+    ``"summary"`` → that role interactively; ``"main <name>"`` /
+    ``"summary <name>"`` → set that role directly. Returns ``(None, None)``
+    for an unrecognized role token (caller warns).
+    """
+    parts = args.split(None, 1)
+    if not parts:
+        return "main", None
+    role = parts[0].lower()
+    if role not in ("main", "summary"):
+        return None, None
+    direct = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
+    return role, direct
+
+
 def _cmd_model(ctx: SimpleNamespace, args: str) -> None:
-    _warn_extra_args(ctx, "/model", args)
-    new_model = ctx.pick_model(ctx.config["llm"]["model"], ctx.base_url)
-    if new_model:
-        ctx.config["llm"]["model"] = new_model
-        safe_cb(ctx.cb, "on_notice", "info",
-                theme.c(theme.MINT,
-                        f"Model set to {new_model} (summarizer keeps its original model)"))
-        ctx.log.info("Model changed via /model: %s", new_model)
+    role, direct = _parse_model_args(args)
+    if role is None:
+        safe_cb(ctx.cb, "on_notice", "warn",
+                f"usage: /model [main|summary] [<name>] — got: {args!r}")
+        return
+
+    section = "llm" if role == "main" else "summary"
+    current = ctx.config.get(section, {}).get("model", "")
+    if role == "summary":
+        base_url = getattr(ctx, "summary_base_url", None) or ctx.base_url
+    else:
+        base_url = ctx.base_url
+
+    if direct:
+        new_model = direct
+    else:
+        new_model = ctx.pick_model(current, base_url)
+    if not new_model:
+        return
+
+    ctx.set_model(role, new_model)
+    safe_cb(ctx.cb, "on_notice", "info",
+            theme.c(theme.MINT,
+                    f"{role} model set to {new_model} "
+                    f"(persisted to ./.agent/config.json)"))
+    ctx.log.info("Model changed via /model %s: %s", role, new_model)
 
 
 def _cmd_alias(ctx: SimpleNamespace, args: str) -> None:
