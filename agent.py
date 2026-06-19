@@ -2493,14 +2493,21 @@ def _setup_logger():
     console_handler.addFilter(_VerboseConsoleFilter())
     logger.addHandler(console_handler)
 
+    # encoding="utf-8" is required: log messages contain non-ASCII (e.g. the
+    # "→" arrow). Without it, RotatingFileHandler opens the file in the
+    # platform-default encoding (cp1252 on Windows), which raises
+    # UnicodeEncodeError on those characters. errors="replace" is belt-and-
+    # suspenders for any codepoint utf-8 somehow can't represent.
     file_handler = logging.handlers.RotatingFileHandler(
-        log_path, maxBytes=10*1024*1024, backupCount=5)
+        log_path, maxBytes=10*1024*1024, backupCount=5,
+        encoding="utf-8", errors="replace")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s', datefmt='%H:%M:%S'))
     logger.addHandler(file_handler)
 
     error_handler = logging.handlers.RotatingFileHandler(
-        error_log_path, maxBytes=5*1024*1024, backupCount=3)
+        error_log_path, maxBytes=5*1024*1024, backupCount=3,
+        encoding="utf-8", errors="replace")
     error_handler.setLevel(logging.ERROR)
     error_handler.setFormatter(logging.Formatter('%(asctime)s ERROR %(message)s', datefmt='%H:%M:%S'))
     logger.addHandler(error_handler)
@@ -5773,11 +5780,21 @@ def main():
     
     
 if __name__ == "__main__":
-    if hasattr(sys.stdout, 'reconfigure'):
-        sys.stdout.reconfigure(encoding='utf-8')
-    else:
-        import io
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    # Force UTF-8 on stdout AND stderr. Under Git-Bash / a non-console handle on
+    # Windows, Python picks the locale encoding (cp1252), which raises
+    # UnicodeEncodeError on the non-ASCII characters in our banner and log
+    # messages (e.g. "→", "●"). errors="replace" keeps a stray codepoint from
+    # ever crashing output.
+    for _std in ("stdout", "stderr"):
+        _stream = getattr(sys, _std, None)
+        if _stream is None:
+            continue
+        if hasattr(_stream, 'reconfigure'):
+            _stream.reconfigure(encoding='utf-8', errors='replace')
+        elif hasattr(_stream, 'buffer'):
+            import io
+            setattr(sys, _std, io.TextIOWrapper(
+                _stream.buffer, encoding='utf-8', errors='replace'))
     import atexit
     # Always log bedrock session spend at exit — crashes (TimeoutError,
     # BedrockBudgetExceeded, etc.) would otherwise skip it. Safe no-op
