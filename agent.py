@@ -365,6 +365,30 @@ def _redact_api_keys(cfg):
     return result
 
 
+_ACTIVE_CONFIG_PATH = None  # set by _load_config to the loaded config file (or None)
+
+
+def _config_path_display() -> str:
+    """Human-facing description of which config is active — shown in the banner
+    in place of backend URLs."""
+    if not _ACTIVE_CONFIG_PATH:
+        return "built-in defaults"
+    try:
+        return os.path.relpath(_ACTIVE_CONFIG_PATH, os.getcwd())
+    except ValueError:  # different drive on Windows
+        return _ACTIVE_CONFIG_PATH
+
+
+def _display_backend_kind(kind, base_url) -> str:
+    """Display label for a backend's ``kind``. AWS gateways are configured as
+    ``llamacpp`` but live behind ``*.amazonaws.com`` — surface those as ``aws``
+    so the banner is meaningful without exposing the endpoint URL.
+    """
+    if base_url and "amazonaws.com" in str(base_url).lower():
+        return "aws"
+    return kind or ""
+
+
 def _warn_if_world_readable_with_key(config_path, user_config):
     """Emit a WARN log line if ``config.json`` is world-readable AND
     contains a non-empty ``api_key`` under any ``backends`` entry.
@@ -416,6 +440,9 @@ def _load_config():
     _agent_cfg = Path(os.getcwd()) / ".agent" / "config.json"
     _legacy_cfg = Path(os.getcwd()) / "config.json"
     config_path = _agent_cfg if _agent_cfg.exists() else _legacy_cfg
+
+    global _ACTIVE_CONFIG_PATH
+    _ACTIVE_CONFIG_PATH = str(config_path) if config_path.exists() else None
     user_config = None
     if config_path.exists():
         try:
@@ -2938,9 +2965,9 @@ def _pick_model_interactive(current_model, base_url):
     """Interactive model picker. Returns the chosen model id or None."""
     models = _list_available_models(base_url)
     if not models:
-        _emit("on_notice", "warn", theme.c(theme.ROSE, f"Could not list models from {base_url}/v1/models"))
+        _emit("on_notice", "warn", theme.c(theme.ROSE, "Could not list models from the configured backend"))
         return None
-    _emit("on_notice", "info", theme.c(theme.SKY, f"Available models at {base_url}:"))
+    _emit("on_notice", "info", theme.c(theme.SKY, "Available models:"))
     for i, m in enumerate(models, 1):
         marker = theme.c(theme.MINT, " *") if m == current_model else "  "
         _emit("on_notice", "info", f"{marker} {i}. {m}")
@@ -3049,7 +3076,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     model_name = _main_backend.model or _config["llm"]["model"]
     _emit(
         "on_boot_progress",
-        f"checking main backend — {getattr(_main_backend, 'kind', '?')} {model_name} @ {getattr(_main_backend, 'base_url', '?')}",
+        f"checking main backend — {_display_backend_kind(getattr(_main_backend, 'kind', ''), getattr(_main_backend, 'base_url', ''))} {model_name}",
     )
     ok, detail = _main_backend.health(timeout=_startup_health_timeout())
 
@@ -3106,7 +3133,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     if summary_cfg["enabled"]:
         _emit(
             "on_boot_progress",
-            f"checking summary backend — {getattr(_summary_backend, 'kind', '?')} {getattr(_summary_backend, 'model', '?')} @ {summary_url}",
+            f"checking summary backend — {_display_backend_kind(getattr(_summary_backend, 'kind', ''), summary_url)} {getattr(_summary_backend, 'model', '?')}",
         )
         try:
             summary_ok, summary_detail = _summary_backend.health(timeout=_startup_health_timeout())
@@ -3129,14 +3156,15 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         "api_ok": ok,
         "api_detail": detail,
         "base_url": getattr(_main_backend, "base_url", None) or BASE_URL,
+        "config_path": _config_path_display(),
         "model": _main_backend.model or _config["llm"]["model"],
-        "main_kind": getattr(_main_backend, "kind", ""),
+        "main_kind": _display_backend_kind(getattr(_main_backend, "kind", ""), getattr(_main_backend, "base_url", "")),
         "summary_enabled": summary_cfg["enabled"],
         "summary_ok": summary_ok,
         "summary_detail": summary_detail,
         "summary_base_url": summary_url,
         "summary_model": getattr(_summary_backend, "model", "") if _summary_backend else "",
-        "summary_kind": getattr(_summary_backend, "kind", "") if _summary_backend else "",
+        "summary_kind": _display_backend_kind(getattr(_summary_backend, "kind", ""), summary_url) if _summary_backend else "",
         "ctx_size": ctx_size,
         "max_turns": _MAX_TURNS,
         "log_path": log_path,
