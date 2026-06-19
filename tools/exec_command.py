@@ -31,16 +31,22 @@ def _bash_exe() -> str:
     POSIX: plain ``bash`` on PATH. Windows (C1 strategy): Git-Bash's
     ``bash.exe`` so the CICD templates' bash idioms (heredocs, pipes, ``&&``,
     ``/tmp/...`` under the MSYS2 view) run unchanged. Override with the
-    ``AGENT_BASH_EXE`` env var. Falls back to bare ``bash`` (Popen surfaces a
-    clear error) if Git-Bash can't be located.
+    ``AGENT_BASH_EXE`` env var.
 
     On Windows we must NOT trust ``shutil.which('bash')`` blindly: the first
     ``bash.exe`` on PATH is usually the WSL launcher stub at
     ``C:\\Windows\\System32\\bash.exe`` (and there may be a Store alias under
     ``WindowsApps``). If no WSL distro is installed, that stub fails *every*
     command with "Windows Subsystem for Linux has no installed distributions".
-    So we check known Git-Bash locations first and reject any System32/
-    WindowsApps result from ``which``.
+    Falling back to bare ``bash`` is useless here — Popen would re-resolve it
+    straight back to that stub. So the resolution order on Windows is:
+      1. ``AGENT_BASH_EXE`` override
+      2. known Git-Bash install locations
+      3. derive from ``git`` on PATH — Git for Windows keeps ``bash.exe`` in a
+         sibling ``bin``/``usr\\bin`` of ``git.exe``. This is the common case:
+         Git's ``cmd`` dir (git.exe) is on PATH but ``bin`` (bash.exe) is not.
+      4. ``which('bash')``, excluding System32/WindowsApps stubs
+      5. bare ``bash`` (last resort; logs nothing better is available)
     """
     global _BASH_EXE_CACHE
     if _BASH_EXE_CACHE is not None:
@@ -51,24 +57,54 @@ def _bash_exe() -> str:
     elif os.name != "nt":
         _BASH_EXE_CACHE = "bash"
     else:
-        import shutil
-        candidates = [
-            r"C:\Program Files\Git\bin\bash.exe",
-            r"C:\Program Files (x86)\Git\bin\bash.exe",
-        ]
-        localapp = os.environ.get("LOCALAPPDATA")
-        if localapp:  # per-user Git for Windows install
-            candidates.append(os.path.join(localapp, "Programs", "Git", "bin", "bash.exe"))
-        found = next((c for c in candidates if os.path.exists(c)), None)
-        if not found:
-            which = shutil.which("bash")
-            # Reject the WSL stub / Store alias — they shadow Git-Bash on PATH.
-            if which and not any(
-                seg in which.lower() for seg in ("system32", "windowsapps")
-            ):
-                found = which
-        _BASH_EXE_CACHE = found or "bash"
+        _BASH_EXE_CACHE = _resolve_windows_bash() or "bash"
     return _BASH_EXE_CACHE
+
+
+def _is_wsl_stub(path: str) -> bool:
+    """True if *path* is the System32 WSL launcher or a WindowsApps Store alias."""
+    low = path.lower()
+    return any(seg in low for seg in ("system32", "windowsapps"))
+
+
+def _resolve_windows_bash() -> "str | None":
+    """Locate Git-Bash's bash.exe on Windows, avoiding the WSL stub."""
+    import shutil
+
+    # 2. Known Git-Bash install locations.
+    candidates = [
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files (x86)\Git\bin\bash.exe",
+    ]
+    localapp = os.environ.get("LOCALAPPDATA")
+    if localapp:  # per-user Git for Windows install
+        candidates.append(os.path.join(localapp, "Programs", "Git", "bin", "bash.exe"))
+    found = next((c for c in candidates if os.path.exists(c)), None)
+    if found:
+        return found
+
+    # 3. Derive from git.exe — bash.exe lives in a sibling bin/ of the Git root.
+    #    git.exe is typically at <root>\cmd\git.exe (also <root>\bin or
+    #    <root>\mingw64\bin), so walk up a few levels looking for bin\bash.exe.
+    git = shutil.which("git")
+    if git and not _is_wsl_stub(git):
+        d = os.path.dirname(git)
+        for _ in range(3):
+            d = os.path.dirname(d)
+            if not d:
+                break
+            for rel in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
+                cand = os.path.join(d, *rel)
+                if os.path.exists(cand):
+                    return cand
+
+    # 4. which('bash'), but never the WSL stub / Store alias.
+    which = shutil.which("bash")
+    if which and not _is_wsl_stub(which):
+        return which
+
+    # 5. No real bash found.
+    return None
 
 
 def _find_git_root(start_dir: str) -> str | None:
