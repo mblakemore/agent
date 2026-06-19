@@ -125,28 +125,34 @@ def _cmd_alias(ctx: SimpleNamespace, args: str) -> None:
     kind = A.current_shell_kind()
     rc = A.rc_file_for(kind)
 
-    def note(level, msg):
-        safe_cb(ctx.cb, "on_notice", level, msg)
+    # Literal-level helpers (not a single note(level, ...) closure): the
+    # callbacks dispatch-arm AST guard requires on_notice to be called with a
+    # literal level so it can verify every level arm is reachable.
+    def info(msg):
+        safe_cb(ctx.cb, "on_notice", "info", msg)
 
-    note("info", theme.c(theme.SKY, f"Detected python: {py}"))
-    note("info", f"agent.py: {agent_path}")
+    def warn(msg):
+        safe_cb(ctx.cb, "on_notice", "warn", msg)
+
+    info(theme.c(theme.SKY, f"Detected python: {py}"))
+    info(f"agent.py: {agent_path}")
 
     if rc:
         try:
             status = A.install_alias_block(rc, cmds["bash"])
-            note("info", theme.c(theme.MINT, f"alias written to {rc} ({status})"))
-            note("info", f"  {cmds['bash']}")
-            note("info", f"Activate now with:  source {rc}   (or open a new shell), then run `agent`.")
+            info(theme.c(theme.MINT, f"alias written to {rc} ({status})"))
+            info(f"  {cmds['bash']}")
+            info(f"Activate now with:  source {rc}   (or open a new shell), then run `agent`.")
             ctx.log.info("/alias installed agent alias in %s (%s)", rc, status)
         except OSError as e:
-            note("warn", f"Could not write {rc}: {e}. Add this line manually:")
-            note("info", f"  {cmds['bash']}")
+            warn(f"Could not write {rc}: {e}. Add this line manually:")
+            info(f"  {cmds['bash']}")
     else:
         # Pure Windows shell (cmd / PowerShell) — can't safely edit a profile blind.
-        note("info", "PowerShell — add to your $PROFILE:")
-        note("info", f"  {cmds['powershell']}")
-        note("info", "cmd — define a doskey macro (or drop a small agent.bat on PATH):")
-        note("info", f"  {cmds['cmd']}")
+        info("PowerShell — add to your $PROFILE:")
+        info(f"  {cmds['powershell']}")
+        info("cmd — define a doskey macro (or drop a small agent.bat on PATH):")
+        info(f"  {cmds['cmd']}")
         ctx.log.info("/alias printed Windows (cmd/PowerShell) alias instructions")
 
 

@@ -51,7 +51,9 @@ class TestTerminalCallbacks(unittest.TestCase):
         out = self.get_output()
         self.assertIn("agent v1.0", out)
         self.assertIn("(abc)", out)
-        self.assertIn("http://api [chat]  gpt-4", out)
+        # URLs are hidden from the banner (#1043) — kind tag + model only.
+        self.assertIn("[chat]  gpt-4", out)
+        self.assertNotIn("http://api", out)
 
     def test_on_session_start_summary(self):
         cb = TerminalCallbacks()
@@ -66,7 +68,9 @@ class TestTerminalCallbacks(unittest.TestCase):
         }
         cb.on_session_start(info)
         out = self.get_output()
-        self.assertIn("summary http://sum [summary]  sum-gpt", out)
+        # URL hidden (#1043) — kind tag + model only.
+        self.assertIn("[summary]  sum-gpt", out)
+        self.assertNotIn("http://sum", out)
 
     def test_on_session_start_api_fail(self):
         cb = TerminalCallbacks()
