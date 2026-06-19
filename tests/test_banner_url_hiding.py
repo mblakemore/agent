@@ -24,20 +24,6 @@ def test_display_kind_passthrough_when_no_url():
     assert agent._display_backend_kind("", None) == ""
 
 
-# ── _config_path_display ────────────────────────────────────────────────────
-
-def test_config_path_display_defaults(monkeypatch):
-    monkeypatch.setattr(agent, "_ACTIVE_CONFIG_PATH", None)
-    assert agent._config_path_display() == "built-in defaults"
-
-
-def test_config_path_display_relative(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    p = tmp_path / ".agent" / "config.json"
-    monkeypatch.setattr(agent, "_ACTIVE_CONFIG_PATH", str(p))
-    assert agent._config_path_display() == os.path.join(".agent", "config.json")
-
-
 # ── banner rendering ────────────────────────────────────────────────────────
 
 def _render_banner(monkeypatch, info):
@@ -53,7 +39,7 @@ def test_banner_hides_urls_and_shows_aws(monkeypatch):
     blob = _render_banner(monkeypatch, {
         "version": "0.1.0", "sha": "abc",
         "api_ok": True, "api_detail": "ok",
-        "base_url": url, "config_path": ".agent/config.json",
+        "base_url": url,
         "model": "claude-v4.6-sonnet", "main_kind": "aws",
         "summary_enabled": True, "summary_ok": True,
         "summary_base_url": url, "summary_model": "claude-v4.6-sonnet",
@@ -62,7 +48,6 @@ def test_banner_hides_urls_and_shows_aws(monkeypatch):
     assert "amazonaws.com" not in blob
     assert "execute-api" not in blob
     assert "[aws]" in blob
-    assert "config: .agent/config.json" in blob
     assert "claude-v4.6-sonnet" in blob
 
 
@@ -70,7 +55,7 @@ def test_banner_hides_localhost(monkeypatch):
     blob = _render_banner(monkeypatch, {
         "version": "0.1.0", "sha": "abc",
         "api_ok": True, "api_detail": "ok",
-        "base_url": "http://127.0.0.1:8080", "config_path": "built-in defaults",
+        "base_url": "http://127.0.0.1:8080",
         "model": "gemma-4-31B", "main_kind": "llamacpp",
         "summary_enabled": False,
     })
