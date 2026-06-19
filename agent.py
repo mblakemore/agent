@@ -5,6 +5,12 @@ Connects to llama-server and runs the agentic tool-calling loop.
 Entry points: ``run_agent_interactive()`` for interactive use, ``run_agent()``
 for single-prompt runs. See ``README.md`` for CLI flags.
 
+Interactive slash commands are dispatched from ``commands.py`` (``/help`` lists
+them in-session). Notably: ``/model [main|summary] [name]`` sets the main or
+summary model and persists the choice to ``.agent/config.json``; ``/alias``
+installs an ``agent`` shell alias for the current checkout. See ``README.md`` →
+"Slash commands".
+
 Windows runs under Git-Bash (the runtime is cross-platform Python; bash idioms
 shell out to Git-Bash's ``bash.exe``). See ``README.md`` → "Windows (Git-Bash)
 setup" for install steps and platform notes.

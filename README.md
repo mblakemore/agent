@@ -32,6 +32,7 @@ The runtime is cross-platform Python. The `exec_command` tool shells out to `bas
    python agent.py "fix the failing test in tests/test_parser.py"
    ```
    For the CICD pipeline: `bash CICD/cicd.sh <repo-url>` from Git-Bash. (A native PowerShell launcher is a separate, not-yet-done port.)
+5. **(Optional) shorten the launch command** — run `/alias` inside the agent to install an `agent` shell alias (`<python> /path/to/agent.py` → `agent`). On Git-Bash it writes to `~/.bashrc`; `source ~/.bashrc` (or open a new shell) and then just run `agent`.
 
 **Platform notes:**
 
@@ -106,7 +107,8 @@ Falls back to plain `input()` automatically if `prompt_toolkit` isn't installed.
 | `/help` | List available commands. |
 | `/clear` | Clear conversation history and start a fresh session log. |
 | `/context` | Show context usage as an Aurora-gradient bar with token counts. |
-| `/model` | Pick a different model from the server's `/v1/models` endpoint. |
+| `/model [main\|summary] [name]` | Set the **main** or **summary** model and persist it to `.agent/config.json` (survives restart). Bare `/model` picks the main model interactively; `/model summary` targets the summary backend; append a model id (`/model main gpt-4o`) to set it directly without the picker. |
+| `/alias` | Detect the working Python and install an `agent` shell alias (`<python> /path/to/agent.py` → `agent`). Writes an idempotent block to `~/.bashrc` / `~/.zshrc` on Linux & Git-Bash; prints PowerShell/cmd equivalents on native Windows. |
 | `/verbose` | Toggle compact vs. full tool-result output. |
 | `/tools [N\|all]` | Show buffered tool calls with a one-line result preview. |
 | `exit` / `quit` | End the session. |
