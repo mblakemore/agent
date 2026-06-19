@@ -196,3 +196,43 @@ def test_bash_exe_windows_prefers_git_over_wsl_stub(monkeypatch):
     monkeypatch.setattr(exec_command.os.path, "exists", lambda p: p == git_bash)
     monkeypatch.setattr(shutil, "which", lambda _: r"C:\Windows\System32\bash.exe")
     assert exec_command._bash_exe() == git_bash
+
+
+def test_bash_exe_windows_derives_bash_from_git(monkeypatch):
+    """The real-world case: git.exe is on PATH (in <root>\\cmd) but bash.exe is
+    not, so which('bash') only finds the System32 WSL stub. We must derive
+    Git-Bash from the git location instead of returning the broken stub.
+
+    Paths are built with os.path so dirname/join stay consistent under the
+    POSIX test runner.
+    """
+    from tools import exec_command
+    import shutil
+    monkeypatch.delenv("AGENT_BASH_EXE", raising=False)
+    monkeypatch.setattr(exec_command.os, "name", "nt")
+    root = os.path.join("X:", "Users", "samike", "AppData", "Local", "Programs", "Git")
+    git = os.path.join(root, "cmd", "git.exe")
+    bash = os.path.join(root, "bin", "bash.exe")
+    monkeypatch.setattr(exec_command.os.path, "exists", lambda p: p == bash)
+    monkeypatch.setattr(
+        shutil, "which",
+        lambda name: git if name == "git" else r"C:\Windows\System32\bash.exe",
+    )
+    assert exec_command._bash_exe() == bash
+
+
+def test_bash_exe_windows_derives_from_git_mingw_layout(monkeypatch):
+    """git.exe at <root>\\mingw64\\bin\\git.exe still resolves bash from root."""
+    from tools import exec_command
+    import shutil
+    monkeypatch.delenv("AGENT_BASH_EXE", raising=False)
+    monkeypatch.setattr(exec_command.os, "name", "nt")
+    root = os.path.join("X:", "Git")
+    git = os.path.join(root, "mingw64", "bin", "git.exe")
+    bash = os.path.join(root, "usr", "bin", "bash.exe")
+    monkeypatch.setattr(exec_command.os.path, "exists", lambda p: p == bash)
+    monkeypatch.setattr(
+        shutil, "which",
+        lambda name: git if name == "git" else None,
+    )
+    assert exec_command._bash_exe() == bash
