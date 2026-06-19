@@ -1,5 +1,7 @@
-"""Successful exec_command output collapses to a terse OK in the console
-(non-verbose); failures, non-exec tools, and /verbose still print in full."""
+"""exec_command output collapses to a terse OK in the console once the command
+ran (non-verbose). Only tool-level errors (is_error / "Error:" results), other
+tools, and /verbose still print in full. A non-zero exit code is NOT an error —
+a `cmd && other` chain whose trailing part fails still collapses to OK."""
 
 import callbacks
 
@@ -9,21 +11,6 @@ def _cb(verbose=False):
     lines = []
     cb._print = lambda text="", end="\n": lines.append(text)
     return cb, lines
-
-
-# ── _exec_succeeded ─────────────────────────────────────────────────────────
-
-def test_exec_succeeded_exit0():
-    assert callbacks._exec_succeeded("[session: x] exit=0\nhello") is True
-
-
-def test_exec_succeeded_nonzero():
-    assert callbacks._exec_succeeded("[session: x] exit=1\nboom") is False
-
-
-def test_exec_succeeded_no_marker():
-    assert callbacks._exec_succeeded("Command started in background. Poll ...") is False
-    assert callbacks._exec_succeeded("") is False
 
 
 # ── on_tool_result collapse ─────────────────────────────────────────────────
@@ -38,20 +25,26 @@ def test_success_collapses_to_ok():
     assert "Thu Jun 19" not in blob          # raw output suppressed in console
 
 
-def test_failure_shows_full_result():
+def test_nonzero_exit_still_collapses():
+    # `uname -a && cat /missing` → exit=1 but the run is fine; not is_error.
     cb, lines = _cb()
-    cb.on_tool_result("exec_command", {"command": "cat /nope"},
-                      "[session: s] exit=1\nNo such file", is_error=False)
+    cb.on_tool_result("exec_command", {"command": "uname -a && cat /missing"},
+                      "[session: s] exit=1\nLinux\ncat: /missing: No such file", is_error=False)
+    blob = "\n".join(lines)
+    assert "OK" in blob
+    assert "Result:" not in blob
+    assert "No such file" not in blob        # benign sub-command error suppressed
+
+
+def test_tool_level_error_shows_result():
+    # is_error=True (result starts with "Error:", e.g. no usable bash) → full.
+    cb, lines = _cb()
+    cb.on_tool_result("exec_command", {"command": "date"},
+                      "Error: no usable bash found. Install Git for Windows ...",
+                      is_error=True)
     blob = "\n".join(lines)
     assert "Result:" in blob
-    assert "No such file" in blob
-
-
-def test_is_error_shows_result():
-    cb, lines = _cb()
-    cb.on_tool_result("exec_command", {"command": "x"},
-                      "[session: s] exit=0\nweird", is_error=True)
-    assert "Result:" in "\n".join(lines)     # is_error always shown
+    assert "no usable bash" in blob
 
 
 def test_verbose_shows_full_even_on_success():
