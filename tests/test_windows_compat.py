@@ -171,3 +171,28 @@ def test_bash_exe_windows_falls_back_to_known_path(monkeypatch):
     known = r"C:\Program Files\Git\bin\bash.exe"
     monkeypatch.setattr(exec_command.os.path, "exists", lambda p: p == known)
     assert exec_command._bash_exe() == known
+
+
+def test_bash_exe_windows_rejects_wsl_stub(monkeypatch):
+    """which() returning the System32 WSL launcher stub must be rejected
+    (it fails every command when no distro is installed), falling back to
+    bare 'bash' rather than the broken stub."""
+    from tools import exec_command
+    import shutil
+    monkeypatch.delenv("AGENT_BASH_EXE", raising=False)
+    monkeypatch.setattr(exec_command.os, "name", "nt")
+    monkeypatch.setattr(exec_command.os.path, "exists", lambda p: False)  # no Git-Bash
+    monkeypatch.setattr(shutil, "which", lambda _: r"C:\Windows\System32\bash.exe")
+    assert exec_command._bash_exe() == "bash"
+
+
+def test_bash_exe_windows_prefers_git_over_wsl_stub(monkeypatch):
+    """Even when the WSL stub is first on PATH, a present Git-Bash wins."""
+    from tools import exec_command
+    import shutil
+    monkeypatch.delenv("AGENT_BASH_EXE", raising=False)
+    monkeypatch.setattr(exec_command.os, "name", "nt")
+    git_bash = r"C:\Program Files\Git\bin\bash.exe"
+    monkeypatch.setattr(exec_command.os.path, "exists", lambda p: p == git_bash)
+    monkeypatch.setattr(shutil, "which", lambda _: r"C:\Windows\System32\bash.exe")
+    assert exec_command._bash_exe() == git_bash
