@@ -225,31 +225,36 @@ class TerminalCallbacks(NullCallbacks):
         self._print(title)
         self._print(bar)
 
-        # Main indicator
+        # Config source line (shown in place of backend URLs — we deliberately
+        # don't print endpoint URLs so private gateways / localhost don't leak
+        # into screenshots or logs; the URLs stay in the debug log).
+        config_path = info.get("config_path", "")
+        if config_path:
+            self._print(theme.dim(f"config: {config_path}"))
+
+        # Main indicator — kind tag ([aws]/[llamacpp]/...) + model, no URL.
         ok = info.get("api_ok", False)
         detail = info.get("api_detail", "")
-        base_url = info.get("base_url", "")
         model = info.get("model", "")
         kind = info.get("main_kind", "")
-        kind_tag = f" [{kind}]" if kind else ""
+        tag = f"[{kind}]  " if kind else ""
         if ok:
-            main_line = theme.c(theme.MINT, f"● main   ") + f"{base_url}{kind_tag}  {model}"
+            main_line = theme.c(theme.MINT, f"● main   ") + f"{tag}{model}"
         else:
-            main_line = theme.c(theme.AMBER, f"⚠ main   ") + f"{base_url}{kind_tag}  {detail}"
+            main_line = theme.c(theme.AMBER, f"⚠ main   ") + f"{tag}{detail}"
         self._print(main_line)
 
         # Summary indicator (single line; silent when summary is disabled)
         if info.get("summary_enabled"):
             s_ok = info.get("summary_ok", False)
-            s_url = info.get("summary_base_url", "")
             s_model = info.get("summary_model", "")
             s_kind = info.get("summary_kind", "")
             s_detail = info.get("summary_detail", "")
-            s_kind_tag = f" [{s_kind}]" if s_kind else ""
+            s_tag = f"[{s_kind}]  " if s_kind else ""
             if s_ok:
-                sum_line = theme.c(theme.MINT, f"● summary") + f" {s_url}{s_kind_tag}  {s_model}"
+                sum_line = theme.c(theme.MINT, f"● summary") + f" {s_tag}{s_model}"
             else:
-                sum_line = theme.c(theme.AMBER, f"⚠ summary") + f" {s_url}{s_kind_tag}  {s_detail} — falling back to main"
+                sum_line = theme.c(theme.AMBER, f"⚠ summary") + f" {s_tag}{s_detail} — falling back to main"
             self._print(sum_line)
         self._print("")
 
