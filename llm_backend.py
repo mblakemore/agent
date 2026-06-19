@@ -178,7 +178,7 @@ class Backend(Protocol):
     model: str
     base_url: str
 
-    def health(self) -> tuple[bool, str]: ...
+    def health(self, timeout: int = 3) -> tuple[bool, str]: ...
 
     def detect_ctx_size(self) -> int | None: ...
 
@@ -1011,12 +1011,15 @@ class BedrockBackend:
 
     # ── Introspection ──
 
-    def health(self) -> tuple[bool, str]:
+    def health(self, timeout: int = 3) -> tuple[bool, str]:
         """Return ``(ok, detail)``. ``detail`` is the URL on success,
         a short diagnostic on failure. Shape matches LlamacppBackend.
         """
         try:
-            ok = self._api.health()
+            try:
+                ok = self._api.health(timeout=timeout)
+            except TypeError:  # older _api.health() without a timeout param
+                ok = self._api.health()
         except Exception as e:  # pragma: no cover - defensive
             return False, f"error: {str(e)[:60]}"
         return (True, self.api_url) if ok else (False, "gateway health failed")
@@ -1538,7 +1541,7 @@ class FoundryBackend:
         )
         self.enabled = cfg.get("enabled", True)
 
-    def health(self) -> tuple[bool, str]:
+    def health(self, timeout: int = 3) -> tuple[bool, str]:  # timeout unused (no probe)
         return True, self.api_url
 
     def detect_ctx_size(self) -> int:

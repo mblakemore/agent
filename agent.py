@@ -2829,6 +2829,21 @@ def _backend_for_url(base_url):
     return _build_backend({"kind": "llamacpp", "base_url": base_url, "model": ""})
 
 
+def _startup_health_timeout() -> int:
+    """Timeout (seconds) for the startup backend health probes.
+
+    Longer than the per-request 3s default because cold-start endpoints — e.g.
+    an AWS API Gateway / Lambda that has scaled to zero — can take several
+    seconds to answer the first request, then respond instantly once warm. A
+    too-tight probe spuriously reports the backend as ``timeout`` at launch.
+    Override with the ``AGENT_HEALTH_TIMEOUT`` env var (seconds).
+    """
+    try:
+        return max(1, int(os.environ.get("AGENT_HEALTH_TIMEOUT", "10")))
+    except (TypeError, ValueError):
+        return 10
+
+
 def _check_api_health(base_url, timeout=3):
     """Probe the LLM endpoint. Return (ok: bool, detail: str)."""
     return _backend_for_url(base_url).health(timeout=timeout)
@@ -2978,7 +2993,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         "on_boot_progress",
         f"checking main backend — {getattr(_main_backend, 'kind', '?')} {model_name} @ {getattr(_main_backend, 'base_url', '?')}",
     )
-    ok, detail = _main_backend.health()
+    ok, detail = _main_backend.health(timeout=_startup_health_timeout())
 
     # Auto-detect the model name from /v1/models so the TUI shows the actual
     # loaded model rather than the config default ("gemma-4-31B").  Only update
@@ -3036,7 +3051,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             f"checking summary backend — {getattr(_summary_backend, 'kind', '?')} {getattr(_summary_backend, 'model', '?')} @ {summary_url}",
         )
         try:
-            summary_ok, summary_detail = _summary_backend.health()
+            summary_ok, summary_detail = _summary_backend.health(timeout=_startup_health_timeout())
         except (requests.ConnectionError, requests.Timeout):
             summary_ok, summary_detail = False, "unreachable"
         if summary_ok and getattr(_summary_backend, "kind", None) == "llamacpp":

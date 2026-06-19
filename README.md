@@ -120,6 +120,8 @@ Falls back to plain `input()` automatically if `prompt_toolkit` isn't installed.
 | `BEDROCK_API_KEY` | Bedrock API key — fallback. |
 | `AGENT_BEDROCK_STORE` | Override path to the `bedrock_creds.json` keystore. |
 | `BEDROCK_DAILY_CAP_USD` | Combined daily spend cap across roles (default `$10` main, `$1` summary). |
+| `AGENT_HEALTH_TIMEOUT` | Seconds to wait for the startup backend health probe (default `10`). Raise it for cold-start endpoints (e.g. AWS API Gateway/Lambda) that are slow on the first request. |
+| `AGENT_BASH_EXE` | Windows only — full path to `bash.exe` for the `exec_command` shell, overriding Git-Bash auto-detection. |
 
 ## How it works
 
