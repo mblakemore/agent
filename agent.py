@@ -5,32 +5,9 @@ Connects to llama-server and runs the agentic tool-calling loop.
 Entry points: ``run_agent_interactive()`` for interactive use, ``run_agent()``
 for single-prompt runs. See ``README.md`` for CLI flags.
 
-Windows (Git-Bash) setup
-------------------------
-The runtime is cross-platform Python; the ``exec_command`` tool shells out to
-``bash`` so the CICD templates' shell idioms (heredocs, pipes, ``&&``,
-``/tmp/...``) run unchanged. On Windows that bash comes from Git-Bash.
-
-1. Install Git for Windows (https://git-scm.com/download/win). This bundles a
-   standalone ``bash.exe`` (MSYS2) plus ``git`` — no WSL required.
-2. Install Python 3.10+ for Windows and ``pip install -r requirements.txt``.
-   (Also install the GitHub CLI ``gh`` if you run the CICD pipeline.)
-3. Make ``bash`` resolvable, in priority order:
-     - set ``AGENT_BASH_EXE`` to the full path
-       (e.g. ``C:\\Program Files\\Git\\bin\\bash.exe``), or
-     - put Git's ``bin`` (or ``usr\\bin``) on ``PATH`` so ``where bash`` finds
-       it, or
-     - rely on the default probe of ``C:\\Program Files\\Git\\bin\\bash.exe``.
-4. Run the CICD launcher under Git-Bash, not ``cmd``/PowerShell:
-   ``bash CICD/cicd.sh <repo-url>`` from a Git-Bash shell. (A native
-   PowerShell launcher is a separate, not-yet-done port.)
-
-Platform notes:
-  - Double-Escape cancellation is a POSIX-tty feature and is a no-op on the
-    Windows console; use Ctrl+C, or a TUI host's cancel keybinding.
-  - The bedrock credential store lock uses ``msvcrt`` on Windows (``fcntl`` on
-    POSIX); both auto-release on process exit.
-  - State lives under ``%USERPROFILE%\\.config\\agent\\`` on Windows.
+Windows runs under Git-Bash (the runtime is cross-platform Python; bash idioms
+shell out to Git-Bash's ``bash.exe``). See ``README.md`` → "Windows (Git-Bash)
+setup" for install steps and platform notes.
 """
 
 __version__ = "0.1.0"

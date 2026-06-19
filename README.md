@@ -16,6 +16,29 @@ On Ubuntu 24.04+ (PEP 668 / externally-managed system python), add `--break-syst
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 ```
 
+## Windows (Git-Bash) setup
+
+The runtime is cross-platform Python. The `exec_command` tool shells out to `bash` so shell idioms (heredocs, pipes, `&&`, `/tmp/...`) run unchanged — on Windows that bash comes from Git-Bash, **not** `cmd` or PowerShell.
+
+1. **Install [Git for Windows](https://git-scm.com/download/win).** It bundles a standalone `bash.exe` (MSYS2) and `git` — no WSL required.
+2. **Install Python 3.10+** for Windows, then `pip install -r requirements.txt`. (Install the GitHub CLI `gh` too if you run the CICD pipeline.)
+3. **Make `bash` resolvable**, in the order the runtime probes:
+   - set `AGENT_BASH_EXE` to the full path (e.g. `C:\Program Files\Git\bin\bash.exe`), **or**
+   - put Git's `bin` (or `usr\bin`) on `PATH` so `where bash` finds it, **or**
+   - rely on the default probe of `C:\Program Files\Git\bin\bash.exe`.
+4. **Run from a Git-Bash shell**, not `cmd`/PowerShell:
+   ```bash
+   python agent.py "fix the failing test in tests/test_parser.py"
+   ```
+   For the CICD pipeline: `bash CICD/cicd.sh <repo-url>` from Git-Bash. (A native PowerShell launcher is a separate, not-yet-done port.)
+
+**Platform notes:**
+
+- Double-Escape cancellation is a POSIX-tty feature and is a no-op on the Windows console — use `Ctrl+C`, or a TUI host's cancel keybinding.
+- The bedrock credential-store lock uses `msvcrt` on Windows (`fcntl` on POSIX); both auto-release on process exit.
+- State lives under `%USERPROFILE%\.config\agent\`.
+- Native Windows validation is pending a `windows-2022` runner; the suite is currently validated on Linux plus platform-simulation tests (`tests/test_windows_compat.py`).
+
 ## Quick start
 
 1. Start an OpenAI-compatible LLM server locally (default endpoint `http://127.0.0.1:8080`):
