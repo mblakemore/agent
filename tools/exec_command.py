@@ -22,11 +22,18 @@ from pathlib import Path
 from .file import _accessed_files
 
 
-_BASH_EXE_CACHE = None
+# Sentinel: distinguishes "not resolved yet" from "resolved to None" (no bash
+# found on Windows), so a None result is cached and not re-resolved every call.
+_UNSET = object()
+_BASH_EXE_CACHE = _UNSET
 
 
-def _bash_exe() -> str:
+def _bash_exe():
     """Resolve the bash executable used to run exec_command shell strings.
+
+    Returns the path to bash, or ``None`` on Windows when no usable Git-Bash
+    can be located (callers must surface :func:`_no_bash_error` instead of
+    invoking anything).
 
     POSIX: plain ``bash`` on PATH. Windows (C1 strategy): Git-Bash's
     ``bash.exe`` so the CICD templates' bash idioms (heredocs, pipes, ``&&``,
@@ -38,18 +45,11 @@ def _bash_exe() -> str:
     ``C:\\Windows\\System32\\bash.exe`` (and there may be a Store alias under
     ``WindowsApps``). If no WSL distro is installed, that stub fails *every*
     command with "Windows Subsystem for Linux has no installed distributions".
-    Falling back to bare ``bash`` is useless here — Popen would re-resolve it
-    straight back to that stub. So the resolution order on Windows is:
-      1. ``AGENT_BASH_EXE`` override
-      2. known Git-Bash install locations
-      3. derive from ``git`` on PATH — Git for Windows keeps ``bash.exe`` in a
-         sibling ``bin``/``usr\\bin`` of ``git.exe``. This is the common case:
-         Git's ``cmd`` dir (git.exe) is on PATH but ``bin`` (bash.exe) is not.
-      4. ``which('bash')``, excluding System32/WindowsApps stubs
-      5. bare ``bash`` (last resort; logs nothing better is available)
+    Bare ``bash`` is never used as a fallback: ``CreateProcess`` searches
+    System32 before PATH, so it would resolve straight back to that stub.
     """
     global _BASH_EXE_CACHE
-    if _BASH_EXE_CACHE is not None:
+    if _BASH_EXE_CACHE is not _UNSET:
         return _BASH_EXE_CACHE
     override = os.environ.get("AGENT_BASH_EXE")
     if override:
@@ -57,8 +57,23 @@ def _bash_exe() -> str:
     elif os.name != "nt":
         _BASH_EXE_CACHE = "bash"
     else:
-        _BASH_EXE_CACHE = _resolve_windows_bash() or "bash"
+        _BASH_EXE_CACHE = _resolve_windows_bash()  # str or None
     return _BASH_EXE_CACHE
+
+
+def _no_bash_error() -> str:
+    """Actionable message when no usable bash is found on Windows."""
+    exepath = os.environ.get("EXEPATH") or "(unset)"
+    return (
+        "Error: no usable bash found. The agent runs shell commands through "
+        "bash; on Windows that must be Git-Bash. To fix:\n"
+        "  - install Git for Windows (https://git-scm.com/download/win) and "
+        "launch the agent from a Git-Bash shell, or\n"
+        "  - set AGENT_BASH_EXE to the full path of bash.exe, e.g. "
+        "C:\\Program Files\\Git\\bin\\bash.exe.\n"
+        "Note: C:\\Windows\\System32\\bash.exe is the WSL launcher (not a "
+        f"usable shell here). [EXEPATH={exepath}]"
+    )
 
 
 def _is_wsl_stub(path: str) -> bool:
@@ -67,25 +82,46 @@ def _is_wsl_stub(path: str) -> bool:
     return any(seg in low for seg in ("system32", "windowsapps"))
 
 
+def _bash_in(root: str) -> "str | None":
+    """Return ``<root>\\bin\\bash.exe`` or ``<root>\\usr\\bin\\bash.exe`` if present."""
+    if not root:
+        return None
+    for rel in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
+        cand = os.path.join(root, *rel)
+        if os.path.exists(cand):
+            return cand
+    return None
+
+
 def _resolve_windows_bash() -> "str | None":
-    """Locate Git-Bash's bash.exe on Windows, avoiding the WSL stub."""
+    """Locate Git-Bash's bash.exe on Windows, avoiding the WSL stub.
+
+    Order matters: EXEPATH first because when the agent is launched *from*
+    Git-Bash (the documented Windows flow), MSYS2 can hand the child a PATH
+    full of un-converted POSIX entries (``/usr/bin`` …) that ``shutil.which``
+    can't use — but Git-Bash also exports ``EXEPATH`` as a real Windows path
+    pointing at the Git install root, which is immune to that mangling.
+    """
     import shutil
 
-    # 2. Known Git-Bash install locations.
-    candidates = [
-        r"C:\Program Files\Git\bin\bash.exe",
-        r"C:\Program Files (x86)\Git\bin\bash.exe",
-    ]
-    localapp = os.environ.get("LOCALAPPDATA")
-    if localapp:  # per-user Git for Windows install
-        candidates.append(os.path.join(localapp, "Programs", "Git", "bin", "bash.exe"))
-    found = next((c for c in candidates if os.path.exists(c)), None)
+    # 1. EXEPATH — set by the Git-Bash launcher to the Git install root.
+    found = _bash_in(os.environ.get("EXEPATH", ""))
     if found:
         return found
 
-    # 3. Derive from git.exe — bash.exe lives in a sibling bin/ of the Git root.
-    #    git.exe is typically at <root>\cmd\git.exe (also <root>\bin or
-    #    <root>\mingw64\bin), so walk up a few levels looking for bin\bash.exe.
+    # 2. Known Git-Bash install roots (system-wide + per-user).
+    roots = [r"C:\Program Files\Git", r"C:\Program Files (x86)\Git"]
+    localapp = os.environ.get("LOCALAPPDATA")
+    if localapp:
+        roots.append(os.path.join(localapp, "Programs", "Git"))
+    for root in roots:
+        found = _bash_in(root)
+        if found:
+            return found
+
+    # 3. Derive from git.exe on PATH — bash.exe lives in a sibling bin/ of the
+    #    Git root. git.exe is typically at <root>\cmd\git.exe (also <root>\bin
+    #    or <root>\mingw64\bin), so walk up a few levels.
     git = shutil.which("git")
     if git and not _is_wsl_stub(git):
         d = os.path.dirname(git)
@@ -93,15 +129,17 @@ def _resolve_windows_bash() -> "str | None":
             d = os.path.dirname(d)
             if not d:
                 break
-            for rel in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
-                cand = os.path.join(d, *rel)
-                if os.path.exists(cand):
-                    return cand
+            found = _bash_in(d)
+            if found:
+                return found
 
     # 4. which('bash'), but never the WSL stub / Store alias.
     which = shutil.which("bash")
     if which and not _is_wsl_stub(which):
         return which
+
+    # 5. Nothing usable.
+    return None
 
     # 5. No real bash found.
     return None
@@ -589,11 +627,17 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
             merged_env["PYTHONPATH"] = caller_pp + os.pathsep + base_pp
         _auto_env = {**base, **merged_env}
 
+    # Resolve bash once for both execution paths. None (Windows-only) means no
+    # usable Git-Bash — surface a clear error rather than invoking the WSL stub.
+    _bash = _bash_exe()
+    if _bash is None:
+        return _no_bash_error()
+
     # ── Background execution ──────────────────────────────────────────
     if background:
         try:
             proc = subprocess.Popen(
-                [_bash_exe(), '-c', f'exec 2>&1; {command}'],
+                [_bash, '-c', f'exec 2>&1; {command}'],
                 cwd=run_cwd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -624,7 +668,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
 
     try:
         proc = subprocess.Popen(
-            ['bash', '-c', f'exec 2>&1; {command}'],
+            [_bash, '-c', f'exec 2>&1; {command}'],
             cwd=run_cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,

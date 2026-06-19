@@ -133,11 +133,14 @@ def test_lock_best_effort_when_no_primitive(monkeypatch, tmp_path):
 # ───────────────────────── exec_command bash resolution ─────────────────────────
 
 @pytest.fixture(autouse=True)
-def _reset_bash_cache():
+def _reset_bash_cache(monkeypatch):
     from tools import exec_command
-    exec_command._BASH_EXE_CACHE = None
+    exec_command._BASH_EXE_CACHE = exec_command._UNSET
+    # EXEPATH would leak the host's Git-Bash into Windows-path tests; clear it
+    # so each test controls detection explicitly.
+    monkeypatch.delenv("EXEPATH", raising=False)
     yield
-    exec_command._BASH_EXE_CACHE = None
+    exec_command._BASH_EXE_CACHE = exec_command._UNSET
 
 
 def test_bash_exe_env_override(monkeypatch):
@@ -168,22 +171,38 @@ def test_bash_exe_windows_falls_back_to_known_path(monkeypatch):
     monkeypatch.delenv("AGENT_BASH_EXE", raising=False)
     monkeypatch.setattr(exec_command.os, "name", "nt")
     monkeypatch.setattr(shutil, "which", lambda _: None)
-    known = r"C:\Program Files\Git\bin\bash.exe"
-    monkeypatch.setattr(exec_command.os.path, "exists", lambda p: p == known)
-    assert exec_command._bash_exe() == known
+    # The code probes <root>\bin\bash.exe via os.path.join — build the expected
+    # path the same way so it matches under the POSIX test runner.
+    expected = os.path.join(r"C:\Program Files\Git", "bin", "bash.exe")
+    monkeypatch.setattr(exec_command.os.path, "exists", lambda p: p == expected)
+    assert exec_command._bash_exe() == expected
 
 
-def test_bash_exe_windows_rejects_wsl_stub(monkeypatch):
-    """which() returning the System32 WSL launcher stub must be rejected
-    (it fails every command when no distro is installed), falling back to
-    bare 'bash' rather than the broken stub."""
+def test_bash_exe_windows_no_bash_returns_none(monkeypatch):
+    """No Git-Bash anywhere and only the WSL stub on PATH → None (never the
+    stub, and never bare 'bash' which CreateProcess resolves to the stub)."""
     from tools import exec_command
     import shutil
     monkeypatch.delenv("AGENT_BASH_EXE", raising=False)
     monkeypatch.setattr(exec_command.os, "name", "nt")
     monkeypatch.setattr(exec_command.os.path, "exists", lambda p: False)  # no Git-Bash
     monkeypatch.setattr(shutil, "which", lambda _: r"C:\Windows\System32\bash.exe")
-    assert exec_command._bash_exe() == "bash"
+    assert exec_command._bash_exe() is None
+
+
+def test_bash_exe_windows_uses_exepath(monkeypatch):
+    """Git-Bash exports EXEPATH=<git root>; it must win even when which()
+    only sees the WSL stub (the launched-from-Git-Bash redistribution case)."""
+    from tools import exec_command
+    import shutil
+    monkeypatch.delenv("AGENT_BASH_EXE", raising=False)
+    monkeypatch.setattr(exec_command.os, "name", "nt")
+    root = os.path.join("X:", "Program Files", "Git")
+    bash = os.path.join(root, "bin", "bash.exe")
+    monkeypatch.setenv("EXEPATH", root)
+    monkeypatch.setattr(exec_command.os.path, "exists", lambda p: p == bash)
+    monkeypatch.setattr(shutil, "which", lambda _: r"C:\Windows\System32\bash.exe")
+    assert exec_command._bash_exe() == bash
 
 
 def test_bash_exe_windows_prefers_git_over_wsl_stub(monkeypatch):
@@ -192,10 +211,30 @@ def test_bash_exe_windows_prefers_git_over_wsl_stub(monkeypatch):
     import shutil
     monkeypatch.delenv("AGENT_BASH_EXE", raising=False)
     monkeypatch.setattr(exec_command.os, "name", "nt")
-    git_bash = r"C:\Program Files\Git\bin\bash.exe"
+    git_bash = os.path.join(r"C:\Program Files\Git", "bin", "bash.exe")
     monkeypatch.setattr(exec_command.os.path, "exists", lambda p: p == git_bash)
     monkeypatch.setattr(shutil, "which", lambda _: r"C:\Windows\System32\bash.exe")
     assert exec_command._bash_exe() == git_bash
+
+
+def test_no_bash_error_is_actionable():
+    """The no-bash error must name Git for Windows, AGENT_BASH_EXE, and the
+    WSL-stub gotcha — not the cryptic WSL message."""
+    from tools import exec_command
+    msg = exec_command._no_bash_error()
+    assert "git-scm.com" in msg
+    assert "AGENT_BASH_EXE" in msg
+    assert "System32" in msg
+
+
+def test_exec_command_surfaces_no_bash_error(monkeypatch):
+    """End-to-end: when bash is unresolvable, fn() returns the actionable
+    error instead of invoking anything (would otherwise hit the WSL stub)."""
+    from tools import exec_command
+    monkeypatch.setattr(exec_command, "_bash_exe", lambda: None)
+    result = exec_command.fn(command="date")
+    assert "no usable bash" in result
+    assert "git-scm.com" in result
 
 
 def test_bash_exe_windows_derives_bash_from_git(monkeypatch):
