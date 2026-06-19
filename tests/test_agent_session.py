@@ -138,14 +138,22 @@ class TestAgentInteractive(unittest.TestCase):
     @patch('agent.run_agent_single')
     @patch('builtins.input')
     def test_run_agent_continue_mode(self, mock_input, mock_run_single):
-        """Test continuing from a checkpoint with full state."""
-        mock_input.side_effect = ["exit"]
-        # Mock checkpoint: (conversation_history, summary_state, start_turn, initial_files)
+        """Test continuing from a checkpoint with full state.
+
+        Non-auto continue mode restores the checkpoint state and falls through
+        to the interactive loop, so a prompt must be submitted to drive a turn;
+        the restored history (incl. "prev msg") must reach run_agent_single.
+        """
+        mock_input.side_effect = ["resume please", "exit"]
+        # Mock checkpoint: (conversation_history, summary_state, start_turn,
+        # initial_files, clean_exit) — must match _load_checkpoint's 5-tuple
+        # (clean_exit was added to the checkpoint shape after this test).
         agent._load_checkpoint.return_value = (
             [{"role": "user", "content": "prev msg"}],
             {"text": "prev summary", "up_to": 1},
             1,
-            ["file1.txt"]
+            ["file1.txt"],
+            False,
         )
         
         with patch('sys.stdout'):
@@ -241,6 +249,40 @@ class TestAgentInteractive(unittest.TestCase):
             agent.run_agent_interactive()
         
         self.assertTrue(mock_run_single.called)
+
+
+# ── Checkpoint round-trip guards ────────────────────────────────────────────
+# These pin the _save/_load_checkpoint tuple shape. A stale 4-tuple mock once
+# hid the addition of `clean_exit` (5th field) and silently broke the
+# continue-mode test instead of failing loudly here.
+
+def test_checkpoint_roundtrip_is_five_tuple(tmp_path, monkeypatch):
+    cp_path = tmp_path / "cp.json"
+    monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(cp_path))
+    history = [{"role": "user", "content": "hi"}]
+    summary = {"text": "s", "up_to": 1}
+    agent._save_checkpoint(history, summary, 3, ["f.txt"], clean_exit=True)
+    loaded = agent._load_checkpoint()
+    assert loaded is not None and len(loaded) == 5
+    h, s, turn, files, clean = loaded
+    assert any(m.get("content") == "hi" for m in h)
+    assert s == summary and turn == 3 and files == ["f.txt"] and clean is True
+
+
+def test_checkpoint_load_defaults_clean_exit_for_old_files(tmp_path, monkeypatch):
+    import json
+    cp_path = tmp_path / "cp.json"
+    cp_path.write_text(json.dumps({
+        "conversation_history": [{"role": "user", "content": "x"}],
+        "summary_state": {"text": ""},
+        "turn": 2,
+        "initial_files": [],
+    }))
+    monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(cp_path))
+    loaded = agent._load_checkpoint()
+    assert len(loaded) == 5
+    assert loaded[4] is False  # clean_exit defaulted for pre-clean_exit files
+
 
 if __name__ == '__main__':
     unittest.main()
