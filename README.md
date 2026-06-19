@@ -176,6 +176,8 @@ Agent-specific tools in `./tools/` alongside your working directory are auto-dis
 
 Drop a `config.json` in the working directory (i.e. wherever you run `agent.py` from) to override defaults. All sections are optional; omitted keys use the defaults listed below.
 
+The agent looks for `.agent/config.json` first, then falls back to `config.json` in the working directory. Putting it under `.agent/` keeps your local, key-bearing config alongside the other runtime files. When you run inside a git repo, the agent best-effort adds `.agent/` and `config.json` to `.gitignore` so your config (which may hold API keys) and runtime state never get committed. Outside a repo it leaves the directory untouched.
+
 ### `backends`
 
 Preferred shape. Replaces the legacy `llm` / `summary` flat blocks (which still work — they are synthesized into `backends` at load time).
