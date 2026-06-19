@@ -13,7 +13,9 @@ def test_pick_model_interactive_success():
         result = _pick_model_interactive('gpt-4', 'http://api.test')
         
         assert result == 'gpt-4'
-        mock_emit.assert_any_call("on_notice", "info", "Available models at http://api.test:")
+        # URL is intentionally hidden from output (PR #1043) — the header no
+        # longer includes the endpoint.
+        mock_emit.assert_any_call("on_notice", "info", "Available models:")
 
 def test_pick_model_interactive_invalid_index():
     """Test selection of an out-of-bounds index."""
