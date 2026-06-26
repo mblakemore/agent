@@ -85,9 +85,37 @@ python agent.py [OPTIONS] [PROMPT...]
 | `--verbose` | Start with full (uncompacted) tool output. Toggle in-session with `/verbose`. |
 | `--backend-main` | Override the main backend kind (`llamacpp` or `bedrock`). |
 | `--backend-summary` | Override the summary backend kind (`llamacpp` or `bedrock`). |
+| `-cc [HOST:PORT]` | Launch an Anthropic-compatible gateway for **Claude Code** (default `127.0.0.1:8788`) that forwards to the configured main backend, then exit. See [Claude Code gateway](#claude-code-gateway--cc). |
 | `PROMPT...` | Initial prompt. Optional in interactive mode. |
 
 Press **Escape twice** within 400ms to cancel a streaming response.
+
+### Claude Code gateway (`-cc`)
+
+`agent.py -cc` stands up an Anthropic-native `/v1/messages` endpoint and points it at whichever backend `agent.py` is configured for (`llamacpp`, `bedrock`, or `foundry`). This lets [Claude Code](https://docs.claude.com/en/docs/claude-code) — or anything that speaks the Anthropic Messages API — drive your local/self-hosted model.
+
+```bash
+python agent.py -cc                      # listen on 127.0.0.1:8788
+python agent.py -cc 0.0.0.0:9000         # explicit host:port
+python agent.py -cc --backend-main bedrock   # forward to a different backend
+```
+
+Then point Claude Code at it:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8788
+export ANTHROPIC_API_KEY=dummy           # any non-empty value; the gateway ignores it
+claude
+```
+
+How it works:
+
+- It is a **stateless translator** — Anthropic Messages in, OpenAI chat-completions to the backend, and the streamed reply translated back to Anthropic SSE. Tool definitions, `tool_use`/`tool_result` blocks, images, and streaming tool calls are all converted in both directions.
+- Claude Code runs its **own** agentic loop and resends the full conversation each turn, so the gateway bypasses `agent.py`'s session pipeline (no checkpointing, summarization, or cycle limits) and forces a fresh backend conversation per request.
+- The model id Claude Code sends is ignored; requests always go to the configured main backend's model. Gemma `<think>` reasoning is suppressed so it doesn't surface as message content.
+- `GET /health` reports backend reachability; `POST /v1/messages/count_tokens` returns an estimate.
+
+Implemented in `cc_gateway.py`; requires `fastapi` + `uvicorn` (already in `requirements.txt`).
 
 ### Interactive TUI
 
@@ -158,6 +186,7 @@ token_utils.py      # Tokenizer (Gemma) with char-based fallback
 tool_recovery.py    # Auto-recovery from recoverable tool errors
 llm_backend.py      # LLM backend abstraction (llamacpp, bedrock)
 bedrock_api.py      # AWS Bedrock Chat API integration
+cc_gateway.py       # Anthropic /v1/messages gateway for Claude Code (agent.py -cc)
 tools/
   file.py           # read / write / insert / append / delete / list
   exec_command.py   # Shell execution with background-session support

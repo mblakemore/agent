@@ -5890,11 +5890,32 @@ def main():
     parser.add_argument("--backend-summary", dest="backend_summary",
                         choices=["llamacpp", "bedrock", "foundry"], default=None,
                         help="Override the summary backend kind.")
+    parser.add_argument("-cc", dest="cc", nargs="?", const="127.0.0.1:8788", default=None,
+                        metavar="HOST:PORT",
+                        help="Launch an Anthropic-compatible gateway endpoint for Claude "
+                             "Code (default 127.0.0.1:8788), forwarding to the configured "
+                             "main backend, then exit. Point Claude Code at it with "
+                             "ANTHROPIC_BASE_URL=http://HOST:PORT.")
     parser.add_argument("prompt", nargs="*", help="Initial prompt")
     args = parser.parse_args()
 
     # Apply backend-kind overrides before any backend-dependent startup logic.
     _apply_backend_overrides(args.backend_main, args.backend_summary)
+
+    # -cc — stand up the Claude Code gateway against the configured main
+    # backend and block here. Backend overrides above are already applied, so
+    # _main_backend is the final, fully-configured backend.
+    if args.cc is not None:
+        host, sep, port = args.cc.partition(":")
+        host = host or "127.0.0.1"
+        try:
+            port_num = int(port) if sep else 8788
+        except ValueError:
+            print(f"Invalid -cc port: {port!r} (expected HOST:PORT)", file=sys.stderr)
+            sys.exit(2)
+        import cc_gateway
+        cc_gateway.serve(_main_backend, host=host, port=port_num)
+        return
 
     global _NUDGE_ENABLED
     _NUDGE_ENABLED = _NUDGE_ENABLED or args.nudge
