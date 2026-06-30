@@ -115,6 +115,18 @@ How it works:
 - The model id Claude Code sends is ignored; requests always go to the configured main backend's model. Gemma `<think>` reasoning is suppressed so it doesn't surface as message content.
 - `GET /health` reports backend reachability; `POST /v1/messages/count_tokens` returns an estimate.
 
+**Resilience for slow/flaky backends.** If the backend cuts a stream *after* tokens have started flowing (e.g. a Bedrock proxy behind an API Gateway with a ~29s timeout), the gateway closes the turn cleanly with `stop_reason: max_tokens` instead of letting the client see "stream ended prematurely". If the backend fails *before* any content reaches the client, the gateway retries with backoff (only then — once tokens stream, retrying would duplicate output). Tunable via env vars:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CC_GATEWAY_MAX_RETRIES` | `2` | Retries when the backend fails before producing any content. Each retry can cost up to one read-timeout, so keep it small. `0` disables. |
+| `CC_GATEWAY_RETRY_BASE_DELAY` | `1.0` | Initial backoff (seconds); doubles each retry. |
+| `CC_GATEWAY_RETRY_MAX_DELAY` | `8.0` | Cap on backoff (seconds). |
+| `CC_GATEWAY_CONNECT_TIMEOUT` | `30` | Connect timeout to the backend (seconds). |
+| `CC_GATEWAY_READ_TIMEOUT` | `600` | Read timeout — a slow backend can hold the stream this long. |
+
+These mitigate transient failures but cannot make a turn that genuinely needs longer than the backend's hard timeout *complete* — that requires fixing the backend (e.g. streaming via a Lambda Function URL instead of API Gateway).
+
 Implemented in `cc_gateway.py`; requires `fastapi` + `uvicorn` (already in `requirements.txt`).
 
 ### Interactive TUI

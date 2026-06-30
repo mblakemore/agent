@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import uuid
 from typing import List, Optional, Union
 
@@ -47,6 +48,22 @@ log = logging.getLogger("cc-gateway")
 # finish a long turn, and Claude Code holds the stream open the whole time.
 _CONNECT_TIMEOUT = int(os.environ.get("CC_GATEWAY_CONNECT_TIMEOUT", "30"))
 _READ_TIMEOUT = int(os.environ.get("CC_GATEWAY_READ_TIMEOUT", "600"))
+
+# TEMP resilience knobs — the durable fix is server-side (see
+# /droid/repos/test/aws-streaming-fix.md). A Bedrock proxy behind an API
+# Gateway with a ~29s timeout sometimes stalls under transient load and cuts
+# the stream. Retrying is safe ONLY before any content has reached the client;
+# once tokens are streaming we close gracefully instead. Worst-case added
+# latency is ~N×(read timeout) + backoffs, so keep N small.
+_MAX_RETRIES = int(os.environ.get("CC_GATEWAY_MAX_RETRIES", "2"))
+_RETRY_BASE_DELAY = float(os.environ.get("CC_GATEWAY_RETRY_BASE_DELAY", "1.0"))
+_RETRY_MAX_DELAY = float(os.environ.get("CC_GATEWAY_RETRY_MAX_DELAY", "8.0"))
+
+try:  # never retry definite, non-transient failures
+    from llm_backend import BedrockBudgetExceeded, ContextOverflowError
+    _NON_RETRYABLE: tuple = (BedrockBudgetExceeded, ContextOverflowError)
+except Exception:  # pragma: no cover - llm_backend is always importable in-repo
+    _NON_RETRYABLE = ()
 
 # OpenAI finish_reason → Anthropic stop_reason.
 _STOP_MAP = {
@@ -332,6 +349,41 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+def _safe_close(response) -> None:
+    closer = getattr(response, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:
+            pass
+
+
+def _retry_delay(attempt: int) -> float:
+    return min(_RETRY_BASE_DELAY * (2 ** attempt), _RETRY_MAX_DELAY)
+
+
+def _is_transient(e: Exception) -> bool:
+    """Retryable unless it's a definite non-transient failure (budget cap /
+    context overflow). Connection resets, read timeouts, 5xx, and the mid-stream
+    cut from an API-Gateway timeout are all treated as transient.
+
+    Caveat (acceptable for this temp resilience layer): this also treats a bug
+    in the gateway's own delta/tool processing as "transient", so such a bug
+    would be retried and surfaced as ``overloaded_error`` rather than failing
+    loudly. Note that ``LlamacppBackend.stream_chat`` already retries pure
+    connection errors internally, so this layer mainly covers stream deaths
+    that happen after a response is returned (zero-content cuts)."""
+    return not (_NON_RETRYABLE and isinstance(e, _NON_RETRYABLE))
+
+
+def _args_parse_ok(args: str) -> bool:
+    try:
+        json.loads(args or "{}")
+        return True
+    except json.JSONDecodeError:
+        return False
+
+
 def stream_anthropic(backend, req: MessagesRequest):
     """Generator yielding Anthropic SSE events translated live from the
     backend's OpenAI delta stream.
@@ -363,7 +415,6 @@ def stream_anthropic(backend, req: MessagesRequest):
     yield _sse("ping", {"type": "ping"})
 
     body = build_openai_body(req, backend)
-    _reset_backend_conversation(backend)
 
     # Text is streamed live (genuine UX benefit). Tool calls are *accumulated*
     # by OpenAI tool index and emitted at stream end: a real backend (gemma via
@@ -378,76 +429,114 @@ def stream_anthropic(backend, req: MessagesRequest):
     tool_order: List[int] = []
     finish_reason: Optional[str] = None
     out_tokens: Optional[int] = None
+    committed = False            # have we emitted any content_block to the client?
+    truncated = False            # backend cut the stream mid-response
+    gave_up: Optional[Exception] = None
 
-    try:
-        response = backend.stream_chat(
-            log, json=body, stream=True,
-            timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
-        )
-    except Exception as e:  # backend unreachable / budget exceeded / etc.
-        log.error("backend stream_chat failed: %s", e)
+    # Retry the backend ONLY while no content has reached the client: a flaky
+    # proxy that stalls under load and dies before producing any token is the
+    # safe-to-retry case. Once tokens are streaming we must not re-send — we
+    # close gracefully as truncated instead.
+    for attempt in range(_MAX_RETRIES + 1):
+        block_index = -1
+        text_open = False
+        tool_acc = {}
+        tool_order = []
+        finish_reason = None
+        out_tokens = None
+        response = None
+        _reset_backend_conversation(backend)
+        try:
+            response = backend.stream_chat(
+                log, json=body, stream=True,
+                timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
+            )
+            for chunk in _iter_openai_deltas(response):
+                usage = chunk.get("usage")
+                if usage and usage.get("completion_tokens") is not None:
+                    out_tokens = usage.get("completion_tokens")
+
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+                delta = choice.get("delta", {}) or {}
+
+                # --- text (streamed live) ---
+                text = delta.get("content")
+                if text:
+                    if not text_open:
+                        block_index += 1
+                        text_open = True
+                        committed = True
+                        yield _sse("content_block_start", {
+                            "type": "content_block_start", "index": block_index,
+                            "content_block": {"type": "text", "text": ""},
+                        })
+                    yield _sse("content_block_delta", {
+                        "type": "content_block_delta", "index": block_index,
+                        "delta": {"type": "text_delta", "text": text},
+                    })
+
+                # --- tool calls (accumulated; name/id/args may span deltas) ---
+                for tc in delta.get("tool_calls") or []:
+                    oai_idx = tc.get("index", 0)
+                    fn = tc.get("function", {}) or {}
+                    if oai_idx not in tool_acc:
+                        tool_acc[oai_idx] = {"id": "", "name": "", "args": ""}
+                        tool_order.append(oai_idx)
+                    if tc.get("id"):
+                        tool_acc[oai_idx]["id"] = tc["id"]
+                    if fn.get("name"):
+                        tool_acc[oai_idx]["name"] = fn["name"]
+                    if fn.get("arguments"):
+                        tool_acc[oai_idx]["args"] += fn["arguments"]
+            _safe_close(response)
+            break  # stream ended cleanly → finalize
+        except Exception as e:
+            _safe_close(response)
+            if committed:
+                # Tokens already reached the client — can't retry. Close as a
+                # truncated turn (honest stop_reason below).
+                log.warning("cc-gateway: stream cut mid-response: %s — closing as truncated", e)
+                truncated = True
+                break
+            if not _is_transient(e) or attempt >= _MAX_RETRIES:
+                gave_up = e
+                break
+            delay = _retry_delay(attempt)
+            log.warning(
+                "cc-gateway: transient backend error before any content "
+                "(attempt %d/%d): %s — retrying in %.1fs",
+                attempt + 1, _MAX_RETRIES + 1, e, delay,
+            )
+            yield _sse("ping", {"type": "ping"})  # keep the client connection warm
+            time.sleep(delay)
+
+    # Gave up before emitting anything → surface a clean error, not a half-stream.
+    if gave_up is not None and not committed:
+        log.error("cc-gateway: backend failed after %d attempt(s): %s",
+                  _MAX_RETRIES + 1, gave_up)
         yield _sse("error", {"type": "error", "error": {
-            "type": "api_error", "message": f"backend error: {e}",
+            "type": "overloaded_error",
+            "message": f"backend unavailable after {_MAX_RETRIES + 1} attempt(s): {gave_up}",
         }})
         yield _sse("message_stop", {"type": "message_stop"})
         return
 
-    try:
-        for chunk in _iter_openai_deltas(response):
-            usage = chunk.get("usage")
-            if usage and usage.get("completion_tokens") is not None:
-                out_tokens = usage.get("completion_tokens")
-
-            choices = chunk.get("choices") or []
-            if not choices:
-                continue
-            choice = choices[0]
-            if choice.get("finish_reason"):
-                finish_reason = choice["finish_reason"]
-            delta = choice.get("delta", {}) or {}
-
-            # --- text (streamed live) ---
-            text = delta.get("content")
-            if text:
-                if not text_open:
-                    block_index += 1
-                    text_open = True
-                    yield _sse("content_block_start", {
-                        "type": "content_block_start", "index": block_index,
-                        "content_block": {"type": "text", "text": ""},
-                    })
-                yield _sse("content_block_delta", {
-                    "type": "content_block_delta", "index": block_index,
-                    "delta": {"type": "text_delta", "text": text},
-                })
-
-            # --- tool calls (accumulated; name/id/args may span deltas) ---
-            for tc in delta.get("tool_calls") or []:
-                oai_idx = tc.get("index", 0)
-                fn = tc.get("function", {}) or {}
-                if oai_idx not in tool_acc:
-                    tool_acc[oai_idx] = {"id": "", "name": "", "args": ""}
-                    tool_order.append(oai_idx)
-                if tc.get("id"):
-                    tool_acc[oai_idx]["id"] = tc["id"]
-                if fn.get("name"):
-                    tool_acc[oai_idx]["name"] = fn["name"]
-                if fn.get("arguments"):
-                    tool_acc[oai_idx]["args"] += fn["arguments"]
-    finally:
-        closer = getattr(response, "close", None)
-        if callable(closer):
-            try:
-                closer()
-            except Exception:
-                pass
-
     if text_open:
         yield _sse("content_block_stop", {"type": "content_block_stop", "index": block_index})
 
-    # Emit accumulated tool_use blocks now that their names/args are complete.
+    # Emit accumulated tool_use blocks. On a truncated stream, skip any whose
+    # arguments don't parse — a half-written tool call would break Claude Code.
+    emitted_tool = False
     for oai_idx in tool_order:
         t = tool_acc[oai_idx]
+        if truncated and not _args_parse_ok(t["args"]):
+            continue
+        emitted_tool = True
         block_index += 1
         yield _sse("content_block_start", {
             "type": "content_block_start", "index": block_index,
@@ -465,10 +554,13 @@ def stream_anthropic(backend, req: MessagesRequest):
             })
         yield _sse("content_block_stop", {"type": "content_block_stop", "index": block_index})
 
-    # Anthropic always reports stop_reason=tool_use when tool_use blocks are
-    # present, even if the backend's finish_reason was "stop"/None.
-    if tool_order:
+    # stop_reason: tool_use if a complete tool was emitted; max_tokens if the
+    # stream was truncated (NEVER end_turn on truncation — Claude Code would act
+    # on a half-finished turn as if it were complete); else the backend's reason.
+    if emitted_tool:
         stop_reason = "tool_use"
+    elif truncated:
+        stop_reason = "max_tokens"
     else:
         stop_reason = _STOP_MAP.get(finish_reason or "", "end_turn")
     yield _sse("message_delta", {
@@ -485,89 +577,101 @@ def stream_anthropic(backend, req: MessagesRequest):
 def build_message_response(backend, req: MessagesRequest) -> dict:
     body = build_openai_body(req, backend)
     body["stream"] = True  # backend always streams; we accumulate here
-    _reset_backend_conversation(backend)
 
-    response = backend.stream_chat(
-        log, json=body, stream=True,
-        timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
-    )
-
-    text_buf = ""
-    tools_by_idx: dict = {}
-    order: List[int] = []
-    finish_reason = None
-    out_tokens = None
-    try:
-        for chunk in _iter_openai_deltas(response):
-            usage = chunk.get("usage")
-            if usage and usage.get("completion_tokens") is not None:
-                out_tokens = usage["completion_tokens"]
-            choices = chunk.get("choices") or []
-            if not choices:
-                continue
-            choice = choices[0]
-            if choice.get("finish_reason"):
-                finish_reason = choice["finish_reason"]
-            delta = choice.get("delta", {}) or {}
-            if delta.get("content"):
-                text_buf += delta["content"]
-            for tc in delta.get("tool_calls") or []:
-                idx = tc.get("index", 0)
-                if idx not in tools_by_idx:
-                    tools_by_idx[idx] = {"id": tc.get("id", ""), "name": "", "args": ""}
-                    order.append(idx)
-                fn = tc.get("function", {}) or {}
-                if tc.get("id"):
-                    tools_by_idx[idx]["id"] = tc["id"]
-                if fn.get("name"):
-                    tools_by_idx[idx]["name"] = fn["name"]
-                if fn.get("arguments"):
-                    tools_by_idx[idx]["args"] += fn["arguments"]
-    finally:
-        closer = getattr(response, "close", None)
-        if callable(closer):
-            try:
-                closer()
-            except Exception:
-                pass
-
-    content: List[dict] = []
-    if text_buf:
-        content.append({"type": "text", "text": text_buf})
-    for idx in order:
-        tc = tools_by_idx[idx]
+    # Non-streaming buffers the whole response before returning, so the entire
+    # collection is safe to retry on a transient error (nothing reached the
+    # client). The route handler turns a final failure into a 502.
+    last_err: Optional[Exception] = None
+    for attempt in range(_MAX_RETRIES + 1):
+        _reset_backend_conversation(backend)
+        response = None
+        text_buf = ""
+        tools_by_idx: dict = {}
+        order: List[int] = []
+        finish_reason = None
+        out_tokens = None
         try:
-            parsed = json.loads(tc["args"]) if tc["args"] else {}
-        except json.JSONDecodeError:
-            parsed = {}
-        content.append({
-            "type": "tool_use",
-            "id": tc["id"] or f"toolu_{uuid.uuid4().hex[:24]}",
-            "name": tc["name"],
-            "input": parsed,
-        })
-    if not content:
-        content.append({"type": "text", "text": ""})
+            response = backend.stream_chat(
+                log, json=body, stream=True,
+                timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
+            )
+            for chunk in _iter_openai_deltas(response):
+                usage = chunk.get("usage")
+                if usage and usage.get("completion_tokens") is not None:
+                    out_tokens = usage["completion_tokens"]
+                choices = chunk.get("choices") or []
+                if not choices:
+                    continue
+                choice = choices[0]
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+                delta = choice.get("delta", {}) or {}
+                if delta.get("content"):
+                    text_buf += delta["content"]
+                for tc in delta.get("tool_calls") or []:
+                    idx = tc.get("index", 0)
+                    if idx not in tools_by_idx:
+                        tools_by_idx[idx] = {"id": tc.get("id", ""), "name": "", "args": ""}
+                        order.append(idx)
+                    fn = tc.get("function", {}) or {}
+                    if tc.get("id"):
+                        tools_by_idx[idx]["id"] = tc["id"]
+                    if fn.get("name"):
+                        tools_by_idx[idx]["name"] = fn["name"]
+                    if fn.get("arguments"):
+                        tools_by_idx[idx]["args"] += fn["arguments"]
+            _safe_close(response)
+        except Exception as e:
+            _safe_close(response)
+            last_err = e
+            if not _is_transient(e) or attempt >= _MAX_RETRIES:
+                raise
+            log.warning(
+                "cc-gateway (non-stream): transient backend error "
+                "(attempt %d/%d): %s — retrying", attempt + 1, _MAX_RETRIES + 1, e,
+            )
+            time.sleep(_retry_delay(attempt))
+            continue
 
-    # Match Anthropic: tool_use blocks present ⇒ stop_reason=tool_use, even if
-    # the backend reported finish_reason "stop"/None.
-    if order:
-        stop_reason = "tool_use"
-    else:
-        stop_reason = _STOP_MAP.get(finish_reason or "", "end_turn")
-    return {
-        "id": f"msg_{uuid.uuid4().hex[:24]}",
-        "type": "message",
-        "role": "assistant",
-        "model": req.model,
-        "content": content,
-        "stop_reason": stop_reason,
-        "stop_sequence": None,
-        "usage": {
-            "input_tokens": _estimate_input_tokens(req),
-            "output_tokens": out_tokens if out_tokens is not None else _estimate_tokens(text_buf),
-        },
-    }
+        content: List[dict] = []
+        if text_buf:
+            content.append({"type": "text", "text": text_buf})
+        for idx in order:
+            tc = tools_by_idx[idx]
+            try:
+                parsed = json.loads(tc["args"]) if tc["args"] else {}
+            except json.JSONDecodeError:
+                parsed = {}
+            content.append({
+                "type": "tool_use",
+                "id": tc["id"] or f"toolu_{uuid.uuid4().hex[:24]}",
+                "name": tc["name"],
+                "input": parsed,
+            })
+        if not content:
+            content.append({"type": "text", "text": ""})
+
+        # Match Anthropic: tool_use blocks present ⇒ stop_reason=tool_use, even
+        # if the backend reported finish_reason "stop"/None.
+        if order:
+            stop_reason = "tool_use"
+        else:
+            stop_reason = _STOP_MAP.get(finish_reason or "", "end_turn")
+        return {
+            "id": f"msg_{uuid.uuid4().hex[:24]}",
+            "type": "message",
+            "role": "assistant",
+            "model": req.model,
+            "content": content,
+            "stop_reason": stop_reason,
+            "stop_sequence": None,
+            "usage": {
+                "input_tokens": _estimate_input_tokens(req),
+                "output_tokens": out_tokens if out_tokens is not None else _estimate_tokens(text_buf),
+            },
+        }
+
+    raise last_err  # pragma: no cover - loop either returns or raises
 
 
 # ---------------------------------------------------------------------------
