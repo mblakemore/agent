@@ -251,3 +251,174 @@ def test_health_and_count_tokens():
     payload = {"model": "x", "max_tokens": 10,
                "messages": [{"role": "user", "content": "hello world"}]}
     assert client.post("/v1/messages/count_tokens", json=payload).json()["input_tokens"] > 0
+
+
+# ── retry + graceful-degradation (temp resilience for flaky/slow backends) ──
+def _good_text(text):
+    return _SSEResponse([
+        _sse({"choices": [{"delta": {"content": text}}]}),
+        _sse({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        "data: [DONE]",
+    ])
+
+
+class _SSERaising:
+    """iter_lines yields frames then raises — simulates a mid-stream cut."""
+    def __init__(self, frames, exc):
+        self._frames = frames
+        self._exc = exc
+
+    def iter_lines(self, decode_unicode=False):
+        for f in self._frames:
+            yield f.encode("utf-8") if isinstance(f, str) else f
+        raise self._exc
+
+    def close(self):
+        pass
+
+
+class _RaiseThenSucceed:
+    """Raises a transient error on the first `fails` calls, then streams text."""
+    kind = "llamacpp"; model = "m"
+
+    def __init__(self, fails, exc=None):
+        self.calls = 0
+        self.fails = fails
+        self.exc = exc or ConnectionError
+
+    def stream_chat(self, log, *, json=None, stream=True, timeout=None):
+        self.calls += 1
+        if self.calls <= self.fails:
+            raise self.exc(f"transient {self.calls}")
+        return _good_text("recovered")
+
+
+_STREAM_REQ = {"model": "x", "max_tokens": 50, "stream": True,
+               "messages": [{"role": "user", "content": "hi"}]}
+
+
+def _fast_retries(monkeypatch, n=2):
+    monkeypatch.setattr(g, "_MAX_RETRIES", n)
+    monkeypatch.setattr(g, "_RETRY_BASE_DELAY", 0.0)
+    monkeypatch.setattr(g, "_RETRY_MAX_DELAY", 0.0)
+
+
+def test_stream_retries_then_succeeds(monkeypatch):
+    _fast_retries(monkeypatch, 2)
+    b = _RaiseThenSucceed(fails=1)
+    client = TestClient(g.create_app(b))
+    with client.stream("POST", "/v1/messages", json=_STREAM_REQ) as r:
+        datas = _parse("".join(r.iter_text()))
+    assert b.calls == 2  # failed once, retried, succeeded
+    text = "".join(d["delta"]["text"] for d in datas
+                   if d.get("type") == "content_block_delta"
+                   and d["delta"].get("type") == "text_delta")
+    assert text == "recovered"
+    md = [d for d in datas if d.get("type") == "message_delta"][0]
+    assert md["delta"]["stop_reason"] == "end_turn"
+    assert [d for d in datas if d.get("type") == "message_stop"]
+    assert not [d for d in datas if d.get("type") == "error"]
+
+
+def test_stream_gives_up_with_clean_error(monkeypatch):
+    _fast_retries(monkeypatch, 2)
+    b = _RaiseThenSucceed(fails=99)  # never recovers
+    client = TestClient(g.create_app(b))
+    with client.stream("POST", "/v1/messages", json=_STREAM_REQ) as r:
+        datas = _parse("".join(r.iter_text()))
+    assert b.calls == 3  # 1 initial + 2 retries
+    errs = [d for d in datas if d.get("type") == "error"]
+    assert errs and errs[0]["error"]["type"] == "overloaded_error"
+    assert not [d for d in datas if d.get("type") == "content_block_start"]
+    assert [d for d in datas if d.get("type") == "message_stop"]
+
+
+def test_stream_non_retryable_not_retried(monkeypatch):
+    _fast_retries(monkeypatch, 3)
+    from llm_backend import BedrockBudgetExceeded
+
+    class B:
+        kind = "bedrock"; model = "m"
+
+        def __init__(self):
+            self.calls = 0
+
+        def stream_chat(self, log, *, json=None, stream=True, timeout=None):
+            self.calls += 1
+            raise BedrockBudgetExceeded("quota gone")
+
+    b = B()
+    client = TestClient(g.create_app(b))
+    with client.stream("POST", "/v1/messages", json=_STREAM_REQ) as r:
+        datas = _parse("".join(r.iter_text()))
+    assert b.calls == 1  # budget error is terminal — no retry
+    assert [d for d in datas if d.get("type") == "error"]
+
+
+def test_stream_midcut_closes_gracefully_as_truncated(monkeypatch):
+    _fast_retries(monkeypatch, 2)
+
+    class B:
+        kind = "llamacpp"; model = "m"
+
+        def __init__(self):
+            self.calls = 0
+
+        def stream_chat(self, log, *, json=None, stream=True, timeout=None):
+            self.calls += 1
+            return _SSERaising(
+                [_sse({"choices": [{"delta": {"content": "partial answer"}}]})],
+                ConnectionError("cut at 29s"),
+            )
+
+    b = B()
+    client = TestClient(g.create_app(b))
+    with client.stream("POST", "/v1/messages", json=_STREAM_REQ) as r:
+        datas = _parse("".join(r.iter_text()))
+    assert b.calls == 1  # content already streamed → NOT retried
+    text = "".join(d["delta"]["text"] for d in datas
+                   if d.get("type") == "content_block_delta"
+                   and d["delta"].get("type") == "text_delta")
+    assert text == "partial answer"
+    # clean, well-formed close — never end_turn on a truncated turn
+    md = [d for d in datas if d.get("type") == "message_delta"][0]
+    assert md["delta"]["stop_reason"] == "max_tokens"
+    assert [d for d in datas if d.get("type") == "content_block_stop"]
+    assert [d for d in datas if d.get("type") == "message_stop"]
+
+
+def test_truncated_partial_tool_call_dropped(monkeypatch):
+    _fast_retries(monkeypatch, 1)
+
+    class B:
+        kind = "llamacpp"; model = "m"
+        calls = 0
+
+        def stream_chat(self, log, *, json=None, stream=True, timeout=None):
+            B.calls += 1
+            return _SSERaising([
+                _sse({"choices": [{"delta": {"content": "let me check"}}]}),
+                _sse({"choices": [{"delta": {"tool_calls": [
+                    {"index": 0, "id": "t1",
+                     "function": {"name": "foo", "arguments": '{"par'}}]}}]}),
+            ], ConnectionError("cut mid tool-args"))
+
+    client = TestClient(g.create_app(B()))
+    with client.stream("POST", "/v1/messages", json=_STREAM_REQ) as r:
+        datas = _parse("".join(r.iter_text()))
+    starts = [d for d in datas if d.get("type") == "content_block_start"]
+    # the half-written tool ('{"par') must NOT be shipped to Claude Code
+    assert all(s["content_block"]["type"] != "tool_use" for s in starts)
+    md = [d for d in datas if d.get("type") == "message_delta"][0]
+    assert md["delta"]["stop_reason"] == "max_tokens"
+
+
+def test_nonstream_retries_then_succeeds(monkeypatch):
+    _fast_retries(monkeypatch, 2)
+    b = _RaiseThenSucceed(fails=1)
+    client = TestClient(g.create_app(b))
+    resp = client.post("/v1/messages",
+                       json={**_STREAM_REQ, "stream": False})
+    assert resp.status_code == 200
+    assert b.calls == 2
+    assert resp.json()["content"][0]["text"] == "recovered"
