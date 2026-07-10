@@ -1,11 +1,13 @@
 """LLM backend abstraction for agent.py.
 
 See ``plan/bedrock-integration.md`` for the full design rationale. This module
-implements the Phase-1 backend surface: a ``Backend`` Protocol, a concrete
-``LlamacppBackend`` wrapping the current llama.cpp / OpenAI-compatible HTTP
-transport, and a ``build_backend(cfg)`` factory. A ``BedrockBackend`` is *not*
-included here — the factory raises ``NotImplementedError`` for ``kind="bedrock"``
-so Phase-1 tests can confirm dispatch without the Bedrock port existing yet.
+implements the backend surface: a ``Backend`` Protocol, a concrete
+``LlamacppBackend`` wrapping the llama.cpp / OpenAI-compatible HTTP transport,
+a ``BedrockBackend`` (AWS Bedrock Chat gateway, with spend tracking and
+credential rotation via ``bedrock_store``), a ``FoundryBackend``
+(Anthropic-native), and a ``build_backend(cfg)`` factory dispatching on
+``cfg["kind"]``. (WS8.6: an earlier revision of this docstring claimed
+Bedrock was unimplemented — stale since the Phase-2 port landed.)
 
 Key decisions reflected in this module (see plan § 24 decision log):
 

@@ -273,3 +273,52 @@ def mock_bedrock_token_usage(request):
     # is satisfied and the test's own send_and_wait mock runs normally.
     with patch("llm_backend.BedrockBackend._log_token_usage"):
         yield
+
+
+@pytest.fixture
+def agent_loop_mocks(monkeypatch):
+    """WS8.5 — the CANONICAL 4-patch pattern for run_agent_single tests.
+
+    Beewatcher runs 109/110: tests hang unless ALL FOUR of _llm_request,
+    _NUDGE_ENABLED, _emit, and the MAP_FN tool dispatch are patched.  Runs
+    104/106 burned 20-50 turns each re-deriving the mock shapes.  Use this
+    fixture instead of hand-rolling the patches.
+
+    Usage:
+        def test_something(agent_loop_mocks):
+            agent_loop_mocks.script([
+                {"choices": [{"delta": {"content": "done"}}]},
+            ])
+            agent_loop_mocks.stub_tool("exec_command", "exit=0")
+            result = agent.run_agent_single(...)
+
+    Notes on shapes (see agent._llm_request TESTING NOTES):
+      - the request body is kwargs['json']; messages at kwargs['json']['messages']
+      - _llm_request may return a plain iterable of OpenAI-shape delta dicts
+        (what .script() uses) — no need to fake iter_lines()/SSE framing.
+    """
+    import agent as _agent
+    from tools import MAP_FN as _map_fn
+
+    class _LoopMocks:
+        def __init__(self):
+            self._responses = []
+
+        def script(self, *turns):
+            """Queue one iterable of delta dicts per LLM turn."""
+            self._responses = [list(t) for t in turns]
+
+        def _fake_llm_request(self, log, **kwargs):
+            if self._responses:
+                return iter(self._responses.pop(0))
+            # Default: a bare text turn so completion detection can end the run.
+            return iter([{"choices": [{"delta": {"content": "cycle complete"}}]}])
+
+        def stub_tool(self, name, result="ok"):
+            monkeypatch.setitem(_map_fn, name, lambda **kw: result)
+
+    mocks = _LoopMocks()
+    monkeypatch.setattr(_agent, "_llm_request", mocks._fake_llm_request)
+    monkeypatch.setattr(_agent, "_NUDGE_ENABLED", False)
+    monkeypatch.setattr(_agent, "_emit", lambda *a, **kw: None)
+    return mocks

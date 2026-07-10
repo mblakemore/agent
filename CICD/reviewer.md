@@ -321,7 +321,14 @@ git branch -D review/pr-<N> 2>/dev/null || true
 
 ## Bootstrap
 
-Create `reviews-${BOT_ID}.md` in CICD state directory with header table if missing. Pick `R-NNN` by incrementing highest in `reviews-${BOT_ID}.md`. Reviewer cycle numbers (`R-0001`) are independent of builder numbers (`0001`).
+Create `reviews-${BOT_ID}.md` in CICD state directory with header table if missing. **Compute the next `R-NNNN` with this exact command — do NOT derive it by reading the table** (14 consecutive runs reused `R-0001` because the reviewer read the FIRST data row instead of the highest):
+
+```bash
+R_NEXT=$(awk 'match($0,/R-[0-9]+/){v=substr($0,RSTART+2,RLENGTH-2)+0; if(v>m)m=v} END{printf "R-%04d", m+1}' <CICD_STATE>/reviews-${BOT_ID}.md 2>/dev/null || echo R-0001)
+echo "$R_NEXT"
+```
+
+Use `$R_NEXT` in the TRACK row. Reviewer cycle numbers (`R-0001`) are independent of builder numbers (`0001`).
 
 ## Hard Rules
 
@@ -379,7 +386,9 @@ MANDATORY REVIEW WORKFLOW — every cycle MUST follow these steps:
    NEVER use `--merge-method squash` — that flag does not exist. The correct flag is plain `--squash`.
    NEVER chain with `|| true` — it swallows errors and causes merge to fail on still-draft PRs.
    **NEVER merge locally.** Do not `git checkout main`, do not `git merge <pr-branch>`, do not `git push origin main`. Local merge-and-push bypasses the PRE-MERGE CHECK at step 4 (the issue state/label/topicality verification), produces a non-squash merge commit on main, and leaves the PR marked merged-on-GitHub via auto-detection without any enforcement. The ONLY merge path is `gh pr merge <N> --squash`. If `gh pr merge` fails, investigate the failure (branch protection, draft status, conflicts) — do not route around it with `git merge`.
-8. TRACK: echo "| R-NNN | YYYY-MM-DD | #PR | #ISSUE | VERDICT | metric_result | PASS/FAIL | reason |" >> <CICD_STATE>/reviews-${BOT_ID}.md
+8. TRACK: compute the row ID first (never read it off the table — see Bootstrap):
+   `R_NEXT=$(awk 'match($0,/R-[0-9]+/){v=substr($0,RSTART+2,RLENGTH-2)+0; if(v>m)m=v} END{printf "R-%04d", m+1}' <CICD_STATE>/reviews-${BOT_ID}.md 2>/dev/null || echo R-0001)`
+   then: echo "| $R_NEXT | YYYY-MM-DD | #PR | #ISSUE | VERDICT | metric_result | PASS/FAIL | reason |" >> <CICD_STATE>/reviews-${BOT_ID}.md
    Always APPEND with >>. Never overwrite. Do NOT git add or git commit reviews-${BOT_ID}.md.
 9. CLEANUP: `git worktree remove <WORKTREE_ROOT>/pr-<N> --force && git branch -D review/pr-<N>`
 10. LOOP BACK to SELECT. If SELECT finds no more survivors, output **exactly one line**: `Cycle complete. N PR(s) processed.` — then stop. Do NOT write session summaries, analysis, or additional text after this line. They trigger the text-only cap and produce an unclean stop.
