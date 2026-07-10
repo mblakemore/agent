@@ -212,7 +212,7 @@ def auto_close_ephemeral():
         return (closed, persistent_open)
 
 
-def fn(action: str, description: str = "", task_id: int = 0, status: str = "", limit: int = 0, persistent: bool = False) -> str:
+def fn(action: str, description: str = "", task_id: int = 0, status: str = "", limit: int = 0, persistent: bool = False, goal_id: str = "") -> str:
     """Manage persistent tasks.
 
     Args:
@@ -223,6 +223,8 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
         limit: For "list": maximum number of tasks to return (0 = no limit).
         persistent: For "add" only — if True, mark the task as persistent so it
             survives session-boundary auto-close. Default False (ephemeral).
+        goal_id: For "add" only — link this task to a durable goal in
+            state/goals.json (WS2), e.g. "g001". Optional.
     """
     # Validate persistent type — must be a bool (or the default False). None → False.
     if persistent is None:
@@ -608,6 +610,10 @@ def fn(action: str, description: str = "", task_id: int = 0, status: str = "", l
             # persistent=False (see list-marker logic and _load_tasks schema).
             if persistent:
                 task["persistent"] = True
+            # WS2: optional goal linkage — only written when provided so the
+            # default JSON shape is unchanged (same pattern as persistent).
+            if goal_id:
+                task["goal_id"] = str(goal_id)
             tasks.append(task)
             err = _save_tasks(tasks)
             if err:
@@ -751,6 +757,13 @@ definition = {
                         "session-boundary auto-close. Default false (ephemeral)."
                     ),
                     "default": False,
+                },
+                "goal_id": {
+                    "type": "string",
+                    "description": (
+                        "For 'add' only — link the task to a durable goal in "
+                        "state/goals.json (WS2), e.g. 'g001'."
+                    ),
                 },
             },
             "required": ["action"],

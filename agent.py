@@ -298,6 +298,12 @@ _cicd_pr_number = None
 _cicd_branch = None
 _cicd_edited_files = set()  # tracks edited file paths to survive summary compression
 _cicd_worktree_path = None  # actual worktree path, captured on successful `git worktree add`
+# WS1 (wave 2): active PhaseEngine for this session, or None (inert — no
+# behavior change without cycle.profile/cycle.phases config). Module-level
+# for the same reason as the _cicd_* cluster: read by per-turn injection.
+_active_phase_engine = None
+# WS1: explicit role from --role flag; None → legacy prompt string-matching.
+_explicit_role = None
 
 
 def _extract_pinned(text):
@@ -3477,6 +3483,21 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         if _preamble:
             conversation_history.append({"role": "system", "content": _preamble})
 
+        # WS2: goal-stack hydration — independent of preamble.json. If
+        # state/goals.json has active goals, inject "goal → next actionable
+        # step" so multi-cycle work resumes without re-derivation from git
+        # log. Token-capped inside preamble_summary (~600 tokens).
+        try:
+            from tools.goal import preamble_summary as _goal_summary
+            _goals_txt = _goal_summary()
+            if _goals_txt:
+                conversation_history.append(
+                    {"role": "system", "content": _goals_txt})
+                log.info("Goal stack hydrated into preamble (%d chars)",
+                         len(_goals_txt))
+        except Exception as _ge:
+            log.debug("goal-stack hydration skipped: %s", _ge)
+
         # AC4 of #1028 — prepend [Session resume] block to the first user
         # message so the agent immediately sees what was auto-closed and
         # what persistent work remains, without an extra task_tracker call.
@@ -3717,20 +3738,39 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # Reviewer sessions rarely make code edits (they verify and merge), so the
     # edit-deadline nudge is a false positive for that role.  Detect by
     # scanning the initial prompt for the reviewer-template marker.
-    _is_reviewer_role = any(
-        isinstance(m.get("content"), str) and "CICD Reviewer" in m["content"]
-        for m in conversation_history[:2]
-    )
+    # WS1: explicit --role wins; prompt string-matching is the legacy fallback.
+    global _active_phase_engine
+    if _explicit_role is not None:
+        _is_reviewer_role = _explicit_role == "reviewer"
+    else:
+        _is_reviewer_role = any(
+            isinstance(m.get("content"), str) and "CICD Reviewer" in m["content"]
+            for m in conversation_history[:2]
+        )
+        if _is_reviewer_role:
+            log.debug("role detected by prompt string-match (legacy) — prefer --role")
+
+    # WS1: PhaseEngine — inert unless config opts in (cycle.profile/phases).
+    from phase_engine import build_phase_engine
+    _phase_engine = build_phase_engine(_config, log)
+    _active_phase_engine = _phase_engine
+    if _phase_engine is not None:
+        log.info("PhaseEngine active: profile=%s", _phase_engine.profile)
 
     # cycle 86 (issue #425): CICD-specific guards (e.g. cycle 44 requiring
     # `Closes #N`) only apply in the self-improvement builder loop, not in
     # general agent sessions on other repos.  Detect by the same strategy as
     # _is_reviewer_role — the builder template always opens with
     # "CICD Improvement Loop — Builder".
-    _is_cicd_builder = any(
-        isinstance(m.get("content"), str) and "CICD Improvement Loop" in m["content"]
-        for m in conversation_history[:2]
-    )
+    if _explicit_role is not None:
+        # builder flag semantically means "CICD session" — reviewers carry it
+        # too (see WS8.2 note in _validate_tool_call); creature = neither.
+        _is_cicd_builder = _explicit_role in ("builder", "reviewer")
+    else:
+        _is_cicd_builder = any(
+            isinstance(m.get("content"), str) and "CICD Improvement Loop" in m["content"]
+            for m in conversation_history[:2]
+        )
 
     # Detect tool-call loops: same command signature repeated N times.
     _recent_tool_sigs = []  # list of (frozenset of (name, args_hash)) tuples
@@ -3977,6 +4017,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 f"Current time (UTC, ISO8601): {_now_iso}",
                 f"Working directory: {os.getcwd()} — use this for all file paths, not /home/user.",
             ]
+            # WS1: phase checkpoint every turn — phase state survives
+            # summarization the same way the CICD footnote line does.
+            if _phase_engine is not None:
+                _system_lines.append(_phase_engine.checkpoint_line())
 
             # T5.14 Option B — opt-in tool-selection guidance. When the agent's
             # config has `preferences.tool_selection_hints: true`, prepend a
@@ -5134,8 +5178,18 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         _cicd_blocked, cicd_error = False, None
                     else:
                         _cicd_blocked, cicd_error = _validate_tool_call(func_name, func_args, _cicd_issue_view_called, log, _is_cicd_builder, _is_reviewer_role)
-                    if _grace_exhausted_block:
-                        pass  # result_str already holds the grace redirect
+                    # WS1: PhaseEngine pre-dispatch gate (per-phase tool
+                    # rules). Only consulted when an engine is active.
+                    _phase_blocked = False
+                    if (_phase_engine is not None and not _grace_exhausted_block
+                            and not _cicd_blocked):
+                        _ph_ok, _ph_msg = _phase_engine.allow(func_name, func_args)
+                        if not _ph_ok:
+                            _phase_blocked = True
+                            result_str = _ph_msg
+                            telemetry.record_patch_event("phase_gate_block", kind="fired")
+                    if _grace_exhausted_block or _phase_blocked:
+                        pass  # result_str already holds the redirect
                     elif _cicd_blocked:
                         result_str = cicd_error
                     elif func_name not in MAP_FN:
@@ -5152,6 +5206,17 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         except Exception as e:
                             result_str = f"Error executing tool: {str(e)}"
                             telemetry.record_tool_error(func_name, "execution_error")
+                        # WS1: PhaseEngine observation — advance on
+                        # task_tracker phase-done markers, count verify
+                        # calls; may return a gate message to inject
+                        # (DECIDE verification gate).
+                        if _phase_engine is not None:
+                            _gate_msg = _phase_engine.observe(func_name, func_args, result_str)
+                            if _gate_msg:
+                                conversation_history.append(
+                                    {"role": "user", "content": _gate_msg})
+                                telemetry.record_patch_event(
+                                    "phase_verify_gate", kind="fired")
                         # end_cycle sentinel — agent requested clean exit.
                         if result_str == _end_cycle_tool.SENTINEL:
                             _summary = func_args.get("summary", "") if isinstance(func_args, dict) else ""
@@ -5471,6 +5536,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             _cycle_persisted = True
                             _cycle_persisted_turn = _cycle_persisted_turn or turn
                             _cicd_phase_state["verify"] = True
+                            if _phase_engine is not None:
+                                _phase_engine.mark_persisted("git push")
                             # Cycle 37: block direct push to main — builder must use feature branches.
                             # Only enforce for CICD builder sessions; regular agents push to main normally.
                             if _is_cicd_builder and re.search(r"git\s+push\b.*\borigin\s+main\b", _cmd_normalized):
@@ -6050,8 +6117,19 @@ def main():
                              "Code (default 127.0.0.1:8788), forwarding to the configured "
                              "main backend, then exit. Point Claude Code at it with "
                              "ANTHROPIC_BASE_URL=http://HOST:PORT.")
+    parser.add_argument("--role", choices=["builder", "reviewer", "creature"],
+                        default=None,
+                        help="Explicit session role (WS1). Overrides the "
+                             "legacy prompt string-matching: builder/reviewer "
+                             "enable CICD guards (reviewer may merge, builder "
+                             "may not); creature disables CICD-specific guards.")
     parser.add_argument("prompt", nargs="*", help="Initial prompt")
     args = parser.parse_args()
+
+    # WS1: explicit role beats prompt string-matching in run_agent_single.
+    if getattr(args, "role", None):
+        global _explicit_role
+        _explicit_role = args.role
 
     # Apply backend-kind overrides before any backend-dependent startup logic.
     _apply_backend_overrides(args.backend_main, args.backend_summary)
