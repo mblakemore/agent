@@ -196,8 +196,10 @@ def write_run_config(wt_path, turn_cap, backend_config=None):
         for key in ("backends", "retry", "context"):
             if isinstance(src.get(key), dict):
                 cfg[key] = src[key]
-    with open(os.path.join(cfg_dir, "config.json"), "w") as f:
+    cfg_path = os.path.join(cfg_dir, "config.json")
+    with open(cfg_path, "w") as f:
         json.dump(cfg, f, indent=2)
+    os.chmod(cfg_path, 0o600)  # may embed backend API keys
 
 
 def run_agent(wt_path, seed, turn_cap, agent_args, timeout, backend_config=None):
