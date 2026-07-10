@@ -9,18 +9,29 @@ from unittest.mock import patch, MagicMock, mock_open
 def test_validate_tool_call_merge_blocked():
     from agent import _validate_tool_call
     mock_log = MagicMock()
-    # Case: gh pr merge without issue view
+    # WS8.2 (run 110): builder-only session — merge ALWAYS blocked,
+    # regardless of issue view. Merge is the reviewer's verdict.
     blocked, msg = _validate_tool_call("exec_command", {"command": "gh pr merge"}, False, mock_log, is_cicd_builder=True)
+    assert blocked is True
+    assert "BUILDER" in msg
+    # Reviewer without issue view: the cycle-24 PRE-MERGE CHECK still fires.
+    # (Reviewer sessions carry is_cicd_builder=True too — reviewer.md shares
+    # the "CICD Improvement Loop" header — so both flags are set here.)
+    blocked, msg = _validate_tool_call("exec_command", {"command": "gh pr merge"}, False, mock_log, is_cicd_builder=True, is_cicd_reviewer=True)
     assert blocked is True
     assert "PRE-MERGE CHECK required" in msg
 
 def test_validate_tool_call_merge_allowed():
     from agent import _validate_tool_call
     mock_log = MagicMock()
-    # Case: gh pr merge WITH issue view
-    blocked, msg = _validate_tool_call("exec_command", {"command": "gh pr merge"}, True, mock_log, is_cicd_builder=True)
+    # Reviewer WITH issue view → allowed (production reviewer carries both flags).
+    blocked, msg = _validate_tool_call("exec_command", {"command": "gh pr merge"}, True, mock_log, is_cicd_builder=True, is_cicd_reviewer=True)
     assert blocked is False
     assert msg is None
+    # WS8.2: builder with issue view → STILL blocked (self-merge, run 110).
+    blocked, msg = _validate_tool_call("exec_command", {"command": "gh pr merge"}, True, mock_log, is_cicd_builder=True)
+    assert blocked is True
+    assert "BUILDER" in msg
 
 def test_validate_tool_call_pr_create_blocked_no_closes():
     from agent import _validate_tool_call

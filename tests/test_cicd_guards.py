@@ -67,10 +67,10 @@ def mock_text_response(content):
      "exit=0\nMerged",
      "You MUST use `gh pr merge --squash`",
      "PR merge without squash"),
-    ('gh pr merge 456 --squash --delete-branch', 
-     "exit=1\nError: PR is still a draft", 
-     "The PR is still a draft. You must run `gh pr ready <N>` FIRST", 
-     "PR merge on draft"),
+    ('gh pr merge 456 --squash --delete-branch',
+     "exit=1\nError: PR is still a draft",
+     "Merging is the REVIEWER's verdict",
+     "PR merge by builder blocked pre-execute (WS8.2 run 110; draft-warning path now reviewer-only, covered in test_ws8_guard_anchoring)"),
     ('gh pr merge 456 --squash --delete-branch', 
      "exit=1\nMerged (but we check guard before result)", 
      "You attempted to merge without using the think tool first", 
@@ -364,20 +364,23 @@ def test_pre_merge_warning_logged(monkeypatch):
             mock_text_response("Done")
         ]
         
-        history = [{"role": "user", "content": "# CICD Improvement Loop — Builder\nTest prompt"}]
+        # WS8.2: PRE-MERGE CHECK is now a reviewer-path warning — builder
+        # merges are hard-blocked earlier with a different message. Use a
+        # reviewer prompt (production reviewers carry BOTH role flags).
+        history = [{"role": "user", "content": "# CICD Improvement Loop — Reviewer\nI am the CICD Reviewer.\nTest prompt"}]
         mock_log = MagicMock()
-        
+
         with patch('agent._check_api_health', return_value=(True, "ok")), \
              patch('agent._setup_logger'), \
              patch('agent._detect_ctx_size', return_value=None):
-            
+
             run_agent_single(
                 conversation_history=history,
                 summary_state={"text": "", "up_to": 0},
                 initial_files=[],
                 log=mock_log
             )
-        
+
         calls = mock_log.warning.call_args_list
         assert any("PRE-MERGE CHECK required" in call[0][0] for call in calls), \
             "Warning log for PRE-MERGE CHECK was not found"

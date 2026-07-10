@@ -128,6 +128,77 @@ def _check_worktree_guard(file_path, worktree_path):
         pass
     return False, None
 
+
+# WS8.1 (beewatcher runs 092+, 114): guard/tracker regexes must only see
+# actual command positions. Naive substring checks (`"git worktree add" in
+# _cmd`) match inside heredoc bodies and quoted string literals — run 114
+# burned turns 18-77 in a worktree-guard loop seeded by exactly this, and a
+# heredoc line containing `&& git push` would fake-persist the cycle.
+# Shell-separator anchor set shared by every command guard. Includes `$(`
+# and backtick so unquoted command substitutions can't evade detection.
+_SHELL_ANCHOR = r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*|\$\(\s*|`\s*)"
+
+_HEREDOC_BODY_RE = re.compile(
+    r"<<-?\s*([\"']?)(\w+)\1.*?(?:\n\2\b|\Z)", re.DOTALL
+)
+
+
+def _strip_noncommand_text(cmd: str) -> str:
+    """Return cmd with heredoc bodies and quoted-string contents removed,
+    and backslash line-continuations collapsed (cycle 36), so command
+    detection only fires on real command positions.
+
+    NOTE: only use the result for *detection/anchoring*. Content checks
+    (e.g. `Closes #N` inside a --body string) must keep reading the raw
+    command — quoted bodies are semantics-bearing there.
+    """
+    if not cmd:
+        return cmd
+    out = re.sub(r"\\\n", " ", cmd)
+    out = _HEREDOC_BODY_RE.sub(" ", out)
+    out = re.sub(r"'[^']*'", "''", out)
+    out = re.sub(r'"(?:\\.|[^"\\])*"', '""', out)
+    return out
+
+
+def _cmd_has(cmd: str, phrase: str) -> bool:
+    """True if `phrase` (words separated by whitespace) occurs at a command
+    position — start of command or after a shell separator — outside
+    heredoc bodies and quoted strings."""
+    if not cmd or not phrase:
+        return False
+    stripped = _strip_noncommand_text(cmd)
+    pat = _SHELL_ANCHOR + r"\s+".join(re.escape(w) for w in phrase.split()) + r"\b"
+    return re.search(pat, stripped) is not None
+
+
+# WS8.3 (run 096): tools/paths that count as legitimate TRACK work after the
+# post-persist grace budget is exhausted. Everything else at that point is
+# the start of a second PERCEIVE and gets blocked with a redirect.
+_TRACK_SCOPE_TOOLS = {"end_cycle", "task_tracker", "think", "sleep"}
+_TRACK_SCOPE_PATH_RE = re.compile(
+    r"improvements/|progress-\d|reviews-\d|\.results\.md|journal"
+)
+
+
+def _is_track_scope_call(func_name, func_args):
+    """True if this tool call is plausible TRACK-phase work (results file,
+    progress/review rows, git/gh bookkeeping) rather than new-cycle work."""
+    args = func_args if isinstance(func_args, dict) else {}
+    if func_name in _TRACK_SCOPE_TOOLS:
+        return True
+    if func_name in ("file", "write_file", "append_file", "edit_file",
+                     "read_file", "check_file"):
+        path = str(args.get("path", "") or args.get("file_path", ""))
+        return bool(_TRACK_SCOPE_PATH_RE.search(path))
+    if func_name == "exec_command":
+        cmd = _strip_noncommand_text(str(args.get("command", "")))
+        if re.search(_SHELL_ANCHOR + r"(?:git|gh)\b", cmd):
+            return True
+        return bool(_TRACK_SCOPE_PATH_RE.search(cmd))
+    return False
+
+
 def _detect_hallucinated_read(full_content: str) -> tuple[bool, str | None]:
     """
     Checks if the agent claims to have read a file that was not actually accessed.
@@ -641,16 +712,44 @@ def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log, is_ci
 
     _precmd = func_args.get("command", "") if isinstance(func_args, dict) else ""
 
+    # WS8.1: anchor detection runs on stripped text (heredoc bodies + quoted
+    # literals removed) so keywords inside string content can't false-fire.
+    # Content checks below (pr-body `Closes #N`) keep using raw _precmd.
+    _precmd_anchor = _strip_noncommand_text(_precmd)
+
     # Cycle 96 — skip shell-level guards for python3/python invocations.
     # Guard regexes match CICD keywords appearing as string literals inside
     # python -c scripts, producing false positives (run 207 reviewer, turns 30-62).
-    if re.match(r'\s*python3?\s', _precmd):
+    # WS8.1 tightening: only skip when the WHOLE command is a single python
+    # invocation. The old blanket skip meant `python3 -c '...' && gh pr merge`
+    # bypassed every guard. With quoted bodies stripped, a trailing compound
+    # command is visible and the guards still run.
+    if (re.match(r'\s*python3?\s', _precmd)
+            and not re.search(r'&&|;|\|\|?|\n', _precmd_anchor)):
         return False, None
+
+    # WS8.2 (run 110): the builder must NEVER merge — merge is the reviewer's
+    # verdict. PRE-MERGE CHECK below only verifies issue state, so a builder
+    # that ran `gh issue view` could still self-merge its own draft PR (run
+    # 110: builder merged in 20 turns with no reviewer; merged test hung).
+    # NOTE: reviewer sessions also match the "CICD Improvement Loop" builder
+    # heuristic (reviewer.md shares the header), so is_cicd_builder is True
+    # for reviewers too — the reviewer flag must win here.
+    if (is_cicd_builder and not is_cicd_reviewer
+            and re.search(_SHELL_ANCHOR + r"gh\s+pr\s+merge\b", _precmd_anchor)):
+        log.warning("CICD: gh pr merge BLOCKED — builder role may never merge (WS8.2, run 110)")
+        return True, (
+            "Error: CICD `gh pr merge` BLOCKED — you are the BUILDER. Merging "
+            "is the REVIEWER's verdict, never the builder's. Your cycle ends "
+            "at: draft PR opened + `Closes #N` + results file + TRACK row. "
+            "The reviewer session will re-run tests and decide MERGE / "
+            "REQUEST_CHANGES / CLOSE. The merge was NOT executed."
+        )
 
     # PRE-MERGE CHECK — gated on CICD sessions only (issue #455: don't fire
     # for non-CICD repos that merge PRs without linked issues).
     if ((is_cicd_builder or is_cicd_reviewer)
-            and re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+merge\b", _precmd)
+            and re.search(_SHELL_ANCHOR + r"gh\s+pr\s+merge\b", _precmd_anchor)
             and not cicd_issue_view_called):
         log.warning("CICD: gh pr merge BLOCKED — PRE-MERGE CHECK required (cycle 24)")
         return True, (
@@ -678,7 +777,7 @@ def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log, is_ci
     # general agent use on other repos may legitimately create PRs without a
     # linked issue (roadmap commits, README updates, etc.).
     if (is_cicd_builder
-            and re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+create\b", _precmd)
+            and re.search(_SHELL_ANCHOR + r"gh\s+pr\s+create\b", _precmd_anchor)
             and not re.search(r'Closes\s+#\d+', _precmd_body_check, re.IGNORECASE)):
         log.warning("CICD: gh pr create blocked — body missing valid Closes #N (cycle 44)")
         return True, (
@@ -700,7 +799,7 @@ def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log, is_ci
     # cycle 81 — gated on CICD sessions only (issue #455: non-CICD repos may
     # legitimately push directly to main).
     if ((is_cicd_builder or is_cicd_reviewer)
-            and re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)git\s+push\b[^&;|]*\borigin\s+main\b", _precmd)):
+            and re.search(_SHELL_ANCHOR + r"git\s+push\b[^&;|]*\borigin\s+main\b", _precmd_anchor)):
         log.warning("CICD: git push origin main BLOCKED — must use feature branch (cycle 81)")
         return True, (
             "Error: CICD `git push origin main` BLOCKED — direct pushes to main "
@@ -721,7 +820,7 @@ def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log, is_ci
     # the builder ignored it and 93 turns + a R-0008 REQUEST_CHANGES were lost.
     # This guard makes py_compile a hard gate at the same point as the Closes
     # check — the only way past is to fix the syntax.
-    if re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+create\b", _precmd):
+    if re.search(_SHELL_ANCHOR + r"gh\s+pr\s+create\b", _precmd_anchor):
         import py_compile
         _syntax_errors = []
         for _path in sorted(_cicd_edited_files):
@@ -979,6 +1078,28 @@ def _llm_request(log, **kwargs):
 
     Signature matches the pre-refactor ``_llm_request`` exactly so existing
     tests that ``patch('agent._llm_request')`` still work unmodified.
+
+    # TESTING NOTES (WS8.5 — beewatcher runs 104/106/109/110 each burned
+    # 20-50 turns rediscovering this; read BEFORE writing any mock):
+    #
+    # The request body arrives as ``kwargs['json']`` — messages are at
+    # ``kwargs['json']['messages']`` (run 104's root cause: mocks asserted on
+    # a positional arg that does not exist).
+    #
+    # Return shape: EITHER a requests.Response-like object exposing
+    # ``iter_lines()`` (legacy SSE; mock with
+    # ``resp.iter_lines.return_value = [f"data: {json.dumps(body)}".encode(),
+    # b"data: [DONE]"]`` — NOT ``__iter__``, run 106's confusion) OR a plain
+    # iterable of OpenAI-shape delta dicts (simplest for tests). See
+    # ``_iter_stream_chunks`` below.
+    #
+    # CANONICAL 4-PATCH PATTERN for run_agent_single tests — tests HANG
+    # unless ALL FOUR are patched (runs 109/110). Use the ``agent_loop_mocks``
+    # fixture in tests/conftest.py instead of hand-rolling:
+    #   1. patch('agent._llm_request', ...)        # scripted deltas
+    #   2. agent._NUDGE_ENABLED = False            # else nudge loop retries
+    #   3. patch('agent._emit', ...)               # else callbacks block
+    #   4. patch tool dispatch via MAP_FN entries  # else real tools run
     """
     try:
         return _main_backend.stream_chat(log, **kwargs)
@@ -3558,6 +3679,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     _cycle_persisted = False
     _cycle_persisted_turn = None
     _CYCLE_GRACE_TURNS = 7
+    # WS8.3 (run 096): count of non-TRACK tool calls blocked after grace
+    # exhausted (previously only text-only turns were bounded by grace;
+    # tool-calling turns ran to the hard cap — ~15 wasted turns).
+    _grace_tool_blocks = 0
     # Hard cap: even with ongoing tool calls, end the cycle this many turns
     # after persist.  Prevents post-TRACK drift into a second PERCEIVE.
     _CYCLE_HARD_STOP_TURNS = 15
@@ -4981,8 +5106,37 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     # `gh issue view`, block execution (the merge is irreversible
                     # once it runs; post-hoc reminders are too late). Return a
                     # synthetic error; next turn the reviewer runs `gh issue view`,
-                    _cicd_blocked, cicd_error = _validate_tool_call(func_name, func_args, _cicd_issue_view_called, log, _is_cicd_builder, _is_reviewer_role)
-                    if _cicd_blocked:
+                    # WS8.3 (run 096): grace budget must bind tool-call turns
+                    # too. Previously only text-only turns were grace-capped,
+                    # so a builder that kept calling tools started a second
+                    # PERCEIVE inside the window and ran to the hard cap
+                    # (~15 wasted turns). After grace exhausts, non-TRACK
+                    # calls are blocked with a redirect; TRACK-scope work
+                    # (results/progress/review files, git/gh, end_cycle)
+                    # still runs. Hard cap at :_CYCLE_HARD_STOP_TURNS unchanged.
+                    _grace_exhausted_block = False
+                    if (_cycle_persisted
+                            and (turn - (_cycle_persisted_turn or turn)) >= _CYCLE_GRACE_TURNS
+                            and not _is_track_scope_call(func_name, func_args)):
+                        _grace_exhausted_block = True
+                        _grace_tool_blocks += 1
+                        log.info("Grace exhausted: non-TRACK tool call blocked (%s, block #%d)",
+                                 func_name, _grace_tool_blocks)
+                        telemetry.record_patch_event("grace_tool_block", kind="fired")
+                        result_str = (
+                            "Error: this cycle already persisted its work and the "
+                            "post-persist grace window is exhausted — this call is "
+                            "outside TRACK scope and was NOT executed. Do NOT start "
+                            "new PERCEIVE/investigation work. Finish TRACK now "
+                            "(results file, progress row, issue comment) and call "
+                            "end_cycle."
+                        )
+                        _cicd_blocked, cicd_error = False, None
+                    else:
+                        _cicd_blocked, cicd_error = _validate_tool_call(func_name, func_args, _cicd_issue_view_called, log, _is_cicd_builder, _is_reviewer_role)
+                    if _grace_exhausted_block:
+                        pass  # result_str already holds the grace redirect
+                    elif _cicd_blocked:
                         result_str = cicd_error
                     elif func_name not in MAP_FN:
                         result_str = f"Error: Unknown tool '{func_name}'"
@@ -5293,7 +5447,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     if func_name == "exec_command" and isinstance(func_args, dict):
                         _cmd = func_args.get("command", "")
                         _cmd_normalized = re.sub(r"\\\n", " ", _cmd)  # Cycle 36: collapse shell line-continuations before all checks
-                        if "git commit" in _cmd:
+                        if _cmd_has(_cmd, "git commit"):  # WS8.1: anchored, heredoc/quote-blind
                             _has_committed = True
                             _has_edited = True  # commit implies edit happened
                             log.info("Commit detected — completion signals now allowed")
@@ -5311,7 +5465,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                         "git add tests/test_<name>.py && git commit -m '<message>'.]"
                                     ),
                                 })
-                        if re.search(r"(?:^|&&\s*|;\s*|\|\|\s*)git\s+push\b", _cmd_normalized) and "exit=0" in result_str:  # Cycle 35+36: regex on normalized cmd
+                        if _cmd_has(_cmd, "git push") and "exit=0" in result_str:  # Cycle 35+36 anchoring; WS8.1: heredoc/quote-blind (a doc line `&& git push` must not fake-persist the cycle)
                             if not _cycle_persisted:
                                 log.info("Cycle persist detected (git push exit=0) — auto-nudge disabled")
                             _cycle_persisted = True
@@ -5354,13 +5508,13 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             })
 
                         # ── CICD phase detection ──
-                        if "gh issue list" in _cmd or "gh issue search" in _cmd:
+                        if _cmd_has(_cmd, "gh issue list") or _cmd_has(_cmd, "gh issue search"):  # WS8.1
                             _cicd_phase_state["perceive"] = True
                         if ("pytest" in _cmd or "python3 -m pytest" in _cmd
                                 or "cat " in _cmd or "grep " in _cmd):
                             if _cicd_phase_state["perceive"]:
                                 _cicd_phase_state["probe"] = True
-                        if re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+issue\s+create\b", _cmd_normalized) and "exit=0" in result_str:  # Cycles 36/55: anchored + newline-bypass closed
+                        if _cmd_has(_cmd, "gh issue create") and "exit=0" in result_str:  # Cycles 36/55 anchoring; WS8.1: heredoc/quote-blind
                             if not _cicd_think_used:
                                 log.warning("CICD: gh issue create without think — injecting reminder")
                                 conversation_history.append({
@@ -5398,9 +5552,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 )
                                 log.info("CICD phase: issue #%s filed",
                                          _cicd_issue_number)
-                        if "git worktree add" in _cmd and "exit=0" in result_str:
+                        if _cmd_has(_cmd, "git worktree add") and "exit=0" in result_str:  # WS8.1 (run 114: heredoc match here mis-captured the worktree path → guard-misdirection loop, turns 18-77)
                             _cicd_phase_state["implement"] = True
-                            _wt_path_match = re.search(r'git\s+worktree\s+add\s+(\S+)', _cmd)
+                            _wt_path_match = re.search(r'git\s+worktree\s+add\s+(?:-b\s+\S+\s+|--?[-\w]+\s+)*(\S+)', _strip_noncommand_text(_cmd))
                             if _wt_path_match:
                                 _cicd_worktree_path = _wt_path_match.group(1)
                                 log.info("CICD: worktree path captured: %s", _cicd_worktree_path)
@@ -5423,7 +5577,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 _cicd_issue_number = _existing_match.group(1)
                                 log.info("CICD phase: issue #%s claimed (existing)",
                                          _cicd_issue_number)
-                        if "gh pr create" in _cmd and "exit=0" in result_str:
+                        if _cmd_has(_cmd, "gh pr create") and "exit=0" in result_str:  # WS8.1
                             # cycle 87 (run 192 false-positive): only recognise a
                             # real PR URL (`pull/NNN`) as proof the PR was created.
                             # The old `#(\d+)` fallback fired on `Closes #424`
@@ -5456,7 +5610,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                         f"— use the real issue number this cycle targets.]"
                                     ),
                                 })
-                        if ("gh pr review" in _cmd
+                        if (_cmd_has(_cmd, "gh pr review")  # WS8.1
                                 and ("--request-changes" in _cmd
                                      or "--approve" in _cmd
                                      or "--comment" in _cmd)
@@ -5470,7 +5624,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             if not _has_reviewer_persisted:
                                 log.info("Reviewer persistence detected (reviews.md append) — completion signals now allowed")
                             _has_reviewer_persisted = True
-                        if "gh pr review" in _cmd and "--approve" in _cmd:
+                        if _cmd_has(_cmd, "gh pr review") and "--approve" in _cmd:  # WS8.1
                             if not _cicd_think_used:
                                 log.warning("CICD: gh pr review --approve without think — injecting reminder")
                                 conversation_history.append({
@@ -5490,10 +5644,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                     "`gh pr ready <N>` (separate command), then "
                                     "`gh pr merge <N> --squash` (separate command).]",
                                 })
-                        if "gh pr ready" in _cmd and "exit=0" in result_str:
+                        if _cmd_has(_cmd, "gh pr ready") and "exit=0" in result_str:  # WS8.1
                             _cicd_pr_ready_called = True
                             log.info("CICD: gh pr ready called")
-                        if "gh issue view" in _cmd and ("exit=0" in result_str or "--json" in _cmd):
+                        if _cmd_has(_cmd, "gh issue view") and ("exit=0" in result_str or "--json" in _cmd):  # WS8.1
                             # Cycle 25: validate state + labels in the gh issue view result.
                             # Calling gh issue view is necessary but not sufficient — the
                             # issue must be OPEN and carry cicd + in-progress (or cicd-cycle-*)
