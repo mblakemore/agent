@@ -175,8 +175,14 @@ def build_seed(spec):
         f"  {spec['measure']}\n")
 
 
-def write_run_config(wt_path, turn_cap):
-    """Per-run agent config in the worktree (agent.py loads CWD config)."""
+def write_run_config(wt_path, turn_cap, backend_config=None):
+    """Per-run agent config in the clone (agent.py loads CWD config).
+
+    backend_config: path to an existing agent config.json whose `backends`
+    (and `retry`/`context`) blocks are merged in — e.g.
+    /droid/repos/test/config.json to run the baseline through the UCSB AWS
+    gateway (Claude Sonnet) instead of the local llama server.
+    """
     cfg_dir = os.path.join(wt_path, ".agent")
     os.makedirs(cfg_dir, exist_ok=True)
     cfg = {
@@ -184,12 +190,18 @@ def write_run_config(wt_path, turn_cap):
         "generation": {"temperature": 0.0, "top_p": 1.0, "top_k": 1,
                        "presence_penalty": 0.0},
     }
+    if backend_config:
+        with open(backend_config) as f:
+            src = json.load(f)
+        for key in ("backends", "retry", "context"):
+            if isinstance(src.get(key), dict):
+                cfg[key] = src[key]
     with open(os.path.join(cfg_dir, "config.json"), "w") as f:
         json.dump(cfg, f, indent=2)
 
 
-def run_agent(wt_path, seed, turn_cap, agent_args, timeout):
-    write_run_config(wt_path, turn_cap)
+def run_agent(wt_path, seed, turn_cap, agent_args, timeout, backend_config=None):
+    write_run_config(wt_path, turn_cap, backend_config)
     cmd = [sys.executable, os.path.join(REPO, "agent.py"),
            "--auto", "--role", "creature", "--no-tui"] + agent_args + [seed]
     t0 = time.time()
@@ -215,12 +227,21 @@ def main():
     ap.add_argument("--agent-timeout", type=int, default=3600)
     ap.add_argument("--agent-arg", action="append", default=[],
                     help="extra args passed through to agent.py (repeatable)")
+    ap.add_argument("--backend-config", default=None,
+                    help="path to an agent config.json whose backends/retry/"
+                         "context blocks are merged into each per-run config "
+                         "(e.g. /droid/repos/test/config.json for UCSB Claude)")
+    ap.add_argument("--tag", default="",
+                    help="run tag appended to clone dirs + results filename "
+                         "so concurrent runs (e.g. gemma vs sonnet) don't "
+                         "collide")
     ap.add_argument("--keep", action="store_true", help="keep worktrees")
     args = ap.parse_args()
 
     wanted = [i.strip().upper() for i in args.issues.split(",") if i.strip()]
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    results_path = os.path.join(REPLAY_ROOT, f"results-{stamp}.jsonl")
+    tag = ("-" + re.sub(r"[^\w-]", "", args.tag)) if args.tag else ""
+    results_path = os.path.join(REPLAY_ROOT, f"results{tag}-{stamp}.jsonl")
     os.makedirs(REPLAY_ROOT, exist_ok=True)
     rows = []
 
@@ -231,7 +252,7 @@ def main():
             continue
         reps = args.k if args.live else 1
         for rep in range(1, reps + 1):
-            wt = make_clone(issue_id, spec, rep)
+            wt = make_clone(issue_id + tag, spec, rep)
             row = {"issue": issue_id, "title": spec["title"], "rep": rep,
                    "base": spec["base"], "difficulty": spec["difficulty"],
                    "mode": "live" if args.live else "dry-run"}
@@ -243,7 +264,8 @@ def main():
                 row["gap_detectable"] = base_rc != 0
                 if args.live:
                     row.update(run_agent(wt, seed, args.turn_cap,
-                                         args.agent_arg, args.agent_timeout))
+                                         args.agent_arg, args.agent_timeout,
+                                         args.backend_config))
                     fin_rc, fin_out = run_measure(spec, wt)
                     row["measure_rc_final"] = fin_rc
                     row["success"] = fin_rc == 0
