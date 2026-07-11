@@ -3722,6 +3722,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # exhausted (previously only text-only turns were bounded by grace;
     # tool-calling turns ran to the hard cap — ~15 wasted turns).
     _grace_tool_blocks = 0
+    # WS10.e rung 2: count of loop-breaker interventions this cycle; the
+    # 2nd+ one escalates from text redirect to a system-invoked think.
+    _loop_interventions = 0
     # WS10.c: success-check gate state (strict type-validation — MagicMock
     # configs and misconfigs must leave the gate off, same rule as the
     # PhaseEngine factory).
@@ -4874,17 +4877,36 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             log.warning("Tool-call loop detected: same batch repeated %d times", _repeat)
             # Remove the assistant message that requested these tool calls
             conversation_history.pop()
-            conversation_history.append({
-                "role": "user",
-                "content": (
-                    "STOP — you have repeated the exact same tool call(s) "
-                    f"{_repeat} times with no effect. The approach is not working. "
-                    "Try a COMPLETELY DIFFERENT method. For example: "
-                    "use the file tool with action='write' to replace a line directly, "
-                    "or use python -c to do the replacement, "
-                    "or accept the current state and commit what you have."
-                ),
-            })
+            _loop_redirect = (
+                "STOP — you have repeated the exact same tool call(s) "
+                f"{_repeat} times with no effect. The approach is not working. "
+                "Try a COMPLETELY DIFFERENT method. For example: "
+                "use the file tool with action='write' to replace a line directly, "
+                "or use python -c to do the replacement, "
+                "or accept the current state and commit what you have."
+            )
+            # WS10.e rung 2: a plain text redirect that already failed once
+            # this cycle gets escalated to a system-invoked think on the
+            # loop evidence (beewatcher: "the injection message doesn't
+            # always redirect" — run 114 died at rung 1).
+            _loop_interventions += 1
+            if _loop_interventions >= 2 and "think" in MAP_FN:
+                try:
+                    _fk = MAP_FN["think"](prompt=(
+                        f"MANDATORY REFLECTION: the same tool batch has now "
+                        f"looped {_repeat}x AND a previous redirect this "
+                        f"cycle was ignored. Batch signature: "
+                        f"{str(_batch_sig)[:300]}. Answer: (1) why is the "
+                        f"loop not converging? (2) name ONE materially "
+                        f"different next action; (3) if none exists, the "
+                        f"answer is: mark this step failed and move to "
+                        f"CONSOLIDATE/PERSIST."))
+                    _loop_redirect += ("\n\nFORCED REFLECTION (system-invoked "
+                                       "think):\n" + str(_fk)[:1500])
+                    telemetry.record_patch_event("loop_forced_think", kind="fired")
+                except Exception as _fe:
+                    log.warning("forced think failed: %s", _fe)
+            conversation_history.append({"role": "user", "content": _loop_redirect})
             _recent_tool_sigs.clear()
             continue
 
@@ -6008,6 +6030,28 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 f"Either try a completely different method, or accept "
                                 f"the current state and move on to the next step."
                             )
+                        # WS10.e rung 2: escalate repeat interventions to a
+                        # system-invoked think (same ladder as the batch-loop
+                        # site above).
+                        _loop_interventions += 1
+                        if _loop_interventions >= 2 and "think" in MAP_FN:
+                            try:
+                                _fk = MAP_FN["think"](prompt=(
+                                    f"MANDATORY REFLECTION: {func_name} has "
+                                    f"returned the same result "
+                                    f"{_same_result_count}x and a previous "
+                                    f"redirect this cycle was ignored. Result "
+                                    f"tail: {result_str[:300]}. Answer: (1) "
+                                    f"what is this result actually telling "
+                                    f"me? (2) ONE materially different next "
+                                    f"action; (3) if none, mark the step "
+                                    f"failed and move to CONSOLIDATE/PERSIST."))
+                                _hint += ("\n\nFORCED REFLECTION (system-"
+                                          "invoked think):\n" + str(_fk)[:1500])
+                                telemetry.record_patch_event(
+                                    "loop_forced_think", kind="fired")
+                            except Exception as _fe:
+                                log.warning("forced think failed: %s", _fe)
                         conversation_history.append({
                             "role": "user",
                             "content": _hint,
