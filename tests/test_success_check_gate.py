@@ -1,0 +1,89 @@
+"""WS10.c tests: end_cycle success-check gate (wave 3)."""
+
+import json as _json
+import logging
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+import agent as _agent
+from tools import MAP_FN as _MAP_FN
+
+log = logging.getLogger("test_success_check")
+
+
+def _sse(lines):
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.iter_lines.return_value = [l.encode() for l in lines]
+    resp.close = MagicMock()
+    return resp
+
+
+def _tool_resp(name, args, call_id="s1"):
+    payload = {"choices": [{"delta": {"tool_calls": [{
+        "index": 0, "id": call_id,
+        "function": {"name": name, "arguments": _json.dumps(args)}}]}}]}
+    return _sse([f"data: {_json.dumps(payload)}", "data: [DONE]"])
+
+
+def _text(content):
+    return _sse([f'data: {{"choices": [{{"delta": {{"content": "{content}"}}}}]}}',
+                 "data: [DONE]"])
+
+
+def _run(monkeypatch, success_check, llm_side_effects):
+    monkeypatch.setitem(_agent._config, "cycle",
+                        {**_agent._config["cycle"],
+                         "success_check": success_check})
+    history = [{"role": "user", "content": "Do the work."}]
+    with patch("agent._llm_request") as mock_llm, \
+         patch("agent._check_api_health", return_value=(True, "ok")), \
+         patch("agent._setup_logger"), \
+         patch("agent._detect_ctx_size", return_value=None):
+        mock_llm.side_effect = llm_side_effects
+        _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
+    return history
+
+
+class TestSuccessCheckGate:
+    def test_failing_check_blocks_end_cycle(self, monkeypatch):
+        history = _run(monkeypatch, "false", [
+            _tool_resp("end_cycle", {"summary": "done"}),
+            _text("ok"),
+        ])
+        hist = "".join(str(m) for m in history)
+        assert "end_cycle blocked" in hist
+        assert "success check still FAILS" in hist
+
+    def test_passing_check_allows_end_cycle(self, monkeypatch):
+        history = _run(monkeypatch, "true", [
+            _tool_resp("end_cycle", {"summary": "done"}),
+            _text("ok"),
+        ])
+        hist = "".join(str(m) for m in history)
+        assert "end_cycle blocked" not in hist
+
+    def test_repeated_blocking_is_bounded(self, monkeypatch):
+        # Repeated end_cycle against a permanently failing check cannot loop
+        # forever: the gate blocks at most _SUCCESS_CHECK_MAX_BLOCKS times,
+        # and in practice the RESULT-LOOP detector (3 identical tool results)
+        # ends the cycle even sooner — the detectors compose. Contract: >=2
+        # blocks observed, <=3 ever, and the run terminated.
+        history = _run(monkeypatch, "false", [
+            _tool_resp("end_cycle", {"summary": "1"}, "a"),
+            _tool_resp("end_cycle", {"summary": "2"}, "b"),
+            _tool_resp("end_cycle", {"summary": "3"}, "c"),
+            _tool_resp("end_cycle", {"summary": "4"}, "d"),
+            _text("ok"),
+        ])
+        hist = "".join(str(m) for m in history)
+        assert 2 <= hist.count("end_cycle blocked") <= 3
+
+    def test_no_config_no_gate(self, monkeypatch):
+        history = _run(monkeypatch, None, [
+            _tool_resp("end_cycle", {"summary": "done"}),
+            _text("ok"),
+        ])
+        hist = "".join(str(m) for m in history)
+        assert "end_cycle blocked" not in hist

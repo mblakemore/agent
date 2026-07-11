@@ -175,7 +175,7 @@ def build_seed(spec):
         f"  {spec['measure']}\n")
 
 
-def write_run_config(wt_path, turn_cap, backend_config=None):
+def write_run_config(wt_path, turn_cap, backend_config=None, success_check=None):
     """Per-run agent config in the clone (agent.py loads CWD config).
 
     backend_config: path to an existing agent config.json whose `backends`
@@ -190,6 +190,11 @@ def write_run_config(wt_path, turn_cap, backend_config=None):
         "generation": {"temperature": 0.0, "top_p": 1.0, "top_k": 1,
                        "presence_penalty": 0.0},
     }
+    if success_check:
+        # WS10.c: the agent cannot end_cycle while the issue's own
+        # measurement fails (baseline dominant failure mode: M2/P1
+        # completion-discipline exits with the measurement still red).
+        cfg["cycle"]["success_check"] = success_check
     if backend_config:
         with open(backend_config) as f:
             src = json.load(f)
@@ -202,8 +207,9 @@ def write_run_config(wt_path, turn_cap, backend_config=None):
     os.chmod(cfg_path, 0o600)  # may embed backend API keys
 
 
-def run_agent(wt_path, seed, turn_cap, agent_args, timeout, backend_config=None):
-    write_run_config(wt_path, turn_cap, backend_config)
+def run_agent(wt_path, seed, turn_cap, agent_args, timeout, backend_config=None,
+              success_check=None):
+    write_run_config(wt_path, turn_cap, backend_config, success_check)
     cmd = [sys.executable, os.path.join(REPO, "agent.py"),
            "--auto", "--role", "creature", "--no-tui"] + agent_args + [seed]
     t0 = time.time()
@@ -237,6 +243,10 @@ def main():
                     help="run tag appended to clone dirs + results filename "
                          "so concurrent runs (e.g. gemma vs sonnet) don't "
                          "collide")
+    ap.add_argument("--no-success-check", action="store_true",
+                    help="disable the WS10.c end_cycle success-check gate "
+                         "(for A/B against the 2026-07-10 baselines, which "
+                         "ran WITHOUT it)")
     ap.add_argument("--keep", action="store_true", help="keep worktrees")
     args = ap.parse_args()
 
@@ -265,9 +275,10 @@ def main():
                 row["measure_rc_at_base"] = base_rc
                 row["gap_detectable"] = base_rc != 0
                 if args.live:
+                    sc = None if args.no_success_check else spec["measure"]
                     row.update(run_agent(wt, seed, args.turn_cap,
                                          args.agent_arg, args.agent_timeout,
-                                         args.backend_config))
+                                         args.backend_config, sc))
                     fin_rc, fin_out = run_measure(spec, wt)
                     row["measure_rc_final"] = fin_rc
                     row["success"] = fin_rc == 0
