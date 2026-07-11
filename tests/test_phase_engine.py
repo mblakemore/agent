@@ -50,6 +50,8 @@ class TestGates:
     def test_file_write_allowed_in_act(self):
         eng = self._eng()
         for p in ("PERCEIVE", "REFLECT", "DECIDE"):
+            if eng.current == "DECIDE":  # WS10.b: think required to exit
+                eng.observe("think", {"prompt": "weigh options"})
             eng.observe("task_tracker", {"action": "done", "description": p})
         assert eng.current == "ACT"
         ok, _ = eng.allow("file", {"action": "write", "path": "out.py"})
@@ -60,6 +62,8 @@ class TestGates:
         ok, msg = eng.allow("end_cycle", {})
         assert not ok and "PERSIST" in msg
         for p in SIX_PHASES[:-1]:
+            if eng.current == "DECIDE":  # WS10.b: think required to exit
+                eng.observe("think", {"prompt": "weigh options"})
             eng.observe("task_tracker", {"action": "done", "description": p})
         assert eng.current == "PERSIST"
         ok, _ = eng.allow("end_cycle", {})
@@ -103,11 +107,14 @@ class TestAdvancementAndVerifyGate:
         assert ok and msg2 is None
 
     def test_decide_gate_silent_after_think(self):
+        # WS10.b: entry now returns the DECIDE skeleton (once) even when the
+        # verification gate is satisfied — but NOT the gate warning itself.
         eng = self._eng()
         eng.observe("think", {"prompt": "check assumption"})
         eng.observe("task_tracker", {"action": "done", "description": "PERCEIVE"})
         msg = eng.observe("task_tracker", {"action": "done", "description": "REFLECT"})
-        assert msg is None
+        assert msg is not None and "DECISION RECORD" in msg
+        assert "Verification gate" not in msg
 
     def test_out_of_order_marker_recorded_not_fought(self):
         eng = self._eng()
@@ -188,3 +195,46 @@ class TestLoopWiring:
         hist = "".join(str(m) for m in history)
         assert "blocked — you are in PERCEIVE" in hist
         mock_file.assert_not_called()
+
+
+class TestStructuredDecide:
+    def _eng(self):
+        return PhaseEngine(profile="creature-6phase", log=log)
+
+    def _to_decide(self, eng):
+        eng.observe("task_tracker", {"action": "done", "description": "PERCEIVE"})
+        return eng.observe("task_tracker",
+                           {"action": "done", "description": "REFLECT"})
+
+    def test_skeleton_injected_once_on_entry(self):
+        eng = self._eng()
+        msg = self._to_decide(eng)
+        assert "DECISION RECORD" in msg
+        assert eng.decide_skeleton_sent
+
+    def test_exit_blocked_once_without_think_then_passes(self):
+        eng = self._eng()
+        self._to_decide(eng)
+        msg = eng.observe("task_tracker",
+                          {"action": "done", "description": "DECIDE"})
+        assert msg is not None and "DECIDE exit blocked" in msg
+        assert eng.current == "DECIDE"  # did not advance
+        msg2 = eng.observe("task_tracker",
+                           {"action": "done", "description": "DECIDE"})
+        assert msg2 is None  # anti-deadlock: second attempt passes
+        assert eng.current == "ACT"
+
+    def test_exit_immediate_with_think_during_decide(self):
+        eng = self._eng()
+        self._to_decide(eng)
+        eng.observe("think", {"prompt": "weigh the options"})
+        msg = eng.observe("task_tracker",
+                          {"action": "done", "description": "DECIDE"})
+        assert msg is None
+        assert eng.current == "ACT"
+
+    def test_observe_only_profile_untouched(self):
+        eng = PhaseEngine(profile="cicd-8phase")
+        eng.observe("task_tracker", {"action": "done", "description": "PERCEIVE"})
+        msg = eng.observe("task_tracker", {"action": "done", "description": "REFLECT"})
+        assert msg is None  # no skeleton for observe-only profiles
