@@ -50,6 +50,22 @@ _READ_ONLY_PHASES = {"PERCEIVE", "REFLECT", "DECIDE"}
 # Tools that satisfy the DECIDE verification gate.
 _VERIFY_TOOLS = {"think", "verify"}
 
+# WS10.b: structured DECIDE — the skeleton the model fills instead of
+# open-ended prose. Injected once on DECIDE entry. The enforceable half is
+# the exit gate: leaving DECIDE with zero think/verify calls DURING the
+# phase soft-blocks once (same anti-deadlock pattern as the entry gate).
+DECIDE_SKELETON = (
+    "[SYSTEM: DECIDE PROTOCOL — before marking DECIDE done, produce a "
+    "DECISION RECORD in your next message:\n"
+    "  - options considered (>=2, one may be 'do nothing')\n"
+    "  - evidence for/against each (cite what you actually observed)\n"
+    "  - chosen option + one-sentence rationale\n"
+    "  - first concrete step\n"
+    "Call think() to work through it — high-stakes or uncertain decisions "
+    "should use think(n_samples=3) for self-consistency. A think/verify "
+    "call during DECIDE is required to exit the phase.]"
+)
+
 DEFAULT_PROFILES = {
     "creature-6phase": {"phases": [{"name": p} for p in SIX_PHASES]},
     # cicd-8phase is observational-only in v1: the CICD guards in agent.py
@@ -92,6 +108,10 @@ class PhaseEngine:
         self.log = log
         self.verify_calls = 0          # think/verify calls this cycle
         self.decide_gate_warned = False
+        # WS10.b structured-DECIDE state
+        self.decide_skeleton_sent = False
+        self.think_in_decide = 0
+        self.decide_exit_warned = False
         self.persisted = False         # primary-task-complete latch (WS1)
         self.blocked_count = 0
 
@@ -182,6 +202,8 @@ class PhaseEngine:
         Returns an optional message to inject (e.g. DECIDE gate)."""
         if func_name in _VERIFY_TOOLS:
             self.verify_calls += 1
+            if self.current == "DECIDE":
+                self.think_in_decide += 1
             return None
 
         if func_name != "task_tracker" or not isinstance(func_args, dict):
@@ -199,15 +221,33 @@ class PhaseEngine:
             return None
 
         if named == self.current:
+            # WS10.b exit gate: leaving DECIDE with no think/verify during
+            # the phase soft-blocks ONCE (then passes — anti-deadlock).
+            if (named == "DECIDE" and not self.observe_only
+                    and self.think_in_decide == 0
+                    and not self.decide_exit_warned):
+                self.decide_exit_warned = True
+                return (
+                    "[SYSTEM: DECIDE exit blocked once — no think/verify call "
+                    "happened during DECIDE. Work the decision through "
+                    "think() (n_samples=3 if uncertain), produce the "
+                    "DECISION RECORD, then mark DECIDE done again.]"
+                )
             self.done.append(named)
             self.idx = min(self.idx + 1, len(self.names) - 1)
             if self.log:
                 self.log.info("PhaseEngine: %s done → %s", named, self.current)
-            # Entering DECIDE fires the verification gate.
+            # Entering DECIDE: verification gate + structured-DECIDE skeleton.
             if self.current == "DECIDE":
+                parts = []
                 ok, msg = self.gate_decide_entry()
                 if not ok:
-                    return msg
+                    parts.append(msg)
+                if not self.decide_skeleton_sent and not self.observe_only:
+                    self.decide_skeleton_sent = True
+                    parts.append(DECIDE_SKELETON)
+                if parts:
+                    return "\n\n".join(parts)
         else:
             # Out-of-order marker: record, don't fight (v1 policy).
             if named not in self.done:
