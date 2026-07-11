@@ -172,6 +172,24 @@ def _cmd_has(cmd: str, phrase: str) -> bool:
     return re.search(pat, stripped) is not None
 
 
+# WS10.c: success-check gate. When config defines cycle.success_check (a
+# shell command), end_cycle is blocked until it exits 0 — the agent cannot
+# declare done while the declared success criterion fails. Replay baselines
+# (2026-07-10) showed BOTH tiers' dominant failure was completion discipline
+# (M2/P1: exited with the measurement still red), not reasoning.
+def _run_success_check(cmd, log=None):
+    """Returns (rc, tail). Never raises; failure to run counts as rc=1."""
+    try:
+        p = subprocess.run(["bash", "-c", cmd], capture_output=True,
+                           text=True, timeout=180)
+        out = ((p.stdout or "") + (p.stderr or ""))[-600:]
+        return p.returncode, out
+    except Exception as e:
+        if log:
+            log.warning("success_check errored: %s", e)
+        return 1, f"(success_check errored: {e})"
+
+
 # WS8.3 (run 096): tools/paths that count as legitimate TRACK work after the
 # post-persist grace budget is exhausted. Everything else at that point is
 # the start of a second PERCEIVE and gets blocked with a redirect.
@@ -3704,6 +3722,16 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # exhausted (previously only text-only turns were bounded by grace;
     # tool-calling turns ran to the hard cap — ~15 wasted turns).
     _grace_tool_blocks = 0
+    # WS10.c: success-check gate state (strict type-validation — MagicMock
+    # configs and misconfigs must leave the gate off, same rule as the
+    # PhaseEngine factory).
+    _sc_cycle_cfg = _config.get("cycle") if isinstance(_config, dict) else None
+    _success_check_cmd = (_sc_cycle_cfg.get("success_check")
+                          if isinstance(_sc_cycle_cfg, dict) else None)
+    if not (isinstance(_success_check_cmd, str) and _success_check_cmd.strip()):
+        _success_check_cmd = None
+    _success_check_blocks = 0
+    _SUCCESS_CHECK_MAX_BLOCKS = 3
     # Hard cap: even with ongoing tool calls, end the cycle this many turns
     # after persist.  Prevents post-TRACK drift into a second PERCEIVE.
     _CYCLE_HARD_STOP_TURNS = 15
@@ -5188,7 +5216,33 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             _phase_blocked = True
                             result_str = _ph_msg
                             telemetry.record_patch_event("phase_gate_block", kind="fired")
-                    if _grace_exhausted_block or _phase_blocked:
+                    # WS10.c: success-check gate on end_cycle. After
+                    # _SUCCESS_CHECK_MAX_BLOCKS failed attempts the gate
+                    # stands aside (a gate that can deadlock a weak model is
+                    # worse than none — turn caps still bound the cycle).
+                    _sc_blocked = False
+                    if (func_name == "end_cycle" and _success_check_cmd
+                            and not _grace_exhausted_block and not _phase_blocked
+                            and not _cicd_blocked
+                            and _success_check_blocks < _SUCCESS_CHECK_MAX_BLOCKS):
+                        _sc_rc, _sc_out = _run_success_check(_success_check_cmd, log)
+                        if _sc_rc != 0:
+                            _sc_blocked = True
+                            _success_check_blocks += 1
+                            log.info("success_check FAILED (rc=%d) — end_cycle blocked (%d/%d)",
+                                     _sc_rc, _success_check_blocks, _SUCCESS_CHECK_MAX_BLOCKS)
+                            telemetry.record_patch_event("success_check_block", kind="fired")
+                            result_str = (
+                                "Error: end_cycle blocked — the declared success "
+                                "check still FAILS (exit=" + str(_sc_rc) + "). The "
+                                "work is NOT complete. Check output tail:\n"
+                                + _sc_out +
+                                "\nFix what the check reports, re-run it yourself "
+                                "to confirm, commit, then call end_cycle again."
+                            )
+                        else:
+                            log.info("success_check PASSED — end_cycle permitted")
+                    if _grace_exhausted_block or _phase_blocked or _sc_blocked:
                         pass  # result_str already holds the redirect
                     elif _cicd_blocked:
                         result_str = cicd_error
