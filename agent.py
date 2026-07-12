@@ -3735,6 +3735,36 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         _success_check_cmd = None
     _success_check_blocks = 0
     _SUCCESS_CHECK_MAX_BLOCKS = 3
+
+    def _success_gate_blocks_exit(path_name):
+        """WS10.c shared exit gate. Telemetry (2026-07-12) showed the agent
+        has (at least) THREE clean-exit paths — end_cycle tool, completion-
+        signal return, and the no-nudge text-only stop — and the gate
+        guarded only the first, which replay runs never take. One closure,
+        every exit. Returns True if the exit was blocked (caller: inject the
+        redirect already appended and continue)."""
+        nonlocal _success_check_blocks
+        if not _success_check_cmd:
+            return False
+        if _success_check_blocks >= _SUCCESS_CHECK_MAX_BLOCKS:
+            return False
+        _sc_rc, _sc_out = _run_success_check(_success_check_cmd, log)
+        if _sc_rc == 0:
+            log.info("success_check PASSED — %s exit permitted", path_name)
+            return False
+        _success_check_blocks += 1
+        log.info("success_check FAILED (rc=%d) — %s exit blocked (%d/%d)",
+                 _sc_rc, path_name, _success_check_blocks,
+                 _SUCCESS_CHECK_MAX_BLOCKS)
+        telemetry.record_patch_event("success_check_block", kind=path_name)
+        conversation_history.append({"role": "user", "content": (
+            "Error: you are ending the cycle but the declared success check "
+            "still FAILS (exit=" + str(_sc_rc) + "). The work is NOT "
+            "complete. Output tail:\n" + _sc_out +
+            "\nFix what the check reports, re-run it yourself to confirm, "
+            "then commit and finish."
+        )})
+        return True
     # Hard cap: even with ongoing tool calls, end the cycle this many turns
     # after persist.  Prevents post-TRACK drift into a second PERCEIVE.
     _CYCLE_HARD_STOP_TURNS = 15
@@ -4604,6 +4634,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                  _consecutive_text_only)
                         telemetry.record_patch_event("persist_nudge", kind="fired")
                         continue
+                if _success_gate_blocks_exit("textonly_stop"):
+                    continue
                 log.info("Stopping: text-only response (no tool calls)")
                 if _async_summarizer:
                     _async_summarizer.harvest(summary_state)
@@ -4653,6 +4685,17 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                  _total_nudges)
                         telemetry.record_patch_event("open_task_nudge", kind="fired")
                         continue
+                # WS10.c SIBLING-PATH FIX (2026-07-12): the success-check
+                # gate originally hooked ONLY the end_cycle tool — but
+                # telemetry showed replay/creature runs terminate via THIS
+                # text-only completion path and never call end_cycle, so the
+                # gate was structurally inert in exactly the runs it was
+                # built for (zero success_check_block AND zero end_cycle
+                # patch events across all replay sessions). Guard on one
+                # exit path, missing on the sibling — same defect class the
+                # guards in _validate_tool_call had (WS8.1).
+                if _success_gate_blocks_exit("completion_signal"):
+                    continue
                 log.info("Stopping: model signalled cycle completion (work persisted)")
                 return "done"
             if not _has_persisted_work and _completion_matched:
@@ -4716,6 +4759,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                      _total_nudges)
                             telemetry.record_patch_event("open_task_nudge", kind="fired")
                             continue
+                    if _success_gate_blocks_exit("first_textonly_completion"):
+                        continue
                     log.info("Stopping: first-text-only completion signal with persisted work")
                     telemetry.record_patch_event("completion_signal_first_textonly", kind="fired")
                     return "done"
