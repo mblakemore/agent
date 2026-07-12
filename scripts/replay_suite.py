@@ -243,6 +243,13 @@ def main():
                     help="run tag appended to clone dirs + results filename "
                          "so concurrent runs (e.g. gemma vs sonnet) don't "
                          "collide")
+    ap.add_argument("--ab", action="store_true",
+                    help="A/B mode: run each rep TWICE, gate-on and gate-off, "
+                         "interleaved within this single session — session-"
+                         "level variance (server state, load, model reload) "
+                         "confounds cross-session comparisons (measured "
+                         "2026-07-11/12: same model+arm 30h apart, 73%% vs "
+                         "47%%)")
     ap.add_argument("--no-success-check", action="store_true",
                     help="disable the WS10.c end_cycle success-check gate "
                          "(for A/B against the 2026-07-10 baselines, which "
@@ -263,10 +270,15 @@ def main():
             print(f"!! unknown issue {issue_id}, skipping")
             continue
         reps = args.k if args.live else 1
+        arms = [("gate", spec["measure"]), ("nogate", None)] if (args.ab and args.live) \
+            else [(None, None if args.no_success_check else spec["measure"])]
         for rep in range(1, reps + 1):
-            wt = make_clone(issue_id + tag, spec, rep)
+          for arm_name, arm_check in arms:
+            arm_suffix = f"-{arm_name}" if arm_name else ""
+            wt = make_clone(issue_id + tag + arm_suffix, spec, rep)
             row = {"issue": issue_id, "title": spec["title"], "rep": rep,
                    "base": spec["base"], "difficulty": spec["difficulty"],
+                   "arm": arm_name or ("nogate" if args.no_success_check else "gate"),
                    "mode": "live" if args.live else "dry-run"}
             try:
                 seed = build_seed(spec)
@@ -275,7 +287,8 @@ def main():
                 row["measure_rc_at_base"] = base_rc
                 row["gap_detectable"] = base_rc != 0
                 if args.live:
-                    sc = None if args.no_success_check else spec["measure"]
+                    sc = arm_check if args.ab else (
+                        None if args.no_success_check else spec["measure"])
                     row.update(run_agent(wt, seed, args.turn_cap,
                                          args.agent_arg, args.agent_timeout,
                                          args.backend_config, sc))
@@ -300,13 +313,13 @@ def main():
     if args.live:
         by_issue = {}
         for r in rows:
-            by_issue.setdefault(r["issue"], []).append(r)
+            by_issue.setdefault((r["issue"], r.get("arm", "")), []).append(r)
         total_pass1 = []
-        for iid, rs in by_issue.items():
+        for (iid, arm), rs in sorted(by_issue.items()):
             wins = sum(1 for r in rs if r.get("success"))
             total_pass1.append(wins / len(rs))
-            print(f"  {iid} [{rs[0]['difficulty']:12s}] pass {wins}/{len(rs)}"
-                  f"  (turns capped {args.turn_cap})")
+            print(f"  {iid} {('[' + arm + ']'):9s} [{rs[0]['difficulty']:12s}] "
+                  f"pass {wins}/{len(rs)}  (turns capped {args.turn_cap})")
         if total_pass1:
             print(f"  overall mean pass@1: "
                   f"{sum(total_pass1) / len(total_pass1):.0%} "
