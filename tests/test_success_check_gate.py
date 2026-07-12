@@ -41,7 +41,10 @@ def _run(monkeypatch, success_check, llm_side_effects):
          patch("agent._check_api_health", return_value=(True, "ok")), \
          patch("agent._setup_logger"), \
          patch("agent._detect_ctx_size", return_value=None):
-        mock_llm.side_effect = llm_side_effects
+        # Pad with text turns: the gate now blocks text-only exits too, so
+        # scripts need enough responses for the 3-block cap to play out.
+        mock_llm.side_effect = list(llm_side_effects) + [
+            _text(f"continuing {i}") for i in range(6)]
         _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
     return history
 
@@ -87,3 +90,41 @@ class TestSuccessCheckGate:
         ])
         hist = "".join(str(m) for m in history)
         assert "end_cycle blocked" not in hist
+
+
+class TestCompletionPathGate:
+    """WS10.c sibling-path fix: replay/creature runs end via the TEXT
+    completion path, not end_cycle (telemetry: zero end_cycle events across
+    all replay sessions) — the gate must guard both exits."""
+
+    def _run_completion(self, monkeypatch, success_check):
+        monkeypatch.setitem(_agent._config, "cycle",
+                            {**_agent._config["cycle"],
+                             "success_check": success_check})
+        monkeypatch.setitem(_MAP_FN, "exec_command",
+                            MagicMock(return_value="exit=0\ncommitted"))
+        history = [{"role": "user", "content": "Do the work."}]
+        with patch("agent._llm_request") as mock_llm, \
+             patch("agent._check_api_health", return_value=(True, "ok")), \
+             patch("agent._setup_logger"), \
+             patch("agent._detect_ctx_size", return_value=None):
+            mock_llm.side_effect = [
+                _tool_resp("exec_command",
+                           {"command": "git commit -m done"}, "c1"),
+                _text("Cycle complete."),
+                _text("Cycle complete."),
+                _text("Cycle complete once more."),
+                _text("Cycle complete again."),
+                _text("Cycle complete final."),
+            ]
+            _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
+        return "".join(str(m) for m in history)
+
+    def test_completion_phrase_blocked_while_check_fails(self, monkeypatch):
+        hist = self._run_completion(monkeypatch, "false")
+        assert "ending the cycle" in hist
+        assert "still FAILS" in hist
+
+    def test_completion_phrase_allowed_when_check_passes(self, monkeypatch):
+        hist = self._run_completion(monkeypatch, "true")
+        assert "still FAILS" not in hist
