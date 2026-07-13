@@ -1,0 +1,18 @@
+{
+  "llm": {
+    "base_url": "http://127.0.0.1:8080",
+    "model": "llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF"
+  },
+  "summary": {
+    "base_url": "http://127.0.0.1:8080",
+    "model": "llmfan46/Qwen3.6-27B-uncensored-heretic-v2-Native-MTP-Preserved-GGUF"
+  },
+  "advisor": {
+    "base_url": "http://127.0.0.1:8000",
+    "model": "glm-5.2-colibri",
+    "prefill_token_budget": 1200,
+    "max_tokens": 256,
+    "max_calls_per_task": 2,
+    "timeout_s": 600
+  }
+}
