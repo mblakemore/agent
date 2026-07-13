@@ -79,5 +79,29 @@ class ConfigRegistryShimTest(unittest.TestCase):
         self.assertEqual(cfg["summary"]["base_url"], "http://127.0.0.1:8082")
 
 
+class AdvisorConfigLoadTest(unittest.TestCase):
+    """Regression: a user `advisor` block (a section NOT in _DEFAULT_CONFIG)
+    must survive _load_config, else the escalation tier is silently inert. The
+    bug was masked because the gate tests inject _config['advisor'] directly."""
+
+    def test_advisor_block_carried_through(self):
+        cfg = _load_with({"advisor": {
+            "base_url": "http://127.0.0.1:8000", "model": "glm-5.2",
+            "max_calls_per_task": 3}})
+        self.assertIn("advisor", cfg)
+        self.assertEqual(cfg["advisor"]["base_url"], "http://127.0.0.1:8000")
+        self.assertEqual(cfg["advisor"]["max_calls_per_task"], 3)
+
+    def test_no_advisor_block_stays_absent(self):
+        # Defaults ship no advisor endpoint → tier off unless configured.
+        self.assertNotIn("advisor", _load_with({}))
+
+    def test_unknown_scalar_override_still_carried(self):
+        # The pre-existing scalar carry-through (log_prefix etc.) must not
+        # regress now that dict sections are also carried.
+        self.assertEqual(_load_with({"log_prefix": "agentx"}).get("log_prefix"),
+                         "agentx")
+
+
 if __name__ == "__main__":
     unittest.main()

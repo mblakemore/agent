@@ -535,11 +535,16 @@ def _load_config():
             for section in config:
                 if section in user_config and isinstance(user_config[section], dict):
                     config[section].update(user_config[section])
-            # Copy top-level scalar overrides (e.g. log_dir, log_prefix) that aren't
-            # _DEFAULT_CONFIG sections — the loop above only handles dict-valued sections.
+            # Carry through top-level overrides that aren't _DEFAULT_CONFIG
+            # sections: scalar keys (log_dir, log_prefix) AND new dict sections
+            # such as `advisor` (a role the defaults don't ship). Without this a
+            # user-provided advisor block would be silently dropped and the
+            # escalation tier would never activate. Dicts are deep-copied so the
+            # loaded config can't alias user_config.
             for key, val in user_config.items():
-                if key not in config and not isinstance(val, dict):
-                    config[key] = val
+                if key not in config:
+                    config[key] = (json.loads(json.dumps(val))
+                                   if isinstance(val, dict) else val)
             _warn_if_world_readable_with_key(config_path, user_config)
         except (json.JSONDecodeError, IOError) as e:
             _emit("on_notice", "warn", f"Warning: Could not load config.json, using defaults: {e}")
