@@ -3735,6 +3735,54 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         _success_check_cmd = None
     _success_check_blocks = 0
     _SUCCESS_CHECK_MAX_BLOCKS = 3
+    # Advisor escalation (spike): suggest the heavyweight advisor tier at most
+    # once per cycle when the gate fails repeatedly. Inert unless
+    # _config["advisor"]["enabled"] — default-off, so no behavior change. The
+    # once-per-cycle latch is a closure attribute (reset each cycle since the
+    # closure is rebuilt per run_agent_single call), NOT a run_agent_single
+    # local — avoids the test_no_dead_locals nested-scope false positive.
+    def _maybe_advisor_nudge():
+        """Return a one-time advisor-escalation suggestion string if the
+        repeated success-check failure count warrants escalation and the
+        advisor tier is enabled; else "". The gate-failure counter
+        (_success_check_blocks) IS the structural signal escalation_policy
+        consumes: two strikes = past the fast model's reliable range. We only
+        SUGGEST — the expensive GLM call stays behind the model's own
+        consult_advisor invocation and that tool's budget. Shared by every
+        success-gate block site (end_cycle tool + text/completion exits).
+        Fully guarded: never raises, so it can't break a gate."""
+        try:
+            _adv_cfg = (_config.get("advisor", {})
+                        if isinstance(_config, dict) else {})
+            if (not _adv_cfg.get("enabled")
+                    or getattr(_maybe_advisor_nudge, "_fired", False)):
+                return ""
+            from escalation_policy import should_escalate, LoopSignals
+            _dec = should_escalate(LoopSignals(
+                consecutive_gate_failures=_success_check_blocks,
+                task_difficulty=str(_adv_cfg.get("task_difficulty", "unknown")),
+                advisor_calls_cap=int(_adv_cfg.get("max_calls_per_task", 3)),
+            ))
+            if not _dec.escalate:
+                return ""
+            _maybe_advisor_nudge._fired = True
+            _how = ("consider a deliberate takeover via subagent"
+                    if _dec.mode == "takeover" else "call consult_advisor")
+            log.info("advisor escalation suggested (mode=%s, triggers=%s) after "
+                     "%d gate blocks", _dec.mode, _dec.triggers,
+                     _success_check_blocks)
+            return (
+                "[SYSTEM: escalation available — the success check has FAILED "
+                f"{_success_check_blocks}x, past the fast model's reliable range "
+                f"({', '.join(_dec.triggers)}). {_how}(question='the specific "
+                "blocker', context='the failing output + what you already "
+                f"tried', reason='failed success_check x{_success_check_blocks}') "
+                "to get the heavyweight advisor's decisive fix, then apply it. "
+                "Do this once — don't loop.]"
+            )
+        except Exception as _adv_e:  # never let the hook break a gate
+            log.debug("advisor escalation hook skipped: %s", _adv_e)
+            return ""
 
     def _success_gate_blocks_exit(path_name):
         """WS10.c shared exit gate. Telemetry (2026-07-12) showed the agent
@@ -3764,6 +3812,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             "\nFix what the check reports, re-run it yourself to confirm, "
             "then commit and finish."
         )})
+        _adv_msg = _maybe_advisor_nudge()
+        if _adv_msg:
+            conversation_history.append({"role": "user", "content": _adv_msg})
         return True
     # Hard cap: even with ongoing tool calls, end the cycle this many turns
     # after persist.  Prevents post-TRACK drift into a second PERCEIVE.
@@ -5307,6 +5358,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                 "\nFix what the check reports, re-run it yourself "
                                 "to confirm, commit, then call end_cycle again."
                             )
+                            _adv_msg = _maybe_advisor_nudge()
+                            if _adv_msg:
+                                result_str += "\n\n" + _adv_msg
                         else:
                             log.info("success_check PASSED — end_cycle permitted")
                     if _grace_exhausted_block or _phase_blocked or _sc_blocked:

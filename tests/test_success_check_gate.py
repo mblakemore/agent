@@ -128,3 +128,57 @@ class TestCompletionPathGate:
     def test_completion_phrase_allowed_when_check_passes(self, monkeypatch):
         hist = self._run_completion(monkeypatch, "true")
         assert "still FAILS" not in hist
+
+
+class TestAdvisorEscalationWiring:
+    """Spike: the success-gate failure counter drives escalation_policy, which
+    suggests the heavyweight advisor tier after repeated blocks. Default-off:
+    absent/disabled ``advisor`` config = no suggestion, no behavior change."""
+
+    def _run_adv(self, monkeypatch, advisor_cfg, side_effects):
+        monkeypatch.setitem(_agent._config, "cycle",
+                            {**_agent._config["cycle"], "success_check": "false"})
+        if advisor_cfg is not None:
+            monkeypatch.setitem(_agent._config, "advisor", advisor_cfg)
+        history = [{"role": "user", "content": "Do the work."}]
+        with patch("agent._llm_request") as mock_llm, \
+             patch("agent._check_api_health", return_value=(True, "ok")), \
+             patch("agent._setup_logger"), \
+             patch("agent._detect_ctx_size", return_value=None):
+            mock_llm.side_effect = list(side_effects) + [
+                _text(f"continuing {i}") for i in range(6)]
+            _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
+        return "".join(str(m) for m in history)
+
+    def test_escalation_suggested_after_repeated_block(self, monkeypatch):
+        # 2nd block → consecutive_gate_failures==2 → policy escalates (advisor).
+        hist = self._run_adv(monkeypatch, {"enabled": True}, [
+            _tool_resp("end_cycle", {"summary": "1"}, "a"),
+            _tool_resp("end_cycle", {"summary": "2"}, "b"),
+            _tool_resp("end_cycle", {"summary": "3"}, "c"),
+            _text("ok"),
+        ])
+        assert "consult_advisor" in hist
+        assert "escalation available" in hist
+        # Suggested at most once — not on every subsequent block.
+        assert hist.count("escalation available") == 1
+
+    def test_no_escalation_when_disabled_by_default(self, monkeypatch):
+        # No advisor key at all (default) → hook inert.
+        hist = self._run_adv(monkeypatch, None, [
+            _tool_resp("end_cycle", {"summary": "1"}, "a"),
+            _tool_resp("end_cycle", {"summary": "2"}, "b"),
+            _tool_resp("end_cycle", {"summary": "3"}, "c"),
+            _text("ok"),
+        ])
+        assert "consult_advisor" not in hist
+        # The base gate still worked — this isn't a silently-broken run.
+        assert "still FAILS" in hist
+
+    def test_no_escalation_when_enabled_false(self, monkeypatch):
+        hist = self._run_adv(monkeypatch, {"enabled": False}, [
+            _tool_resp("end_cycle", {"summary": "1"}, "a"),
+            _tool_resp("end_cycle", {"summary": "2"}, "b"),
+            _text("ok"),
+        ])
+        assert "consult_advisor" not in hist
