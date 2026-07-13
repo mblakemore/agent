@@ -75,6 +75,21 @@ def _approx_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def _record_call(reason: str, prefill_tokens: int, model: str) -> None:
+    """Best-effort escalation telemetry: one JSONL line per actual advisor
+    invocation, in the CWD's .agent/advisor-calls.jsonl (gitignored). Lets an
+    operator (or the replay harness) SEE that the tier fired and how often.
+    Never raises."""
+    try:
+        os.makedirs(".agent", exist_ok=True)
+        with open(os.path.join(".agent", "advisor-calls.jsonl"), "a") as f:
+            f.write(json.dumps({"reason": reason or "unspecified",
+                                "prefill_tokens": prefill_tokens,
+                                "model": model}) + "\n")
+    except Exception:
+        pass
+
+
 def _read_role(role: str) -> dict:
     """Read a model-role block from config.json (cwd), merged over defaults.
 
@@ -198,6 +213,7 @@ def consult_advisor(question: str, context: str = "", reason: str = "") -> str:
 
     user = question if not brief else f"BRIEF:\n{brief}\n\nQUESTION: {question}"
     _session_call_count += 1
+    _record_call(reason, total_prefill, a.get("model", ""))
     t0 = time.time()
     try:
         answer = _chat(
