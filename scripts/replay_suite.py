@@ -198,7 +198,11 @@ def write_run_config(wt_path, turn_cap, backend_config=None, success_check=None)
     if backend_config:
         with open(backend_config) as f:
             src = json.load(f)
-        for key in ("backends", "retry", "context"):
+        # `llm`/`summary`/`advisor` let a backend-config select the local model
+        # roles AND opt the escalation tier in — an advisor block with a base_url
+        # activates consult_advisor, so the same suite measures advisor-on vs
+        # advisor-off just by swapping the backend-config.
+        for key in ("backends", "retry", "context", "llm", "summary", "advisor"):
             if isinstance(src.get(key), dict):
                 cfg[key] = src[key]
     cfg_path = os.path.join(cfg_dir, "config.json")
