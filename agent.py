@@ -3754,8 +3754,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         try:
             _adv_cfg = (_config.get("advisor", {})
                         if isinstance(_config, dict) else {})
-            if (not _adv_cfg.get("enabled")
-                    or getattr(_maybe_advisor_nudge, "_fired", False)):
+            # Enabled-by-default-if-configured: an advisor block with a base_url
+            # is ON unless "enabled": false is set explicitly. No advisor block
+            # (or no base_url) → off. Explicit "enabled" always wins.
+            _active = _adv_cfg.get("enabled", bool(_adv_cfg.get("base_url")))
+            if not _active or getattr(_maybe_advisor_nudge, "_fired", False):
                 return ""
             from escalation_policy import should_escalate, LoopSignals
             _dec = should_escalate(LoopSignals(
