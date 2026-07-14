@@ -283,3 +283,30 @@ class TestAdvisorEscalationWiring:
             _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
         hist = "".join(str(m) for m in history)
         assert self._ADVICE in hist  # advisor auto-invoked via the elapsed path
+
+    def test_grind_no_progress_gate_suppresses_while_editing(self, monkeypatch):
+        # CONVERGING run: model mutates a file EVERY turn. Even with elapsed
+        # trigger armed + check red, the no-progress gate keeps grind (and the
+        # advisor) suppressed — the fix for the M2 A/B regression where grind
+        # derailed a slow-but-editing run. Contrast test_grind_auto_invokes
+        # (exec_command only = spinning = grind DOES fire).
+        monkeypatch.setitem(_agent._config, "cycle",
+                            {**_agent._config["cycle"], "success_check": "false",
+                             "grind_elapsed_s": 0.01, "grind_no_progress_turns": 4})
+        monkeypatch.setattr(_agent, "_MAX_TURNS", 6)  # hard-stop ~12 turns
+        monkeypatch.setitem(_agent._config, "advisor", {"enabled": True})
+        monkeypatch.setitem(_MAP_FN, "consult_advisor",
+                            MagicMock(return_value=self._ADVICE))
+        monkeypatch.setitem(_MAP_FN, "write_file",
+                            MagicMock(side_effect=[f"written {i}" for i in range(30)]))
+        history = [{"role": "user", "content": "work"}]
+        calls = [_tool_resp("write_file", {"path": f"f{i}.txt", "content": "x"}, f"w{i}")
+                 for i in range(30)]
+        with patch("agent._llm_request") as mock_llm, \
+             patch("agent._check_api_health", return_value=(True, "ok")), \
+             patch("agent._setup_logger"), \
+             patch("agent._detect_ctx_size", return_value=None):
+            mock_llm.side_effect = calls
+            _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
+        hist = "".join(str(m) for m in history)
+        assert self._ADVICE not in hist  # suppressed: model was editing (progress)
