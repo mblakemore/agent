@@ -3757,6 +3757,18 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         _GRIND_ELAPSED_S = float((_config.get("cycle") or {}).get("grind_elapsed_s", 0) or 0)
     except Exception:
         _GRIND_ELAPSED_S = 0.0
+    # No-progress gate (fixes the M2 A/B regression: grind fired on a slow-but-
+    # CONVERGING run at the elapsed mark and derailed a run the model would have
+    # finished on its own — OFF 1/3 vs ON 0/3). Only escalate if the model has
+    # NOT mutated a file in the last N turns: a converging coding run edits; a
+    # genuinely stuck one spins on reads/re-runs without changing the codebase.
+    # So the trigger distinguishes "stuck" from merely "slow". 0 disables it.
+    _last_mutation_turn = 0
+    try:
+        _GRIND_NO_PROGRESS_TURNS = int(
+            (_config.get("cycle") or {}).get("grind_no_progress_turns", 4) or 0)
+    except Exception:
+        _GRIND_NO_PROGRESS_TURNS = 4
     # Advisor escalation (spike): suggest the heavyweight advisor tier at most
     # once per cycle when the gate fails repeatedly. Inert unless
     # _config["advisor"]["enabled"] — default-off, so no behavior change. The
@@ -4085,8 +4097,14 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                            and turn >= int(_GRIND_TURN_FRACTION * _MAX_TURNS))
         _grind_time_hit = (_GRIND_ELAPSED_S > 0
                            and (time.monotonic() - _grind_t0) >= _GRIND_ELAPSED_S)
+        # No-progress gate: only escalate if the model hasn't mutated a file in
+        # the last N turns (genuinely stuck), not merely slow-but-converging.
+        # Left OUT of the latch when it blocks, so the check re-fires if the run
+        # later goes stuck (edits then spins) — escalate on stall, not on clock.
+        _grind_no_progress = (_GRIND_NO_PROGRESS_TURNS <= 0
+                              or (turn - _last_mutation_turn) >= _GRIND_NO_PROGRESS_TURNS)
         if (not _grind_checked and _success_check_cmd
-                and (_grind_turn_hit or _grind_time_hit)):
+                and (_grind_turn_hit or _grind_time_hit) and _grind_no_progress):
             _grind_checked = True
             try:
                 _g_rc, _g_out = _run_success_check(_success_check_cmd, log)
@@ -5308,6 +5326,17 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         and func_args.get("action") in ("write", "insert", "append", "delete", "create")
                     ):
                         _turn_had_action = True
+                    # Progress signal for the grind no-progress gate: a file
+                    # MUTATION (not exec/read) = the model is changing the
+                    # codebase = converging. exec_command is excluded (it's
+                    # usually re-running the check, i.e. spinning, not progress).
+                    if func_name in ("write_file", "edit_file", "append_file",
+                                     "delete_file") or (
+                        func_name == "file" and isinstance(func_args, dict)
+                        and func_args.get("action") in ("write", "insert",
+                                                        "append", "delete", "create")
+                    ):
+                        _last_mutation_turn = turn
 
                     # Per-call dedup: if this exact (tool_name, args) was dispatched
                     # within the last _DEDUP_WINDOW calls AND the tool is safe to
