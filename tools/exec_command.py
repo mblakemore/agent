@@ -258,6 +258,75 @@ def _load_command_guards() -> list:
     return _command_guards or []
 
 
+# ── Always-on catastrophic-command guard (accidental system-wipe protection) ──
+# Independent of config (unlike command_guards) so it protects even an
+# unconfigured agent. Conservative by design — blocks only UNAMBIGUOUS
+# system-destroyers, never legit `rm -rf ./build` / `/tmp/...`. Override only via
+# env AGENT_ALLOW_CATASTROPHIC=1 or config "allow_catastrophic_commands": true.
+_SYSTEM_DIRS = ("/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64",
+                "/proc", "/root", "/run", "/sbin", "/sys", "/usr", "/var", "/opt")
+_ROOT_TARGETS = {"/", "/*", "~", "~/", "$HOME", "${HOME}", "$HOME/", "*"}
+
+
+def _catastrophic_allowed() -> bool:
+    if str(os.environ.get("AGENT_ALLOW_CATASTROPHIC", "")).lower() in ("1", "true", "yes"):
+        return True
+    try:
+        import json as _json
+        for p in (Path(os.getcwd()) / ".agent" / "config.json",
+                  Path(os.getcwd()) / "config.json"):
+            if p.exists():
+                with open(p, encoding="utf-8") as _f:
+                    return bool(_json.load(_f).get("allow_catastrophic_commands", False))
+    except Exception:
+        pass
+    return False
+
+
+def _is_catastrophic(command: str):
+    """Return a short reason string if `command` is unambiguously system-
+    destroying, else None. Splits on shell separators and inspects each simple
+    command; conservative — targets must be root/home/system paths, not subdirs."""
+    for part in re.split(r"&&|\|\||[;\n|&]", command):
+        toks = part.strip().split()
+        i = 0
+        while i < len(toks) and (toks[i] in ("sudo", "env", "nohup", "time", "doas")
+                                 or ("=" in toks[i] and not toks[i].startswith("-"))):
+            i += 1
+        if i >= len(toks):
+            continue
+        cmd = os.path.basename(toks[i].strip("\"'"))
+        args = toks[i + 1:]
+        pos = [a.strip("\"'") for a in args if not a.startswith("-")]
+        flags = "".join(a[1:] for a in args if a.startswith("-") and not a.startswith("--"))
+        longs = [a for a in args if a.startswith("--")]
+        if cmd == "rm":
+            has_r = "r" in flags or "R" in flags or "--recursive" in longs
+            has_f = "f" in flags or "--force" in longs
+            if has_r and has_f:
+                for t in pos:
+                    tnorm = t.rstrip("/") or "/"
+                    if t in _ROOT_TARGETS or tnorm in _SYSTEM_DIRS or t.startswith("/*"):
+                        return f"rm -rf on {t}"
+        elif cmd == "dd":
+            if any(re.match(r"of=/dev/(sd|hd|nvme|vd|mmcblk|disk|xvd)", a) for a in args):
+                return "dd writing to a raw block device"
+        elif cmd == "mkfs" or cmd.startswith("mkfs."):
+            if any(a.startswith("/dev/") for a in pos):
+                return "mkfs on a device"
+        elif cmd in ("wipefs", "shred", "fdisk", "sgdisk", "parted") and \
+                any(a.startswith("/dev/") for a in pos):
+            return f"{cmd} on a device"
+    # whole-command patterns
+    if re.search(r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:?\s*&\s*\}\s*;?\s*:", command):
+        return "fork bomb"
+    if re.search(r">\s*/dev/(sd|hd|nvme|vd|mmcblk|xvd)", command):
+        return "redirect to a raw block device"
+    if re.search(r"\b(chmod|chown)\s+(-[a-zA-Z]*R[a-zA-Z]*|--recursive)\b[^\n;|&]*\s/(\s|$|;|\|)", command):
+        return "recursive chmod/chown on /"
+    return None
+
+
 def _derive_main_session():
     """Derive a stable main session name from the agent's working directory."""
     cwd = os.getcwd()
@@ -477,6 +546,21 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         import shutil
         if not shutil.which('python') and shutil.which('python3'):
             command = re.sub(r'(?<![/\w])python(\s)', r'python3\1', command)
+
+    # Always-on catastrophic-command guard (accidental system-wipe protection).
+    # Runs BEFORE config guards and independent of any config, so an unconfigured
+    # agent still can't `rm -rf /` etc. Override only via env
+    # AGENT_ALLOW_CATASTROPHIC=1 or config "allow_catastrophic_commands": true.
+    if not _catastrophic_allowed():
+        _cat = _is_catastrophic(command)
+        if _cat:
+            return (
+                f"Error: BLOCKED — refusing to run what looks like a "
+                f"catastrophic command ({_cat}) that could irreversibly wipe "
+                f"the system. If this is genuinely intended, set "
+                f"'allow_catastrophic_commands': true in config.json (or export "
+                f"AGENT_ALLOW_CATASTROPHIC=1) and re-run."
+            )
 
     # Config-based command guards: patterns from config.json["command_guards"].
     for _guard in _load_command_guards():
