@@ -183,14 +183,20 @@ class TestAdvisorEscalationWiring:
         ])
         assert "consult_advisor" not in hist
 
+    # Stall/grind AUTO-INVOKE consult_advisor (not suggest) — mock it so the
+    # tests are hermetic (no real glm call) and assert the advice is injected.
+    _ADVICE = "CANNED_ADVICE_APPLY_FIX"
+
     # --- stall path (the grind/loop mode the gate-block trigger misses) -------
     def _run_stall(self, monkeypatch, tmp_path, advisor_cfg):
         """Drive a semantic result-loop (read_file returns the same content
         repeatedly) so loop_interventions>=2 fires the stuck-intervention
-        ladder. `think` is mocked so the test is hermetic + fast."""
+        ladder. `think` + `consult_advisor` are mocked (hermetic + fast)."""
         if advisor_cfg is not None:
             monkeypatch.setitem(_agent._config, "advisor", advisor_cfg)
         monkeypatch.setitem(_MAP_FN, "think", MagicMock(return_value="(reflect)"))
+        monkeypatch.setitem(_MAP_FN, "consult_advisor",
+                            MagicMock(return_value=self._ADVICE))
         f = tmp_path / "loopfile.txt"
         f.write_text("stable content that repeats\nline two\n")
         monkeypatch.chdir(tmp_path)
@@ -205,26 +211,28 @@ class TestAdvisorEscalationWiring:
             _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
         return "".join(str(m) for m in history)
 
-    def test_stall_escalation_fires_on_result_loop(self, monkeypatch, tmp_path):
+    def test_stall_auto_invokes_advisor_on_result_loop(self, monkeypatch, tmp_path):
         hist = self._run_stall(monkeypatch, tmp_path, {"enabled": True})
-        assert "consult_advisor" in hist
-        assert "stuck: repeated-failure loop" in hist
+        assert "heavyweight advisor was consulted" in hist  # auto-invoked, not suggested
+        assert self._ADVICE in hist                          # its advice injected
 
-    def test_stall_no_escalation_when_advisor_disabled(self, monkeypatch, tmp_path):
+    def test_stall_no_invoke_when_advisor_disabled(self, monkeypatch, tmp_path):
         hist = self._run_stall(monkeypatch, tmp_path, None)  # no advisor block
-        assert "stuck: repeated-failure loop" not in hist
+        assert self._ADVICE not in hist
 
     # --- grind path (turn-budget spent, check still red — no other detector) --
     def _run_grind(self, monkeypatch, success_check, advisor_cfg):
         """Model takes DISTINCT actions (no loop) until it burns most of a small
         turn budget; grind trigger runs success_check once at 70% and, if red,
-        escalates."""
+        auto-invokes the advisor."""
         monkeypatch.setitem(_agent._config, "cycle",
                             {**_agent._config["cycle"],
                              "success_check": success_check})
         monkeypatch.setattr(_agent, "_MAX_TURNS", 5)  # threshold int(0.7*5)=3
         if advisor_cfg is not None:
             monkeypatch.setitem(_agent._config, "advisor", advisor_cfg)
+        monkeypatch.setitem(_MAP_FN, "consult_advisor",
+                            MagicMock(return_value=self._ADVICE))
         monkeypatch.setitem(_MAP_FN, "exec_command",
                             MagicMock(side_effect=[f"distinct {i}" for i in range(10)]))
         history = [{"role": "user", "content": "work on it"}]
@@ -238,16 +246,16 @@ class TestAdvisorEscalationWiring:
             _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
         return "".join(str(m) for m in history)
 
-    def test_grind_escalation_when_check_stays_red(self, monkeypatch):
+    def test_grind_auto_invokes_advisor_when_check_stays_red(self, monkeypatch):
         hist = self._run_grind(monkeypatch, "false", {"enabled": True})
-        assert "grind: turn-budget spent" in hist
-        assert "consult_advisor" in hist
+        assert "heavyweight advisor was consulted" in hist
+        assert self._ADVICE in hist
 
-    def test_grind_no_escalation_when_check_passes(self, monkeypatch):
-        # Converging (check green at the threshold) → no grind nudge.
+    def test_grind_no_invoke_when_check_passes(self, monkeypatch):
+        # Converging (check green at the threshold) → no escalation, no advisor.
         hist = self._run_grind(monkeypatch, "true", {"enabled": True})
-        assert "grind: turn-budget spent" not in hist
+        assert self._ADVICE not in hist
 
-    def test_grind_no_escalation_when_advisor_disabled(self, monkeypatch):
+    def test_grind_no_invoke_when_advisor_disabled(self, monkeypatch):
         hist = self._run_grind(monkeypatch, "false", None)  # no advisor block
-        assert "grind: turn-budget spent" not in hist
+        assert self._ADVICE not in hist
