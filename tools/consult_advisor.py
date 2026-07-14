@@ -100,17 +100,22 @@ def _emit_outcome(kind: str) -> None:
 def _read_role(role: str) -> dict:
     """Read a model-role block from config.json (cwd), merged over defaults.
 
-    Mirrors think.py's config-reading convention. ``advisor`` merges over
-    _DEFAULTS; ``summary`` falls back to the llama.cpp default endpoint.
+    ``advisor`` merges over _DEFAULTS; ``summary`` falls back to the llama.cpp
+    default endpoint. Reads .agent/config.json FIRST, then legacy ./config.json
+    — the SAME precedence as agent.py's _load_config, so the tool and the gate
+    hook agree on whether the tier is configured (a mismatch made auto-invoke
+    read "disabled" whenever config lived in .agent/, e.g. the replay + agentx).
     """
     cfg = {}
-    try:
-        path = os.path.join(os.getcwd(), "config.json")
-        if os.path.exists(path):
-            with open(path, encoding="utf-8", errors="replace") as f:
-                cfg = json.load(f)
-    except Exception:
-        cfg = {}
+    for _p in (os.path.join(os.getcwd(), ".agent", "config.json"),
+               os.path.join(os.getcwd(), "config.json")):
+        try:
+            if os.path.exists(_p):
+                with open(_p, encoding="utf-8", errors="replace") as f:
+                    cfg = json.load(f)
+                break
+        except Exception:
+            cfg = {}
     if role == "advisor":
         raw = cfg.get("advisor", {}) or {}
         out = dict(_DEFAULTS)
