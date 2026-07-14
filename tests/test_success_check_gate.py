@@ -259,3 +259,27 @@ class TestAdvisorEscalationWiring:
     def test_grind_no_invoke_when_advisor_disabled(self, monkeypatch):
         hist = self._run_grind(monkeypatch, "false", None)  # no advisor block
         assert self._ADVICE not in hist
+
+    def test_grind_fires_on_elapsed_time(self, monkeypatch):
+        # Slow-model case: turn budget huge so the TURN trigger never hits, but
+        # grind_elapsed_s (tiny) fires the elapsed trigger with the check red.
+        monkeypatch.setitem(_agent._config, "cycle",
+                            {**_agent._config["cycle"], "success_check": "false",
+                             "grind_elapsed_s": 0.01})
+        monkeypatch.setattr(_agent, "_MAX_TURNS", 100)  # turn trigger won't hit
+        monkeypatch.setitem(_agent._config, "advisor", {"enabled": True})
+        monkeypatch.setitem(_MAP_FN, "consult_advisor",
+                            MagicMock(return_value=self._ADVICE))
+        monkeypatch.setitem(_MAP_FN, "exec_command",
+                            MagicMock(side_effect=[f"d {i}" for i in range(12)]))
+        history = [{"role": "user", "content": "work"}]
+        calls = [_tool_resp("exec_command", {"command": f"echo {i}"}, f"c{i}")
+                 for i in range(6)]
+        with patch("agent._llm_request") as mock_llm, \
+             patch("agent._check_api_health", return_value=(True, "ok")), \
+             patch("agent._setup_logger"), \
+             patch("agent._detect_ctx_size", return_value=None):
+            mock_llm.side_effect = calls + [_text(f"done {i}") for i in range(6)]
+            _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
+        hist = "".join(str(m) for m in history)
+        assert self._ADVICE in hist  # advisor auto-invoked via the elapsed path

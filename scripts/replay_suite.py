@@ -175,7 +175,8 @@ def build_seed(spec):
         f"  {spec['measure']}\n")
 
 
-def write_run_config(wt_path, turn_cap, backend_config=None, success_check=None):
+def write_run_config(wt_path, turn_cap, backend_config=None, success_check=None,
+                     grind_elapsed=None):
     """Per-run agent config in the clone (agent.py loads CWD config).
 
     backend_config: path to an existing agent config.json whose `backends`
@@ -195,6 +196,8 @@ def write_run_config(wt_path, turn_cap, backend_config=None, success_check=None)
         # measurement fails (baseline dominant failure mode: M2/P1
         # completion-discipline exits with the measurement still red).
         cfg["cycle"]["success_check"] = success_check
+    if grind_elapsed:
+        cfg["cycle"]["grind_elapsed_s"] = float(grind_elapsed)
     if backend_config:
         with open(backend_config) as f:
             src = json.load(f)
@@ -212,8 +215,8 @@ def write_run_config(wt_path, turn_cap, backend_config=None, success_check=None)
 
 
 def run_agent(wt_path, seed, turn_cap, agent_args, timeout, backend_config=None,
-              success_check=None):
-    write_run_config(wt_path, turn_cap, backend_config, success_check)
+              success_check=None, grind_elapsed=None):
+    write_run_config(wt_path, turn_cap, backend_config, success_check, grind_elapsed)
     cmd = [sys.executable, os.path.join(REPO, "agent.py"),
            "--auto", "--role", "creature", "--no-tui"] + agent_args + [seed]
     t0 = time.time()
@@ -258,6 +261,10 @@ def main():
                     help="disable the WS10.c end_cycle success-check gate "
                          "(for A/B against the 2026-07-10 baselines, which "
                          "ran WITHOUT it)")
+    ap.add_argument("--grind-elapsed", type=float, default=None,
+                    help="cycle.grind_elapsed_s — fire the grind->advisor "
+                         "trigger after this many wall-clock seconds with "
+                         "the check still red (slow-model case)")
     ap.add_argument("--keep", action="store_true", help="keep worktrees")
     args = ap.parse_args()
 
@@ -295,7 +302,8 @@ def main():
                         None if args.no_success_check else spec["measure"])
                     row.update(run_agent(wt, seed, args.turn_cap,
                                          args.agent_arg, args.agent_timeout,
-                                         args.backend_config, sc))
+                                         args.backend_config, sc,
+                                         args.grind_elapsed))
                     fin_rc, fin_out = run_measure(spec, wt)
                     row["measure_rc_final"] = fin_rc
                     row["success"] = fin_rc == 0
