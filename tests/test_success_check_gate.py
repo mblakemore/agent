@@ -182,3 +182,34 @@ class TestAdvisorEscalationWiring:
             _text("ok"),
         ])
         assert "consult_advisor" not in hist
+
+    # --- stall path (the grind/loop mode the gate-block trigger misses) -------
+    def _run_stall(self, monkeypatch, tmp_path, advisor_cfg):
+        """Drive a semantic result-loop (read_file returns the same content
+        repeatedly) so loop_interventions>=2 fires the stuck-intervention
+        ladder. `think` is mocked so the test is hermetic + fast."""
+        if advisor_cfg is not None:
+            monkeypatch.setitem(_agent._config, "advisor", advisor_cfg)
+        monkeypatch.setitem(_MAP_FN, "think", MagicMock(return_value="(reflect)"))
+        f = tmp_path / "loopfile.txt"
+        f.write_text("stable content that repeats\nline two\n")
+        monkeypatch.chdir(tmp_path)
+        history = [{"role": "user", "content": "read the file"}]
+        reads = [_tool_resp("read_file", {"path": str(f)}, f"r{i}")
+                 for i in range(7)]
+        with patch("agent._llm_request") as mock_llm, \
+             patch("agent._check_api_health", return_value=(True, "ok")), \
+             patch("agent._setup_logger"), \
+             patch("agent._detect_ctx_size", return_value=None):
+            mock_llm.side_effect = reads + [_text(f"done {i}") for i in range(6)]
+            _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
+        return "".join(str(m) for m in history)
+
+    def test_stall_escalation_fires_on_result_loop(self, monkeypatch, tmp_path):
+        hist = self._run_stall(monkeypatch, tmp_path, {"enabled": True})
+        assert "consult_advisor" in hist
+        assert "stuck: repeated-failure loop" in hist
+
+    def test_stall_no_escalation_when_advisor_disabled(self, monkeypatch, tmp_path):
+        hist = self._run_stall(monkeypatch, tmp_path, None)  # no advisor block
+        assert "stuck: repeated-failure loop" not in hist
