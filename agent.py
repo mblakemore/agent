@@ -3774,6 +3774,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             if not _dec.escalate:
                 return ""
             _maybe_advisor_nudge._fired = True
+            # First-class telemetry (same pipeline as success_check_block): the
+            # gate SUGGESTED escalation. Pairs with the tool-side advisor_call
+            # outcomes + record_tool_call("consult_advisor") to form the funnel
+            # suggested -> called -> answered, queryable per-instance and
+            # dashboardable for CICD/beewatcher.
+            telemetry.record_patch_event("advisor_escalation", kind=_dec.mode)
             _how = ("consider a deliberate takeover via subagent"
                     if _dec.mode == "takeover" else "call consult_advisor")
             log.info("advisor escalation suggested (mode=%s, triggers=%s) after "
