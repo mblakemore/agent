@@ -3748,6 +3748,15 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # gated — so a false positive costs nudge tokens, not a glm call.
     _grind_checked = False
     _GRIND_TURN_FRACTION = 0.7
+    # Slow thinking-models are WALL-CLOCK bound, not turn bound: on a long task
+    # the run hits its subprocess timeout well before 70% of the turn budget, so
+    # the turn-based grind trigger never fires. cycle.grind_elapsed_s (seconds,
+    # 0=off) fires grind on elapsed wall-clock too — whichever comes first.
+    _grind_t0 = time.monotonic()
+    try:
+        _GRIND_ELAPSED_S = float((_config.get("cycle") or {}).get("grind_elapsed_s", 0) or 0)
+    except Exception:
+        _GRIND_ELAPSED_S = 0.0
     # Advisor escalation (spike): suggest the heavyweight advisor tier at most
     # once per cycle when the gate fails repeatedly. Inert unless
     # _config["advisor"]["enabled"] — default-off, so no behavior change. The
@@ -4072,8 +4081,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         # still red, it is grinding (distinct actions, no convergence) — the
         # failure mode that trips no loop/stall/gate detector. Runs the check at
         # most once (latch); suggest-only, so the glm call stays model-gated.
-        if (not _grind_checked and _success_check_cmd and _MAX_TURNS > 0
-                and turn >= int(_GRIND_TURN_FRACTION * _MAX_TURNS)):
+        _grind_turn_hit = (_MAX_TURNS > 0
+                           and turn >= int(_GRIND_TURN_FRACTION * _MAX_TURNS))
+        _grind_time_hit = (_GRIND_ELAPSED_S > 0
+                           and (time.monotonic() - _grind_t0) >= _GRIND_ELAPSED_S)
+        if (not _grind_checked and _success_check_cmd
+                and (_grind_turn_hit or _grind_time_hit)):
             _grind_checked = True
             try:
                 _g_rc, _g_out = _run_success_check(_success_check_cmd, log)
