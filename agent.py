@@ -3740,30 +3740,40 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         _success_check_cmd = None
     _success_check_blocks = 0
     _SUCCESS_CHECK_MAX_BLOCKS = 3
+    # Grind escalation: once per cycle, if a success_check is configured and the
+    # model has burned this fraction of its turn budget with the check STILL
+    # red (not converging — the distinct-plausible-actions-until-timeout mode
+    # that trips no loop/stall/gate detector), suggest the advisor. Runs the
+    # check at most once (latch), and only SUGGESTS — the glm call stays model-
+    # gated — so a false positive costs nudge tokens, not a glm call.
+    _grind_checked = False
+    _GRIND_TURN_FRACTION = 0.7
     # Advisor escalation (spike): suggest the heavyweight advisor tier at most
     # once per cycle when the gate fails repeatedly. Inert unless
     # _config["advisor"]["enabled"] — default-off, so no behavior change. The
     # once-per-cycle latch is a closure attribute (reset each cycle since the
     # closure is rebuilt per run_agent_single call), NOT a run_agent_single
     # local — avoids the test_no_dead_locals nested-scope false positive.
-    def _maybe_advisor_nudge(stalled=False):
+    def _maybe_advisor_nudge(source="gate"):
         """Return a one-time advisor-escalation suggestion string if the current
         signals warrant escalation and the advisor tier is enabled; else "".
 
-        Two trigger sources, both routed through escalation_policy:
-          - gate side (stalled=False): the success-check gate has blocked
-            repeatedly (_success_check_blocks) — the model declared done while
-            wrong.
-          - stall side (stalled=True): the model is cognitively STUCK — it
-            repeated a failing action AND ignored a prior redirect (the
-            loop-intervention ladder), which the gate-block trigger never sees
-            because a stuck model never cleanly declares done. This is the
-            grind/stall failure mode the k=3 A/B exposed via telemetry.
+        Three trigger sources, all routed through escalation_policy:
+          - "gate": the success-check gate has blocked repeatedly
+            (_success_check_blocks) — the model declared done while wrong.
+          - "stall": the model is cognitively STUCK — repeated a failing action
+            AND ignored a prior redirect (the loop-intervention ladder).
+          - "grind": the model has spent most of its turn budget with the
+            success check STILL failing — it is not converging (distinct
+            plausible actions until wall-clock). This is the exact failure mode
+            the k=3 A/B runs died on, which trips NO other detector.
 
-        We only SUGGEST — the expensive GLM call stays behind the model's own
-        consult_advisor invocation + that tool's budget. Once per cycle
-        (shared _fired latch across all call sites). Fully guarded: never
-        raises, so it can't break a gate or the turn loop."""
+        gate is structural (_success_check_blocks); stall/grind are the
+        "self_reported_stuck" path — a stuck model never cleanly declares done,
+        so the gate never sees it. We only SUGGEST — the expensive GLM call
+        stays behind the model's own consult_advisor invocation + that tool's
+        budget. Once per cycle (shared _fired latch across all call sites).
+        Fully guarded: never raises, so it can't break a gate or the turn loop."""
         try:
             _adv_cfg = (_config.get("advisor", {})
                         if isinstance(_config, dict) else {})
@@ -3773,10 +3783,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             _active = _adv_cfg.get("enabled", bool(_adv_cfg.get("base_url")))
             if not _active or getattr(_maybe_advisor_nudge, "_fired", False):
                 return ""
+            _stuck = source in ("stall", "grind")
             from escalation_policy import should_escalate, LoopSignals
             _dec = should_escalate(LoopSignals(
                 consecutive_gate_failures=_success_check_blocks,
-                self_reported_stuck=stalled,
+                self_reported_stuck=_stuck,
                 task_difficulty=str(_adv_cfg.get("task_difficulty", "unknown")),
                 advisor_calls_cap=int(_adv_cfg.get("max_calls_per_task", 3)),
             ))
@@ -3784,25 +3795,29 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 return ""
             _maybe_advisor_nudge._fired = True
             # First-class telemetry (same pipeline as success_check_block): the
-            # gate/stall path SUGGESTED escalation. Pairs with the tool-side
-            # advisor_call outcomes + record_tool_call("consult_advisor") to form
-            # the funnel suggested -> called -> answered, queryable per-instance
-            # and dashboardable for CICD/beewatcher. kind carries the trigger
-            # source so a dashboard can split stall- vs gate-driven escalations.
+            # trigger SUGGESTED escalation. Pairs with the tool-side advisor_call
+            # outcomes + record_tool_call("consult_advisor") to form the funnel
+            # suggested -> called -> answered, queryable per-instance and
+            # dashboardable for CICD/beewatcher. kind carries the trigger source
+            # so a dashboard can split grind/stall/gate-driven escalations.
             telemetry.record_patch_event(
-                "advisor_escalation",
-                kind=("stall" if stalled else "gate") + ":" + _dec.mode)
+                "advisor_escalation", kind=source + ":" + _dec.mode)
             _how = ("consider a deliberate takeover via subagent"
                     if _dec.mode == "takeover" else "call consult_advisor")
-            _situation = (
-                "you appear STUCK (repeated a failing action and a prior "
-                "redirect was ignored)" if stalled
-                else f"the success check has FAILED {_success_check_blocks}x")
-            _reason = ("stuck: repeated-failure loop" if stalled
-                       else f"failed success_check x{_success_check_blocks}")
+            _situation = {
+                "stall": "you appear STUCK (repeated a failing action and a "
+                         "prior redirect was ignored)",
+                "grind": "you have spent most of your turn budget and the "
+                         "success check is STILL failing — you are not converging",
+                "gate": f"the success check has FAILED {_success_check_blocks}x",
+            }[source]
+            _reason = {
+                "stall": "stuck: repeated-failure loop",
+                "grind": "grind: turn-budget spent, check still red",
+                "gate": f"failed success_check x{_success_check_blocks}",
+            }[source]
             log.info("advisor escalation suggested (source=%s, mode=%s, "
-                     "triggers=%s)", "stall" if stalled else "gate", _dec.mode,
-                     _dec.triggers)
+                     "triggers=%s)", source, _dec.mode, _dec.triggers)
             return (
                 "[SYSTEM: escalation available — " + _situation +
                 f", past the fast model's reliable range ({', '.join(_dec.triggers)}). "
@@ -4026,6 +4041,23 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
     while True:
         turn += 1
+        # Grind escalation (turn-budget): once per cycle, if a success_check is
+        # configured and the model has burned most of its budget with the check
+        # still red, it is grinding (distinct actions, no convergence) — the
+        # failure mode that trips no loop/stall/gate detector. Runs the check at
+        # most once (latch); suggest-only, so the glm call stays model-gated.
+        if (not _grind_checked and _success_check_cmd and _MAX_TURNS > 0
+                and turn >= int(_GRIND_TURN_FRACTION * _MAX_TURNS)):
+            _grind_checked = True
+            try:
+                _g_rc, _g_out = _run_success_check(_success_check_cmd, log)
+                if _g_rc != 0:
+                    _grind_msg = _maybe_advisor_nudge(source="grind")
+                    if _grind_msg:
+                        conversation_history.append(
+                            {"role": "user", "content": _grind_msg})
+            except Exception as _grind_e:
+                log.debug("grind escalation check skipped: %s", _grind_e)
         # Update read-only counter from the previous turn
         if turn > 1:
             if _turn_had_action:
@@ -5036,7 +5068,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 # Stall-side advisor escalation (batch-loop site): same stuck
                 # signal as the semantic-result-loop site — repeated batch +
                 # ignored redirect. Once-per-cycle latch dedupes across sites.
-                _adv_nudge = _maybe_advisor_nudge(stalled=True)
+                _adv_nudge = _maybe_advisor_nudge(source="stall")
                 if _adv_nudge:
                     _loop_redirect += "\n\n" + _adv_nudge
             conversation_history.append({"role": "user", "content": _loop_redirect})
@@ -6194,7 +6226,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             # sees (a stuck model never cleanly declares done).
                             # Offer the heavyweight advisor alongside the forced
                             # self-think; once-per-cycle, budget- and config-gated.
-                            _adv_nudge = _maybe_advisor_nudge(stalled=True)
+                            _adv_nudge = _maybe_advisor_nudge(source="stall")
                             if _adv_nudge:
                                 _hint += "\n\n" + _adv_nudge
                         conversation_history.append({

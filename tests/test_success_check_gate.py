@@ -213,3 +213,41 @@ class TestAdvisorEscalationWiring:
     def test_stall_no_escalation_when_advisor_disabled(self, monkeypatch, tmp_path):
         hist = self._run_stall(monkeypatch, tmp_path, None)  # no advisor block
         assert "stuck: repeated-failure loop" not in hist
+
+    # --- grind path (turn-budget spent, check still red — no other detector) --
+    def _run_grind(self, monkeypatch, success_check, advisor_cfg):
+        """Model takes DISTINCT actions (no loop) until it burns most of a small
+        turn budget; grind trigger runs success_check once at 70% and, if red,
+        escalates."""
+        monkeypatch.setitem(_agent._config, "cycle",
+                            {**_agent._config["cycle"],
+                             "success_check": success_check})
+        monkeypatch.setattr(_agent, "_MAX_TURNS", 5)  # threshold int(0.7*5)=3
+        if advisor_cfg is not None:
+            monkeypatch.setitem(_agent._config, "advisor", advisor_cfg)
+        monkeypatch.setitem(_MAP_FN, "exec_command",
+                            MagicMock(side_effect=[f"distinct {i}" for i in range(10)]))
+        history = [{"role": "user", "content": "work on it"}]
+        calls = [_tool_resp("exec_command", {"command": f"echo {i}"}, f"c{i}")
+                 for i in range(6)]
+        with patch("agent._llm_request") as mock_llm, \
+             patch("agent._check_api_health", return_value=(True, "ok")), \
+             patch("agent._setup_logger"), \
+             patch("agent._detect_ctx_size", return_value=None):
+            mock_llm.side_effect = calls + [_text(f"done {i}") for i in range(6)]
+            _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
+        return "".join(str(m) for m in history)
+
+    def test_grind_escalation_when_check_stays_red(self, monkeypatch):
+        hist = self._run_grind(monkeypatch, "false", {"enabled": True})
+        assert "grind: turn-budget spent" in hist
+        assert "consult_advisor" in hist
+
+    def test_grind_no_escalation_when_check_passes(self, monkeypatch):
+        # Converging (check green at the threshold) → no grind nudge.
+        hist = self._run_grind(monkeypatch, "true", {"enabled": True})
+        assert "grind: turn-budget spent" not in hist
+
+    def test_grind_no_escalation_when_advisor_disabled(self, monkeypatch):
+        hist = self._run_grind(monkeypatch, "false", None)  # no advisor block
+        assert "grind: turn-budget spent" not in hist
