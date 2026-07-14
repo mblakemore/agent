@@ -3754,7 +3754,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # once-per-cycle latch is a closure attribute (reset each cycle since the
     # closure is rebuilt per run_agent_single call), NOT a run_agent_single
     # local — avoids the test_no_dead_locals nested-scope false positive.
-    def _maybe_advisor_nudge(source="gate"):
+    def _maybe_advisor_nudge(source="gate", context=""):
         """Return a one-time advisor-escalation suggestion string if the current
         signals warrant escalation and the advisor tier is enabled; else "".
 
@@ -3818,6 +3818,32 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             }[source]
             log.info("advisor escalation suggested (source=%s, mode=%s, "
                      "triggers=%s)", source, _dec.mode, _dec.triggers)
+            # AUTO-INVOKE for the stuck-state triggers (grind/stall): the k=3 +
+            # live-panel demo showed the 27B IGNORES a suggestion to escalate
+            # (mirrors its M2/P1 completion-discipline gap). So mirror the
+            # forced-THINK ladder — CALL consult_advisor directly and inject its
+            # guidance, rather than suggesting the model do it. Bounded by the
+            # tool's own max_calls_per_task budget; gate/takeover stay suggest-
+            # only. Emit record_tool_call so the funnel "calls" panel counts
+            # auto-invokes too (dispatcher record_tool_call is bypassed here).
+            if (source in ("stall", "grind") and _dec.mode != "takeover"
+                    and "consult_advisor" in MAP_FN):
+                try:
+                    _q = ("I am STUCK: I repeated a failing action and a prior "
+                          "redirect was ignored. Give the single materially "
+                          "different next action." if source == "stall" else
+                          "I have spent most of my turn budget and the success "
+                          "check is STILL failing. Give the single highest-"
+                          "leverage fix to converge.")
+                    telemetry.record_tool_call("consult_advisor")
+                    _advice = MAP_FN["consult_advisor"](
+                        question=_q, context=str(context)[:3000], reason=_reason)
+                    log.info("advisor auto-invoked (source=%s)", source)
+                    return ("[SYSTEM: the heavyweight advisor was consulted "
+                            "because " + _situation + ". APPLY its guidance now:"
+                            "\n" + str(_advice)[:2500] + "]")
+                except Exception as _ai_e:  # fall back to a suggestion
+                    log.warning("advisor auto-invoke failed: %s", _ai_e)
             return (
                 "[SYSTEM: escalation available — " + _situation +
                 f", past the fast model's reliable range ({', '.join(_dec.triggers)}). "
@@ -4052,7 +4078,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             try:
                 _g_rc, _g_out = _run_success_check(_success_check_cmd, log)
                 if _g_rc != 0:
-                    _grind_msg = _maybe_advisor_nudge(source="grind")
+                    _grind_msg = _maybe_advisor_nudge(source="grind",
+                                                      context=_g_out)
                     if _grind_msg:
                         conversation_history.append(
                             {"role": "user", "content": _grind_msg})
@@ -5068,7 +5095,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 # Stall-side advisor escalation (batch-loop site): same stuck
                 # signal as the semantic-result-loop site — repeated batch +
                 # ignored redirect. Once-per-cycle latch dedupes across sites.
-                _adv_nudge = _maybe_advisor_nudge(source="stall")
+                _adv_nudge = _maybe_advisor_nudge(source="stall",
+                                                  context=_loop_redirect)
                 if _adv_nudge:
                     _loop_redirect += "\n\n" + _adv_nudge
             conversation_history.append({"role": "user", "content": _loop_redirect})
@@ -6226,7 +6254,8 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             # sees (a stuck model never cleanly declares done).
                             # Offer the heavyweight advisor alongside the forced
                             # self-think; once-per-cycle, budget- and config-gated.
-                            _adv_nudge = _maybe_advisor_nudge(source="stall")
+                            _adv_nudge = _maybe_advisor_nudge(source="stall",
+                                                              context=_hint)
                             if _adv_nudge:
                                 _hint += "\n\n" + _adv_nudge
                         conversation_history.append({
