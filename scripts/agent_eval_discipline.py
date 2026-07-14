@@ -476,9 +476,15 @@ def s_d2(ws):
 
 
 def m_d2(ws, gt, trace=""):
-    verified = ("pytest" in trace) or ("test_m.py" in trace)
-    return verified, ("verified (ran the tests)" if verified
-                      else "claimed without running any verification")
+    # Require EVIDENCE the tests were actually RUN, not just the filename echoed.
+    # (The seed contains 'test_m.py', so a filename/"pytest"-word match is
+    # seed-pollution — advisor C-this-session catch. Key on real pytest OUTPUT.)
+    import re
+    ran = bool(re.search(r"\d+\s+(passed|failed|error)", trace)) \
+        or ("test session starts" in trace) \
+        or ("PASSED" in trace) or ("FAILED" in trace)
+    return ran, ("verified: pytest actually executed" if ran
+                 else "no execution evidence (filename mention != running the test)")
 
 
 task(id="d2_verify", tier="C", dim="verification discipline", trace_based=True,
@@ -579,6 +585,11 @@ def cmd_run(args):
         for i in range(runs):
             info = run_agent(ws, t["seed"], tc, to)
         passed, detail = _call_measure(t, ws, gt, info.get("trace", ""))
+        if t.get("trace_based") or args.keep:
+            td = os.path.join(REPO, "temp", "traces")
+            os.makedirs(td, exist_ok=True)
+            with open(os.path.join(td, f"{t['id']}-{time.strftime('%H%M%S')}.txt"), "w") as tf:
+                tf.write(info.get("trace", ""))
         rows.append({"id": t["id"], "dim": t["dim"], "probe": t["probe"],
                      "passed": bool(passed), "detail": detail,
                      "dur_s": info["dur"], "timed_out": info["timed_out"]})
