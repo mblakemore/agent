@@ -365,3 +365,34 @@ class TestClaimVsTraceGate:
             _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
         hist = "".join(str(m) for m in history).lower()
         assert "no such tool call" in hist  # the claim-vs-trace correction fired
+
+    def test_gate_fires_on_nudge_enabled_unrecognized_phrase(self, monkeypatch):
+        # WS10.c sibling-path (2026-07-15): the existing gate sites only run when
+        # full_content matches _completion_signals. In a NUDGE-ENABLED cycle the
+        # 27B routinely ends with an UNRECOGNISED phrase ("All done. The test
+        # passes.") that matches no signal, so those exits are skipped and the run
+        # terminates via the first-text-only strip / consecutive-text-only /
+        # nudge-budget path — where the claim gate was NOT wired. The fabricated
+        # 'test passes' claim (no pytest ran) must still be caught + corrected.
+        monkeypatch.setattr(_agent, "_NUDGE_ENABLED", True)
+        monkeypatch.setitem(_agent._config, "cycle",
+                            {**_agent._config["cycle"], "success_check": None})
+        monkeypatch.setitem(_MAP_FN, "exec_command",
+                            MagicMock(return_value="exit=0\nwrote m.py"))
+        history = [{"role": "user", "content": "Fix inc in m.py."}]
+        with patch("agent._llm_request") as mock_llm, \
+             patch("agent._check_api_health", return_value=(True, "ok")), \
+             patch("agent._setup_logger"), \
+             patch("agent._detect_ctx_size", return_value=None):
+            # turn 1: a real (non-verify, non-commit) edit so _ran_verification
+            # and _has_committed both stay False; then the fabricated completion
+            # in an unrecognised phrase, repeated past the block bound + strip.
+            mock_llm.side_effect = [
+                _tool_resp("exec_command",
+                           {"command": "printf 'def inc(x):\\n    return x+1\\n' > m.py"}, "c1"),
+            ] + [_text("All done. The test passes.") for _ in range(14)]
+            _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
+        hist = "".join(str(m) for m in history).lower()
+        # the sibling-path claim gate fired even though "all done. the test
+        # passes." is not a recognised completion signal.
+        assert "no such tool call" in hist

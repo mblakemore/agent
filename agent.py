@@ -3994,6 +3994,31 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             "and show the real output before you finish."
         )})
         return True, blocks
+
+    def _claim_gate_blocks_textonly_exit():
+        """Backstop the claim-vs-trace gate at the nudge-enabled give-up / strip
+        exits (2026-07-15, WS10.c sibling-path class). The three phrase-gated
+        exits (completion_signal / first_textonly_completion / no-nudge
+        textonly_stop) only run the claim gate when full_content matches the
+        fixed _completion_signals list. In a nudge-ENABLED cycle this model
+        routinely ends with an UNRECOGNISED phrase ('All done. The test
+        passes.') that matches no signal, so those exits are skipped and the run
+        terminates via the first-text-only strip / consecutive-text-only /
+        nudge-budget / overtime path where the gate was never wired — a
+        fabricated 'verified/committed' claim escapes unchecked. Honesty-of-
+        claim is orthogonal to done-intent, so guard the exits here rather than
+        broadening _completion_signals (which would couple the two and widen the
+        blast radius into completion-acceptance + the success gate). Reads
+        full_content/_ran_verification/_has_committed from the enclosing turn;
+        _claim_trace_blocks stays a run_agent_single local (also read/written at
+        the three inline sites) so no dead-locals false positive. Bounded by
+        _CLAIM_TRACE_MAX_BLOCKS, so every caller's continue-instead-of-return is
+        safe. Returns True if the exit was blocked."""
+        nonlocal _claim_trace_blocks
+        _blk, _claim_trace_blocks = _claim_vs_trace_block(
+            full_content, _ran_verification, _has_committed,
+            _claim_trace_blocks, _CLAIM_TRACE_MAX_BLOCKS)
+        return _blk
     # Hard cap: even with ongoing tool calls, end the cycle this many turns
     # after persist.  Prevents post-TRACK drift into a second PERCEIVE.
     _CYCLE_HARD_STOP_TURNS = 15
@@ -4983,12 +5008,16 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                      _total_nudges)
                             telemetry.record_patch_event("open_task_nudge", kind="fired")
                             continue
+                    if _claim_gate_blocks_textonly_exit():
+                        continue
                     log.info("Stopping: cycle persisted %d turns ago, grace period exhausted", grace_used)
                     return "done"
                 log.info("Cycle persisted but grace period active (%d/%d turns) — nudging for TRACK work",
                         grace_used, _CYCLE_GRACE_TURNS)
             # Past turn limit + no tool use = end cycle immediately
             if turn > _MAX_TURNS:
+                if _claim_gate_blocks_textonly_exit():
+                    continue
                 log.warning("Overtime + text-only response — ending cycle")
                 _emit("on_overtime", "text_only")
                 return "done"
@@ -4998,11 +5027,15 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             # Total nudge budget across the session.
             _total_nudges += 1
             if _total_nudges >= _MAX_TOTAL_NUDGES:
+                if _claim_gate_blocks_textonly_exit():
+                    continue
                 log.info("Stopping: total nudge budget exhausted (%d/%d)",
                          _total_nudges, _MAX_TOTAL_NUDGES)
                 return "done"
 
             if _consecutive_text_only >= _MAX_TEXT_ONLY:
+                if _claim_gate_blocks_textonly_exit():
+                    continue
                 log.info("Stopping: %d consecutive text-only responses", _consecutive_text_only)
                 return "done"
 
@@ -5036,6 +5069,17 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     log.info("Stopping: first-text-only completion signal with persisted work")
                     telemetry.record_patch_event("completion_signal_first_textonly", kind="fired")
                     return "done"
+
+                # Claim-vs-trace on the FIRST text-only response, BEFORE the strip
+                # below silently discards it — the highest-leverage site. An
+                # unrecognised-phrase completion ("All done. The test passes.")
+                # skips the completion block above; without this check the strip
+                # would erase the fabricated claim and retry, so the gate never
+                # sees it. Catch it here at first occurrence and correct (don't
+                # strip). Fires only on a real unsupported claim, so honest terse
+                # and plan-in-text responses fall through to Q.01 + strip unchanged.
+                if _claim_gate_blocks_textonly_exit():
+                    continue
 
                 # Q.01 guard: if the response contains 2+ fenced code blocks, the
                 # model wrote bash/python in text instead of calling tools ("plan-
