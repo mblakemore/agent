@@ -3687,7 +3687,8 @@ def _handle_auto_guidance(conversation_history, summary_state, initial_files, lo
 # tense assertion that verification/commit was PERFORMED.
 _VERIFY_CLAIM_RE = re.compile(
     r"\b(ran|re-?ran|executed)\b[^.\n]{0,40}\b(test|pytest|suite|spec)s?\b"
-    r"|\bverified\b[^.\n]{0,30}\b(with|via|using|by running|the test|pytest|it works|it passes)"
+    r"|\b(verified|tested|retested)\b"   # bare past-tense verification claim
+    r"|\bconfirmed\b[^.\n]{0,25}\b(test|pass|work|fix|correct)"
     r"|\ball tests?(?:\s+\w+){0,3}\s+pass"
     r"|\btests?(?:\s+now)?\s+pass(?:es|ed|ing)?\b"
     r"|\b\d+\s+passed\b"
