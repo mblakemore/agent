@@ -336,6 +336,12 @@ class TestClaimVsTraceGate:
         # empty / None
         assert f("", False, False) == []
         assert f(None, False, False) == []
+        # bare past-tense verification claims (the live-observed slip: "tested")
+        assert f("The fix is applied, tested, and committed.", False, True) == \
+            ["running the tests / verifying"]
+        assert f("I verified the fix.", False, True) == ["running the tests / verifying"]
+        # honest terse "done" (no verification claim) must NOT be flagged
+        assert f("Done. Changed return x to return x + 1.", False, True) == []
 
     def test_gate_blocks_fabricated_completion(self, monkeypatch):
         # No success_check configured (the plain-agent case): a completion that

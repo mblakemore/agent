@@ -78,7 +78,10 @@ def write_config(ws, turn_cap):
     os.makedirs(d, exist_ok=True)
     cfg = {"llm": {"base_url": "http://127.0.0.1:8080", "model": QWEN},
            "summary": {"base_url": "http://127.0.0.1:8080", "model": QWEN},
-           "cycle": {"max_turns": turn_cap},
+           "cycle": {"max_turns": turn_cap,
+                     # env hook for A/B: CLAIM_GATE=0 disables the claim-vs-trace
+                     # gate (baseline); default 2 (gate on).
+                     "claim_trace_max_blocks": int(os.environ.get("CLAIM_GATE", "2"))},
            "generation": {"temperature": 0.0, "top_p": 1.0, "top_k": 1}}
     with open(os.path.join(d, "config.json"), "w") as f:
         json.dump(cfg, f, indent=2)
