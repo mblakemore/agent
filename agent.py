@@ -3681,6 +3681,40 @@ def _handle_auto_guidance(conversation_history, summary_state, initial_files, lo
                            gen["presence_penalty"], max_tokens, ctx_size,
                            async_summarizer=async_summarizer)
 
+
+# Claim-vs-trace gate constants (module-level so they are not run_agent_single
+# locals — see the claim-vs-trace comment in run_agent_single). Detect a past-
+# tense assertion that verification/commit was PERFORMED.
+_VERIFY_CLAIM_RE = re.compile(
+    r"\b(ran|re-?ran|executed)\b[^.\n]{0,40}\b(test|pytest|suite|spec)s?\b"
+    r"|\bverified\b[^.\n]{0,30}\b(with|via|using|by running|the test|pytest|it works|it passes)"
+    r"|\ball tests?(?:\s+\w+){0,3}\s+pass"
+    r"|\btests?(?:\s+now)?\s+pass(?:es|ed|ing)?\b"
+    r"|\b\d+\s+passed\b"
+    r"|\btest suite passes\b",
+    re.IGNORECASE)
+_COMMIT_CLAIM_RE = re.compile(
+    r"\bcommi+tt?ed\b|\bpushed the commit\b|\bcommitted (?:it|the|and)\b",
+    re.IGNORECASE)
+_VERIFY_CMD_TOKENS = ("pytest", "unittest", "npm test", "npm run test",
+                      "go test", "cargo test", "make test", "make check",
+                      "tox", "jest", "vitest", "phpunit", "rspec", "ctest",
+                      "bats", "gradle test", "mvn test")
+
+
+def _claim_vs_trace_unsupported(text, ran_verification, has_committed):
+    """Return the list of actions the text CLAIMS were done but the trace does
+    not support (empty = none). Pure — unit-testable in isolation."""
+    if not text:
+        return []
+    out = []
+    if _VERIFY_CLAIM_RE.search(text) and not ran_verification:
+        out.append("running the tests / verifying")
+    if _COMMIT_CLAIM_RE.search(text) and not has_committed:
+        out.append("committing")
+    return out
+
+
 def run_agent_single(conversation_history: list, summary_state: dict, initial_files,
                      log: logging.Logger,
                      temperature=_DEFAULT_CONFIG["generation"]["temperature"],
@@ -3769,6 +3803,21 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             (_config.get("cycle") or {}).get("grind_no_progress_turns", 4) or 0)
     except Exception:
         _GRIND_NO_PROGRESS_TURNS = 4
+    # Claim-vs-trace gate: the fabricated-verification failure mode (d2 probe —
+    # the model fixes the code, then asserts "verified with pytest / committed"
+    # having run NO pytest and made NO commit; measured 4/8-5/8 on Qwen-27B, and
+    # NO sampling/MTP/temperature knob moves it (temp already 0 + MTP off still
+    # ~50-62%), so the only fix is structural: reject a completion whose claim the
+    # trace does not support). _ran_verification = a test/success-check command
+    # actually ran SINCE the last edit — an edit resets it, so a stale pre-edit
+    # run does not count as verification of the current state.
+    _ran_verification = False
+    _claim_trace_blocks = 0
+    try:
+        _CLAIM_TRACE_MAX_BLOCKS = int(
+            (_config.get("cycle") or {}).get("claim_trace_max_blocks", 2) or 0)
+    except Exception:
+        _CLAIM_TRACE_MAX_BLOCKS = 2
     # Advisor escalation (spike): suggest the heavyweight advisor tier at most
     # once per cycle when the gate fails repeatedly. Inert unless
     # _config["advisor"]["enabled"] — default-off, so no behavior change. The
@@ -3884,7 +3933,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         guarded only the first, which replay runs never take. One closure,
         every exit. Returns True if the exit was blocked (caller: inject the
         redirect already appended and continue)."""
-        nonlocal _success_check_blocks
+        nonlocal _success_check_blocks, _ran_verification
         if not _success_check_cmd:
             return False
         if _success_check_blocks >= _SUCCESS_CHECK_MAX_BLOCKS:
@@ -3892,6 +3941,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         _sc_rc, _sc_out = _run_success_check(_success_check_cmd, log)
         if _sc_rc == 0:
             log.info("success_check PASSED — %s exit permitted", path_name)
+            # The harness just verified the current state — a subsequent
+            # "I ran the tests" claim is now supported (don't trip the
+            # claim-vs-trace gate on a genuinely-verified completion).
+            _ran_verification = True
             return False
         _success_check_blocks += 1
         log.info("success_check FAILED (rc=%d) — %s exit blocked (%d/%d)",
@@ -3909,6 +3962,37 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         if _adv_msg:
             conversation_history.append({"role": "user", "content": _adv_msg})
         return True
+
+    def _claim_vs_trace_block(text, ran_verification, has_committed, blocks, max_blocks):
+        """Reject a completion whose CLAIM the trace does not support — the
+        fabricated-verification failure mode (d2 probe: the model fixes the code
+        then asserts 'verified with pytest / committed' having run neither).
+        Fires only when the model CLAIMS it ran the tests / committed AND no such
+        tool call happened since the last edit — so a false positive is impossible
+        when the action was genuinely performed. Bounded by max_blocks; on a block,
+        appends a correction nudge. Returns (blocked, new_blocks).
+        Orthogonal to _success_gate_blocks_exit: that catches 'done while RED';
+        this catches 'claimed an action never taken' (invisible without the trace,
+        and unfixable by any sampling knob — hence structural). State is passed in
+        (not closed over) so the reads register in the caller's scope."""
+        if not text or max_blocks <= 0 or blocks >= max_blocks:
+            return False, blocks
+        _unsupported = _claim_vs_trace_unsupported(text, ran_verification, has_committed)
+        if not _unsupported:
+            return False, blocks
+        blocks += 1
+        log.info("claim-vs-trace: unsupported claim(s) %s — exit blocked (%d/%d)",
+                 _unsupported, blocks, max_blocks)
+        telemetry.record_patch_event(
+            "claim_vs_trace_block",
+            kind="+".join(s.split()[0] for s in _unsupported))
+        conversation_history.append({"role": "user", "content": (
+            "You reported " + " and ".join(_unsupported) + ", but there is NO "
+            "such tool call in this session — you did not actually do it. Do not "
+            "report an action you did not perform. Run it now with exec_command "
+            "and show the real output before you finish."
+        )})
+        return True, blocks
     # Hard cap: even with ongoing tool calls, end the cycle this many turns
     # after persist.  Prevents post-TRACK drift into a second PERCEIVE.
     _CYCLE_HARD_STOP_TURNS = 15
@@ -4808,6 +4892,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         continue
                 if _success_gate_blocks_exit("textonly_stop"):
                     continue
+                _cvt_blk, _claim_trace_blocks = _claim_vs_trace_block(
+                    full_content, _ran_verification, _has_committed,
+                    _claim_trace_blocks, _CLAIM_TRACE_MAX_BLOCKS)
+                if _cvt_blk:
+                    continue
                 log.info("Stopping: text-only response (no tool calls)")
                 if _async_summarizer:
                     _async_summarizer.harvest(summary_state)
@@ -4867,6 +4956,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 # exit path, missing on the sibling — same defect class the
                 # guards in _validate_tool_call had (WS8.1).
                 if _success_gate_blocks_exit("completion_signal"):
+                    continue
+                _cvt_blk, _claim_trace_blocks = _claim_vs_trace_block(
+                    full_content, _ran_verification, _has_committed,
+                    _claim_trace_blocks, _CLAIM_TRACE_MAX_BLOCKS)
+                if _cvt_blk:
                     continue
                 log.info("Stopping: model signalled cycle completion (work persisted)")
                 return "done"
@@ -4932,6 +5026,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             telemetry.record_patch_event("open_task_nudge", kind="fired")
                             continue
                     if _success_gate_blocks_exit("first_textonly_completion"):
+                        continue
+                    _cvt_blk, _claim_trace_blocks = _claim_vs_trace_block(
+                        full_content, _ran_verification, _has_committed,
+                        _claim_trace_blocks, _CLAIM_TRACE_MAX_BLOCKS)
+                    if _cvt_blk:
                         continue
                     log.info("Stopping: first-text-only completion signal with persisted work")
                     telemetry.record_patch_event("completion_signal_first_textonly", kind="fired")
@@ -5337,6 +5436,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                                                         "append", "delete", "create")
                     ):
                         _last_mutation_turn = turn
+                        # An edit invalidates any prior test run: the current
+                        # state is unverified until the tests re-run (claim gate).
+                        _ran_verification = False
 
                     # Per-call dedup: if this exact (tool_name, args) was dispatched
                     # within the last _DEDUP_WINDOW calls AND the tool is safe to
@@ -5826,6 +5928,10 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     if func_name == "exec_command" and isinstance(func_args, dict):
                         _cmd = func_args.get("command", "")
                         _cmd_normalized = re.sub(r"\\\n", " ", _cmd)  # Cycle 36: collapse shell line-continuations before all checks
+                        # Claim-vs-trace: a real test/verify run supports a later
+                        # "I ran the tests / verified" completion claim.
+                        if any(_vt in _cmd_normalized.lower() for _vt in _VERIFY_CMD_TOKENS):
+                            _ran_verification = True
                         if _cmd_has(_cmd, "git commit"):  # WS8.1: anchored, heredoc/quote-blind
                             _has_committed = True
                             _has_edited = True  # commit implies edit happened

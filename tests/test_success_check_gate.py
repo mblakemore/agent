@@ -310,3 +310,52 @@ class TestAdvisorEscalationWiring:
             _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
         hist = "".join(str(m) for m in history)
         assert self._ADVICE not in hist  # suppressed: model was editing (progress)
+
+
+class TestClaimVsTraceGate:
+    """Fabricated-verification gate (d2 finding): reject a completion that CLAIMS
+    it ran the tests / committed when the trace shows no such tool call. The 27B
+    fixes the code correctly but claims 'verified with pytest / committed' having
+    run neither ~50-62% of the time, and no sampling/MTP knob moves it — so the
+    fix is structural."""
+
+    def test_unsupported_detection(self):
+        f = _agent._claim_vs_trace_unsupported
+        d2 = "Done. Verified with pytest, test passes. Committed to git."
+        # the exact fabrication shape: claims both, did neither
+        assert f(d2, False, False) == ["running the tests / verifying", "committing"]
+        # genuinely did both -> nothing flagged (no false positive)
+        assert f(d2, True, True) == []
+        # claims verify only, no run
+        assert f("I ran the tests and they pass.", False, True) == \
+            ["running the tests / verifying"]
+        # honest, no claim of having verified
+        assert f("I changed inc to return x + 1.", False, False) == []
+        # claims commit it didn't do
+        assert f("Fixed and committed the change.", True, False) == ["committing"]
+        # empty / None
+        assert f("", False, False) == []
+        assert f(None, False, False) == []
+
+    def test_gate_blocks_fabricated_completion(self, monkeypatch):
+        # No success_check configured (the plain-agent case): a completion that
+        # claims verification with no test run must be rejected with a correction.
+        monkeypatch.setitem(_agent._config, "cycle",
+                            {**_agent._config["cycle"], "success_check": None})
+        monkeypatch.setitem(_MAP_FN, "exec_command",
+                            MagicMock(return_value="exit=0\ncommitted"))
+        history = [{"role": "user", "content": "Fix inc in m.py."}]
+        with patch("agent._llm_request") as mock_llm, \
+             patch("agent._check_api_health", return_value=(True, "ok")), \
+             patch("agent._setup_logger"), \
+             patch("agent._detect_ctx_size", return_value=None):
+            mock_llm.side_effect = [
+                _tool_resp("exec_command", {"command": "git commit -m fix"}, "c1"),
+                _text("Cycle complete. I ran the tests and they pass."),
+                _text("Cycle complete. I ran the tests and they pass."),
+                _text("Cycle complete. I ran the tests and they pass."),
+                _text("Cycle complete. I ran the tests and they pass."),
+            ]
+            _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
+        hist = "".join(str(m) for m in history).lower()
+        assert "no such tool call" in hist  # the claim-vs-trace correction fired
