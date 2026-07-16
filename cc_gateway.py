@@ -49,10 +49,10 @@ log = logging.getLogger("cc-gateway")
 _CONNECT_TIMEOUT = int(os.environ.get("CC_GATEWAY_CONNECT_TIMEOUT", "30"))
 _READ_TIMEOUT = int(os.environ.get("CC_GATEWAY_READ_TIMEOUT", "600"))
 
-# TEMP resilience knobs — the durable fix is server-side (see
-# /droid/repos/test/aws-streaming-fix.md). A Bedrock proxy behind an API
-# Gateway with a ~29s timeout sometimes stalls under transient load and cuts
-# the stream. Retrying is safe ONLY before any content has reached the client;
+# Resilience knobs. A Bedrock proxy behind an API Gateway has a hard integration
+# timeout that cuts the stream mid-response; as of 2026-07-16 that wall is 180s
+# (raised from ~29s), measured cutting at 180.3s. Requests can also stall under
+# transient load. Retrying is safe ONLY before any content has reached the client;
 # once tokens are streaming we close gracefully instead. Worst-case added
 # latency is ~N×(read timeout) + backoffs, so keep N small.
 _MAX_RETRIES = int(os.environ.get("CC_GATEWAY_MAX_RETRIES", "2"))
