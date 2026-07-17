@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="How a local coding agent was made to run on a small open model when the cloud is unavailable — by building the harness, not retraining the model. A guided tour with measured before/after numbers.">
+<title>Scaffold, Don't Fine-Tune — A Big Harness for a Small Model</title>
+<style>
+  :root{
+    --ink:#12141c; --panel:#1b1f2b; --panel2:#232838; --line:#2c3346; --text:#e6e9f2;
+    --muted:#9aa2b6; --dim:#7d8398;
+    --drive:#f0a83a;      /* the fast local driver (Qwen) */
+    --drivedk:#c9860f;
+    --advise:#5ac8e0;     /* the deep advisor (GLM) */
+    --advisedk:#2f9fbd;
+    --green:#43c07f; --red:#e8677a; --violet:#a68bf0;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  :root[data-theme="light"]{
+    --ink:#f6f7fb; --panel:#ffffff; --panel2:#f0f2f8; --line:#d9deea; --text:#1a1e2a;
+    --muted:#5a6277; --dim:#6b7285; --drivedk:#b0760a; --advisedk:#1f86a3;
+  }
+  @media (prefers-color-scheme: light){
+    :root:not([data-theme="dark"]){
+      --ink:#f6f7fb; --panel:#ffffff; --panel2:#f0f2f8; --line:#d9deea; --text:#1a1e2a;
+      --muted:#5a6277; --dim:#6b7285; --drivedk:#b0760a; --advisedk:#1f86a3;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ink);color:var(--text);font-family:var(--sans);line-height:1.62}
+  .wrap{max-width:900px;margin:auto;padding:44px 22px 90px}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+  h1{font-family:var(--mono);font-weight:700;letter-spacing:-.02em;line-height:1.15;font-size:clamp(27px,4.6vw,40px);margin:.28em 0 .4em}
+  h1 .sub{display:block;font-size:clamp(15px,2.4vw,19px);color:var(--muted);font-weight:600;letter-spacing:0;margin-top:.5em}
+  .lede{color:var(--muted);font-size:17px;max-width:66ch}
+  .lede b{color:var(--text)}
+  h2{font-size:23px;margin:.2em 0 .4em;line-height:1.25}
+  h3{font-size:16px;font-family:var(--mono);letter-spacing:.02em;margin:1.4em 0 .3em}
+  p{max-width:68ch}
+  .muted{color:var(--muted)}
+  code{font-family:var(--mono);font-size:.9em;background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  a{color:var(--advise)}
+
+  /* cast strip */
+  .cast{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:26px 0 8px}
+  .who{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px 15px}
+  .who .role{font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim)}
+  .who .name{font-weight:700;font-size:15px;margin:3px 0 5px}
+  .who .desc{font-size:13.5px;color:var(--muted);line-height:1.5}
+  .who.drive{border-left:3px solid var(--drive)}
+  .who.advise{border-left:3px solid var(--advise)}
+  .who.harness{border-left:3px solid var(--violet)}
+  .who.engine{border-left:3px solid var(--green)}
+
+  /* before/after diagram */
+  .ba{display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:stretch;margin:22px 0}
+  @media (max-width:640px){ .ba{grid-template-columns:1fr} .ba .arrow{transform:rotate(90deg);justify-self:center} }
+  .bacol{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 17px}
+  .bacol .tag{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;margin-bottom:10px}
+  .bacol.before .tag{color:var(--red)}
+  .bacol.after .tag{color:var(--green)}
+  .bacol ul{margin:0;padding-left:18px}
+  .bacol li{font-size:13.6px;margin:6px 0;color:var(--muted)}
+  .bacol li b{color:var(--text)}
+  .arrow{display:flex;align-items:center;justify-content:center;font-size:26px;color:var(--dim);font-family:var(--mono)}
+
+  /* rail */
+  .rail{position:relative;margin-top:48px;padding-left:32px;border-left:3px solid var(--line)}
+  .stop{position:relative;margin-bottom:58px}
+  .stop::before{content:"";position:absolute;left:-43px;top:5px;width:16px;height:16px;border-radius:50%;
+    background:var(--ink);border:3px solid var(--drive)}
+  .stop.adv::before{border-color:var(--advise);box-shadow:0 0 13px rgba(90,200,224,.5)}
+  .stop.neg::before{border-color:var(--red)}
+  .step{font-family:var(--mono);font-size:12px;letter-spacing:.15em;text-transform:uppercase;color:var(--drivedk)}
+  .stop.adv .step{color:var(--advisedk)}
+  .stop.neg .step{color:var(--red)}
+
+  /* cards + stat tiles */
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:16px 18px;margin:16px 0}
+  .card .k{font-family:var(--mono);font-size:11.5px;color:var(--dim);letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin:16px 0}
+  .tile{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:15px 16px;text-align:center}
+  .tile .big{font-family:var(--mono);font-size:26px;font-weight:700;line-height:1}
+  .tile .lbl{font-size:12px;color:var(--muted);margin-top:7px;line-height:1.4}
+  .tile.g .big{color:var(--green)} .tile.d .big{color:var(--drive)} .tile.a .big{color:var(--advise)} .tile.r .big{color:var(--red)}
+
+  /* two-column worked/didn't */
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:16px 0}
+  @media (max-width:600px){ .cols{grid-template-columns:1fr} }
+  .colbox{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px 16px}
+  .colbox h4{margin:0 0 9px;font-size:14px;font-family:var(--mono);letter-spacing:.04em}
+  .colbox.win h4{color:var(--green)} .colbox.lose h4{color:var(--red)}
+  .colbox li{font-size:13.4px;color:var(--muted);margin:7px 0}
+  .colbox li b{color:var(--text)}
+  .colbox ul{margin:0;padding-left:17px}
+
+  figure{margin:20px 0}
+  figcaption{font-size:12.5px;color:var(--dim);font-family:var(--mono);margin-top:8px;max-width:64ch}
+  svg{max-width:100%;height:auto;display:block}
+
+  .callout{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--violet);
+    border-radius:10px;padding:16px 18px;margin:18px 0}
+  .callout .lab{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--violet);margin-bottom:6px}
+
+  .idea{margin-top:58px;background:linear-gradient(135deg,var(--panel),var(--panel2));
+    border:1px solid var(--line);border-radius:14px;padding:26px 26px 22px}
+  .idea .lab{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--drivedk)}
+  .idea h2{font-size:25px;margin:.3em 0 .4em}
+  .idea p{font-size:16px;color:var(--muted)}
+  .idea b{color:var(--text)}
+
+  .specbtn{display:inline-flex;align-items:center;gap:9px;font-family:var(--mono);font-size:13.5px;font-weight:600;
+    text-decoration:none;color:var(--ink);background:var(--advise);border:1.5px solid var(--advise);border-radius:11px;
+    padding:10px 18px;margin:22px 0 4px;transition:transform .12s, box-shadow .12s}
+  .specbtn:hover{transform:translateY(-1px);box-shadow:0 8px 22px rgba(90,200,224,.32)}
+  .foot{margin-top:66px;padding-top:18px;border-top:1px solid var(--line);color:var(--dim);font-size:13px}
+
+  .toggle{position:fixed;top:14px;right:14px;font-family:var(--mono);font-size:12px;background:var(--panel);
+    color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:7px 11px;cursor:pointer;z-index:10}
+</style>
+</head>
+<body>
+<button class="toggle" onclick="(function(){var r=document.documentElement;var d=r.getAttribute('data-theme')==='light'?'dark':'light';r.setAttribute('data-theme',d);})()">◐ theme</button>
+<main class="wrap">
+
+  <div class="eyebrow">A guided tour · one local coding agent · measured before &amp; after</div>
+  <h1>Scaffold, don't fine-tune
+    <span class="sub">Making a small open model reliable enough to run the coding agent when the cloud is down</span>
+  </h1>
+  <p class="lede">The goal was simple to state and hard to hit: keep an autonomous coding agent working
+  when the frontier cloud models (Claude, AWS Bedrock) are unavailable — using only <b>open models running
+  on one desktop</b>. The bet we tested was that you don't get there by <b>retraining</b> the model. You get
+  there by building the <b>harness around it</b>: route the hard problems to a deeper model, refuse to trust the
+  model's own "it works," and measure everything honestly enough to find where it actually breaks. Here is the
+  tour, with the real numbers — including the experiment that came out <em>negative</em>, which turned out to be
+  the most useful result of all.</p>
+
+  <div class="eyebrow" style="margin-top:34px">The cast — four pieces, so nothing gets confused later</div>
+  <div class="cast">
+    <div class="who harness"><div class="role">The harness</div><div class="name">agent.py</div>
+      <div class="desc">The autonomous loop: reads a task, plans, edits files, runs commands and tests, decides when it's done. Model-agnostic — you plug a model in.</div></div>
+    <div class="who drive"><div class="role">The fast driver</div><div class="name">Qwen 27B</div>
+      <div class="desc">A small open model on the GPU. ~40 words/sec. Does the moment-to-moment coding. Capable, but sometimes undisciplined.</div></div>
+    <div class="who advise"><div class="role">The deep advisor</div><div class="name">GLM 744B</div>
+      <div class="desc">A very large open model on the CPU. Slow — about ½ word/sec — but far deeper. Called only when the driver gets stuck.</div></div>
+    <div class="who engine"><div class="role">The inference engine</div><div class="name">colibri</div>
+      <div class="desc">The software that runs the 744B advisor from disk on a single machine. Most of the speed work happened here.</div></div>
+  </div>
+
+  <h3 style="margin-top:36px">The whole change, on one screen</h3>
+  <div class="ba">
+    <div class="bacol before"><div class="tag">Before</div>
+      <ul>
+        <li><b>One stock model</b>, out of the box</li>
+        <li><b>Default engine config</b> — inherited from someone else's computer</li>
+        <li><b>Single model</b> does everything, easy and hard alike</li>
+        <li><b>Trusts the model</b> when it says "done, verified, committed"</li>
+        <li><b>No guardrail</b> — a bad command runs</li>
+      </ul>
+    </div>
+    <div class="arrow" aria-hidden="true">→</div>
+    <div class="bacol after"><div class="tag">After</div>
+      <ul>
+        <li><b>Host-tuned engine</b> — <b>~4× faster</b> on this machine</li>
+        <li><b>Two models</b>, routed by comparative advantage</li>
+        <li><b>Harness runs the tests itself</b> and rejects unsupported "done" claims</li>
+        <li><b>Always-on catastrophic-command guard</b></li>
+        <li><b>Everything measured</b> — including what didn't work</li>
+      </ul>
+    </div>
+  </div>
+
+  <a class="specbtn" href="./spec.html"><span aria-hidden="true">◇</span> Full spec sheet — every number, method &amp; caveat</a>
+
+  <div class="rail">
+
+    <!-- STOP 1 -->
+    <div class="stop">
+      <div class="step">Step 1 · Does it even work?</div>
+      <h2>First question before any tuning: can a small local model actually do the job?</h2>
+      <p>We built a <b>replay suite</b> — five real bugs from this codebase's own history, each run from the commit
+      just before it was fixed, scored on whether the agent reproduces the fix and passes the tests. Then we ran
+      two models through the identical harness.</p>
+      <div class="tiles">
+        <div class="tile g"><div class="big">73%</div><div class="lbl">local Qwen&nbsp;27B<br>pass@1 on the replay suite</div></div>
+        <div class="tile d"><div class="big">47%</div><div class="lbl">frontier model via a<br>throttled gateway</div></div>
+        <div class="tile a"><div class="big">≥70%</div><div class="lbl">the bar we set for<br>"local is strong enough"</div></div>
+      </div>
+      <p class="muted">The local model <b>cleared the bar</b>. (The frontier number is depressed by a 29-second
+      response cap on the shared gateway we reached it through — not a fair head-to-head, but it made the point:
+      the local option was viable on its own merits, not just as a fallback.)</p>
+    </div>
+
+    <!-- STOP 2 -->
+    <div class="stop">
+      <div class="step">Step 2 · The bottleneck</div>
+      <h2>The engine was slow because it was tuned for a different computer</h2>
+      <p>The big advisor model is 363&nbsp;GB — far too large for memory, so the engine streams it from disk,
+      token by token. It was crawling at <b>0.23 words/second</b>. The instinct is "buy a faster GPU." The
+      measurement said otherwise: the machine was <b>disk-bound</b>, and the engine's disk setting had been
+      tuned years earlier for a <em>different</em> host with a slower drive — and never re-checked here.</p>
+      <p>Flipping one flag to bypass the operating system's file cache (this NVMe drive is <b>5× faster</b> read
+      directly), and turning off a "speculative decoding" trick that's a net tax when you're disk-bound, doubled
+      the speed. Then striping the model across two SSDs, then a background pre-fetch of the next layer, climbed
+      the rest of the way:</p>
+
+      <figure>
+        <svg viewBox="0 0 640 232" role="img" aria-label="Throughput ladder: 0.23 baseline to about 0.9 words per second, roughly 4x.">
+          <g font-family="var(--mono)" font-size="12.5">
+            <!-- axis -->
+            <line x1="150" y1="16" x2="150" y2="200" stroke="var(--line)" stroke-width="1"/>
+            <!-- bars: scale 0..1.0 tok/s -> 150..610 px (460px) -->
+            <!-- baseline 0.23 -->
+            <rect x="150" y="26" width="106" height="26" rx="4" fill="var(--red)" opacity="0.85"/>
+            <text x="264" y="44" fill="var(--text)">0.23</text>
+            <text x="142" y="44" fill="var(--muted)" text-anchor="end">stock config</text>
+            <!-- direct+draft 0.49 -->
+            <rect x="150" y="66" width="225" height="26" rx="4" fill="var(--drive)" opacity="0.9"/>
+            <text x="383" y="84" fill="var(--text)">0.49&nbsp;&nbsp;2.2×</text>
+            <text x="142" y="84" fill="var(--muted)" text-anchor="end">direct-disk read</text>
+            <!-- +stripe 0.65 -->
+            <rect x="150" y="106" width="299" height="26" rx="4" fill="var(--drive)"/>
+            <text x="457" y="124" fill="var(--text)">0.65&nbsp;&nbsp;2.8×</text>
+            <text x="142" y="124" fill="var(--muted)" text-anchor="end">+ 2-disk stripe</text>
+            <!-- +staging ~0.9 -->
+            <rect x="150" y="146" width="414" height="26" rx="4" fill="var(--green)"/>
+            <text x="572" y="164" fill="var(--text)">~0.9&nbsp;&nbsp;~4×</text>
+            <text x="142" y="164" fill="var(--muted)" text-anchor="end">+ layer pre-fetch</text>
+            <!-- x ticks -->
+            <text x="150" y="192" fill="var(--dim)" text-anchor="middle">0</text>
+            <text x="380" y="192" fill="var(--dim)" text-anchor="middle">0.5</text>
+            <text x="610" y="192" fill="var(--dim)" text-anchor="middle">1.0</text>
+            <text x="380" y="216" fill="var(--dim)" text-anchor="middle">words / second (advisor model, streamed from disk)</text>
+          </g>
+        </svg>
+        <figcaption>Every rung is env-flags or storage layout — <b>zero changes to the model's weights</b>. The disk
+        time per word fell 36% at the stripe step alone. Independently reproduced by a community benchmark on
+        different hardware, which hit the same two conclusions.</figcaption>
+      </figure>
+
+      <h3>What worked, and what didn't — both are the result</h3>
+      <div class="cols">
+        <div class="colbox win"><h4>✓ Paid off</h4><ul>
+          <li><b>Direct disk reads</b> — the single biggest win, one flag</li>
+          <li><b>Turning speculation off</b> when disk-bound (it inflates the working set)</li>
+          <li><b>Two-SSD stripe</b> — every layer lands on both drives</li>
+          <li><b>Next-layer pre-fetch</b> in the background</li>
+          <li><b>Lossless compression</b> of experts, in the idle prefill phase only</li>
+        </ul></div>
+        <div class="colbox lose"><h4>✗ Measured, then dropped</h4><ul>
+          <li><b>2-bit quantization</b> — the shortcut everyone tries; the math doesn't survive it (broke generation)</li>
+          <li><b>Caching experts in GPU memory</b> — no win; call overhead ate it</li>
+          <li><b>GPU prefill</b> — falsified three separate ways; the GPU was slower here</li>
+          <li><b>More aggressive pre-fetch</b> — contended for the same disk it was trying to help</li>
+        </ul></div>
+      </div>
+      <p class="muted">The pattern under all of it: when disk, cores, and memory are all saturated at once,
+      only three moves help — <b>remove waste, add bandwidth, or do work during an idle phase</b>. Everything
+      that failed violated that rule.</p>
+    </div>
+
+    <!-- STOP 3 -->
+    <div class="stop adv">
+      <div class="step">Step 3 · Two models</div>
+      <h2>One fast model to drive, one deep model to consult — routed automatically</h2>
+      <p>The original design ran the small model twice: once to code, once to summarize. The upgrade replaced the
+      second copy with a <b>different kind of model entirely</b>. The 27B is fast but shallow; the 744B is slow but
+      deep. So we route by <b>comparative advantage</b>: the fast model drives every turn, and the harness escalates
+      to the deep advisor <b>only when the driver is genuinely stuck</b> — because one advisor call costs about two
+      minutes.</p>
+      <div class="card">
+        <div class="k">Three ways to detect "stuck" — each wired to auto-call the advisor</div>
+        <p style="margin:.2em 0"><b>1 · Declares done while tests are red.</b> The harness runs the tests itself and
+        catches it.<br>
+        <b>2 · Loops.</b> Same failing action, ignores the redirect, twice.<br>
+        <b>3 · Grinds.</b> Distinct plausible actions but no convergence past a time budget.</p>
+      </div>
+      <figure>
+        <svg viewBox="0 0 640 96" role="img" aria-label="Funnel: trigger fires, harness auto-calls the advisor, advisor answers, all logged.">
+          <g font-family="var(--mono)" font-size="12.5">
+            <rect x="8"   y="26" width="150" height="44" rx="9" fill="var(--panel2)" stroke="var(--drive)"/>
+            <text x="83"  y="46" fill="var(--text)" text-anchor="middle">stuck detected</text>
+            <text x="83"  y="62" fill="var(--dim)"  text-anchor="middle">gate · loop · grind</text>
+            <text x="176" y="52" fill="var(--dim)" text-anchor="middle">→</text>
+            <rect x="196" y="26" width="150" height="44" rx="9" fill="var(--panel2)" stroke="var(--advise)"/>
+            <text x="271" y="46" fill="var(--text)" text-anchor="middle">harness calls</text>
+            <text x="271" y="62" fill="var(--dim)"  text-anchor="middle">the 744B advisor</text>
+            <text x="364" y="52" fill="var(--dim)" text-anchor="middle">→</text>
+            <rect x="384" y="26" width="150" height="44" rx="9" fill="var(--panel2)" stroke="var(--advise)"/>
+            <text x="459" y="46" fill="var(--text)" text-anchor="middle">real advice</text>
+            <text x="459" y="62" fill="var(--dim)"  text-anchor="middle">injected into the loop</text>
+            <text x="552" y="52" fill="var(--dim)" text-anchor="middle">→</text>
+            <rect x="572" y="26" width="60" height="44" rx="9" fill="var(--panel2)" stroke="var(--green)"/>
+            <text x="602" y="46" fill="var(--text)" text-anchor="middle">logged</text>
+            <text x="602" y="62" fill="var(--dim)"  text-anchor="middle">dashboards</text>
+          </g>
+        </svg>
+        <figcaption>Built and proven end-to-end live: the deep model, when called, returned genuinely useful advice
+        (e.g. spotting that an import warning was hiding the real error, and suggesting the exact flag to silence it).
+        The whole funnel is instrumented on live dashboards.</figcaption>
+      </figure>
+    </div>
+
+    <!-- STOP 4 -->
+    <div class="stop neg">
+      <div class="step">Step 4 · Don't trust "done"</div>
+      <h2>The model is capable. Its failures are about <em>discipline</em>, not ability.</h2>
+      <p>Given real tasks, the 27B scored 6 of 7 on a general capability eval and 3 of 3 on the hard tier — fast,
+      clean solves. So where does it fall down? On <b>process</b>: declaring a task verified without running the test,
+      claiming "committed" without committing. The kind of thing that never shows up in the final code but poisons
+      any workflow that trusts the model's word.</p>
+
+      <div class="callout">
+        <div class="lab">A measurement lesson we had to eat first</div>
+        <p style="margin:.1em 0">Our first pass reported the model <b>fabricated its test results ~50–60% of the
+        time</b> — alarming. It was wrong. Our own detector was reading the harness's <em>summarized</em> "OK" as
+        "no test ran." When we keyed on the actual <b>tool invocation</b> instead, the true rate was closer to
+        <b>1 in 15</b>. The model runs the tests the large majority of the time. The 4× overstatement was a bug in
+        <em>our measurement</em>, not the model — a reminder that a metric is only as good as the signal it reads.</p>
+      </div>
+
+      <p>The fix that matters isn't a better prompt — we proved no decoding or sampling knob changes the behavior.
+      It's <b>structural</b>: the harness runs the success check <b>itself</b> and rejects any "verified / done /
+      committed" claim the execution trace doesn't support, injecting <em>"there is no such tool call — run it now
+      and show the output."</em> Trust is replaced by verification.</p>
+
+      <div class="card">
+        <div class="k">And one guardrail that has nothing to do with intelligence</div>
+        <p style="margin:.2em 0">A test surfaced that <code>rm -rf /</code> would run <b>unguarded</b>. We added an
+        always-on catastrophic-command guard — blocks whole-filesystem deletes, raw-disk writes, fork bombs, and
+        friends — verified to <b>block 19/19 dangerous commands while allowing 18/18 safe ones</b> (it still lets
+        you <code>rm -rf ./build</code>). Any agent that can run shell commands needs this.</p>
+      </div>
+    </div>
+
+    <!-- STOP 5 -->
+    <div class="stop neg">
+      <div class="step">Step 5 · The honest negative</div>
+      <h2>We built the whole advisor tier — and measured that it doesn't help <em>this</em> model yet</h2>
+      <p>Here's the result most demos would bury. We ran the advisor head-to-head, on vs. off, on tasks the model
+      actually gets stuck on. The advisor <b>fired correctly every time</b> — trigger, call, real answer, all
+      confirmed. And it converted <b>zero</b> failures.</p>
+      <div class="tiles">
+        <div class="tile d"><div class="big">on ✓</div><div class="lbl">advisor engaged &amp; answered<br>on every run — mechanically it works</div></div>
+        <div class="tile r"><div class="big">0 → 0</div><div class="lbl">extra tasks solved<br>with the advisor turned on</div></div>
+        <div class="tile a"><div class="big">why</div><div class="lbl">it interrupted runs that were<br>slowly converging on their own</div></div>
+      </div>
+      <p>The mechanism is subtle and worth the slide: our "grinding" trigger fired on <em>elapsed time with tests
+      still red</em> — which for a slow model looks identical to <em>"slow but converging."</em> The two-minute
+      advisor interruption <b>derailed runs that would have finished by themselves.</b> So we built the fix the
+      negative pointed straight at: only escalate if the model has made <b>no file changes</b> in the last several
+      turns — spinning, not progressing. Re-running recovered the lost ground to parity.</p>
+      <p class="muted"><b>The tier as built shows no positive lift on this strong 27B — stated plainly, not hidden.</b>
+      That's a real finding: it means the small model is disciplined enough, on tasks it can do, that a deep second
+      opinion mostly gets in the way. The value of building the whole scaffold was <em>learning exactly that</em>,
+      with numbers, instead of shipping a plausible feature that quietly hurt.</p>
+    </div>
+
+    <!-- STOP 6 -->
+    <div class="stop">
+      <div class="step">Step 6 · What one more hard drive would buy</div>
+      <h2>The wall is measured, so the next upgrade isn't a guess</h2>
+      <p>At the tuned optimum, the machine's time splits cleanly — and that split is the whole forward-looking story.</p>
+      <figure>
+        <svg viewBox="0 0 640 118" role="img" aria-label="Where the wall-clock time goes: disk about 50 percent, CPU matmul about 33 percent, memory about 17 percent.">
+          <g font-family="var(--mono)" font-size="12.5">
+            <!-- stacked bar, total width 620 from x=10 -->
+            <rect x="10"  y="30" width="310" height="34" rx="5" fill="var(--drive)"/>
+            <rect x="320" y="30" width="205" height="34" fill="var(--advise)"/>
+            <rect x="525" y="30" width="105" height="34" rx="5" fill="var(--violet)"/>
+            <text x="165" y="52" fill="#12141c" text-anchor="middle" font-weight="700">disk streaming ~50%</text>
+            <text x="422" y="52" fill="#12141c" text-anchor="middle" font-weight="700">CPU math ~33%</text>
+            <text x="577" y="52" fill="#12141c" text-anchor="middle" font-weight="700">memory ~17%</text>
+            <text x="10" y="92" fill="var(--muted)">Disk is still the single biggest slice — and it's the one storage buys down directly.</text>
+          </g>
+        </svg>
+        <figcaption>Reference point from a bigger machine: with enough memory to hold the whole model, the disk
+        slice essentially disappears (98% cache hit) and memory becomes the terminal bottleneck.</figcaption>
+      </figure>
+      <p>So the "what would a third drive do" question has a <b>measured</b> answer instead of a marketing one: the
+      two-disk stripe already cut disk time per word by 36%; a <b>third fast NVMe widens the stripe further</b>,
+      and the miss-bursts that currently split unevenly across two drives spread across three. And the real
+      end-state the data points to is <b>more memory</b> — enough RAM to resident the model turns the whole disk
+      slice off, and that directly buys speed on the deep-advisor tier, which is the one part of the system where
+      depth-per-second is the binding constraint. <b>Storage and memory, not a bigger GPU, are the levers this
+      workload responds to</b> — and we know that because we measured it, not because we assumed it.</p>
+    </div>
+
+  </div>
+
+  <!-- THE ONE IDEA -->
+  <div class="idea">
+    <div class="lab">The one idea to take to the meeting</div>
+    <h2>Scaffold the harness, don't retrain the model</h2>
+    <p>Nothing in this entire arc touched a model's weights. The gains came from <b>engineering around the model</b>:
+    tune the engine to the actual machine (<b>4×</b>), route hard problems to a deeper model by comparative
+    advantage, <b>run the tests yourself instead of trusting "done"</b>, guard the destructive commands, and
+    <b>measure honestly enough to find the feature that doesn't help.</b> For anyone building on top of an LLM,
+    that's the transferable lesson: your leverage is in the harness — the verification, the routing, the
+    guardrails, the measurement — far more than in the model you happened to start with.</p>
+  </div>
+
+  <div class="foot">
+    Built for the UCSB “AI for App Dev” group. Every figure on this page is measured on real hardware and traceable
+    in the <a href="./spec.html">spec sheet</a>. The most quotable line of the project: <em>you cannot trust a model's
+    “verified,” so the harness must verify — and you cannot trust your own metric either, so check what signal it
+    actually reads.</em>
+  </div>
+
+</main>
+</body>
+</html>
