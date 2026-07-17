@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Spec sheet: every measured number, method, and caveat behind the small-model coding-agent scaffolding project.">
+<title>Spec Sheet — Scaffold, Don't Fine-Tune</title>
+<style>
+  :root{
+    --ink:#12141c; --panel:#1b1f2b; --panel2:#232838; --line:#2c3346; --text:#e6e9f2;
+    --muted:#9aa2b6; --dim:#7d8398; --drive:#f0a83a; --advise:#5ac8e0; --green:#43c07f;
+    --red:#e8677a; --violet:#a68bf0;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  :root[data-theme="light"]{--ink:#f6f7fb;--panel:#fff;--panel2:#f0f2f8;--line:#d9deea;--text:#1a1e2a;--muted:#5a6277;--dim:#6b7285}
+  @media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--ink:#f6f7fb;--panel:#fff;--panel2:#f0f2f8;--line:#d9deea;--text:#1a1e2a;--muted:#5a6277;--dim:#6b7285}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--ink);color:var(--text);font-family:var(--sans);line-height:1.6}
+  .wrap{max-width:880px;margin:auto;padding:40px 22px 80px}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
+  h1{font-family:var(--mono);font-size:clamp(23px,4vw,32px);letter-spacing:-.02em;margin:.3em 0 .3em}
+  h2{font-size:19px;margin:1.8em 0 .5em;border-bottom:1px solid var(--line);padding-bottom:7px}
+  p{max-width:74ch;color:var(--muted)} p b{color:var(--text)}
+  a{color:var(--advise)}
+  code{font-family:var(--mono);font-size:.88em;background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  th{background:var(--panel2);font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
+  td b{color:var(--text)} .num{font-family:var(--mono)}
+  .g{color:var(--green)} .r{color:var(--red)} .d{color:var(--drive)} .a{color:var(--advise)}
+  .tblwrap{overflow-x:auto}
+  .note{background:var(--panel2);border-left:3px solid var(--violet);border-radius:8px;padding:12px 15px;margin:14px 0;font-size:13.5px;color:var(--muted)}
+  .note b{color:var(--text)}
+  .back{font-family:var(--mono);font-size:13px;text-decoration:none;color:var(--advise)}
+  .toggle{position:fixed;top:14px;right:14px;font-family:var(--mono);font-size:12px;background:var(--panel);color:var(--muted);border:1px solid var(--line);border-radius:8px;padding:7px 11px;cursor:pointer}
+  ul{color:var(--muted);font-size:14px} li{margin:5px 0} li b{color:var(--text)}
+</style>
+</head>
+<body>
+<button class="toggle" onclick="(function(){var r=document.documentElement;var d=r.getAttribute('data-theme')==='light'?'dark':'light';r.setAttribute('data-theme',d);})()">◐ theme</button>
+<main class="wrap">
+  <a class="back" href="./index.html">← back to the tour</a>
+  <div class="eyebrow" style="margin-top:20px">Spec sheet · measured on real hardware</div>
+  <h1>Scaffold, Don't Fine-Tune — the numbers</h1>
+  <p>The tour is the story; this is the receipt. Every figure below is measured on the actual host. Where a number
+  has a caveat, the caveat is here too — including the ones that overturned our own earlier claims.</p>
+
+  <h2>1 · The components</h2>
+  <div class="tblwrap"><table>
+    <tr><th>Piece</th><th>What it is</th><th>Speed (this host)</th></tr>
+    <tr><td><b>agent.py</b></td><td>Model-agnostic autonomous coding loop: plan → edit → run → test → decide-done. Six-phase discipline profile optional.</td><td>—</td></tr>
+    <tr><td><b>Qwen 27B</b> (driver)</td><td>Small open model on the GPU. Does every turn's coding.</td><td class="num">~40 tok/s decode · 123 tok/s prefill (GPU)</td></tr>
+    <tr><td><b>GLM 744B</b> (advisor)</td><td>Very large open model, streamed from disk on CPU. Called only on "stuck."</td><td class="num">~0.5–0.9 tok/s · ≈2 min / call</td></tr>
+    <tr><td><b>colibri</b></td><td>The inference engine that runs the 744B advisor from disk on one machine.</td><td class="num">tuned to ~4× baseline</td></tr>
+  </table></div>
+
+  <h2>2 · Does a small local model do the job? (replay suite)</h2>
+  <p>Five real bugs from this codebase's history (labeled E1 / M1 / M2 / H1 / P1), each run from the commit
+  <em>before</em> its fix, scored pass@1 with k=3 through the identical harness.</p>
+  <div class="tblwrap"><table>
+    <tr><th>Model</th><th>Score</th><th>Breakdown</th><th>Note</th></tr>
+    <tr><td><b>Qwen 27B</b> (local, stock third-party build)</td><td class="num g">73%</td><td class="num">E1 3/3 · M1 3/3 · H1 3/3 · M2 1/3 · P1 1/3</td><td>Clears the ≥70% "local-strong" bar.</td></tr>
+    <tr><td>Frontier model via shared gateway</td><td class="num d">47%</td><td class="num">M2 0/3 · P1 0/3</td><td>Depressed by a 29 s gateway response cap + early-exit discipline — not a fair head-to-head.</td></tr>
+  </table></div>
+  <p class="note">Both tiers fail the same two issues (M2, P1) the same way — a <b>completion-discipline / mock-trap</b>
+  failure, not a capability gap. That observation set the whole "discipline, not ability" direction below.
+  Caveat logged: the repo is public, so recent fixes could in principle sit in pretraining data (weak, recent).</p>
+
+  <h2>3 · Engine throughput ladder (the 4×)</h2>
+  <p>Host: 16-core CPU, 60 GB RAM, 363 GB int4 model on NVMe. Bottleneck confirmed <b>disk-bound</b> (expert-disk
+  ≈ 67% of wall at baseline). All gains are env-flags or storage layout — <b>no weight changes</b>.</p>
+  <div class="tblwrap"><table>
+    <tr><th>Configuration</th><th>tok/s</th><th>vs base</th><th>Mechanism</th></tr>
+    <tr><td>Stock config (default)</td><td class="num r">0.23</td><td class="num">1.0×</td><td>Inherited a disk setting tuned for a different, slower host; never re-benchmarked here.</td></tr>
+    <tr><td>+ direct disk reads, speculation off</td><td class="num d">0.49</td><td class="num">2.2×</td><td>O_DIRECT bypasses page-cache copy (drive does 5.9 GB/s direct vs 1.2 GB/s buffered); speculative decode is a net tax when disk-bound (inflates the per-forward expert set).</td></tr>
+    <tr><td>+ two-SSD stripe</td><td class="num d">0.65</td><td class="num">2.8×</td><td>Every model layer spans both drives (even/odd shard split) → disk time per word −36%.</td></tr>
+    <tr><td>+ background next-layer pre-fetch</td><td class="num g">~0.9</td><td class="num">~4×</td><td>Router-predicted layer staged while the current one computes; best observed 0.94. Note: a later upstream async-pipeline feature reaches the same ~0.9 band by a different route.</td></tr>
+  </table></div>
+  <p class="note"><b>Independently reproduced.</b> A community benchmark on entirely different hardware
+  (RTX 5090, Gen5 NVMe) hit the same two conclusions: speculation is a net loss when disk-bound, and direct-disk
+  should be the Linux default. Both are now upstream pull-request candidates.</p>
+
+  <h3 style="font-family:var(--mono);font-size:14px;color:var(--drive);margin-top:22px">✓ Levers that paid off</h3>
+  <ul>
+    <li><b>Direct disk reads</b> — biggest single win, one flag.</li>
+    <li><b>Speculation off</b> when disk-bound — also shrinks the working set, lifting cache hit-rate 30% → 50%.</li>
+    <li><b>Two-disk stripe</b> — rollback is a file rename; originals kept.</li>
+    <li><b>Next-layer pre-fetch</b> — byte-identical output; +9–15% at matched cache state, never negative.</li>
+    <li><b>Lossless expert compression (EZST)</b> — 345 → 258 GB, bit-exact; a win only in the idle prefill phase.</li>
+    <li><b>AMD GPU port</b> — the 744B runs on consumer RDNA4 silicon (a temp-dir JIT bug caused the one hard crash; found via strace).</li>
+  </ul>
+  <h3 style="font-family:var(--mono);font-size:14px;color:var(--red);margin-top:14px">✗ Levers measured, then dropped</h3>
+  <ul>
+    <li><b>2-bit quantization</b> — per-row scales can't carry 2 bits (rel-RMS 0.90); group-wise scales also dead; int4 nibbles already near the lossless entropy floor. Visibly broke generation.</li>
+    <li><b>GPU expert cache</b> — no win at batch-1; launch + PCIe overhead per call, and RAM pins displace disk cache 1:1.</li>
+    <li><b>GPU prefill</b> — falsified three separate ways; the GPU attention was slower at this sequence length.</li>
+    <li><b>More aggressive pre-fetch lead</b> — net loss; the fetch traffic contended for the same CPU and disk.</li>
+  </ul>
+  <p class="note"><b>The law under all of it:</b> at the optimum, disk + cores + memory are co-saturated, so only three
+  moves help — <b>remove waste, add bandwidth, or do work during an idle phase</b>. Every failed lever broke that rule.</p>
+
+  <h2>4 · The two-model advisor tier</h2>
+  <p>Route by comparative advantage: fast 27B drives; deep 744B is consulted only on a genuine stall (≈2 min/call,
+  so it must be rare). Escalation router (<code>should_escalate</code>) covers three stall modes, each auto-invoking
+  the advisor and injecting its answer:</p>
+  <div class="tblwrap"><table>
+    <tr><th>Trigger</th><th>Fires when</th><th>Detection</th></tr>
+    <tr><td><b>gate</b></td><td>Model declares done while the success check is red</td><td>Harness runs the check itself</td></tr>
+    <tr><td><b>loop</b></td><td>Same failing action, redirect ignored, ≥2×</td><td>Loop-intervention ladder</td></tr>
+    <tr><td><b>grind</b></td><td>Distinct actions, no convergence past a turn/time budget</td><td>Turn-% or wall-clock-elapsed with check still red</td></tr>
+  </table></div>
+  <p>Verified live end-to-end: trigger → auto-call → real GLM advice → injected → telemetry funnel → Grafana panels.
+  In one live catch, the advisor diagnosed that an import warning was hiding the real traceback and suggested the
+  exact <code>pytest -p no:warnings --tb=short</code> fix. A config-loader bug that silently dropped the advisor
+  block (so the tier was inert in production) was found and fixed along the way — <b>lesson: features that consume
+  config must test the config-load path, not just an injected config.</b></p>
+
+  <h2>5 · Capability vs. discipline</h2>
+  <p>General capability eval (7 probes: instruction-adherence, tool calls, terminal, TDD, multi-file edit,
+  multi-hop): <b>Qwen 27B = 6/7</b>, all six passes fast (15–30 s, 1–3 turns). Hard tier (red-herring debug,
+  edge-case round-trips, feature-without-regression): <b>3/3 both arms</b>. The model is <b>capable</b>; the real
+  gaps are process discipline under stall.</p>
+  <div class="note"><b>The fabrication-rate correction (a measurement bug of ours).</b>
+  First reported: the model claims "verified / passed / committed" without running anything <b>~50–62%</b> of the
+  time. That was wrong. Our trace detector counted the harness's <em>summarized</em> "OK" output (and a truncated
+  command display) as "no test ran." Re-keying on the actual <b>tool invocation</b> in the session log: over 15
+  saved traces, 7 of 8 flagged "fabrications" had actually run pytest — true fabrication ≈ <b>1 in 15</b>, N far too
+  small to pin a rate. We also A/B-tested decoding knobs (speculation on/off): fabrication stayed stochastic,
+  Fisher p ≈ 1.0 — <b>no sampling/temperature/decoding knob fixes it.</b> The residual source is GPU
+  float-reduction nondeterminism tipping a borderline "call pytest vs. claim it" decision. Only a <b>structural</b>
+  fix works.</div>
+  <p><b>The structural fix — claim-vs-trace gate.</b> The harness rejects any completion whose claim the execution
+  trace doesn't support: "ran the tests / verified / N passed" with no test invocation since the last edit, or
+  "committed" with no commit. It injects <em>"there is no such tool call — run it now and show the output"</em> and
+  continues. Wired at all completion exits (including the unrecognized-phrase strip/nudge paths that a naive wiring
+  misses). No false positives by construction — fires only when the claim is present and the action genuinely absent.</p>
+
+  <h2>6 · The catastrophic-command guard</h2>
+  <p>Independent of intelligence: <code>exec_command</code> had a guard mechanism with <b>zero defaults</b>, so
+  <code>rm -rf /</code> ran unguarded. Added an always-on guard: blocks <code>rm -rf</code> on <code>/</code> ·
+  <code>~</code> · <code>$HOME</code> · system dirs, raw-device <code>dd</code>/<code>mkfs</code>/<code>wipefs</code>,
+  <code>&gt;/dev/sdX</code>, fork bombs, recursive chown/chmod on <code>/</code>. <b>Conservative: 19/19 dangerous
+  blocked, 18/18 safe allowed</b> (<code>rm -rf ./build</code> still works). Override is explicit
+  (<code>AGENT_ALLOW_CATASTROPHIC=1</code>).</p>
+
+  <h2>7 · Advisor lift — the honest negative</h2>
+  <p>The payoff of the rigor. A/B on a task the model actually stalls on (M2), k=3 interleaved, advisor
+  <b>confirmed-engaged every on-run</b> (trigger + call + answer all fired — a real test, not a null):</p>
+  <div class="tblwrap"><table>
+    <tr><th>Arm</th><th>Result</th><th>Reading</th></tr>
+    <tr><td>Advisor OFF</td><td class="num">1 / 3 solved</td><td>One run converged slowly on its own (~25 min).</td></tr>
+    <tr><td>Advisor ON (as first built)</td><td class="num r">0 / 3 solved</td><td>The ≈2 min interruption <b>derailed</b> the run that would have finished. N=3 → not "hurts," but the mechanism is real.</td></tr>
+    <tr><td>Advisor ON (after no-progress fix)</td><td class="num">1 / 3 solved</td><td>Recovered to <b>parity</b> — no longer hurts; still no positive lift on this model.</td></tr>
+  </table></div>
+  <p class="note"><b>Why the first version hurt:</b> the "grind" trigger fired on <em>elapsed time + tests red</em>,
+  which for a slow model is indistinguishable from <em>slow-but-converging</em>. Fix: only escalate if the model
+  has made <b>no file edits</b> in the last N turns (spinning ≠ progressing; re-running the check doesn't count).
+  <b>Net honest verdict: the advisor tier is fully operational but shows no positive lift on this strong 27B</b> —
+  which is itself the finding. The instrument was built well enough to prove a plausible feature doesn't help,
+  instead of shipping it on faith.</p>
+
+  <h2>8 · What one more hard drive (or more RAM) buys</h2>
+  <p>At the tuned optimum the wall-clock splits ≈ <b>disk 50% · CPU math 33% · memory 17%</b>, all co-saturated.</p>
+  <ul>
+    <li><b>A third fast NVMe</b> widens the stripe; the per-layer miss-bursts that currently split unevenly across
+    two drives spread across three (the stripe already cut disk-time/word 36%).</li>
+    <li><b>More RAM is the terminal lever.</b> A reference machine with 430 GB RAM holds the model resident, hits
+    <b>98% cache</b>, and the disk slice disappears — memory becomes the bottleneck. That directly buys tokens/sec
+    on the deep-advisor tier, the one place depth-per-second binds.</li>
+    <li><b>Not a bigger GPU.</b> GPU expert-cache and GPU prefill were both measured and both lost on this workload.</li>
+  </ul>
+  <p class="note">Every number here traces to a measurement, not a projection. Where we quote a future upgrade
+  (third drive, more RAM), it's the <b>direction the measured bottleneck points</b> — we have not benchmarked an
+  upgrade we don't own, and don't claim a specific tokens/sec for one.</p>
+
+  <a class="back" href="./index.html" style="display:inline-block;margin-top:26px">← back to the tour</a>
+</main>
+</body>
+</html>
