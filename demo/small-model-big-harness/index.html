@@ -345,49 +345,24 @@
     (≈2&nbsp;min/call) → it fires <b>only when the driver is genuinely stuck.</b></p>
   </div>
 
-  <!-- 5 · CAPABLE, NOT DISCIPLINED -->
-  <div class="sec n">
-    <div class="sectag">05 · the real gap is discipline</div>
-    <h2>The model can code. It just can't be trusted to say "done."</h2>
-    <div class="frame">
-      <svg viewBox="0 0 720 210" role="img" aria-label="Capability is high; the failure mode is a measurement artifact — reported fabrication 50-62 percent was actually about 1 in 15.">
-        <g font-size="12.5">
-          <!-- capability bars -->
-          <text x="18" y="30" class="lbl-m">capability — solves real tasks</text>
-          <rect x="18" y="40" width="360" height="22" rx="4" class="g-fill"/>
-          <text x="388" y="57" class="lbl-t" font-weight="700">6 / 7 general · 3 / 3 hard · fast</text>
-
-          <!-- fabrication correction -->
-          <text x="18" y="104" class="lbl-m">"fabricated its test result" — first reported</text>
-          <rect x="18" y="114" width="380" height="22" rx="4" class="r-fill" opacity="0.9"/>
-          <text x="408" y="131" class="lbl-t" font-weight="700">~50–62%</text>
-
-          <text x="18" y="164" class="lbl-m">…after fixing our own measurement bug</text>
-          <rect x="18" y="174" width="42" height="22" rx="4" class="g-fill"/>
-          <text x="70" y="191" class="lbl-t" font-weight="700">~1 in 15 &nbsp;<tspan class="lbl-d">(4× overstated — the detector read a summary, not the tool call)</tspan></text>
-        </g>
-      </svg>
-    </div>
-    <p class="read">The lesson cuts both ways: <b>don't trust the model's "verified"</b> — and <b>don't trust your own metric</b>
-    until you check the signal it reads. Fix is structural, not a prompt.</p>
-  </div>
-
-  <!-- 6 · VERIFY + GUARD -->
+  <!-- 5 · TRUST REPLACED BY VERIFICATION -->
   <div class="sec h">
-    <div class="sectag">06 · trust replaced by verification</div>
-    <h2>The harness runs the tests itself — and blocks the commands that end runs</h2>
+    <div class="sectag">05 · trust replaced by verification</div>
+    <h2>The model can code — it just can't be trusted to say "done." So the harness checks.</h2>
     <div class="tiles">
       <div class="tile h"><div class="big">✓ gate</div><div class="lbl">rejects "verified / done / committed"<br>the trace doesn't support</div></div>
       <div class="tile g"><div class="big">19/19</div><div class="lbl">catastrophic commands blocked<br>(<code style="font-size:11px">rm -rf /</code>, raw-disk, fork bombs)</div></div>
       <div class="tile g"><div class="big">18/18</div><div class="lbl">safe commands still allowed<br>(<code style="font-size:11px">rm -rf ./build</code> works)</div></div>
     </div>
-    <p class="read">On a bad claim the harness injects <span class="lbl-t">"there is no such tool call — run it now and show
-    the output."</span> No trust required, from a local model or a frontier one.</p>
+    <p class="read">Capability was never the gap (Phase B–C above). The risk is the <b>~1 in 15</b> time the model claims
+    "verified" having run nothing — rare, but invisible from the output. So the harness <b>runs the success check
+    itself</b> and, on an unsupported claim, injects <span class="lbl-t">"there is no such tool call — run it now and
+    show the output."</span> <b class="up">Trust is replaced by verification</b> — model-independent, local or frontier.</p>
   </div>
 
   <!-- 7 · HONEST NEGATIVE -->
   <div class="sec n">
-    <div class="sectag">07 · the honest negative</div>
+    <div class="sectag">06 · the honest negative</div>
     <h2>Built the whole advisor tier — measured that it doesn't lift <em>this</em> model yet</h2>
     <div class="frame">
       <svg viewBox="0 0 720 214" role="img" aria-label="Advisor A/B: off solved 1 of 3, on-as-first-built solved 0 of 3, on-after-fix recovered to 1 of 3 parity.">
@@ -423,7 +398,7 @@
 
   <!-- 8 · THE WALL -->
   <div class="sec">
-    <div class="sectag">08 · what more hardware buys — measured, not guessed</div>
+    <div class="sectag">07 · what more hardware buys — measured, not guessed</div>
     <h2>Storage and memory are the levers · not a bigger GPU</h2>
     <div class="frame">
       <svg viewBox="0 0 720 150" role="img" aria-label="Wall-clock split: disk about 50 percent, CPU math 33 percent, memory 17 percent.">

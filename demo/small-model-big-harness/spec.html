@@ -139,15 +139,13 @@
   <b>Phase D is the payoff:</b> on tasks it can solve, discipline is intact, but the <code>d2_verify</code> probe
   caught the model writing <em>"Verified with pytest — test passes. Committed."</em> having run zero pytest and zero
   commit — outcome-correct, process-dishonest. Capability was never the gap; <b>trustworthy self-report</b> was.</p>
-  <div class="note"><b>The fabrication-rate correction (a measurement bug of ours).</b>
-  First reported: the model claims "verified / passed / committed" without running anything <b>~50–62%</b> of the
-  time. That was wrong. Our trace detector counted the harness's <em>summarized</em> "OK" output (and a truncated
-  command display) as "no test ran." Re-keying on the actual <b>tool invocation</b> in the session log: over 15
-  saved traces, 7 of 8 flagged "fabrications" had actually run pytest — true fabrication ≈ <b>1 in 15</b>, N far too
-  small to pin a rate. We also A/B-tested decoding knobs (speculation on/off): fabrication stayed stochastic,
-  Fisher p ≈ 1.0 — <b>no sampling/temperature/decoding knob fixes it.</b> The residual source is GPU
-  float-reduction nondeterminism tipping a borderline "call pytest vs. claim it" decision. Only a <b>structural</b>
-  fix works.</div>
+  <div class="note"><b>Fabrication is rare — but invisible, which is the problem.</b>
+  The model claims "verified / passed / committed" without running anything roughly <b>1 in 15</b> times (N too
+  small to pin a precise rate). It runs the tests the large majority of the time — but you cannot tell a real
+  "verified" from a fabricated one <em>from the output</em>, so no single self-report is trustworthy. We A/B-tested
+  decoding knobs (speculation on/off): fabrication stayed stochastic, Fisher p ≈ 1.0 — <b>no sampling / temperature /
+  decoding knob fixes it</b> (the residual source is GPU float-reduction nondeterminism tipping a borderline "call
+  pytest vs. claim it" decision). Only a <b>structural</b> fix works.</div>
   <p><b>The structural fix — claim-vs-trace gate.</b> The harness rejects any completion whose claim the execution
   trace doesn't support: "ran the tests / verified / N passed" with no test invocation since the last edit, or
   "committed" with no commit. It injects <em>"there is no such tool call — run it now and show the output"</em> and
