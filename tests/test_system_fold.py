@@ -194,6 +194,16 @@ def test_probe_sends_a_system_message():
     assert "system" in roles
 
 
+def test_probe_disables_thinking_and_leaves_room_for_nonce():
+    """Regression: a reasoning model (Qwen3) with max_tokens=8 and thinking on
+    returns finish=length + empty content, so the probe would false-negative.
+    The probe must disable thinking and request enough tokens."""
+    b = _SSEBackend(lb._PROBE_NONCE)
+    lb.backend_supports_system(b)
+    assert b.sent["chat_template_kwargs"] == {"enable_thinking": False}
+    assert b.sent["max_tokens"] >= 32
+
+
 def test_probe_is_cached_across_calls(tmp_path):
     b = _SSEBackend(lb._PROBE_NONCE)
     assert lb.backend_supports_system(b) is True
