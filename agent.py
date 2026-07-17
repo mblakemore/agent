@@ -3825,6 +3825,60 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # once-per-cycle latch is a closure attribute (reset each cycle since the
     # closure is rebuilt per run_agent_single call), NOT a run_agent_single
     # local — avoids the test_no_dead_locals nested-scope false positive.
+    def _funnel_ev(ev, **kw):
+        """Append one advisor-escalation funnel event (guarded; never raises).
+        LOCAL per-run observability: telemetry is OTLP/Prometheus-gated and the
+        replay results schema has no advisor field, so without this a re-run
+        cannot say whether the advisor engaged or WHICH guard suppressed it.
+        replay_suite reads this back into the result row before worktree cleanup.
+        Events: reached | suppressed_latch | no_escalate | suggested |
+        auto_invoke_call | auto_invoke_answered | auto_invoke_error.
+        Path literal is inlined (not a run_agent_single local) to avoid the
+        test_no_dead_locals nested-scope false positive."""
+        try:
+            rec = {"ev": ev}
+            rec.update(kw)
+            try:
+                rec["t_s"] = round(time.monotonic() - _grind_t0, 1)
+            except Exception:
+                pass
+            with open(os.path.join(".agent", "advisor_funnel.jsonl"), "a") as _f:
+                _f.write(json.dumps(rec) + "\n")
+        except Exception:
+            pass
+
+    def _build_advisor_context(fail_output):
+        """Assemble GROUNDED context for the advisor auto-invoke: the task, the
+        exact success-check command, its failing output, and the agent's most
+        recent action. Without this framing GLM misread a code-fixing agent as a
+        chatbot and returned "rewrite your system prompt" meta-advice. Bounded
+        (the tool distills further); guarded — falls back to the raw output."""
+        try:
+            parts = []
+            try:
+                for _m in conversation_history:
+                    if isinstance(_m, dict) and _m.get("role") == "user" and _m.get("content"):
+                        parts.append("TASK (what I must accomplish):\n"
+                                     + str(_m["content"])[:800])
+                        break
+            except Exception:
+                pass
+            if _success_check_cmd:
+                parts.append("SUCCESS CHECK (must exit 0):\n$ " + str(_success_check_cmd))
+            if fail_output and str(fail_output).strip():
+                parts.append("CURRENT FAILING OUTPUT:\n" + str(fail_output)[:1600])
+            try:
+                for _m in reversed(conversation_history):
+                    if (isinstance(_m, dict) and _m.get("role") == "assistant"
+                            and str(_m.get("content") or "").strip()):
+                        parts.append("WHAT I LAST TRIED:\n" + str(_m["content"])[:600])
+                        break
+            except Exception:
+                pass
+            return "\n\n".join(parts) if parts else str(fail_output)[:3000]
+        except Exception:
+            return str(fail_output)[:3000]
+
     def _maybe_advisor_nudge(source="gate", context=""):
         """Return a one-time advisor-escalation suggestion string if the current
         signals warrant escalation and the advisor tier is enabled; else "".
@@ -3841,10 +3895,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
         gate is structural (_success_check_blocks); stall/grind are the
         "self_reported_stuck" path — a stuck model never cleanly declares done,
-        so the gate never sees it. We only SUGGEST — the expensive GLM call
-        stays behind the model's own consult_advisor invocation + that tool's
-        budget. Once per cycle (shared _fired latch across all call sites).
-        Fully guarded: never raises, so it can't break a gate or the turn loop."""
+        so the gate never sees it. gate SUGGESTS; grind/stall AUTO-INVOKE the
+        GLM call (bounded by the tool's own budget). Once per cycle PER CLASS
+        (split _auto_fired/_suggest_fired latch — a suggestion must not starve an
+        auto-invoke; cycle.advisor_legacy_shared_latch restores the old single
+        latch). Fully guarded: never raises, can't break a gate or the turn loop."""
         try:
             _adv_cfg = (_config.get("advisor", {})
                         if isinstance(_config, dict) else {})
@@ -3852,9 +3907,27 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             # is ON unless "enabled": false is set explicitly. No advisor block
             # (or no base_url) → off. Explicit "enabled" always wins.
             _active = _adv_cfg.get("enabled", bool(_adv_cfg.get("base_url")))
-            if not _active or getattr(_maybe_advisor_nudge, "_fired", False):
+            if not _active:
                 return ""
-            _stuck = source in ("stall", "grind")
+            # Per-CLASS once-per-cycle latch. The gate source is suggestion-only;
+            # grind/stall AUTO-INVOKE the (expensive but tool-budget-bounded) GLM
+            # call. A single shared latch let a cheap gate SUGGESTION consume the
+            # one budgeted escalation and silently starve grind's auto-invoke on
+            # the same cycle — measured: gate-arm grind preconditions met, 0
+            # consult_advisor calls. Split the latch so a suggestion can't block
+            # an auto-invoke (still ≤1 of EACH class per cycle). The legacy shared
+            # latch is restorable via cycle.advisor_legacy_shared_latch for a
+            # clean before/after of this fix.
+            _auto = source in ("stall", "grind")
+            _legacy_latch = bool((_config.get("cycle") or {}).get(
+                "advisor_legacy_shared_latch", False)) if isinstance(_config, dict) else False
+            _latch = "_fired" if _legacy_latch else (
+                "_auto_fired" if _auto else "_suggest_fired")
+            _funnel_ev("reached", source=source, auto=_auto, latch=_latch)
+            if getattr(_maybe_advisor_nudge, _latch, False):
+                _funnel_ev("suppressed_latch", source=source, latch=_latch)
+                return ""
+            _stuck = _auto
             from escalation_policy import should_escalate, LoopSignals
             _dec = should_escalate(LoopSignals(
                 consecutive_gate_failures=_success_check_blocks,
@@ -3863,8 +3936,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 advisor_calls_cap=int(_adv_cfg.get("max_calls_per_task", 3)),
             ))
             if not _dec.escalate:
+                _funnel_ev("no_escalate", source=source)
                 return ""
-            _maybe_advisor_nudge._fired = True
+            setattr(_maybe_advisor_nudge, _latch, True)
             # First-class telemetry (same pipeline as success_check_block): the
             # trigger SUGGESTED escalation. Pairs with the tool-side advisor_call
             # outcomes + record_tool_call("consult_advisor") to form the funnel
@@ -3900,21 +3974,44 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             if (source in ("stall", "grind") and _dec.mode != "takeover"
                     and "consult_advisor" in MAP_FN):
                 try:
-                    _q = ("I am STUCK: I repeated a failing action and a prior "
-                          "redirect was ignored. Give the single materially "
-                          "different next action." if source == "stall" else
-                          "I have spent most of my turn budget and the success "
-                          "check is STILL failing. Give the single highest-"
-                          "leverage fix to converge.")
+                    # Role-grounded, anti-meta framing. GLM previously drifted to
+                    # chatbot advice ("rewrite your system prompt") because the
+                    # question didn't establish this is a CODING agent whose
+                    # success check is a shell/test command. State the role, feed
+                    # the task + exact check command + failing output + last
+                    # action, and forbid meta-advice.
+                    _q = ("I am an autonomous CODING agent stuck mid-task in a git "
+                          "repository. I repeated a failing action and a prior "
+                          "redirect was ignored. Using the task, the failing check "
+                          "command and output, and what I last tried (all below), "
+                          "give ONE concrete code-level next action that is "
+                          "materially different from what I tried. No meta-advice "
+                          "about prompts or process."
+                          if source == "stall" else
+                          "I am an autonomous CODING agent in a git repository. "
+                          "Success is a shell command (a test/check) exiting 0; it "
+                          "is STILL FAILING after most of my turn budget. Using the "
+                          "task, the failing check command and its output, and what "
+                          "I last tried (all below), give ONE concrete code-level "
+                          "fix to make that command pass. No meta-advice about "
+                          "prompts or process — I need the specific fix.")
+                    _adv_context = _build_advisor_context(context)
+                    _funnel_ev("auto_invoke_call", source=source,
+                               ctx_chars=len(_adv_context))
                     telemetry.record_tool_call("consult_advisor")
                     _advice = MAP_FN["consult_advisor"](
-                        question=_q, context=str(context)[:3000], reason=_reason)
+                        question=_q, context=_adv_context, reason=_reason)
+                    _funnel_ev("auto_invoke_answered", source=source,
+                               chars=len(str(_advice)))
                     log.info("advisor auto-invoked (source=%s)", source)
                     return ("[SYSTEM: the heavyweight advisor was consulted "
                             "because " + _situation + ". APPLY its guidance now:"
                             "\n" + str(_advice)[:2500] + "]")
                 except Exception as _ai_e:  # fall back to a suggestion
+                    _funnel_ev("auto_invoke_error", source=source,
+                               err=str(_ai_e)[:200])
                     log.warning("advisor auto-invoke failed: %s", _ai_e)
+            _funnel_ev("suggested", source=source, mode=_dec.mode)
             return (
                 "[SYSTEM: escalation available — " + _situation +
                 f", past the fast model's reliable range ({', '.join(_dec.triggers)}). "
