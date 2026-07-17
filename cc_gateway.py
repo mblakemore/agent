@@ -273,9 +273,20 @@ def build_openai_body(req: MessagesRequest, backend) -> dict:
     ``stream_options.include_usage`` (so llamacpp emits the final usage chunk).
     Bedrock ignores both.
     """
+    messages = anthropic_to_openai_messages(req)
+    # Some gateways silently drop role:"system" (see llm_backend.maybe_fold_system
+    # and /droid/repos/test/aws-proxy-bugs.md §1). Without this, Claude Code's
+    # entire system prompt is discarded and the model appears to ignore its
+    # instructions. No-op on backends that honour system.
+    try:
+        from llm_backend import maybe_fold_system
+        messages = maybe_fold_system(messages, backend, log)
+    except Exception as e:  # never fail a request over the workaround
+        log.debug("system-fold skipped: %s", e)
+
     body: dict = {
         "model": getattr(backend, "model", None) or req.model,
-        "messages": anthropic_to_openai_messages(req),
+        "messages": messages,
         "max_tokens": req.max_tokens,
         "stream": True,
         "chat_template_kwargs": {"enable_thinking": False},

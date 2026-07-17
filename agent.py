@@ -4413,6 +4413,17 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             if _gateway_timeout_recovery_count > 0:
                 _effective_max_tokens = min(max_tokens, 1024)
 
+            # Some gateways silently drop role:"system" — the preamble bundle,
+            # goal-stack hydration and the per-turn steering block above would
+            # never reach the model. Fold them into the adjacent user message on
+            # those backends. No-op where system is honoured (local llama.cpp).
+            try:
+                from llm_backend import maybe_fold_system
+                _outgoing_messages = maybe_fold_system(
+                    _outgoing_messages, _main_backend, log)
+            except Exception as _fe:
+                log.debug("system-fold skipped: %s", _fe)
+
             request_body = {
                 "model": _main_backend.model or _config["llm"]["model"],
                 "messages": _outgoing_messages,
