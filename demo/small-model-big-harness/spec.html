@@ -63,10 +63,9 @@
   <em>before</em> its fix, scored pass@1 with k=3 through the identical harness.</p>
   <div class="tblwrap"><table>
     <tr><th>Model</th><th>Score</th><th>Breakdown</th><th>Note</th></tr>
-    <tr><td><b>Qwen 27B</b> (local, stock third-party build)</td><td class="num g">73%</td><td class="num">E1 3/3 · M1 3/3 · H1 3/3 · M2 1/3 · P1 1/3</td><td>Clears the ≥70% "local-strong" bar.</td></tr>
-    <tr><td>Frontier model via shared gateway</td><td class="num d">47%</td><td class="num">M2 0/3 · P1 0/3</td><td>Depressed by a 29 s gateway response cap + early-exit discipline — not a fair head-to-head.</td></tr>
+    <tr><td><b>Qwen 27B</b> (local, stock third-party build)</td><td class="num g">73%</td><td class="num">E1 3/3 · M1 3/3 · H1 3/3 · M2 1/3 · P1 1/3</td><td>Clears the ≥70% "local-strong" bar — inside the same harness a frontier model runs in.</td></tr>
   </table></div>
-  <p class="note">Both tiers fail the same two issues (M2, P1) the same way — a <b>completion-discipline / mock-trap</b>
+  <p class="note">The two the local model misses (M2, P1) fail the same way — a <b>completion-discipline / mock-trap</b>
   failure, not a capability gap. That observation set the whole "discipline, not ability" direction below.
   Caveat logged: the repo is public, so recent fixes could in principle sit in pretraining data (weak, recent).</p>
 
