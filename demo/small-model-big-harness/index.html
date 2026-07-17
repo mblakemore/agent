@@ -256,7 +256,20 @@
       </svg>
     </div>
     <p class="read">Root cause: the engine's disk setting was <b>tuned for a different, slower computer</b> and never re-checked.
-    Every rung is config or storage layout — <b class="up">zero weight changes.</b> Independently reproduced on other hardware.</p>
+    Every rung is config or storage layout — <b class="up">zero weight changes.</b></p>
+  </div>
+
+  <!-- 02b · ACCESSIBILITY + GENERALIZATION -->
+  <div class="sec">
+    <div class="sectag">02b · and it's not exotic hardware</div>
+    <h2>One desktop · a consumer GPU · findings that generalized</h2>
+    <div class="tiles">
+      <div class="tile g"><div class="big">1 desk</div><div class="lbl">16-core, 60&nbsp;GB RAM runs<br>the driver <em>and</em> the 744B advisor</div></div>
+      <div class="tile h"><div class="big">15.6&nbsp;GB</div><div class="lbl">the 744B advisor fits a<br>consumer GPU — gaming, not datacenter</div></div>
+      <div class="tile a"><div class="big">2 → PRs</div><div class="lbl">both engine findings reproduced on<br>a stranger's very different rig → upstreamed</div></div>
+    </div>
+    <p class="read">A user on entirely different hardware hit the <b>same two conclusions</b> independently — they're now
+    open-source pull requests. The tuning wasn't a one-machine fluke; it was a <b class="up">real property of the workload.</b></p>
   </div>
 
   <!-- 3 · WORKED / DIDN'T -->
@@ -403,7 +416,9 @@
       </svg>
     </div>
     <p class="read">The tier is <b>fully operational</b> and shows <b class="dn">no positive lift</b> on this strong 27B — stated,
-    not buried. Building it well enough to <em>prove</em> that beats shipping a feature that quietly hurts.</p>
+    not buried. When it <em>was</em> called the advice was real (it once spotted an import warning hiding the true
+    traceback, and independently reproduced a fix a human had just made) — it simply didn't move the aggregate on a
+    model already this disciplined. Building it well enough to <em>prove</em> that beats shipping a feature that quietly hurts.</p>
   </div>
 
   <!-- 8 · THE WALL -->
