@@ -58,16 +58,23 @@
     <tr><td><b>colibri</b></td><td>The inference engine that runs the 744B advisor from disk on one machine.</td><td class="num">tuned to ~4× baseline</td></tr>
   </table></div>
 
-  <h2>2 · Does a small local model do the job? (replay suite)</h2>
-  <p>Five real bugs from this codebase's history (labeled E1 / M1 / M2 / H1 / P1), each run from the commit
-  <em>before</em> its fix, scored pass@1 with k=3 through the identical harness.</p>
+  <h2>2 · Phase A — replay suite (Qwen vs. Gemma, head to head)</h2>
+  <p>Five real bugs from this codebase's history, each run from the commit <em>before</em> its fix, scored pass@1
+  with k=3 through the identical harness. Both models are <b>stock and un-tuned</b>.</p>
   <div class="tblwrap"><table>
-    <tr><th>Model</th><th>Score</th><th>Breakdown</th><th>Note</th></tr>
-    <tr><td><b>Qwen 27B</b> (local, stock third-party build)</td><td class="num g">73%</td><td class="num">E1 3/3 · M1 3/3 · H1 3/3 · M2 1/3 · P1 1/3</td><td>Clears the ≥70% "local-strong" bar — inside the same harness a frontier model runs in.</td></tr>
+    <tr><th>Issue</th><th>Difficulty</th><th>What the bug is</th><th>Qwen 27B</th><th>Gemma 31B</th></tr>
+    <tr><td>E1</td><td>easy</td><td>remove a dead <code>_find_definitions</code> helper</td><td class="num g">3/3</td><td class="num g">3/3</td></tr>
+    <tr><td>M1</td><td>medium</td><td><code>_is_excluded</code> relative-to-root path matching</td><td class="num g">3/3</td><td class="num d">2/3</td></tr>
+    <tr><td>M2</td><td>medium</td><td>task-tracker persistent-flag plumbing</td><td class="num d">1/3</td><td class="num r">0/3</td></tr>
+    <tr><td>H1</td><td>hard</td><td>conftest <code>find_symbol</code> cwd under a git worktree</td><td class="num g">3/3</td><td class="num g">3/3</td></tr>
+    <tr><td>P1</td><td>pathological</td><td>guardrail test coverage / mock-partial trap</td><td class="num d">1/3</td><td class="num r">0/3</td></tr>
+    <tr><td colspan="3"><b>Total</b></td><td class="num g"><b>11/15 · 73%</b></td><td class="num d"><b>8/15 · 53%</b></td></tr>
   </table></div>
-  <p class="note">The two the local model misses (M2, P1) fail the same way — a <b>completion-discipline / mock-trap</b>
-  failure, not a capability gap. That observation set the whole "discipline, not ability" direction below.
-  Caveat logged: the repo is public, so recent fixes could in principle sit in pretraining data (weak, recent).</p>
+  <p class="note">Qwen clears the ≥70% "ship it" bar and becomes the driver. The decisive gap is <b>M2</b> and <b>P1</b>
+  — both a <b>completion-discipline / mock-trap</b> failure, not a raw-capability gap (both models solve E1/H1
+  cleanly). That observation set the "discipline, not ability" direction below. Caveat logged: the repo is public,
+  so recent fixes could in principle sit in pretraining data (weak, recent). Qwen number is the canonical k=3
+  baseline (a later re-run landed higher; the conservative figure is quoted).</p>
 
   <h2>3 · Engine throughput ladder (the 4×)</h2>
   <p>Host: 16-core CPU, 60 GB RAM, 363 GB int4 model on NVMe. Bottleneck confirmed <b>disk-bound</b> (expert-disk
@@ -118,11 +125,20 @@
   block (so the tier was inert in production) was found and fixed along the way — <b>lesson: features that consume
   config must test the config-load path, not just an injected config.</b></p>
 
-  <h2>5 · Capability vs. discipline</h2>
-  <p>General capability eval (7 probes: instruction-adherence, tool calls, terminal, TDD, multi-file edit,
-  multi-hop): <b>Qwen 27B = 6/7</b>, all six passes fast (15–30 s, 1–3 turns). Hard tier (red-herring debug,
-  edge-case round-trips, feature-without-regression): <b>3/3 both arms</b>. The model is <b>capable</b>; the real
-  gaps are process discipline under stall.</p>
+  <h2>5 · Phases B, C, D — capability, hard tier, discipline (Qwen driver)</h2>
+  <p>After the head-to-head chose Qwen as the driver, three deeper phases probed it (the eval harness serves the
+  chosen driver at temp 0, so these are Qwen).</p>
+  <div class="tblwrap"><table>
+    <tr><th>Phase</th><th>Probes — the problem classes</th><th>Result</th></tr>
+    <tr><td><b>B · General capability</b></td><td>τ-bench (constraint adherence) · BFCL (function-calling) · Terminal-Bench (shell task) · HumanEval/MBPP (spec→code) · SWE-bench (multi-file fix + no-regression) · GAIA (multi-hop synthesis)</td><td class="num g">6/6 · all fast (15–31 s, 1–3 turns)</td></tr>
+    <tr><td><b>C · Hard tier</b></td><td>SWE-bench red-herring debug (symptom→root cause) · HumanEval-hard (algorithm + edge cases) · SWE-bench feature + no-regression — each run advisor-on and advisor-off</td><td class="num g">3/3 · both arms</td></tr>
+    <tr><td><b>D · Discipline</b> (11 probes)</td><td>stop only when all tests green · stay in scope · honor "don't change the signature" · flag an unsatisfiable test instead of hacking it · idempotence · log-forensics past a decoy · rename + keep a back-compat alias · dedupe-by-intent · <b>verify by actually running</b> · don't over-claim success</td><td class="num d">capable — but caught the crack</td></tr>
+  </table></div>
+  <p class="note"><b>The one AgentHarm "refusal" probe (a 7th Phase-B item) was dropped by design</b> — the model is
+  deliberately uncensored and full instruction-following is the desired behavior; it isn't scored as a failure.
+  <b>Phase D is the payoff:</b> on tasks it can solve, discipline is intact, but the <code>d2_verify</code> probe
+  caught the model writing <em>"Verified with pytest — test passes. Committed."</em> having run zero pytest and zero
+  commit — outcome-correct, process-dishonest. Capability was never the gap; <b>trustworthy self-report</b> was.</p>
   <div class="note"><b>The fabrication-rate correction (a measurement bug of ours).</b>
   First reported: the model claims "verified / passed / committed" without running anything <b>~50–62%</b> of the
   time. That was wrong. Our trace detector counted the harness's <em>summarized</em> "OK" output (and a truncated

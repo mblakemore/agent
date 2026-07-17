@@ -45,6 +45,23 @@
   .tile .lbl{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.4}
   .tile.g .big{color:var(--green)} .tile.d .big{color:var(--drive)} .tile.a .big{color:var(--advise)} .tile.r .big{color:var(--red)} .tile.h .big{color:var(--harness)}
 
+  .legend{display:flex;gap:18px;flex-wrap:wrap;font-family:var(--mono);font-size:12px;color:var(--muted);margin:2px 2px 10px}
+  .legend .sw{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:6px}
+
+  .phases{display:grid;gap:10px;margin-top:16px}
+  .phase{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-items:center}
+  @media (max-width:640px){ .phase{grid-template-columns:1fr;gap:8px} }
+  .phase .pn{font-family:var(--mono);font-size:12px;letter-spacing:.06em}
+  .phase .pn b{display:block;font-size:15px;color:var(--text);letter-spacing:0}
+  .phase .pn span{color:var(--dim);font-size:11.5px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{font-family:var(--mono);font-size:11px;background:var(--panel2);border:1px solid var(--line);border-radius:20px;padding:3px 10px;color:var(--muted)}
+  .phase .sc{font-family:var(--mono);font-weight:700;font-size:15px;text-align:right;white-space:nowrap}
+  .phase .sc small{display:block;font-weight:400;font-size:11px;color:var(--dim)}
+  .pA{border-left:3px solid var(--drive)} .pB{border-left:3px solid var(--green)}
+  .pC{border-left:3px solid var(--advise)} .pD{border-left:3px solid var(--harness)}
+  .sc .q{color:var(--drive)} .sc .gm{color:var(--advise)} .sc .ok{color:var(--green)} .sc .flag{color:var(--red)}
+
   .idea{margin-top:60px;background:linear-gradient(135deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:16px;padding:30px 28px}
   .idea .sectag{color:var(--drivedk)}
   .idea h2{font-size:clamp(22px,3.4vw,30px);margin:.25em 0 .3em}
@@ -123,15 +140,81 @@
 
   <!-- 1 · SAME HARNESS, TWO MODELS -->
   <div class="sec">
-    <div class="sectag">01 · same harness, any model</div>
-    <h2>A 27B running on a desk clears the bar</h2>
-    <div class="tiles">
-      <div class="tile d"><div class="big">73%</div><div class="lbl">local Qwen&nbsp;27B<br>pass@1 · 5 real bug replays</div></div>
-      <div class="tile g"><div class="big">≥70%</div><div class="lbl">bar for<br>"strong enough to ship"</div></div>
-      <div class="tile h"><div class="big">0</div><div class="lbl">model weights changed<br>to get there</div></div>
+    <div class="sectag">01 · two local models, head to head</div>
+    <h2>Same harness, same five real bugs — which local model?</h2>
+    <div class="legend">
+      <span><span class="sw" style="background:var(--drive)"></span>Qwen 27B</span>
+      <span><span class="sw" style="background:var(--advise)"></span>Gemma 31B (stock)</span>
+      <span class="lbl-d">pass @ 3 tries · replayed from the commit before each fix</span>
     </div>
-    <p class="read">Five real bugs from this codebase's own history, each replayed from the commit before its fix.
-    The local model <b class="up">cleared the bar</b> — inside the same harness a frontier model runs in.</p>
+    <div class="frame">
+      <svg viewBox="0 0 720 300" role="img" aria-label="Qwen versus Gemma pass rate on five replay bugs: Qwen 11 of 15, Gemma 8 of 15.">
+        <!-- y grid 0..3 at y=240,173,107,40 -->
+        <g class="grid"><line x1="90" y1="240" x2="680" y2="240"/><line x1="90" y1="173" x2="680" y2="173"/><line x1="90" y1="107" x2="680" y2="107"/><line x1="90" y1="40" x2="680" y2="40"/></g>
+        <g font-size="11.5" class="lbl-d">
+          <text x="80" y="244" text-anchor="end">0</text><text x="80" y="177" text-anchor="end">1</text>
+          <text x="80" y="111" text-anchor="end">2</text><text x="80" y="44" text-anchor="end">3</text>
+        </g>
+        <!-- groups: centers 149 267 385 503 621 ; Qwen x=c-38 w34 ; Gemma x=c+4 w34 -->
+        <g>
+          <!-- E1 3/3 3/3 -->
+          <rect x="111" y="40" width="34" height="200" rx="3" class="d-fill"/><rect x="153" y="40" width="34" height="200" rx="3" class="a-fill"/>
+          <!-- M1 3/2 -->
+          <rect x="229" y="40" width="34" height="200" rx="3" class="d-fill"/><rect x="271" y="107" width="34" height="133" rx="3" class="a-fill"/>
+          <!-- M2 1/0 -->
+          <rect x="347" y="173" width="34" height="67" rx="3" class="d-fill"/><rect x="389" y="236" width="34" height="4" rx="2" class="a-fill" opacity="0.5"/>
+          <!-- H1 3/3 -->
+          <rect x="465" y="40" width="34" height="200" rx="3" class="d-fill"/><rect x="507" y="40" width="34" height="200" rx="3" class="a-fill"/>
+          <!-- P1 1/0 -->
+          <rect x="583" y="173" width="34" height="67" rx="3" class="d-fill"/><rect x="625" y="236" width="34" height="4" rx="2" class="a-fill" opacity="0.5"/>
+        </g>
+        <!-- x labels -->
+        <g font-size="12" class="lbl-t" text-anchor="middle">
+          <text x="149" y="262">E1</text><text x="267" y="262">M1</text><text x="385" y="262">M2</text><text x="503" y="262">H1</text><text x="621" y="262">P1</text>
+        </g>
+        <g font-size="10.5" class="lbl-d" text-anchor="middle">
+          <text x="149" y="282">easy</text><text x="267" y="282">medium</text><text x="385" y="282">medium</text><text x="503" y="282">hard</text><text x="621" y="282">pathological</text>
+        </g>
+      </svg>
+    </div>
+    <div class="tiles">
+      <div class="tile d"><div class="big">73%</div><div class="lbl">Qwen 27B<br>11 / 15 passes</div></div>
+      <div class="tile a"><div class="big">53%</div><div class="lbl">Gemma 31B stock<br>8 / 15 passes</div></div>
+      <div class="tile g"><div class="big">≥70%</div><div class="lbl">"ship it" bar —<br>Qwen clears, becomes the driver</div></div>
+    </div>
+    <p class="read">Both are <b>stock, un-tuned</b> models in the identical harness. Qwen wins the two that decide it —
+    <b>M2</b> (a state-flag plumbing bug) and <b>P1</b> (a pathological mock-trap) — and becomes the driver.
+    <b class="up">No weights changed for either.</b></p>
+  </div>
+
+  <!-- 01b · THE PHASES -->
+  <div class="sec">
+    <div class="sectag">01b · four phases of testing</div>
+    <h2>What we threw at it — and how it did</h2>
+    <div class="phases">
+      <div class="phase pA">
+        <div class="pn"><b>A · Replay suite</b><span>5 real bugs from this repo's own history</span></div>
+        <div class="chips"><span class="chip">dead-code removal</span><span class="chip">path matching</span><span class="chip">state-flag plumbing</span><span class="chip">cwd-under-worktree</span><span class="chip">mock-trap</span></div>
+        <div class="sc"><span class="q">Qwen 73%</span> · <span class="gm">Gemma 53%</span><small>head-to-head, k=3</small></div>
+      </div>
+      <div class="phase pB">
+        <div class="pn"><b>B · General capability</b><span>7 benchmark-style probes</span></div>
+        <div class="chips"><span class="chip">τ-bench adherence</span><span class="chip">BFCL tool-use</span><span class="chip">Terminal-Bench</span><span class="chip">HumanEval TDD</span><span class="chip">SWE-bench multi-file</span><span class="chip">GAIA multi-hop</span></div>
+        <div class="sc"><span class="ok">6 / 6</span><small>Qwen · all fast</small></div>
+      </div>
+      <div class="phase pC">
+        <div class="pn"><b>C · Hard tier</b><span>3 harder problems, advisor on &amp; off</span></div>
+        <div class="chips"><span class="chip">red-herring debug</span><span class="chip">algorithm + edge cases</span><span class="chip">feature + no-regression</span></div>
+        <div class="sc"><span class="ok">3 / 3</span><small>both arms</small></div>
+      </div>
+      <div class="phase pD">
+        <div class="pn"><b>D · Discipline</b><span>11 process probes — not "did it solve," but "did it behave"</span></div>
+        <div class="chips"><span class="chip">stop only when green</span><span class="chip">stay in scope</span><span class="chip">honor constraints</span><span class="chip">flag, don't cheat</span><span class="chip">verify by running</span><span class="chip">don't over-claim</span></div>
+        <div class="sc"><span class="flag">the crack</span><small>caught "verified" with 0 tests run</small></div>
+      </div>
+    </div>
+    <p class="read">Capability was never the problem — the 27B <b class="up">solves</b> real tasks fast. Phase D is where the
+    real gap showed: <b>process discipline</b> under pressure. That set everything that follows.</p>
   </div>
 
   <!-- 2 · THROUGHPUT LADDER -->
