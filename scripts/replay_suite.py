@@ -176,7 +176,7 @@ def build_seed(spec):
 
 
 def write_run_config(wt_path, turn_cap, backend_config=None, success_check=None,
-                     grind_elapsed=None):
+                     grind_elapsed=None, legacy_shared_latch=False):
     """Per-run agent config in the clone (agent.py loads CWD config).
 
     backend_config: path to an existing agent config.json whose `backends`
@@ -198,6 +198,11 @@ def write_run_config(wt_path, turn_cap, backend_config=None, success_check=None,
         cfg["cycle"]["success_check"] = success_check
     if grind_elapsed:
         cfg["cycle"]["grind_elapsed_s"] = float(grind_elapsed)
+    if legacy_shared_latch:
+        # Restore the pre-fix single shared advisor latch (a gate SUGGESTION
+        # consumes the once-per-cycle escalation and starves grind's auto-invoke)
+        # — for a clean before/after of the split-latch fix.
+        cfg["cycle"]["advisor_legacy_shared_latch"] = True
     if backend_config:
         with open(backend_config) as f:
             src = json.load(f)
@@ -214,9 +219,46 @@ def write_run_config(wt_path, turn_cap, backend_config=None, success_check=None,
     os.chmod(cfg_path, 0o600)  # may embed backend API keys
 
 
+def _read_advisor_funnel(wt_path):
+    """Summarize the per-run advisor-escalation funnel that agent.py appends to
+    .agent/advisor_funnel.jsonl, so the result row can say whether the advisor
+    engaged and WHICH guard suppressed it (telemetry is OTLP/Prometheus-gated
+    and the results schema otherwise has no advisor field). Read here, BEFORE
+    any worktree cleanup. Absent file → present:False."""
+    p = os.path.join(wt_path, ".agent", "advisor_funnel.jsonl")
+    evs = []
+    try:
+        with open(p) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    evs.append(json.loads(line))
+                except Exception:
+                    pass
+    except Exception:
+        return {"present": False}
+
+    def _srcs(name):
+        return sorted({e.get("source") for e in evs
+                       if e.get("ev") == name and e.get("source")})
+    return {
+        "present": True, "n_events": len(evs),
+        "reached": _srcs("reached"),
+        "suppressed_latch": _srcs("suppressed_latch"),
+        "no_escalate": _srcs("no_escalate"),
+        "suggested": _srcs("suggested"),
+        "auto_invoke_call": _srcs("auto_invoke_call"),
+        "auto_invoke_answered": _srcs("auto_invoke_answered"),
+        "auto_invoke_error": _srcs("auto_invoke_error"),
+    }
+
+
 def run_agent(wt_path, seed, turn_cap, agent_args, timeout, backend_config=None,
-              success_check=None, grind_elapsed=None):
-    write_run_config(wt_path, turn_cap, backend_config, success_check, grind_elapsed)
+              success_check=None, grind_elapsed=None, legacy_shared_latch=False):
+    write_run_config(wt_path, turn_cap, backend_config, success_check,
+                     grind_elapsed, legacy_shared_latch)
     cmd = [sys.executable, os.path.join(REPO, "agent.py"),
            "--auto", "--role", "creature", "--no-tui"] + agent_args + [seed]
     t0 = time.time()
@@ -230,7 +272,8 @@ def run_agent(wt_path, seed, turn_cap, agent_args, timeout, backend_config=None,
         tail = ((e.stdout or b"").decode(errors="replace")
                 + (e.stderr or b"").decode(errors="replace"))[-2000:]
     return {"agent_rc": rc, "timed_out": timed_out,
-            "duration_s": round(time.time() - t0, 1), "tail": tail}
+            "duration_s": round(time.time() - t0, 1), "tail": tail,
+            "advisor_funnel": _read_advisor_funnel(wt_path)}
 
 
 def main():
@@ -265,6 +308,10 @@ def main():
                     help="cycle.grind_elapsed_s — fire the grind->advisor "
                          "trigger after this many wall-clock seconds with "
                          "the check still red (slow-model case)")
+    ap.add_argument("--legacy-shared-latch", action="store_true",
+                    help="restore the pre-fix single shared advisor latch "
+                         "(gate suggestion starves grind auto-invoke) — for a "
+                         "before/after of the split-latch fix")
     ap.add_argument("--keep", action="store_true", help="keep worktrees")
     args = ap.parse_args()
 
@@ -303,7 +350,8 @@ def main():
                     row.update(run_agent(wt, seed, args.turn_cap,
                                          args.agent_arg, args.agent_timeout,
                                          args.backend_config, sc,
-                                         args.grind_elapsed))
+                                         args.grind_elapsed,
+                                         args.legacy_shared_latch))
                     fin_rc, fin_out = run_measure(spec, wt)
                     row["measure_rc_final"] = fin_rc
                     row["success"] = fin_rc == 0
