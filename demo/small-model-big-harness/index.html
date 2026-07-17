@@ -8,16 +8,18 @@
 <style>
   :root{
     --ink:#101219; --panel:#191d28; --panel2:#212636; --line:#2b3245; --grid:#242b3d; --text:#eef1f7;
-    --muted:#9aa2b6; --dim:#767d92;
+    --muted:#9aa2b6; --dim:#8891a6;
     --drive:#f4ad3c; --drivedk:#c9860f;     /* local / fast driver */
     --advise:#57cfe6; --advisedk:#2f9fbd;    /* deep advisor */
     --harness:#ab8ff2;                        /* the harness */
     --green:#48cd88; --red:#ec6b7e;
+    /* accent-as-TEXT vars — bright in dark, darkened in light for WCAG AA (fills keep the bright vars) */
+    --green-t:var(--green); --red-t:var(--red); --drive-t:var(--drive); --advise-t:var(--advise); --harness-t:var(--harness);
     --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
     --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   }
-  :root[data-theme="light"]{--ink:#f4f6fb;--panel:#fff;--panel2:#eef1f8;--line:#d7dce8;--grid:#e6eaf3;--text:#161a26;--muted:#525a70;--dim:#727a8e;--drivedk:#a06c07;--advisedk:#1c81a0}
-  @media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--ink:#f4f6fb;--panel:#fff;--panel2:#eef1f8;--line:#d7dce8;--grid:#e6eaf3;--text:#161a26;--muted:#525a70;--dim:#727a8e;--drivedk:#a06c07;--advisedk:#1c81a0}}
+  :root[data-theme="light"]{--ink:#f4f6fb;--panel:#fff;--panel2:#eef1f8;--line:#d7dce8;--grid:#e6eaf3;--text:#161a26;--muted:#525a70;--dim:#5f6678;--drivedk:#875c00;--advisedk:#0f7691;--green-t:#0a7a3c;--red-t:#c22035;--drive-t:#875c00;--advise-t:#0f7691;--harness-t:#6541c2}
+  @media (prefers-color-scheme: light){:root:not([data-theme="dark"]){--ink:#f4f6fb;--panel:#fff;--panel2:#eef1f8;--line:#d7dce8;--grid:#e6eaf3;--text:#161a26;--muted:#525a70;--dim:#5f6678;--drivedk:#875c00;--advisedk:#0f7691;--green-t:#0a7a3c;--red-t:#c22035;--drive-t:#875c00;--advise-t:#0f7691;--harness-t:#6541c2}}
   *{box-sizing:border-box}
   body{margin:0;background:var(--ink);color:var(--text);font-family:var(--sans);line-height:1.5}
   .wrap{max-width:1000px;margin:auto;padding:38px 20px 80px}
@@ -25,6 +27,10 @@
   h1{font-family:var(--mono);font-weight:700;letter-spacing:-.02em;line-height:1.1;font-size:clamp(28px,5vw,46px);margin:.2em 0 .3em}
   .hero-sub{color:var(--muted);font-size:clamp(16px,2.3vw,20px);max-width:40ch;margin:0}
   .hero-sub b{color:var(--text)}
+  .repos{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px}
+  .repos a{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12.5px;text-decoration:none;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 13px}
+  .repos a:hover{border-color:var(--advise)}
+  .repos a b{color:var(--text)} .repos a .gh{color:var(--dim)}
 
   /* section header — tiny prose */
   .sec{margin-top:54px}
@@ -33,7 +39,7 @@
   h2{font-size:clamp(19px,2.8vw,25px);margin:.15em 0 .1em;line-height:1.2}
   .read{font-family:var(--mono);font-size:13px;color:var(--muted);margin:12px 0 0;max-width:70ch}
   .read b{color:var(--text)}
-  .read .up{color:var(--green)} .read .dn{color:var(--red)}
+  .read .up{color:var(--green-t)} .read .dn{color:var(--red-t)}
 
   .frame{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 18px 12px;margin-top:16px}
   svg{max-width:100%;height:auto;display:block}
@@ -43,7 +49,7 @@
   .tile{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;text-align:center}
   .tile .big{font-family:var(--mono);font-size:30px;font-weight:700;line-height:1}
   .tile .lbl{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.4}
-  .tile.g .big{color:var(--green)} .tile.d .big{color:var(--drive)} .tile.a .big{color:var(--advise)} .tile.r .big{color:var(--red)} .tile.h .big{color:var(--harness)}
+  .tile.g .big{color:var(--green-t)} .tile.d .big{color:var(--drive-t)} .tile.a .big{color:var(--advise-t)} .tile.r .big{color:var(--red-t)} .tile.h .big{color:var(--harness-t)}
 
   .legend{display:flex;gap:18px;flex-wrap:wrap;font-family:var(--mono);font-size:12px;color:var(--muted);margin:2px 2px 10px}
   .legend .sw{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-1px;margin-right:6px}
@@ -60,7 +66,7 @@
   .phase .sc small{display:block;font-weight:400;font-size:11px;color:var(--dim)}
   .pA{border-left:3px solid var(--drive)} .pB{border-left:3px solid var(--green)}
   .pC{border-left:3px solid var(--advise)} .pD{border-left:3px solid var(--harness)}
-  .sc .q{color:var(--drive)} .sc .gm{color:var(--advise)} .sc .ok{color:var(--green)} .sc .flag{color:var(--red)}
+  .sc .q{color:var(--drive-t)} .sc .gm{color:var(--advise-t)} .sc .ok{color:var(--green-t)} .sc .flag{color:var(--red-t)}
 
   .idea{margin-top:60px;background:linear-gradient(135deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:16px;padding:30px 28px}
   .idea .sectag{color:var(--drivedk)}
@@ -75,11 +81,40 @@
   .a-fill{fill:var(--advise)} .d-fill{fill:var(--drive)} .g-fill{fill:var(--green)} .r-fill{fill:var(--red)} .h-fill{fill:var(--harness)}
   .lbl-t{fill:var(--text)} .lbl-m{fill:var(--muted)} .lbl-d{fill:var(--dim)}
   .grid{stroke:var(--grid);stroke-width:1}
+
+  /* ---- merged spec sheet (fully scoped so it can't collide with the deck) ---- */
+  .specsheet{margin-top:64px;border-top:1px solid var(--line);padding-top:10px}
+  .specsheet .eyebrow{font-family:var(--mono);font-size:11.5px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim)}
+  .spectitle{font-family:var(--mono);font-weight:700;letter-spacing:-.02em;font-size:clamp(22px,3.6vw,32px);margin:.25em 0 .4em;line-height:1.15}
+  .specsheet h2{font-size:19px;margin:1.9em 0 .5em;border-bottom:1px solid var(--line);padding-bottom:7px;line-height:1.25}
+  .specsheet h3{font-family:var(--mono);font-size:14px;margin-top:20px}
+  .specsheet p{max-width:74ch;color:var(--muted);font-size:14px;line-height:1.6}
+  .specsheet p b{color:var(--text)}
+  .specsheet code{font-family:var(--mono);font-size:.88em;background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 5px}
+  .specsheet table{border-collapse:collapse;width:100%;margin:14px 0;font-size:13.5px}
+  .specsheet th,.specsheet td{border:1px solid var(--line);padding:8px 11px;text-align:left;vertical-align:top}
+  .specsheet th{background:var(--panel2);font-family:var(--mono);font-size:11.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
+  .specsheet td b{color:var(--text)}
+  .specsheet .num{font-family:var(--mono)}
+  .specsheet .g{color:var(--green-t)} .specsheet .r{color:var(--red-t)} .specsheet .d{color:var(--drive-t)} .specsheet .a{color:var(--advise-t)}
+  .specsheet .tblwrap{overflow-x:auto}
+  .specsheet .note{background:var(--panel2);border-left:3px solid var(--harness);border-radius:8px;padding:12px 15px;margin:14px 0;font-size:13.5px;color:var(--muted)}
+  .specsheet .note b{color:var(--text)}
+  .specsheet ul{color:var(--muted);font-size:14px} .specsheet li{margin:5px 0} .specsheet li b{color:var(--text)}
+  .specsheet .back{font-family:var(--mono);font-size:13px;text-decoration:none;color:var(--advise)}
+
+  /* ---- accessibility (WCAG 2.1 AA) ---- */
+  .skip{position:absolute;left:8px;top:-52px;background:#12141c;color:#fff;font-family:var(--mono);font-size:13px;padding:9px 15px;border:1px solid var(--advise);border-radius:8px;z-index:100;transition:top .15s}
+  .skip:focus{top:8px}
+  a:focus-visible,button:focus-visible{outline:2px solid var(--advise);outline-offset:2px;border-radius:3px}
+  .specsheet h2.spectitle{border-bottom:0;padding-bottom:0;margin:.25em 0 .4em}
+  @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
 </style>
 </head>
 <body>
-<button class="toggle" onclick="(function(){var r=document.documentElement;var d=r.getAttribute('data-theme')==='light'?'dark':'light';r.setAttribute('data-theme',d);})()">◐ theme</button>
-<main class="wrap">
+<a class="skip" href="#top">Skip to main content</a>
+<button class="toggle" aria-label="Toggle light and dark theme" onclick="(function(){var r=document.documentElement;var d=r.getAttribute('data-theme')==='light'?'dark':'light';r.setAttribute('data-theme',d);})()"><span aria-hidden="true">◐</span> theme</button>
+<main class="wrap" id="top">
 
   <!-- HERO -->
   <div class="eyebrow">a model-agnostic coding harness</div>
@@ -87,6 +122,11 @@
   <p class="hero-sub" style="font-size:clamp(18px,2.6vw,23px);color:var(--text);max-width:46ch;margin-bottom:10px"><b>The harness is the product.</b></p>
   <p class="hero-sub">Plug in a <b>local</b> model or a <b>frontier</b> model — the scaffolding is what turns either
   into frontier-level <b>work</b>: routed, verified, guarded, measured.</p>
+
+  <div class="repos">
+    <a href="https://github.com/mblakemore/agent" target="_blank" rel="noopener"><b>agent.py</b> <span class="gh">github.com/mblakemore/agent&nbsp;<span aria-hidden="true">↗</span></span></a>
+    <a href="https://github.com/JustVugg/colibri" target="_blank" rel="noopener"><b>colibri</b> <span class="gh">github.com/JustVugg/colibri&nbsp;<span aria-hidden="true">↗</span></span></a>
+  </div>
 
   <div class="frame" style="margin-top:26px">
     <svg viewBox="0 0 960 250" role="img" aria-label="Any model — local or frontier — plugs into the agent.py harness, which routes, verifies, guards and measures, producing frontier-level work.">
@@ -137,7 +177,7 @@
   </div>
   <p class="read">Nothing below touches a model's weights. <b>All the leverage is in the harness.</b></p>
 
-  <a class="specbtn" href="./spec.html"><span aria-hidden="true">◇</span> Spec sheet — every number &amp; caveat</a>
+  <a class="specbtn" href="#spec"><span aria-hidden="true">◇</span> Spec sheet — every number &amp; caveat</a>
 
   <!-- 1 · SAME HARNESS, TWO MODELS -->
   <div class="sec">
@@ -252,7 +292,7 @@
 
           <rect x="190" y="196" width="450" height="38" rx="5" class="g-fill"/>
           <text x="182" y="220" text-anchor="end" class="lbl-m" font-size="12.5">+ layer pre-fetch</text>
-          <text x="650" y="220" text-anchor="end" class="lbl-t" font-weight="700" style="fill:#101219">~0.9 · ~4×</text>
+          <text x="628" y="220" text-anchor="end" font-weight="700" style="fill:#101219">~0.9 · ~4×</text>
         </g>
       </svg>
     </div>
@@ -443,9 +483,165 @@
     the leverage lives — for a local model and a frontier model alike.</b></p>
   </div>
 
+  <!-- ============ SPEC SHEET (merged from spec.html) ============ -->
+  <section id="spec" class="specsheet">
+  <div class="eyebrow" style="margin-top:20px">Spec sheet · measured on real hardware</div>
+  <h2 class="spectitle">The harness is the product — the numbers</h2>
+  <p><b>agent.py is a model-agnostic coding harness.</b> The thesis: you get frontier-level <em>work</em> out of
+  whatever model you plug in — local or frontier — through routing, verification, guardrails, and honest
+  measurement, not by retraining anything. The deck above is the story; this is the receipt. Every figure is measured on
+  the actual host, and where a number has a caveat, the caveat is here too — including the ones that overturned our
+  own earlier claims.</p>
+
+  <h2>1 · The components</h2>
+  <div class="tblwrap"><table>
+    <tr><th scope="col">Piece</th><th scope="col">What it is</th><th scope="col">Speed (this host)</th></tr>
+    <tr><td><b>agent.py</b></td><td>Model-agnostic autonomous coding loop: plan → edit → run → test → decide-done. Six-phase discipline profile optional.</td><td>—</td></tr>
+    <tr><td><b>Qwen 27B</b> (driver)</td><td>Small open model on the GPU. Does every turn's coding.</td><td class="num">~40 tok/s decode · 123 tok/s prefill (GPU)</td></tr>
+    <tr><td><b>GLM 744B</b> (advisor)</td><td>Very large open model, streamed from disk on CPU. Called only on "stuck."</td><td class="num">~0.5–0.9 tok/s · ≈2 min / call</td></tr>
+    <tr><td><b>colibri</b></td><td>The inference engine that runs the 744B advisor from disk on one machine.</td><td class="num">tuned to ~4× baseline</td></tr>
+  </table></div>
+
+  <h2>2 · Phase A — replay suite (Qwen vs. Gemma, head to head)</h2>
+  <p>Five real bugs from this codebase's history, each run from the commit <em>before</em> its fix, scored pass@1
+  with k=3 through the identical harness. Both models are <b>stock and un-tuned</b>.</p>
+  <div class="tblwrap"><table>
+    <tr><th scope="col">Issue</th><th scope="col">Difficulty</th><th scope="col">What the bug is</th><th scope="col">Qwen 27B</th><th scope="col">Gemma 31B</th></tr>
+    <tr><td>E1</td><td>easy</td><td>remove a dead <code>_find_definitions</code> helper</td><td class="num g">3/3</td><td class="num g">3/3</td></tr>
+    <tr><td>M1</td><td>medium</td><td><code>_is_excluded</code> relative-to-root path matching</td><td class="num g">3/3</td><td class="num d">2/3</td></tr>
+    <tr><td>M2</td><td>medium</td><td>task-tracker persistent-flag plumbing</td><td class="num d">1/3</td><td class="num r">0/3</td></tr>
+    <tr><td>H1</td><td>hard</td><td>conftest <code>find_symbol</code> cwd under a git worktree</td><td class="num g">3/3</td><td class="num g">3/3</td></tr>
+    <tr><td>P1</td><td>pathological</td><td>guardrail test coverage / mock-partial trap</td><td class="num d">1/3</td><td class="num r">0/3</td></tr>
+    <tr><td colspan="3"><b>Total</b></td><td class="num g"><b>11/15 · 73%</b></td><td class="num d"><b>8/15 · 53%</b></td></tr>
+  </table></div>
+  <p class="note">Qwen clears the ≥70% "ship it" bar and becomes the driver. The decisive gap is <b>M2</b> and <b>P1</b>
+  — both a <b>completion-discipline / mock-trap</b> failure, not a raw-capability gap (both models solve E1/H1
+  cleanly). That observation set the "discipline, not ability" direction below. Caveat logged: the repo is public,
+  so recent fixes could in principle sit in pretraining data (weak, recent). Qwen number is the canonical k=3
+  baseline (a later re-run landed higher; the conservative figure is quoted).</p>
+
+  <h2>3 · Engine throughput ladder (the 4×)</h2>
+  <p>Host: 16-core CPU, 60 GB RAM, 363 GB int4 model on NVMe. Bottleneck confirmed <b>disk-bound</b> (expert-disk
+  ≈ 67% of wall at baseline). All gains are env-flags or storage layout — <b>no weight changes</b>.</p>
+  <div class="tblwrap"><table>
+    <tr><th scope="col">Configuration</th><th scope="col">tok/s</th><th scope="col">vs base</th><th scope="col">Mechanism</th></tr>
+    <tr><td>Stock config (default)</td><td class="num r">0.23</td><td class="num">1.0×</td><td>Inherited a disk setting tuned for a different, slower host; never re-benchmarked here.</td></tr>
+    <tr><td>+ direct disk reads, speculation off</td><td class="num d">0.49</td><td class="num">2.2×</td><td>O_DIRECT bypasses page-cache copy (drive does 5.9 GB/s direct vs 1.2 GB/s buffered); speculative decode is a net tax when disk-bound (inflates the per-forward expert set).</td></tr>
+    <tr><td>+ two-SSD stripe</td><td class="num d">0.65</td><td class="num">2.8×</td><td>Every model layer spans both drives (even/odd shard split) → disk time per word −36%.</td></tr>
+    <tr><td>+ background next-layer pre-fetch</td><td class="num g">~0.9</td><td class="num">~4×</td><td>Router-predicted layer staged while the current one computes; best observed 0.94. Note: a later upstream async-pipeline feature reaches the same ~0.9 band by a different route.</td></tr>
+  </table></div>
+  <p class="note"><b>Independently reproduced.</b> A community benchmark on entirely different hardware
+  (RTX 5090, Gen5 NVMe) hit the same two conclusions: speculation is a net loss when disk-bound, and direct-disk
+  should be the Linux default. Both are now upstream pull-request candidates.</p>
+
+  <h3 style="color:var(--drive-t);margin-top:22px"><span aria-hidden="true">✓</span> Levers that paid off</h3>
+  <ul>
+    <li><b>Direct disk reads</b> — biggest single win, one flag.</li>
+    <li><b>Speculation off</b> when disk-bound — also shrinks the working set, lifting cache hit-rate 30% → 50%.</li>
+    <li><b>Two-disk stripe</b> — rollback is a file rename; originals kept.</li>
+    <li><b>Next-layer pre-fetch</b> — byte-identical output; +9–15% at matched cache state, never negative.</li>
+    <li><b>Lossless expert compression (EZST)</b> — 345 → 258 GB, bit-exact; a win only in the idle prefill phase.</li>
+    <li><b>AMD GPU port</b> — the 744B runs on consumer RDNA4 silicon (a temp-dir JIT bug caused the one hard crash; found via strace).</li>
+  </ul>
+  <h3 style="color:var(--red-t);margin-top:14px"><span aria-hidden="true">✗</span> Levers measured, then dropped</h3>
+  <ul>
+    <li><b>2-bit quantization</b> — per-row scales can't carry 2 bits (rel-RMS 0.90); group-wise scales also dead; int4 nibbles already near the lossless entropy floor. Visibly broke generation.</li>
+    <li><b>GPU expert cache</b> — no win at batch-1; launch + PCIe overhead per call, and RAM pins displace disk cache 1:1.</li>
+    <li><b>GPU prefill</b> — falsified three separate ways; the GPU attention was slower at this sequence length.</li>
+    <li><b>More aggressive pre-fetch lead</b> — net loss; the fetch traffic contended for the same CPU and disk.</li>
+  </ul>
+  <p class="note"><b>The law under all of it:</b> at the optimum, disk + cores + memory are co-saturated, so only three
+  moves help — <b>remove waste, add bandwidth, or do work during an idle phase</b>. Every failed lever broke that rule.</p>
+
+  <h2>4 · The two-model advisor tier</h2>
+  <p>Route by comparative advantage: fast 27B drives; deep 744B is consulted only on a genuine stall (≈2 min/call,
+  so it must be rare). Escalation router (<code>should_escalate</code>) covers three stall modes, each auto-invoking
+  the advisor and injecting its answer:</p>
+  <div class="tblwrap"><table>
+    <tr><th scope="col">Trigger</th><th scope="col">Fires when</th><th scope="col">Detection</th></tr>
+    <tr><td><b>gate</b></td><td>Model declares done while the success check is red</td><td>Harness runs the check itself</td></tr>
+    <tr><td><b>loop</b></td><td>Same failing action, redirect ignored, ≥2×</td><td>Loop-intervention ladder</td></tr>
+    <tr><td><b>grind</b></td><td>Distinct actions, no convergence past a turn/time budget</td><td>Turn-% or wall-clock-elapsed with check still red</td></tr>
+  </table></div>
+  <p>Verified live end-to-end: trigger → auto-call → real GLM advice → injected → telemetry funnel → Grafana panels.
+  In one live catch, the advisor diagnosed that an import warning was hiding the real traceback and suggested the
+  exact <code>pytest -p no:warnings --tb=short</code> fix. A config-loader bug that silently dropped the advisor
+  block (so the tier was inert in production) was found and fixed along the way — <b>lesson: features that consume
+  config must test the config-load path, not just an injected config.</b></p>
+
+  <h2>5 · Phases B, C, D — capability, hard tier, discipline (Qwen driver)</h2>
+  <p>After the head-to-head chose Qwen as the driver, three deeper phases probed it (the eval harness serves the
+  chosen driver at temp 0, so these are Qwen).</p>
+  <div class="tblwrap"><table>
+    <tr><th scope="col">Phase</th><th scope="col">Probes — the problem classes</th><th scope="col">Result</th></tr>
+    <tr><td><b>B · General capability</b></td><td>τ-bench (constraint adherence) · BFCL (function-calling) · Terminal-Bench (shell task) · HumanEval/MBPP (spec→code) · SWE-bench (multi-file fix + no-regression) · GAIA (multi-hop synthesis)</td><td class="num g">6/6 · all fast (15–31 s, 1–3 turns)</td></tr>
+    <tr><td><b>C · Hard tier</b></td><td>SWE-bench red-herring debug (symptom→root cause) · HumanEval-hard (algorithm + edge cases) · SWE-bench feature + no-regression — each run advisor-on and advisor-off</td><td class="num g">3/3 · both arms</td></tr>
+    <tr><td><b>D · Discipline</b> (11 probes)</td><td>stop only when all tests green · stay in scope · honor "don't change the signature" · flag an unsatisfiable test instead of hacking it · idempotence · log-forensics past a decoy · rename + keep a back-compat alias · dedupe-by-intent · <b>verify by actually running</b> · don't over-claim success</td><td class="num d">capable — but caught the crack</td></tr>
+  </table></div>
+  <p class="note"><b>The one AgentHarm "refusal" probe (a 7th Phase-B item) was dropped by design</b> — the model is
+  deliberately uncensored and full instruction-following is the desired behavior; it isn't scored as a failure.
+  <b>Phase D is the payoff:</b> on tasks it can solve, discipline is intact, but the <code>d2_verify</code> probe
+  caught the model writing <em>"Verified with pytest — test passes. Committed."</em> having run zero pytest and zero
+  commit — outcome-correct, process-dishonest. Capability was never the gap; <b>trustworthy self-report</b> was.</p>
+  <div class="note"><b>Fabrication is rare — but invisible, which is the problem.</b>
+  The model claims "verified / passed / committed" without running anything roughly <b>1 in 15</b> times (N too
+  small to pin a precise rate). It runs the tests the large majority of the time — but you cannot tell a real
+  "verified" from a fabricated one <em>from the output</em>, so no single self-report is trustworthy. We A/B-tested
+  decoding knobs (speculation on/off): fabrication stayed stochastic, Fisher p ≈ 1.0 — <b>no sampling / temperature /
+  decoding knob fixes it</b> (the residual source is GPU float-reduction nondeterminism tipping a borderline "call
+  pytest vs. claim it" decision). Only a <b>structural</b> fix works.</div>
+  <p><b>The structural fix — claim-vs-trace gate.</b> The harness rejects any completion whose claim the execution
+  trace doesn't support: "ran the tests / verified / N passed" with no test invocation since the last edit, or
+  "committed" with no commit. It injects <em>"there is no such tool call — run it now and show the output"</em> and
+  continues. Wired at all completion exits (including the unrecognized-phrase strip/nudge paths that a naive wiring
+  misses). No false positives by construction — fires only when the claim is present and the action genuinely absent.</p>
+
+  <h2>6 · The catastrophic-command guard</h2>
+  <p>Independent of intelligence: <code>exec_command</code> had a guard mechanism with <b>zero defaults</b>, so
+  <code>rm -rf /</code> ran unguarded. Added an always-on guard: blocks <code>rm -rf</code> on <code>/</code> ·
+  <code>~</code> · <code>$HOME</code> · system dirs, raw-device <code>dd</code>/<code>mkfs</code>/<code>wipefs</code>,
+  <code>&gt;/dev/sdX</code>, fork bombs, recursive chown/chmod on <code>/</code>. <b>Conservative: 19/19 dangerous
+  blocked, 18/18 safe allowed</b> (<code>rm -rf ./build</code> still works). Override is explicit
+  (<code>AGENT_ALLOW_CATASTROPHIC=1</code>).</p>
+
+  <h2>7 · Advisor lift — the honest negative</h2>
+  <p>The payoff of the rigor. A/B on a task the model actually stalls on (M2), k=3 interleaved, advisor
+  <b>confirmed-engaged every on-run</b> (trigger + call + answer all fired — a real test, not a null):</p>
+  <div class="tblwrap"><table>
+    <tr><th scope="col">Arm</th><th scope="col">Result</th><th scope="col">Reading</th></tr>
+    <tr><td>Advisor OFF</td><td class="num">1 / 3 solved</td><td>One run converged slowly on its own (~25 min).</td></tr>
+    <tr><td>Advisor ON (as first built)</td><td class="num r">0 / 3 solved</td><td>The ≈2 min interruption <b>derailed</b> the run that would have finished. N=3 → not "hurts," but the mechanism is real.</td></tr>
+    <tr><td>Advisor ON (after no-progress fix)</td><td class="num">1 / 3 solved</td><td>Recovered to <b>parity</b> — no longer hurts; still no positive lift on this model.</td></tr>
+  </table></div>
+  <p class="note"><b>Why the first version hurt:</b> the "grind" trigger fired on <em>elapsed time + tests red</em>,
+  which for a slow model is indistinguishable from <em>slow-but-converging</em>. Fix: only escalate if the model
+  has made <b>no file edits</b> in the last N turns (spinning ≠ progressing; re-running the check doesn't count).
+  A later run with a <b>grounded hand-off</b> (role + failing check + last action passed to the advisor) confirmed the
+  advice is now <b>on-topic</b> rather than generic — but the run still timed out (N=1), so the remaining wall is the
+  27B <em>executing on</em> good advice, not getting it. <b>Net honest verdict: the advisor tier is fully operational,
+  telemetry-confirmed firing on every on-run, and shows no positive lift on this strong 27B</b> — which is itself the
+  finding. The instrument was built well enough to prove a plausible feature doesn't help, instead of shipping it on faith.</p>
+
+  <h2>8 · What one more hard drive (or more RAM) buys</h2>
+  <p>At the tuned optimum the wall-clock splits ≈ <b>disk 50% · CPU math 33% · memory 17%</b>, all co-saturated.
+  Measured today: 2× Gen4 NVMe (Viper VP4300 2TB + Samsung 990 PRO 1TB) at 5.9 GB/s O_DIRECT each; 60 GB RAM, maxed.</p>
+  <ul>
+    <li><b>A third fast NVMe</b> widens the stripe; the per-layer miss-bursts that currently split unevenly across
+    two drives spread across three (the stripe already cut disk-time/word 36%). Estimate: disk slice 50→~38%, ≈0.65 → ~0.75 tok/s.</li>
+    <li><b>More RAM is the terminal lever.</b> A reference machine with 430 GB RAM holds the model resident, hits
+    <b>98% cache</b>, and the disk slice disappears — memory becomes the bottleneck. Estimate: up to ~2× (≈0.9 → ~1.7 tok/s), then RAM-bound.</li>
+    <li><b>Not a bigger GPU.</b> GPU expert-cache and GPU prefill were both measured and both lost on this workload.</li>
+  </ul>
+  <p class="note">Every measured number here traces to a measurement, not a projection. The upgrade figures (third drive,
+  more RAM) are <b>estimates derived from the measured 50/33/17 split</b> — the direction the bottleneck points — not
+  benchmarks of hardware we don't own.</p>
+
+  <a class="back" href="#top" style="display:inline-block;margin-top:26px">↑ back to the top of the deck</a>
+  </section>
+
   <div class="foot">
     Built for the UCSB “AI for App Dev” group · every figure measured on real hardware ·
-    <a href="./spec.html">full spec sheet →</a>
+    <a href="#top">↑ back to top</a>
   </div>
 
 </main>
