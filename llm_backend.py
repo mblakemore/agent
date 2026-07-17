@@ -1918,11 +1918,16 @@ def backend_supports_system(backend, log: logging.Logger | None = None) -> bool:
             log or logging.getLogger("llm_backend"),
             json={
                 "model": getattr(backend, "model", None),
-                "max_tokens": 8,
+                # Room for the nonce even if a reasoning model leaks some
+                # thinking; enable_thinking=False keeps a <think> block from
+                # eating the whole budget (Qwen3 with max_tokens=8 returns
+                # finish=length and empty content otherwise).
+                "max_tokens": 64,
                 "temperature": 0,
                 "stream": True,
+                "chat_template_kwargs": {"enable_thinking": False},
                 "messages": [
-                    {"role": "system", "content": f"Reply with exactly: {_PROBE_NONCE}"},
+                    {"role": "system", "content": f"Reply with exactly the token {_PROBE_NONCE} and nothing else."},
                     {"role": "user", "content": "Go."},
                 ],
             },
