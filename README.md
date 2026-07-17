@@ -124,6 +124,29 @@ How it works:
 | `CC_GATEWAY_RETRY_MAX_DELAY` | `8.0` | Cap on backoff (seconds). |
 | `CC_GATEWAY_CONNECT_TIMEOUT` | `30` | Connect timeout to the backend (seconds). |
 | `CC_GATEWAY_READ_TIMEOUT` | `600` | Read timeout — a slow backend can hold the stream this long. |
+| `AGENT_FOLD_SYSTEM` | `auto` | Workaround for backends that silently drop `role:"system"`. `auto` probes the backend once (~20 tokens, ~1.5s) and caches the result per `(base_url, model)` for 7 days; `always` folds without probing; `never` disables. Applies to both `-cc` and the main agent loop. |
+| `AGENT_CACHE_DIR` | `~/.cache/agent` | Where the probe result is cached (`backend_caps.json`). |
+
+### Backends that silently drop `system` messages
+
+Some OpenAI-compatible gateways accept a `role:"system"` message, return HTTP 200,
+and never show it to the model — no error, no warning. The symptom is an agent that
+appears to ignore its instructions. This was measured against a Bedrock proxy behind
+API Gateway, where a 9-word system prompt is dropped exactly like a 6000-token one
+(`developer` too); the likely cause is that Bedrock's `Converse` API takes `system`
+as a top-level parameter rather than a message role, so it is lost in translation.
+
+When `AGENT_FOLD_SYSTEM=auto` (the default), the backend is probed once and, if it
+drops `system`, system content is merged into the following user message — which
+every backend delivers. Backends that honour `system` (e.g. local llama.cpp) are
+left untouched.
+
+The probe **fails safe**: any error, timeout or ambiguous reply folds. Folding a
+backend that works is harmless; not folding one that drops `system` silently
+discards the entire system prompt.
+
+This is a workaround — the durable fix is server-side. The 7-day cache TTL means a
+server-side fix is picked up automatically without a config change.
 
 These mitigate transient failures but cannot make a turn that genuinely needs longer than the backend's hard timeout *complete* — that requires fixing the backend (e.g. streaming via a Lambda Function URL instead of API Gateway).
 

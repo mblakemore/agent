@@ -1737,3 +1737,224 @@ def build_backend(cfg: dict) -> Backend:
     if kind == "foundry":
         return FoundryBackend(cfg)
     raise ValueError(f"Unknown backend kind: {kind!r}")
+
+
+# ── System-message folding ──────────────────────────────────────────────
+#
+# Some OpenAI-compatible gateways silently DISCARD role:"system" messages:
+# they return HTTP 200 and the model never sees the content. There is no
+# error and no warning, so the failure looks like the model ignoring its
+# instructions.
+#
+# Measured 2026-07-16 against the Bedrock proxy behind API Gateway (see
+# /droid/repos/test/aws-proxy-bugs.md §1): a 9-word system prompt is dropped
+# exactly like a 6000-token one, and "developer" is dropped too. Likely cause:
+# Bedrock's Converse API takes `system` as a TOP-LEVEL parameter rather than a
+# message role, so a system-role message has nowhere to land in `messages`
+# during translation and is dropped instead of being lifted into that field.
+#
+# Folding merges system content into the following user message, which every
+# backend delivers. This is a WORKAROUND — the durable fix is server-side.
+
+_SYSTEM_ROLES = ("system", "developer")
+_PROBE_TTL_SECONDS = 7 * 24 * 3600  # re-detect weekly so a server-side fix is picked up
+_PROBE_NONCE = "QX7ZP"
+_probe_memo: dict[str, bool] = {}
+_probe_lock = threading.Lock()
+
+
+def fold_mode() -> str:
+    """Return the configured fold mode: ``auto`` (default), ``always`` or ``never``."""
+    m = (os.environ.get("AGENT_FOLD_SYSTEM") or "auto").strip().lower()
+    return m if m in ("auto", "always", "never") else "auto"
+
+
+def fold_system_messages(messages: list[dict]) -> list[dict]:
+    """Merge ``system``/``developer`` messages into the next user message.
+
+    Ordering is preserved: folded text is prepended to the user message that
+    followed it, so the model sees the same sequence it would have seen had the
+    system message been honoured. Trailing system content with no following
+    user message becomes a user message of its own.
+
+    Non-string user content (vision block lists) is handled by inserting a
+    leading text block rather than stringifying the blocks.
+    """
+    out: list[dict] = []
+    pending: list[str] = []
+
+    def _text_of(content) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):  # text blocks
+            return "\n".join(
+                b.get("text", "") for b in content
+                if isinstance(b, dict) and b.get("type") == "text"
+            )
+        return ""
+
+    for msg in messages:
+        role = msg.get("role")
+        if role in _SYSTEM_ROLES:
+            txt = _text_of(msg.get("content")).strip()
+            if txt:
+                pending.append(txt)
+            continue
+
+        if pending and role == "user":
+            content = msg.get("content")
+            if isinstance(content, list):
+                merged_blocks = [{"type": "text", "text": "\n\n".join(pending)}]
+                out.append({**msg, "content": merged_blocks + content})
+            else:
+                out.append({**msg, "content": "\n\n".join(pending + [str(content or "")])})
+            pending = []
+            continue
+
+        out.append(msg)
+
+    if pending:  # no user message followed — emit one so the text still lands
+        out.append({"role": "user", "content": "\n\n".join(pending)})
+    return out
+
+
+def _caps_cache_path() -> Path:
+    base = os.environ.get("AGENT_CACHE_DIR") or os.path.expanduser("~/.cache/agent")
+    return Path(base) / "backend_caps.json"
+
+
+def _caps_cache_read(key: str):
+    try:
+        data = json.loads(_caps_cache_path().read_text())
+        entry = data.get(key)
+        if entry and (time.time() - entry.get("ts", 0)) < _PROBE_TTL_SECONDS:
+            return bool(entry["supports_system"])
+    except Exception:
+        pass
+    return None
+
+
+def _caps_cache_write(key: str, value: bool) -> None:
+    try:
+        p = _caps_cache_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            data = json.loads(p.read_text())
+        except Exception:
+            data = {}
+        data[key] = {"supports_system": bool(value), "ts": time.time()}
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=1))
+        tmp.replace(p)
+    except Exception:
+        pass  # cache is an optimisation; never fail the run over it
+
+
+def _collect_probe_text(resp) -> str:
+    """Concatenate assistant text from either backend stream shape.
+
+    ``LlamacppBackend.stream_chat`` returns a ``requests.Response`` (SSE via
+    ``iter_lines``); ``BedrockBackend.stream_chat`` returns a generator of
+    OpenAI delta dicts. Handle both so the probe works on either.
+    """
+    parts: list[str] = []
+
+    def _content(d):
+        try:
+            return (d.get("choices") or [{}])[0].get("delta", {}).get("content")
+        except Exception:
+            return None
+
+    if hasattr(resp, "iter_lines"):
+        for ln in resp.iter_lines():
+            if not ln:
+                continue
+            if isinstance(ln, bytes):
+                ln = ln.decode("utf-8", "ignore")
+            if not ln.startswith("data: "):
+                continue
+            payload = ln[len("data: "):].strip()
+            if payload == "[DONE]":
+                break
+            try:
+                c = _content(json.loads(payload))
+            except Exception:
+                continue
+            if c:
+                parts.append(c)
+    else:
+        for d in resp:
+            if isinstance(d, dict):
+                c = _content(d)
+                if c:
+                    parts.append(c)
+    return "".join(parts)
+
+
+def backend_supports_system(backend, log: logging.Logger | None = None) -> bool:
+    """True if ``backend`` honours role:"system". Probes once, then caches.
+
+    Sends a ~20-token request whose system message asks for a nonce; if the
+    nonce comes back, system is honoured. Cached per (base_url, model) on disk
+    with a 7-day TTL so a server-side fix is eventually picked up.
+
+    FAILS SAFE: any error, timeout or ambiguous reply returns False (i.e. fold).
+    A false positive (folding a backend that works) is harmless; a false
+    negative silently discards the entire system prompt.
+    """
+    key = f"{getattr(backend, 'base_url', '?')}|{getattr(backend, 'model', '?')}"
+    with _probe_lock:
+        if key in _probe_memo:
+            return _probe_memo[key]
+    cached = _caps_cache_read(key)
+    if cached is not None:
+        with _probe_lock:
+            _probe_memo[key] = cached
+        return cached
+
+    supports = False
+    try:
+        resp = backend.stream_chat(
+            log or logging.getLogger("llm_backend"),
+            json={
+                "model": getattr(backend, "model", None),
+                "max_tokens": 8,
+                "temperature": 0,
+                "stream": True,
+                "messages": [
+                    {"role": "system", "content": f"Reply with exactly: {_PROBE_NONCE}"},
+                    {"role": "user", "content": "Go."},
+                ],
+            },
+            stream=True,
+            timeout=(15, 30),
+        )
+        supports = _PROBE_NONCE in _collect_probe_text(resp).upper()
+    except Exception as e:
+        if log:
+            log.debug("system-support probe failed (%s) — folding to be safe", e)
+        supports = False
+
+    if log:
+        log.info("backend system-role support: %s (%s)",
+                 "honoured" if supports else "DROPPED — folding into user messages", key)
+    _caps_cache_write(key, supports)
+    with _probe_lock:
+        _probe_memo[key] = supports
+    return supports
+
+
+def maybe_fold_system(messages: list[dict], backend, log: logging.Logger | None = None) -> list[dict]:
+    """Apply :func:`fold_system_messages` if the backend needs it.
+
+    Honours ``AGENT_FOLD_SYSTEM``: ``never`` skips, ``always`` folds without
+    probing, ``auto`` (default) probes once and caches.
+    """
+    mode = fold_mode()
+    if mode == "never":
+        return messages
+    if not any(m.get("role") in _SYSTEM_ROLES for m in messages):
+        return messages
+    if mode == "always" or not backend_supports_system(backend, log):
+        return fold_system_messages(messages)
+    return messages
