@@ -1312,11 +1312,16 @@ def _bootstrap_template_check(log):
     declare. Operator-side gaps (uncommitted tools/, missing config) are
     surfaced as warnings, not silently fixed.
     """
-    # Find the agent's cognitive instructions file
+    # Find the agent's cognitive instructions file (case-insensitive: agent.md / AGENT.md /
+    # Agent.md all count; agent.md preferred over claude.md when both present).
     instructions_file = None
-    for candidate in ("AGENT.md", "CLAUDE.md"):
-        if Path(candidate).exists():
-            instructions_file = candidate
+    try:
+        _cwd_files = {f.lower(): f for f in os.listdir('.') if os.path.isfile(f)}
+    except OSError:
+        _cwd_files = {}
+    for candidate in ("agent.md", "claude.md"):
+        if candidate in _cwd_files:
+            instructions_file = _cwd_files[candidate]
             break
     if not instructions_file:
         return []  # not a DC-style agent
@@ -1938,7 +1943,8 @@ def _expand_file_refs(text):
 
         lines = p.read_text(encoding='utf-8', errors='replace').splitlines(True)
         total = len(lines)
-        if total <= _MAX_FULL_LINES or p.name == "agent.md":
+        _is_agent_md = p.name.lower() == "agent.md"   # case-insensitive: agent.md / AGENT.md / Agent.md
+        if total <= _MAX_FULL_LINES or _is_agent_md:
             content = "".join(lines)
             header = f"[{ref}: {total} lines]"
         else:
@@ -1946,7 +1952,7 @@ def _expand_file_refs(text):
             header = f"[{ref}: first {_PREVIEW_LINES} of {total} lines]"
 
         resolved = str(p.resolve())
-        if p.name == "agent.md":
+        if _is_agent_md:
             header = (f"[AGENT IDENTITY FILE: {ref} (loaded from {resolved}). "
                       f"This is YOUR agent.md — do not search for it elsewhere. {total} lines]")
 
@@ -1956,7 +1962,7 @@ def _expand_file_refs(text):
     files_content = "\n\n".join(attachments)
     # Prepend working directory context when agent.md is loaded
     cwd = os.getcwd()
-    if any(Path(ref).name == "agent.md" for ref in seen):
+    if any(Path(ref).name.lower() == "agent.md" for ref in seen):
         preamble = (
             f"[SYSTEM CONTEXT: Your working directory is {cwd}. "
             f"All relative paths resolve from here. "
