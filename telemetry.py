@@ -72,7 +72,12 @@ def _truthy(val: Optional[str]) -> bool:
 
 
 def _default_instance() -> str:
-    return f"{socket.gethostname()}-{os.getpid()}"
+    # Stable per-agent label (host + the agent's working-dir name) so metrics ACCUMULATE across
+    # cycles instead of churning a fresh instance per PID. A persistent agent (e.g. uhura) then
+    # shows as one series over time rather than N short-lived ones.
+    # Override with AGENTPY_TELEMETRY_INSTANCE when multiple agents run from the SAME dir
+    # concurrently (e.g. replay experiments) so they don't collide on one series.
+    return f"{socket.gethostname()}-{os.path.basename(os.getcwd()) or 'agent'}"
 
 
 def init() -> bool:
