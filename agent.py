@@ -3342,6 +3342,33 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 _summary_backend.model = _det[0]
                 log.info("Auto-detected summary model name from /v1/models: %s", _det[0])
 
+    # Probe the advisor (GLM) endpoint. If it is unreachable, remove the tool
+    # from the registry so the model never sees it in the schema — avoids
+    # wasted escalation attempts against a server that isn't running.
+    advisor_cfg = _config.get("advisor", {}) or {}
+    advisor_enabled = advisor_cfg.get("enabled", bool(advisor_cfg.get("base_url")))
+    advisor_ok = False
+    advisor_detail = "disabled"
+    if advisor_enabled:
+        _emit("on_boot_progress",
+              f"checking advisor backend — {advisor_cfg.get('base_url', '?')} "
+              f"{advisor_cfg.get('model', 'glm')}")
+        try:
+            from tools.consult_advisor import startup_check as _advisor_check
+            advisor_ok, advisor_detail = _advisor_check(
+                timeout_s=_startup_health_timeout())
+        except Exception as _e:
+            advisor_ok, advisor_detail = False, f"{type(_e).__name__}: {_e}"
+        if not advisor_ok:
+            from tools import remove_tool as _remove_tool
+            _remove_tool("consult_advisor")
+            log.warning(
+                "Advisor endpoint unavailable (%s) — consult_advisor tool unloaded",
+                advisor_detail,
+            )
+        else:
+            log.info("Advisor endpoint healthy — consult_advisor tool active")
+
     # Footer ↔ banner parity: the banner uses _main_backend.model, the TUI
     # footer reads _config["llm"]["model"]. Sync them before the banner renders
     # and before the TuiSession is built so both show the active model name.
@@ -3361,6 +3388,9 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         "summary_base_url": summary_url,
         "summary_model": getattr(_summary_backend, "model", "") if _summary_backend else "",
         "summary_kind": _display_backend_kind(getattr(_summary_backend, "kind", ""), summary_url) if _summary_backend else "",
+        "advisor_enabled": advisor_enabled,
+        "advisor_ok": advisor_ok,
+        "advisor_detail": advisor_detail,
         "ctx_size": ctx_size,
         "max_turns": _MAX_TURNS,
         "log_path": log_path,

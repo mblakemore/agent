@@ -185,6 +185,30 @@ def _distill(question: str, context: str, budget_tokens: int) -> str:
     return context[:budget_chars]
 
 
+def startup_check(timeout_s: int = 5) -> tuple:
+    """Probe the advisor endpoint at agent startup.
+
+    Returns ``(ok: bool, detail: str)``.  Uses the same config path as
+    ``_read_role`` so the result is consistent with what the tool will see
+    at call time.  Never raises — any exception maps to ``(False, reason)``.
+    """
+    a = _read_role("advisor")
+    if not a.get("enabled"):
+        return False, "disabled"
+    url = a["base_url"].rstrip("/") + "/v1/models"
+    try:
+        r = requests.get(url, timeout=timeout_s)
+        if r.status_code < 500:
+            return True, "ok"
+        return False, f"http {r.status_code}"
+    except requests.exceptions.ConnectionError:
+        return False, "unreachable"
+    except requests.exceptions.Timeout:
+        return False, "timeout"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
 def consult_advisor(question: str, context: str = "", reason: str = "") -> str:
     """Escalate ONE bounded, hard sub-problem to the heavyweight advisor tier.
 

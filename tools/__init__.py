@@ -124,4 +124,17 @@ def load_extra_tools(directory):
                    _MAX_EXTRA_TOOLS, len(skipped_cap), ", ".join(skipped_cap))
 
 
+def remove_tool(name: str) -> bool:
+    """Remove a tool from the registry by name.
+
+    Returns True if the tool was found and removed, False if it was not
+    registered.  Safe to call even if the tool was never loaded.
+    """
+    global tools
+    was_present = name in MAP_FN
+    MAP_FN.pop(name, None)
+    tools[:] = [t for t in tools if t.get("function", {}).get("name") != name]
+    return was_present
+
+
 _discover_tools()
