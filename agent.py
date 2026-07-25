@@ -566,6 +566,20 @@ def _load_config():
 
 _config = _load_config()
 
+# Fleet identity enforcement (coordination#1355): if the config declares an explicit
+# `identity`, export it as HAIL_IDENTITY so every `hail post` this agent makes is FORCED to
+# that sender (the ship's-computer CLI refuses any other --sender). This makes cross-identity
+# posting structurally impossible for ANY agent.py-driven DC — a bad generation can only ever
+# post AS itself, which is attributable and recoverable. Deliberately conservative:
+#   • STRICT NO-OP without an explicit `identity` field — never guessed from cwd/basename
+#     (a wrong guess would force a wrong sender, worse than no enforcement).
+#   • Never overrides an existing HAIL_IDENTITY (a launch script's export wins).
+# The mechanism lives here (tracked); each agent declares its own value in its (gitignored)
+# .agent/config.json, e.g. {"identity": "uhura"} — same locality as its llm/base_url.
+_declared_identity = _config.get("identity")
+if _declared_identity and not os.environ.get("HAIL_IDENTITY"):
+    os.environ["HAIL_IDENTITY"] = str(_declared_identity)
+
 # Apply configuration
 BASE_URL = _config["llm"]["base_url"]
 
