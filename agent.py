@@ -199,13 +199,26 @@ def _run_success_check(cmd, log=None):
 # pop new work in "as the agent continues". Daemon threads die with the
 # process: an -a cycle that ends still exits promptly; monitors never extend
 # process lifetime.
-def _drain_monitor_injections(conversation_history):
-    """Append any queued monitor output to conversation_history as user turns.
+# Framing for a mid-burst injection: tells the model this is asynchronous
+# background input that arrived mid-work, so it finishes its current action
+# instead of abandoning it (derailment resistance — a behavioural property
+# validated live, not headless).
+_BTW_FRAMING = (
+    "[Background note — the following arrived while you were working. Finish "
+    "your current action first; do NOT abandon or restart it. Address this at "
+    "your next natural stopping point.]"
+)
+
+
+def _drain_monitor_injections(conversation_history, framing=None):
+    """Append any queued monitor output to conversation_history as a single
+    user turn (optionally framed as a background note).
 
     Returns True if it injected anything (the caller resets its turn-complete
-    counters and continues the loop), False if the queue was empty (the caller
-    falls through to normal stop logic, so -a still exits at a real cycle end).
-    Pure w.r.t. loop-control state; never raises.
+    counters / continues), False if the queue was empty (the caller falls
+    through to normal stop logic, so -a still exits at a real cycle end).
+    Combines all queued items into ONE user turn to avoid consecutive-user
+    sequences. Pure w.r.t. loop-control state; never raises.
     """
     try:
         items = monitor_bus.drain()
@@ -213,9 +226,49 @@ def _drain_monitor_injections(conversation_history):
         return False
     if not items:
         return False
-    for text in items:
-        conversation_history.append({"role": "user", "content": text})
+    body = "\n\n".join(items)
+    if framing:
+        body = framing + "\n\n" + body
+    conversation_history.append({"role": "user", "content": body})
     return True
+
+
+def _has_pending_tool_calls(conversation_history):
+    """True if the most recent assistant tool-call batch has any tool_call
+    without a matching tool result — i.e. injecting a user turn now would
+    strand an unanswered tool_call (which strict templates/validators reject).
+
+    Scans from the end for the last assistant message; if it declared
+    tool_calls, every id must appear in a following role:'tool' message.
+    Handles tool_call items as dicts or objects. Never raises.
+    """
+    try:
+        last_asst = None
+        for i in range(len(conversation_history) - 1, -1, -1):
+            if conversation_history[i].get("role") == "assistant":
+                last_asst = i
+                break
+        if last_asst is None:
+            return False
+        tcs = conversation_history[last_asst].get("tool_calls") or []
+        ids = set()
+        for tc in tcs:
+            tid = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+            if tid:
+                ids.add(tid)
+        if not ids:
+            return False
+        answered = set()
+        for j in range(last_asst + 1, len(conversation_history)):
+            m = conversation_history[j]
+            if m.get("role") == "tool":
+                tcid = m.get("tool_call_id")
+                if tcid:
+                    answered.add(tcid)
+        return bool(ids - answered)
+    except Exception:
+        # On any uncertainty, report "pending" so we do NOT inject (fail safe).
+        return True
 
 
 # WS8.3 (run 096): tools/paths that count as legitimate TRACK work after the
@@ -4487,6 +4540,19 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
             if overtime >= _MAX_TURNS:
                 log.error("Hard overtime cap reached (%d turns) — force stopping", turn)
                 return "done"
+
+        # ── Mid-burst "btw" injection ──
+        # Deliver any queued monitor / background input at this natural boundary
+        # (a fresh turn is about to be built), framed so the model finishes its
+        # current action first. Guarded by pairing: never inject a user turn
+        # while a tool_call from the previous batch is still unanswered — that
+        # would strand it (strict templates reject an unanswered tool_call
+        # followed by a user turn). If a tool_call is pending, the queued item
+        # waits for the next boundary. The turn caps above still bound the loop,
+        # so a chatty monitor cannot prevent exit.
+        if monitor_bus.has_pending() and not _has_pending_tool_calls(conversation_history):
+            if _drain_monitor_injections(conversation_history, framing=_BTW_FRAMING):
+                log.debug("mid-burst monitor injection delivered at turn %d", turn)
 
         # Harvest any completed async summary before building context
         if _async_summarizer and _async_summarizer.harvest(summary_state):

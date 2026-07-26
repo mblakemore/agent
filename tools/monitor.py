@@ -55,8 +55,12 @@ def fn(action="arm", label=None, command=None, interval_seconds=15,
         verb = "replaced" if r.get("replaced") else "armed"
         return (f"Monitor '{label.strip()}' {verb} — running "
                 f"`{command.strip()}` every {r['interval']:g}s; its output will "
-                f"pop into the conversation as it arrives. It stops when the "
-                f"cycle ends.")
+                f"pop into the conversation as it arrives, at your next natural "
+                f"tool-result boundary. NOTE: this monitor stops when the "
+                f"session ends and the process exits — in automated (-a) mode "
+                f"that is when the cycle completes, so it will NOT catch events "
+                f"that land after the cycle ends. For something that may fire "
+                f"hours later, run in a persistent interactive session.")
 
     return f"Error: unknown action '{action}' (use arm|stop|list)."
 

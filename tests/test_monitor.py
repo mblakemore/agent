@@ -183,6 +183,51 @@ def test_notifier_exception_is_swallowed():
         monitor_bus.drain()
 
 
+# ── mid-burst injection: pairing guard + framing ─────────────────────────
+def test_pending_tool_calls_detects_unanswered():
+    # unanswered tool_call -> pending (unsafe to inject a user turn)
+    h = [{"role": "assistant", "content": "",
+          "tool_calls": [{"id": "A", "function": {"name": "x"}}]}]
+    assert _agent._has_pending_tool_calls(h) is True
+    # answered -> safe
+    h2 = h + [{"role": "tool", "tool_call_id": "A", "content": "ok"}]
+    assert _agent._has_pending_tool_calls(h2) is False
+    # partial batch (B unanswered) -> pending
+    h3 = [{"role": "assistant", "content": "",
+           "tool_calls": [{"id": "A", "function": {}}, {"id": "B", "function": {}}]},
+          {"role": "tool", "tool_call_id": "A", "content": "ok"}]
+    assert _agent._has_pending_tool_calls(h3) is True
+    # no tool_calls / empty -> safe
+    assert _agent._has_pending_tool_calls([{"role": "assistant", "content": "hi"}]) is False
+    assert _agent._has_pending_tool_calls([]) is False
+
+
+def test_drain_combines_items_and_frames():
+    monitor_bus._BUS._put("first")
+    monitor_bus._BUS._put("second")
+    h = []
+    assert _agent._drain_monitor_injections(h, framing=_agent._BTW_FRAMING) is True
+    assert len(h) == 1  # ONE combined user turn, not two
+    assert h[0]["role"] == "user"
+    assert h[0]["content"].startswith(_agent._BTW_FRAMING)
+    assert "first" in h[0]["content"] and "second" in h[0]["content"]
+
+
+def test_drain_no_framing_is_plain():
+    monitor_bus._BUS._put("hello")
+    h = []
+    assert _agent._drain_monitor_injections(h) is True
+    assert h[0]["content"] == "hello"  # no framing prepended
+
+
+def test_monitor_arm_notice_mentions_session_end():
+    out = monitor_fn(action="arm", label="j", command="true", interval_seconds=5)
+    monitor_fn(action="stop", label="j")
+    low = out.lower()
+    assert "stops when the session ends" in low
+    assert "-a" in low or "automated" in low  # tells -a agents the limit
+
+
 def test_tui_wake_safe_noop_when_not_prompting():
     """wake() from a monitor thread must be a safe no-op when no prompt is
     active (the full idle-wake path is validated live in a real TTY)."""
