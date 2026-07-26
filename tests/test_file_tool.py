@@ -1163,17 +1163,15 @@ class TestFileReadStartLineZeroConsistency(unittest.TestCase):
 # ── Path confinement for write/append (#847) ──────────────────────────────────
 
 
-class TestFileWritePathConfinement(unittest.TestCase):
-    """write and append must refuse paths that resolve outside the working directory (#847).
-
-    Before the fix, file(action='write', path='/tmp/evil.txt', ...) silently
-    created the file; relative traversals like '../../secret.txt' also escaped
-    the working directory undetected.
-    """
+class TestFileNoConfinement(unittest.TestCase):
+    """The file tool NO LONGER confines I/O to the working directory (Creator directive 2026-07-26).
+    exec_command (the agent's fallback whenever confinement blocked it) had no such restriction, so
+    the confinement was pure friction, not a security boundary. These lock in the NEW behavior:
+    outside-cwd read / write / relative-traversal now SUCCEED — while the independent
+    _BLOCKED_FILENAMES guard (the real boundary that remains) still refuses internal runtime files
+    even outside cwd. Replaces the former TestFileWritePathConfinement / DeleteInsert / ReadList."""
 
     def setUp(self):
-        # Create an isolated project directory and change into it so cwd is
-        # well-defined and distinct from /tmp.
         self._orig_cwd = os.getcwd()
         self._outer = tempfile.mkdtemp()
         self._project = Path(self._outer) / "project"
@@ -1185,283 +1183,35 @@ class TestFileWritePathConfinement(unittest.TestCase):
         import shutil
         shutil.rmtree(self._outer, ignore_errors=True)
 
-    # ── write ─────────────────────────────────────────────────────────────────
-
-    def test_write_absolute_path_outside_cwd_returns_error(self):
-        """write to an absolute path outside cwd must be rejected. (#847)"""
+    def test_write_absolute_path_outside_cwd_now_succeeds(self):
         outside = str(Path(self._outer) / "escaped.txt")
-        result = file_tool.fn(action="write", path=outside, content="pwned!")
-        self.assertTrue(result.startswith("Error:"),
-                        msg=f"Expected Error:, got: {result!r}")
-        self.assertIn("outside", result,
-                      msg=f"Error must mention 'outside', got: {result!r}")
-
-    def test_write_absolute_path_outside_cwd_does_not_create_file(self):
-        """A rejected write must not create the file. (#847)"""
-        outside = str(Path(self._outer) / "should_not_exist.txt")
-        file_tool.fn(action="write", path=outside, content="pwned!")
-        self.assertFalse(
-            os.path.exists(outside),
-            "File must not be created when write is rejected due to path confinement",
-        )
-
-    def test_write_relative_traversal_outside_cwd_returns_error(self):
-        """write with a relative '../' traversal that leaves cwd must be rejected. (#847)"""
-        result = file_tool.fn(action="write", path="../escape.txt", content="escaped!")
-        self.assertTrue(result.startswith("Error:"),
-                        msg=f"Expected Error: for traversal path, got: {result!r}")
-        self.assertIn("outside", result)
-
-    def test_write_relative_traversal_does_not_create_file(self):
-        """Traversal write must not create the file in the parent directory. (#847)"""
-        file_tool.fn(action="write", path="../escape.txt", content="escaped!")
-        self.assertFalse(
-            (Path(self._outer) / "escape.txt").exists(),
-            "File must not be created outside cwd via traversal",
-        )
-
-    def test_write_inside_cwd_still_works(self):
-        """write to a path inside cwd must still succeed after the confinement check. (#847)"""
-        inside = str(self._project / "allowed.txt")
-        result = file_tool.fn(action="write", path=inside, content="ok\n")
+        result = file_tool.fn(action="write", path=outside, content="ok")
+        self.assertNotIn("outside the working directory", result,
+                         msg=f"confinement should be gone, got: {result!r}")
         self.assertFalse(result.startswith("Error:"),
-                         msg=f"Write inside cwd must succeed, got: {result!r}")
-        self.assertIn("Wrote", result)
-        self.assertTrue((self._project / "allowed.txt").exists())
+                         msg=f"write outside cwd must succeed now, got: {result!r}")
+        self.assertTrue(Path(outside).exists() and Path(outside).read_text() == "ok")
 
-    def test_write_relative_inside_cwd_still_works(self):
-        """write to a relative path that stays inside cwd must succeed. (#847)"""
-        result = file_tool.fn(action="write", path="subfile.txt", content="safe\n")
+    def test_read_absolute_path_outside_cwd_now_succeeds(self):
+        target = Path(self._outer) / "readme.txt"
+        target.write_text("hello from outside")
+        result = file_tool.fn(action="read", path=str(target))
+        self.assertNotIn("outside the working directory", result)
+        self.assertIn("hello from outside", result)
+
+    def test_relative_traversal_outside_cwd_now_succeeds(self):
+        result = file_tool.fn(action="write", path="../escaped2.txt", content="trav")
         self.assertFalse(result.startswith("Error:"),
-                         msg=f"Relative write inside cwd must succeed, got: {result!r}")
-        self.assertTrue((self._project / "subfile.txt").exists())
+                         msg=f"traversal write must succeed now, got: {result!r}")
+        self.assertTrue((Path(self._outer) / "escaped2.txt").exists())
 
-    # ── append ────────────────────────────────────────────────────────────────
-
-    def test_append_absolute_path_outside_cwd_returns_error(self):
-        """append to an absolute path outside cwd must be rejected. (#847)"""
-        outside = str(Path(self._outer) / "existing.txt")
-        Path(outside).write_text("original\n", encoding="utf-8")
-        result = file_tool.fn(action="append", path=outside, content="appended")
-        self.assertTrue(result.startswith("Error:"),
-                        msg=f"Expected Error:, got: {result!r}")
-        self.assertIn("outside", result)
-
-    def test_append_outside_cwd_does_not_modify_file(self):
-        """A rejected append must leave the target file unchanged. (#847)"""
-        outside = str(Path(self._outer) / "existing.txt")
-        Path(outside).write_text("original\n", encoding="utf-8")
-        file_tool.fn(action="append", path=outside, content="INJECTED")
-        self.assertEqual(
-            Path(outside).read_text(encoding="utf-8"),
-            "original\n",
-            "File must not be modified when append is rejected due to path confinement",
-        )
-
-    def test_append_relative_traversal_outside_cwd_returns_error(self):
-        """append with a '../' traversal must be rejected. (#847)"""
-        result = file_tool.fn(action="append", path="../escape.txt", content="leak")
-        self.assertTrue(result.startswith("Error:"),
-                        msg=f"Expected Error: for traversal append, got: {result!r}")
-        self.assertIn("outside", result)
-
-    def test_append_inside_cwd_still_works(self):
-        """append to a file inside cwd must succeed after the confinement check. (#847)"""
-        inside = self._project / "log.txt"
-        inside.write_text("entry1\n", encoding="utf-8")
-        result = file_tool.fn(action="append", path=str(inside), content="entry2\n")
-        self.assertFalse(result.startswith("Error:"),
-                         msg=f"Append inside cwd must succeed, got: {result!r}")
-        self.assertIn("Appended", result)
-
-
-# ── Path confinement for delete/insert (#861) ─────────────────────────────────
-
-
-class TestFileDeleteInsertPathConfinement(unittest.TestCase):
-    """delete and insert must refuse paths that resolve outside the working directory (#861).
-
-    PR #848 added confinement to write/append but missed delete and insert.
-    file(action='delete', path='/var/tmp/...') could silently remove files outside cwd.
-    file(action='insert', path='/var/tmp/...') could silently inject content outside cwd.
-    """
-
-    def setUp(self):
-        self._orig_cwd = os.getcwd()
-        self._outer = tempfile.mkdtemp()
-        self._project = Path(self._outer) / "project"
-        self._project.mkdir()
-        os.chdir(str(self._project))
-
-    def tearDown(self):
-        os.chdir(self._orig_cwd)
-        import shutil
-        shutil.rmtree(self._outer, ignore_errors=True)
-
-    # ── delete ────────────────────────────────────────────────────────────────
-
-    def test_delete_absolute_path_outside_cwd_returns_error(self):
-        """delete of an absolute path outside cwd must be rejected. (#861)"""
-        outside = str(Path(self._outer) / "victim.txt")
-        Path(outside).write_text("important\n", encoding="utf-8")
-        result = file_tool.fn(action="delete", path=outside)
-        self.assertTrue(result.startswith("Error:"),
-                        msg=f"Expected Error:, got: {result!r}")
-        self.assertIn("outside", result)
-
-    def test_delete_absolute_path_outside_cwd_does_not_delete_file(self):
-        """A rejected delete must leave the target file on disk. (#861)"""
-        outside = str(Path(self._outer) / "must_survive.txt")
-        Path(outside).write_text("preserved\n", encoding="utf-8")
-        file_tool.fn(action="delete", path=outside)
-        self.assertTrue(
-            os.path.exists(outside),
-            "File must NOT be deleted when delete is rejected due to path confinement",
-        )
-
-    def test_delete_relative_traversal_outside_cwd_returns_error(self):
-        """delete with a '../' traversal that leaves cwd must be rejected. (#861)"""
-        result = file_tool.fn(action="delete", path="../escape.txt")
-        self.assertTrue(result.startswith("Error:"),
-                        msg=f"Expected Error: for traversal delete, got: {result!r}")
-        self.assertIn("outside", result)
-
-    def test_delete_inside_cwd_still_works(self):
-        """delete of a file inside cwd must succeed after the confinement check. (#861)"""
-        inside = self._project / "removeme.txt"
-        inside.write_text("bye\n", encoding="utf-8")
-        result = file_tool.fn(action="delete", path=str(inside))
-        self.assertFalse(result.startswith("Error:"),
-                         msg=f"Delete inside cwd must succeed, got: {result!r}")
-        self.assertIn("Deleted", result)
-        self.assertFalse(inside.exists())
-
-    # ── insert ────────────────────────────────────────────────────────────────
-
-    def test_insert_absolute_path_outside_cwd_returns_error(self):
-        """insert into a file outside cwd must be rejected. (#861)"""
-        outside = str(Path(self._outer) / "target.txt")
-        Path(outside).write_text("line 1\nline 2\n", encoding="utf-8")
-        # Mark as accessed so the read-first guard doesn't fire
-        from tools.file import _accessed_files
-        _accessed_files.add(str(Path(outside).resolve()))
-        result = file_tool.fn(action="insert", path=outside, content="injected\n",
-                              start_line=1)
-        self.assertTrue(result.startswith("Error:"),
-                        msg=f"Expected Error:, got: {result!r}")
-        self.assertIn("outside", result)
-
-    def test_insert_absolute_path_outside_cwd_does_not_modify_file(self):
-        """A rejected insert must leave the target file unchanged. (#861)"""
-        outside = str(Path(self._outer) / "target2.txt")
-        original = "line 1\nline 2\n"
-        Path(outside).write_text(original, encoding="utf-8")
-        from tools.file import _accessed_files
-        _accessed_files.add(str(Path(outside).resolve()))
-        file_tool.fn(action="insert", path=outside, content="INJECTED\n", start_line=1)
-        self.assertEqual(
-            Path(outside).read_text(encoding="utf-8"),
-            original,
-            "File content must be unchanged when insert is rejected due to path confinement",
-        )
-
-    def test_insert_relative_traversal_outside_cwd_returns_error(self):
-        """insert with a '../' traversal that leaves cwd must be rejected. (#861)"""
-        result = file_tool.fn(action="insert", path="../escape.txt",
-                              content="evil\n", start_line=1)
-        self.assertTrue(result.startswith("Error:"),
-                        msg=f"Expected Error: for traversal insert, got: {result!r}")
-        self.assertIn("outside", result)
-
-    def test_insert_inside_cwd_still_works(self):
-        """insert into a file inside cwd must succeed after the confinement check. (#861)"""
-        inside = self._project / "editable.txt"
-        inside.write_text("line 1\nline 2\n", encoding="utf-8")
-        from tools.file import _accessed_files
-        _accessed_files.add(str(inside.resolve()))
-        result = file_tool.fn(action="insert", path=str(inside), content="new line\n",
-                              start_line=1)
-        self.assertFalse(result.startswith("Error:"),
-                         msg=f"Insert inside cwd must succeed, got: {result!r}")
-
-
-class TestFileReadListPathConfinement(unittest.TestCase):
-    """read and list must refuse paths that resolve outside the working directory (#870).
-
-    write/append/delete/insert were already confined; read and list were missed.
-    file(action='read', path='/etc/passwd') could leak system files.
-    file(action='list', path='/etc') could enumerate system directories.
-    """
-
-    def setUp(self):
-        self._orig_cwd = os.getcwd()
-        self._outer = tempfile.mkdtemp()
-        self._project = Path(self._outer) / "project"
-        self._project.mkdir()
-        os.chdir(str(self._project))
-
-    def tearDown(self):
-        os.chdir(self._orig_cwd)
-        import shutil
-        shutil.rmtree(self._outer, ignore_errors=True)
-
-    # ── read ──────────────────────────────────────────────────────────────────
-
-    def test_read_absolute_path_outside_cwd_returns_error(self):
-        """read of an absolute path outside cwd must be rejected. (#870)"""
-        outside = str(Path(self._outer) / "secret.txt")
-        Path(outside).write_text("secret\n", encoding="utf-8")
-        result = file_tool.fn(action="read", path=outside)
-        self.assertTrue(result.startswith("Error:"),
-                        msg=f"Expected Error:, got: {result!r}")
-        self.assertIn("outside", result)
-
-    def test_read_absolute_path_outside_cwd_does_not_return_content(self):
-        """A rejected read must not return the file's contents. (#870)"""
-        outside = str(Path(self._outer) / "no_leak.txt")
-        Path(outside).write_text("SENSITIVE DATA\n", encoding="utf-8")
-        result = file_tool.fn(action="read", path=outside)
-        self.assertNotIn("SENSITIVE DATA", result)
-
-    def test_read_relative_traversal_outside_cwd_returns_error(self):
-        """read with a '../' traversal that escapes cwd must be rejected. (#870)"""
-        result = file_tool.fn(action="read", path="../escape.txt")
-        self.assertTrue(result.startswith("Error:"),
-                        msg=f"Expected Error: for traversal read, got: {result!r}")
-        self.assertIn("outside", result)
-
-    def test_read_inside_cwd_still_works(self):
-        """read of a file inside cwd must succeed after the confinement check. (#870)"""
-        inside = self._project / "hello.txt"
-        inside.write_text("hello world\n", encoding="utf-8")
-        result = file_tool.fn(action="read", path=str(inside))
-        self.assertFalse(result.startswith("Error:"),
-                         msg=f"Read inside cwd must succeed, got: {result!r}")
-        self.assertIn("hello world", result)
-
-    # ── list ──────────────────────────────────────────────────────────────────
-
-    def test_list_absolute_path_outside_cwd_returns_error(self):
-        """list of an absolute path outside cwd must be rejected. (#870)"""
-        result = file_tool.fn(action="list", path=self._outer)
-        self.assertTrue(result.startswith("Error:"),
-                        msg=f"Expected Error:, got: {result!r}")
-        self.assertIn("outside", result)
-
-    def test_list_relative_traversal_outside_cwd_returns_error(self):
-        """list with '../' traversal that escapes cwd must be rejected. (#870)"""
-        result = file_tool.fn(action="list", path="..")
-        self.assertTrue(result.startswith("Error:"),
-                        msg=f"Expected Error: for traversal list, got: {result!r}")
-        self.assertIn("outside", result)
-
-    def test_list_inside_cwd_still_works(self):
-        """list of cwd itself must succeed after the confinement check. (#870)"""
-        (self._project / "a.txt").write_text("x", encoding="utf-8")
-        result = file_tool.fn(action="list", path=str(self._project))
-        self.assertFalse(result.startswith("Error:"),
-                         msg=f"List inside cwd must succeed, got: {result!r}")
-        self.assertIn("a.txt", result)
+    def test_blocked_filename_still_refused_even_outside_cwd(self):
+        # The real security boundary survives confinement removal: internal runtime files stay blocked.
+        outside_blocked = str(Path(self._outer) / "conversation_checkpoint.json")
+        result = file_tool.fn(action="write", path=outside_blocked, content="x")
+        self.assertIn("internal runtime file", result,
+                      msg=f"blocked filename must still be refused, got: {result!r}")
+        self.assertFalse(Path(outside_blocked).exists())
 
 
 class TestEditFuzzyTrailingWhitespace(unittest.TestCase):

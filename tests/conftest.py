@@ -31,7 +31,7 @@ happy-path lookups (path='.', path='tools/') resolve inside cwd, while absolute
 outside paths (/etc, /home, ../other) are correctly rejected.
 
 The ``tmp_cwd`` fixture sets cwd=/tmp for test_file_tool.py (except
-TestFileWritePathConfinement).  The ``find_symbol_cwd`` fixture handles the
+TestFileNoConfinement).  The ``find_symbol_cwd`` fixture handles the
 test_find_symbol.py cwd routing.  The ``search_files_cwd`` fixture handles the
 test_search_files.py cwd routing.
 """
@@ -84,12 +84,12 @@ _FIND_SYMBOL_REPO_PATH_CLASSES = {
 
 @pytest.fixture(autouse=True)
 def tmp_cwd(request):
-    """Set cwd=/tmp for test_file_tool.py tests (except TestFileWritePathConfinement).
+    """Set cwd=/tmp for test_file_tool.py tests (except TestFileNoConfinement).
 
     This makes absolute /tmp/... paths used in existing tests resolve as *inside* cwd,
     because /tmp is an ancestor of all tempfile.mkdtemp() paths.
 
-    TestFileWritePathConfinement manages its own cwd explicitly and is excluded.
+    TestFileNoConfinement manages its own cwd explicitly and is excluded.
     Only applies to test_file_tool.py.
     """
     if "test_file_tool" not in request.fspath.basename:
@@ -97,7 +97,7 @@ def tmp_cwd(request):
         return
 
     cls = request.node.cls
-    if cls is not None and cls.__name__ == "TestFileWritePathConfinement":
+    if cls is not None and cls.__name__ == "TestFileNoConfinement":
         yield
         return
 

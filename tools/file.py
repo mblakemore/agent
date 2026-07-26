@@ -185,32 +185,42 @@ _BLOCKED_FILENAMES = {"conversation_checkpoint.json"}
 
 
 def _check_write_confinement(path, p):
-    """Return an error string if the resolved path is outside the working directory, else None.
+    """DISABLED (Creator directive 2026-07-26): the file tool no longer confines I/O to the working
+    directory. Rationale: `exec_command` — the tool the agent fell back to whenever confinement
+    blocked it — has NO such restriction, so this check was pure friction (it just forced a clunky
+    `cat`/`>>` workaround for legitimate cross-repo access like reading
+    /droid/repos/dc_shared/NETWORK_FOCUS.md), not a real security boundary. File I/O now has the
+    same filesystem reach as exec_command.
 
-    Mirrors the confinement logic in _expand_file_refs (fixed in #845):
-    both absolute paths (/tmp/evil) and relative traversals (../../secret) are
-    caught by resolving the path and comparing it to cwd.
+    Kept as a no-op so all six call sites (_read/_write/_insert/_delete/_edit/_append) stay intact,
+    AND so the independent `_BLOCKED_FILENAMES` guard at each of those sites still fires. `_resolve_path`
+    (cwd-prefix dedup) is untouched. Restore by reinstating the resolve-and-compare-to-cwd body below.
+
+    CAVEAT: if an agent is ever configured with `file` whitelisted but `exec_command` DENIED, this
+    removes that agent's only file-system boundary (previously the sole restriction). No current
+    agent does this; flagged so it's a known property.
     """
-    try:
-        resolved = p.resolve()
-    except (OSError, ValueError):
-        return None  # let the write attempt fail naturally
-    cwd_resolved = Path.cwd().resolve()
-    cwd_prefix = str(cwd_resolved) + os.sep
-    resolved_str = str(resolved)
-    if resolved != cwd_resolved and not resolved_str.startswith(cwd_prefix):
-        # Check whitelisted extra paths (preferences.extra_allowed_paths in config.json)
-        for allowed in _EXTRA_ALLOWED_PATHS:
-            if resolved_str == allowed or resolved_str.startswith(allowed + os.sep):
-                return None
-        suggestion = cwd_resolved / resolved.name
-        return (
-            f"Error: path '{path}' resolves to '{resolved}' which is outside "
-            f"the working directory '{cwd_resolved}'. "
-            f"Only files inside the current working directory can be accessed. "
-            f"To write '{resolved.name}' here, use path='{suggestion}'."
-        )
     return None
+    # --- former confinement (kept for restore) ---
+    # try:
+    #     resolved = p.resolve()
+    # except (OSError, ValueError):
+    #     return None
+    # cwd_resolved = Path.cwd().resolve()
+    # cwd_prefix = str(cwd_resolved) + os.sep
+    # resolved_str = str(resolved)
+    # if resolved != cwd_resolved and not resolved_str.startswith(cwd_prefix):
+    #     for allowed in _EXTRA_ALLOWED_PATHS:
+    #         if resolved_str == allowed or resolved_str.startswith(allowed + os.sep):
+    #             return None
+    #     suggestion = cwd_resolved / resolved.name
+    #     return (
+    #         f"Error: path '{path}' resolves to '{resolved}' which is outside "
+    #         f"the working directory '{cwd_resolved}'. "
+    #         f"Only files inside the current working directory can be accessed. "
+    #         f"To write '{resolved.name}' here, use path='{suggestion}'."
+    #     )
+    # return None
 
 
 def _read(path, start_line, end_line):
