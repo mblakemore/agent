@@ -90,6 +90,7 @@ except ImportError:
 from spinner import StreamStatus
 from token_utils import count_tokens_from_message, count_tools_tokens
 from tools import MAP_FN, tools, load_extra_tools
+import monitor_bus
 import tools.end_cycle as _end_cycle_tool
 from tools.exec_command import cleanup_temp_sessions
 # Import CycleFrequencyTracker for cycle timestamp tracking
@@ -188,6 +189,33 @@ def _run_success_check(cmd, log=None):
         if log:
             log.warning("success_check errored: %s", e)
         return 1, f"(success_check errored: {e})"
+
+
+# ── Background monitor injection ─────────────────────────────────────────
+# A monitor (armed via the `monitor` tool) runs a shell command on an interval
+# in a daemon thread and queues any non-empty output on the monitor bus. The
+# agentic loop drains that queue at the turn-complete boundary (below) and
+# feeds each item into the conversation as a new user turn — so a monitor can
+# pop new work in "as the agent continues". Daemon threads die with the
+# process: an -a cycle that ends still exits promptly; monitors never extend
+# process lifetime.
+def _drain_monitor_injections(conversation_history):
+    """Append any queued monitor output to conversation_history as user turns.
+
+    Returns True if it injected anything (the caller resets its turn-complete
+    counters and continues the loop), False if the queue was empty (the caller
+    falls through to normal stop logic, so -a still exits at a real cycle end).
+    Pure w.r.t. loop-control state; never raises.
+    """
+    try:
+        items = monitor_bus.drain()
+    except Exception:
+        return False
+    if not items:
+        return False
+    for text in items:
+        conversation_history.append({"role": "user", "content": text})
+    return True
 
 
 # WS8.3 (run 096): tools/paths that count as legitimate TRACK work after the
@@ -3589,6 +3617,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 result = _handle_auto_guidance(conversation_history, summary_state, initial_files, log,
                                                gen, max_tokens, ctx_size, _async_summarizer,
                                                _telemetry_on, t0)
+            monitor_bus.stop_all()
             cleanup_temp_sessions()
             log.info("Session ended (auto mode) | %d messages in history", len(conversation_history))
             if _telemetry_on:
@@ -3674,6 +3703,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
 
     if tui_session is not None:
         tui_session.close()
+    monitor_bus.stop_all()
     cleanup_temp_sessions()
     log.info("Session ended | %d messages in history", len(conversation_history))
     if _telemetry_on:
@@ -5023,6 +5053,24 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                 return "done"
 
         if not tool_calls:
+            # Background-monitor injection (turn-complete boundary): if a
+            # monitor queued output while the model was working, feed it as a
+            # new user turn and keep going instead of stopping. Placed at the
+            # top of the no-tool-call branch so genuine new input preempts the
+            # "you stopped without a tool" nudges/gates — this is legitimate
+            # continuation, not a stalled completion. Empty queue -> fall
+            # through to the existing stop logic, so -a still exits when the
+            # cycle truly ends. The loop-top hard caps (turn-limit/overtime)
+            # still bound the loop, so even a chatty monitor cannot prevent
+            # eventual exit. Last message here is the model's text response, so
+            # appending a user turn yields the safe assistant->user->assistant
+            # shape (never spliced between a tool call and its result).
+            if _drain_monitor_injections(conversation_history):
+                _consecutive_text_only = 0
+                _recent_text_hashes.clear()
+                log.debug("monitor injection consumed at turn-complete; continuing")
+                continue
+
             # Q.01 guard: fires regardless of _NUDGE_ENABLED.  In no-nudge
             # mode the session stops immediately on any text-only response,
             # so this must run before that early exit.  Budget: 2 retries
