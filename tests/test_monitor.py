@@ -146,3 +146,51 @@ def test_tool_arm_then_list_then_stop():
 
 def test_tool_unknown_action():
     assert "unknown action" in monitor_fn(action="frobnicate").lower()
+
+
+# ── idle-wake plumbing (notifier + has_pending + safe wake) ───────────────
+def test_notifier_fires_on_put_and_has_pending():
+    hits = []
+    monitor_bus.set_notifier(lambda: hits.append(1))
+    try:
+        assert monitor_bus.has_pending() is False
+        monitor_bus._BUS._put("x")
+        assert monitor_bus.has_pending() is True
+        assert hits == [1]
+    finally:
+        monitor_bus.clear_notifier()
+        monitor_bus.drain()
+
+
+def test_cleared_notifier_does_not_fire():
+    hits = []
+    monitor_bus.set_notifier(lambda: hits.append(1))
+    monitor_bus.clear_notifier()
+    monitor_bus._BUS._put("x")
+    monitor_bus.drain()
+    assert hits == []
+
+
+def test_notifier_exception_is_swallowed():
+    def boom():
+        raise RuntimeError("notifier blew up")
+    monitor_bus.set_notifier(boom)
+    try:
+        monitor_bus._BUS._put("x")  # must not propagate
+        assert monitor_bus.has_pending()
+    finally:
+        monitor_bus.clear_notifier()
+        monitor_bus.drain()
+
+
+def test_tui_wake_safe_noop_when_not_prompting():
+    """wake() from a monitor thread must be a safe no-op when no prompt is
+    active (the full idle-wake path is validated live in a real TTY)."""
+    import tui
+    if not getattr(tui, "_AVAILABLE", False):
+        pytest.skip("prompt_toolkit not available")
+    from unittest.mock import MagicMock
+    sess = tui.TuiSession(history=[], summary_state={}, config={}, ctx_size=8000,
+                          cb=MagicMock(), estimate_tokens=lambda m: 0)
+    assert sess.WAKE is tui.MONITOR_WAKE
+    sess.wake()  # not prompting -> no exception, no effect

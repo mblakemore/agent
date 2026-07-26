@@ -45,6 +45,11 @@ from callbacks import TerminalCallbacks
 # thread doesn't own the terminal anyway.
 _prompt_active = threading.local()
 
+# Sentinel returned by TuiSession.prompt() when an idle prompt was woken by a
+# background monitor (rather than by the user typing). The caller detects it by
+# identity and drains the monitor bus instead of treating it as typed input.
+MONITOR_WAKE = object()
+
 
 def _prompt_is_active() -> bool:
     return getattr(_prompt_active, "on", False)
@@ -214,6 +219,9 @@ if _AVAILABLE:
         state on every keystroke without needing explicit refreshes.
         """
 
+        # Sentinel prompt() returns when woken by a monitor (see wake()).
+        WAKE = MONITOR_WAKE
+
         def __init__(
             self,
             *,
@@ -265,10 +273,47 @@ if _AVAILABLE:
             _prompt_active.on = True
             cancel.set_tui_mode(True)
             try:
-                return self._session.prompt().strip()
+                res = self._session.prompt()
             finally:
                 cancel.set_tui_mode(False)
                 _prompt_active.on = False
+            # A background monitor woke the idle prompt: hand the sentinel back
+            # (by identity) so the caller drains the monitor bus rather than
+            # treating it as typed text.
+            if res is MONITOR_WAKE:
+                return MONITOR_WAKE
+            return res.strip()
+
+        def wake(self) -> None:
+            """Wake an idle prompt so it returns MONITOR_WAKE (thread-safe).
+
+            Called from a monitor thread when new output is queued. No-op
+            unless a prompt is actively running AND its input buffer is empty —
+            so it never interrupts a running turn and never clobbers a
+            half-typed line. The actual app.exit runs on the app's own event
+            loop via call_soon_threadsafe. Never raises.
+            """
+            try:
+                app = self._session.app
+            except Exception:
+                return
+            if app is None or not getattr(app, "is_running", False):
+                return
+            loop = getattr(app, "loop", None)
+            if loop is None:
+                return
+
+            def _do():
+                try:
+                    if app.is_running and not app.current_buffer.text:
+                        app.exit(result=MONITOR_WAKE)
+                except Exception:
+                    pass
+
+            try:
+                loop.call_soon_threadsafe(_do)
+            except Exception:
+                pass
 
         def set_cb(self, cb: TerminalCallbacks) -> None:
             """Swap the callback reference (toolbar reads verbose from it)."""

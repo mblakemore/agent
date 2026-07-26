@@ -135,6 +135,13 @@ class _Bus:
 
     def _put(self, text):
         self._q.put(text)
+        _fire_notifier()   # wake an idle interactive prompt, if one registered
+
+    def has_pending(self):
+        # Best-effort: is anything queued right now? Used by the interactive
+        # loop to drain before blocking on input (closes the arrived-just-
+        # before-prompt race).
+        return not self._q.empty()
 
     def drain(self):
         """Return all queued injection strings (FIFO), emptying the queue.
@@ -158,6 +165,38 @@ class _Bus:
 
 
 _BUS = _Bus()
+
+# Optional notifier: a zero-arg callback fired (best-effort, from the monitor
+# thread) whenever new output is queued. The interactive front-end registers
+# one so an idle prompt can wake immediately instead of waiting for the next
+# turn. Default None -> no-op (so -a / non-interactive paths are unaffected).
+_notifier = None
+_notifier_lock = threading.Lock()
+
+
+def set_notifier(fn):
+    """Register a zero-arg callback fired when output is queued (or None)."""
+    global _notifier
+    with _notifier_lock:
+        _notifier = fn
+
+
+def clear_notifier():
+    set_notifier(None)
+
+
+def _fire_notifier():
+    with _notifier_lock:
+        fn = _notifier
+    if fn is not None:
+        try:
+            fn()
+        except Exception:
+            pass
+
+
+def has_pending():
+    return _BUS.has_pending()
 
 
 # Module-level convenience API (agent.py + tools/monitor.py call these).

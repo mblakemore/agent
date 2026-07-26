@@ -3538,6 +3538,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 estimate_tokens=_estimate_tokens,
             )
             _cb = _tuimod.TuiCallbacks(tui_session, verbose=getattr(_cb, "verbose", False))
+            # Let a background monitor wake this idle prompt (thread-safe).
+            monitor_bus.set_notifier(tui_session.wake)
         else:
             _emit("on_notice", "warn",
                   "prompt_toolkit not installed — using plain prompt. "
@@ -3634,6 +3636,16 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                     f.write(last_assistant_msg)
             return
     while True:
+        # Monitor idle-wake pre-check (TUI only): if a monitor queued output
+        # while we were between prompts, inject and run it before blocking on
+        # input — closes the race where output lands just before prompt() starts.
+        if tui_session is not None and monitor_bus.has_pending():
+            if _drain_monitor_injections(conversation_history):
+                run_agent_single(conversation_history, summary_state, initial_files, log,
+                                 gen["temperature"], gen["top_p"], gen["top_k"],
+                                 gen["presence_penalty"], max_tokens, ctx_size,
+                                 async_summarizer=_async_summarizer)
+            continue
         try:
             if tui_session is not None:
                 user_input = tui_session.prompt()
@@ -3644,6 +3656,17 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         except KeyboardInterrupt:
             _emit("on_notice", "info", "\n\nGoodbye!")
             break
+
+        # An idle prompt woken by a monitor returns the WAKE sentinel: drain
+        # the bus and run, rather than treating it as typed text (so monitor
+        # output never hits the slash-command / file-ref paths).
+        if tui_session is not None and user_input is tui_session.WAKE:
+            if _drain_monitor_injections(conversation_history):
+                run_agent_single(conversation_history, summary_state, initial_files, log,
+                                 gen["temperature"], gen["top_p"], gen["top_k"],
+                                 gen["presence_penalty"], max_tokens, ctx_size,
+                                 async_summarizer=_async_summarizer)
+            continue
 
         if not user_input:
             continue
@@ -3703,6 +3726,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
 
     if tui_session is not None:
         tui_session.close()
+    monitor_bus.clear_notifier()
     monitor_bus.stop_all()
     cleanup_temp_sessions()
     log.info("Session ended | %d messages in history", len(conversation_history))
