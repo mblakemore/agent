@@ -80,7 +80,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cancel import cancellable, check_cancelled, CancelledError
+from cancel import cancellable, check_cancelled, CancelledError, set_tui_mode
 try:
     from circuit_breaker import CircuitBreakerError
 except ImportError:
@@ -3579,13 +3579,14 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     # input() with a one-line notice so the default TUI path doesn't
     # break environments that haven't installed the optional dependency.
     tui_session = None
-    # Opt-in concurrent input (config.interactive.live_input): keep the input
-    # line usable while the agent works; typed lines and monitor pings both
-    # queue and are delivered at the next natural boundary. Default off — the
-    # blocking prompt loop below is unchanged when this is false.
-    _live_input = bool(isinstance(_config, dict)
-                       and isinstance(_config.get("interactive"), dict)
-                       and _config["interactive"].get("live_input"))
+    # Concurrent always-live input is the DEFAULT in interactive (TUI) mode:
+    # the input line stays usable while the agent works; typed lines and monitor
+    # pings queue and are delivered at the next natural boundary. Opt OUT with
+    # config.interactive.live_input=false (falls back to the blocking prompt
+    # loop). No effect under -a, or under --no-tui / no prompt_toolkit (plain
+    # input(), which cannot host a concurrent line).
+    _iv = _config.get("interactive") if isinstance(_config, dict) else None
+    _live_input = bool(_iv.get("live_input", True)) if isinstance(_iv, dict) else True
     if tui and not auto:
         import tui as _tuimod
         if _tuimod._AVAILABLE:
@@ -3753,7 +3754,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 return True
             return False
 
-        cancel.set_tui_mode(True)   # input app owns the keyboard continuously
+        set_tui_mode(True)   # input app owns the keyboard continuously
         _it = threading.Thread(target=_live_input_thread, name="live-input", daemon=True)
         _it.start()
         _emit("on_notice", "info",
@@ -3792,7 +3793,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                                  async_summarizer=_async_summarizer)
         finally:
             _input_stop.set()
-            cancel.set_tui_mode(False)
+            set_tui_mode(False)
 
     while not _skip_blocking:
         # Monitor idle-wake pre-check (TUI only): if a monitor queued output

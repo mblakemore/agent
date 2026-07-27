@@ -62,9 +62,13 @@ def test_run_agent_interactive_tui_available():
         mock_sum.health.return_value = (True, "OK")
         mock_sum.model = "sum-model"
 
-        # Mock TuiSession's prompt method to exit the loop
+        # Mock TuiSession's read methods to exit the loop immediately.
+        # live_input defaults ON, so the concurrent path's background thread
+        # reads via prompt_line(); EOFError there enqueues the exit marker and
+        # the consumer breaks. (prompt() covers the blocking fallback path.)
         tui_mock = MagicMock()
         tui_mock.prompt.side_effect = EOFError
+        tui_mock.prompt_line.side_effect = EOFError
         with patch("tui.TuiSession", return_value=tui_mock):
             agent.run_agent_interactive(
                 tui=True, 
