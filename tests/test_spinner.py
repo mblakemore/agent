@@ -73,6 +73,17 @@ class TestSpinnerInteractivity(unittest.TestCase):
         with mock.patch.object(theme, "_no_color", return_value=False):
             self.assertTrue(spinner._interactive())
 
+    def test_interactive_off_when_pt_app_owns_terminal(self):
+        """Concurrent live-input mode: a running prompt_toolkit app owns the
+        terminal, so the \\r spinner must go non-interactive (else it collides
+        with patch_stdout). No app running -> interactive as usual."""
+        import prompt_toolkit.application as pta
+        with mock.patch.object(theme, "_no_color", return_value=False):
+            with mock.patch.object(pta, "get_app_or_none", return_value=object()):
+                self.assertFalse(spinner._interactive())
+            with mock.patch.object(pta, "get_app_or_none", return_value=None):
+                self.assertTrue(spinner._interactive())
+
     def test_status_non_interactive_writes_prefix_once(self):
         """Non-interactive start() writes the stripped prefix then skips the thread."""
         with mock.patch.object(theme, "_no_color", return_value=True):

@@ -20,8 +20,26 @@ _BRAILLE = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 def _interactive():
     """Cheap check: only emit cursor controls / title updates on a real TTY
-    with color enabled. Piping to a file or NO_COLOR suppresses them."""
-    return not theme._no_color()
+    with color enabled. Piping to a file or NO_COLOR suppresses them.
+
+    Also suppressed while a prompt_toolkit application owns the terminal
+    (concurrent live-input mode): its output is routed through patch_stdout,
+    which renders whole lines above the live prompt and is incompatible with
+    our \\r carriage-return spinner redraws — they collide and leave fragments
+    like 'preparing tool calls ⠙ 11.1scycle:'. Falling back to non-interactive
+    (print the prefix once, no redraw thread) renders cleanly through the proxy.
+    In the default blocking mode no app is running during processing, so this
+    is a no-op there.
+    """
+    if theme._no_color():
+        return False
+    try:
+        from prompt_toolkit.application import get_app_or_none
+        if get_app_or_none() is not None:
+            return False
+    except Exception:
+        pass
+    return True
 
 
 class StreamStatus:
