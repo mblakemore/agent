@@ -3579,6 +3579,13 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     # input() with a one-line notice so the default TUI path doesn't
     # break environments that haven't installed the optional dependency.
     tui_session = None
+    # Opt-in concurrent input (config.interactive.live_input): keep the input
+    # line usable while the agent works; typed lines and monitor pings both
+    # queue and are delivered at the next natural boundary. Default off — the
+    # blocking prompt loop below is unchanged when this is false.
+    _live_input = bool(isinstance(_config, dict)
+                       and isinstance(_config.get("interactive"), dict)
+                       and _config["interactive"].get("live_input"))
     if tui and not auto:
         import tui as _tuimod
         if _tuimod._AVAILABLE:
@@ -3589,10 +3596,16 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 ctx_size=ctx_size,
                 cb=_cb,
                 estimate_tokens=_estimate_tokens,
+                enable_cancel_key=_live_input,
             )
             _cb = _tuimod.TuiCallbacks(tui_session, verbose=getattr(_cb, "verbose", False))
-            # Let a background monitor wake this idle prompt (thread-safe).
-            monitor_bus.set_notifier(tui_session.wake)
+            # Idle-wake (app.exit from a monitor thread) is only for the default
+            # blocking loop. Concurrent mode consumes monitor pings from the
+            # queue directly (queue.get wakes on any enqueue), so registering
+            # the wake notifier there would fire app.exit on the always-running
+            # input prompt — do NOT register it in live-input mode.
+            if not _live_input:
+                monitor_bus.set_notifier(tui_session.wake)
         else:
             _emit("on_notice", "warn",
                   "prompt_toolkit not installed — using plain prompt. "
@@ -3688,7 +3701,100 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 with open(result_file, "w", encoding="utf-8") as f:
                     f.write(last_assistant_msg)
             return
-    while True:
+    # ── Concurrent always-live input (opt-in: config.interactive.live_input) ──
+    # A background thread runs the prompt continuously so the operator can type
+    # while the agent works; each entered line is queued (put_user) and
+    # delivered at the next natural boundary by the same mid-burst drain a
+    # monitor ping uses. The main thread here is the SINGLE consumer: it blocks
+    # on the shared queue, so a typed line OR a monitor ping wakes it — this
+    # supersedes the app.exit idle-wake (not registered in this mode). A
+    # process-wide patch_stdout held in the input thread routes all streaming /
+    # tool output above the live input line (probe-verified: a bg-thread app is
+    # visible to the main thread via the shared default AppSession). esc-esc
+    # requests cancellation of a running turn.
+    _skip_blocking = tui_session is not None and _live_input
+    if _skip_blocking:
+        from prompt_toolkit.patch_stdout import patch_stdout as _patch_stdout
+        _input_stop = threading.Event()
+        _EXIT_MARK = "\x00__LIVE_INPUT_EXIT__"
+
+        def _live_input_thread():
+            try:
+                with _patch_stdout(raw=True):
+                    while not _input_stop.is_set():
+                        try:
+                            _line = tui_session.prompt_line()
+                        except (EOFError, KeyboardInterrupt):
+                            monitor_bus.put_user(_EXIT_MARK)
+                            return
+                        if _line:
+                            monitor_bus.put_user(_line)
+            except Exception as _e:  # never let the input thread die silently
+                log.error("live-input thread crashed: %s", _e)
+                monitor_bus.put_user(_EXIT_MARK)
+
+        def _dispatch_slash(_ui):
+            nonlocal initial_files, log, log_path
+            def _refresh_cb_log(new_log):
+                globals()["_cb_log"] = new_log
+            ctx = SimpleNamespace(
+                conversation_history=conversation_history, summary_state=summary_state,
+                initial_files=initial_files, async_summarizer=_async_summarizer, cb=_cb,
+                log=log, log_path=log_path, ctx_size=ctx_size, config=_config,
+                base_url=getattr(_main_backend, "base_url", None) or BASE_URL,
+                summary_base_url=getattr(_summary_backend, "base_url", None),
+                setup_logger=_setup_logger, pick_model=_pick_model_interactive,
+                set_model=_set_model_for_role, render_context_bar=_render_context_bar,
+                refresh_cb_log=_refresh_cb_log)
+            if _commands.handle_command(_ui, ctx):
+                initial_files = ctx.initial_files
+                log = ctx.log
+                log_path = ctx.log_path
+                return True
+            return False
+
+        cancel.set_tui_mode(True)   # input app owns the keyboard continuously
+        _it = threading.Thread(target=_live_input_thread, name="live-input", daemon=True)
+        _it.start()
+        _emit("on_notice", "info",
+              "[live-input] Type anytime — your line is delivered at the next "
+              "boundary. esc·esc cancels a running turn; 'exit' quits.")
+        try:
+            while True:
+                try:
+                    _item = monitor_bus.get_blocking()
+                except KeyboardInterrupt:
+                    break
+                if _item is None:
+                    continue
+                _kind, _text = _item
+                if _kind == "user" and _text == _EXIT_MARK:
+                    break
+                if _kind == "user":
+                    if _text.lower() in ("exit", "quit"):
+                        break
+                    if _text.startswith("/") and _dispatch_slash(_text):
+                        continue
+                    _expanded, _files, _err = _expand_file_refs(_text)
+                    if _err:
+                        _emit("on_error", _err)
+                        continue
+                    if _files:
+                        initial_files = _files
+                    conversation_history.append({"role": "user", "content": _expanded})
+                    log.debug("USER (live): %s", _expanded[:200])
+                else:
+                    # A monitor ping consumed while idle IS the task (raw text).
+                    conversation_history.append({"role": "user", "content": _text})
+                run_agent_single(conversation_history, summary_state, initial_files, log,
+                                 gen["temperature"], gen["top_p"], gen["top_k"],
+                                 gen["presence_penalty"], max_tokens, ctx_size,
+                                 async_summarizer=_async_summarizer)
+        finally:
+            _input_stop.set()
+            cancel.set_tui_mode(False)
+
+    while not _skip_blocking:
         # Monitor idle-wake pre-check (TUI only): if a monitor queued output
         # while we were between prompts, inject and run it before blocking on
         # input — closes the race where output lands just before prompt() starts.

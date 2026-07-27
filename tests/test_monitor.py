@@ -220,6 +220,33 @@ def test_drain_no_framing_is_plain():
     assert h[0]["content"] == "hello"  # no framing prepended
 
 
+# ── concurrent-input plumbing (Stage 2, headless-testable parts) ─────────
+def test_put_user_and_get_blocking_provenance():
+    monitor_bus.put_user("hello")
+    monitor_bus._BUS._put("ping")   # monitor-kind
+    got = {monitor_bus.get_blocking(timeout=1), monitor_bus.get_blocking(timeout=1)}
+    assert ("user", "hello") in got
+    assert ("monitor", "ping") in got
+    assert monitor_bus.get_blocking(timeout=0.2) is None  # empty -> None
+
+
+def test_drain_flattens_mixed_provenance_to_text():
+    monitor_bus.put_user("u1")
+    monitor_bus._BUS._put("m1")
+    assert monitor_bus.drain() == ["u1", "m1"]  # mid-burst path stays text
+
+
+def test_tui_prompt_line_and_cancel_binding_build():
+    import tui
+    if not getattr(tui, "_AVAILABLE", False):
+        pytest.skip("prompt_toolkit not available")
+    from unittest.mock import MagicMock
+    s = tui.TuiSession(history=[], summary_state={}, config={}, ctx_size=8000,
+                       cb=MagicMock(), estimate_tokens=lambda m: 0,
+                       enable_cancel_key=True)
+    assert hasattr(s, "prompt_line") and callable(s.prompt_line)
+
+
 def test_monitor_arm_notice_mentions_session_end():
     out = monitor_fn(action="arm", label="j", command="true", interval_seconds=5)
     monitor_fn(action="stop", label="j")

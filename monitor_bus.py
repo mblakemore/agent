@@ -133,9 +133,25 @@ class _Bus:
             return [{"label": m.label, "command": m.command, "interval": m.interval}
                     for m in self._monitors.values()]
 
-    def _put(self, text):
-        self._q.put(text)
+    def _put(self, text, kind="monitor"):
+        # Items are (kind, text) tuples so consumers can distinguish a typed
+        # user line (needs slash/exit/file-ref handling) from a monitor ping
+        # (injected raw). drain() flattens to text for the mid-burst path,
+        # which treats both identically; get_blocking() preserves the tuple.
+        self._q.put((kind, text))
         _fire_notifier()   # wake an idle interactive prompt, if one registered
+
+    def put_user(self, text):
+        """Enqueue a typed user line (provenance 'user')."""
+        self._put(text, kind="user")
+
+    def get_blocking(self, timeout=None):
+        """Block for the next (kind, text) item; return None on timeout.
+        Used by the concurrent-input main loop as its idle wait."""
+        try:
+            return self._q.get(block=True, timeout=timeout)
+        except _queue.Empty:
+            return None
 
     def has_pending(self):
         # Best-effort: is anything queued right now? Used by the interactive
@@ -144,14 +160,16 @@ class _Bus:
         return not self._q.empty()
 
     def drain(self):
-        """Return all queued injection strings (FIFO), emptying the queue.
-        Non-blocking; safe to call every turn."""
+        """Return queued injection TEXTS (FIFO), emptying the queue. Flattens
+        (kind, text) tuples to text — the mid-burst path treats a typed user
+        line and a monitor ping identically. Non-blocking; safe every turn."""
         out = []
         while True:
             try:
-                out.append(self._q.get_nowait())
+                item = self._q.get_nowait()
             except _queue.Empty:
                 break
+            out.append(item[1] if isinstance(item, tuple) else item)
         return out
 
     def stop_all(self):
@@ -197,6 +215,16 @@ def _fire_notifier():
 
 def has_pending():
     return _BUS.has_pending()
+
+
+def put_user(text):
+    """Enqueue a typed user line (concurrent-input producer)."""
+    return _BUS.put_user(text)
+
+
+def get_blocking(timeout=None):
+    """Block for the next (kind, text) item; None on timeout."""
+    return _BUS.get_blocking(timeout=timeout)
 
 
 # Module-level convenience API (agent.py + tools/monitor.py call these).

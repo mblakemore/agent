@@ -197,7 +197,7 @@ if _AVAILABLE:
                     yield comp
 
 
-    def _build_key_bindings() -> KeyBindings:
+    def _build_key_bindings(enable_cancel: bool = False) -> KeyBindings:
         kb = KeyBindings()
 
         @kb.add("enter")
@@ -207,6 +207,16 @@ if _AVAILABLE:
         @kb.add("c-n")
         def _(event) -> None:
             event.current_buffer.insert_text("\n")
+
+        if enable_cancel:
+            # Concurrent-input mode owns the keyboard continuously, so the
+            # cbreak double-escape monitor is disabled (cancel.set_tui_mode).
+            # Bind ESC-ESC here to request cancellation of a running turn —
+            # exactly the contract cancel.py documents (the TUI host calls
+            # request_cancel itself). Leaves the input line untouched.
+            @kb.add("escape", "escape")
+            def _(event) -> None:
+                cancel.request_cancel()
 
         return kb
 
@@ -231,6 +241,7 @@ if _AVAILABLE:
             ctx_size: int,
             cb: TerminalCallbacks,
             estimate_tokens: Callable[[dict], int],
+            enable_cancel_key: bool = False,
         ) -> None:
             self.history = history
             self.summary_state = summary_state
@@ -249,7 +260,7 @@ if _AVAILABLE:
             self._session: PromptSession = PromptSession(
                 message=[("class:prompt", "\nYou: ")],
                 multiline=False,
-                key_bindings=_build_key_bindings(),
+                key_bindings=_build_key_bindings(enable_cancel=enable_cancel_key),
                 completer=LlmboxCompleter(),
                 complete_while_typing=False,
                 bottom_toolbar=self._toolbar,
@@ -283,6 +294,17 @@ if _AVAILABLE:
             if res is MONITOR_WAKE:
                 return MONITOR_WAKE
             return res.strip()
+
+        def prompt_line(self) -> str:
+            """Blocking read of one user line, for the concurrent-input thread.
+
+            Unlike prompt(): no monitor-wake sentinel (the main loop consumes
+            monitor pings from the queue directly, so the input prompt only ever
+            returns typed text) and no tui_mode / _prompt_active toggling (the
+            concurrent loop sets tui_mode once for the whole session and wraps
+            the process in patch_stdout, so output routing is handled globally).
+            """
+            return self._session.prompt().strip()
 
         def wake(self) -> None:
             """Wake an idle prompt so it returns MONITOR_WAKE (thread-safe).
