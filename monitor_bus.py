@@ -18,7 +18,9 @@ Armed via the `monitor` tool (tools/monitor.py); drained by agent.py.
 """
 
 import logging
+import os
 import queue as _queue
+import signal
 import subprocess
 import threading
 
@@ -30,23 +32,63 @@ _MIN_INTERVAL = 2.0
 _MAX_MONITORS = 8           # sanity ceiling on concurrent monitors
 
 
-def _run_once(command, timeout):
-    """Run command via `bash -c`. Return stripped stdout on success (may be
-    ''), or None on non-zero exit / timeout / error. Never raises."""
+def _kill_group(proc):
+    """SIGKILL the process GROUP of proc, then reap. Never raises.
+
+    Killing only the direct child leaks grandchildren: `bash -c 'tail -f x |
+    grep y'` SIGKILLed at the bash level leaves tail running forever (verified
+    live 2026-08-07 — two survivors from one timed-out poll). Because each
+    poll starts its own session (start_new_session=True below), the group id
+    is the child pid and killpg takes the whole pipeline down."""
+    if proc is None or proc.poll() is not None:
+        return
     try:
-        p = subprocess.run(["bash", "-c", command], capture_output=True,
-                           text=True, timeout=timeout)
+        os.killpg(proc.pid, signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=2)
+    except Exception:
+        pass
+
+
+def _run_once(command, timeout, register=None):
+    """Run command via `bash -c` in its OWN PROCESS GROUP. Return stripped
+    stdout on success (may be ''), or None on non-zero exit / timeout / error.
+    Never raises.
+
+    `register` (optional callable) receives the live Popen (and then None when
+    the poll ends) so the owning monitor can group-kill an in-flight child at
+    stop()/exit — otherwise 'exit' orphans whatever the poll was running and a
+    persistent-style command survives the agent (the 15-day stale process
+    class, 2026-08-07)."""
+    p = None
+    try:
+        p = subprocess.Popen(["bash", "-c", command],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, start_new_session=True)
+        if register:
+            register(p)
+        out, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        _log.debug("monitor cmd timed out after %ss", timeout)
+        _log.debug("monitor cmd timed out after %ss — killing group", timeout)
+        _kill_group(p)
         return None
     except Exception as e:
         _log.debug("monitor cmd errored: %s", e)
+        _kill_group(p)
         return None
+    finally:
+        if register:
+            register(None)
     if p.returncode != 0:
         _log.debug("monitor cmd exit=%s: %s", p.returncode,
-                   ((p.stderr or "")[-200:]).strip())
+                   ((err or "")[-200:]).strip())
         return None
-    return (p.stdout or "").strip()
+    return (out or "").strip()
 
 
 class _Monitor:
@@ -59,6 +101,8 @@ class _Monitor:
         self.dedup = dedup
         self._last = None
         self._stop = threading.Event()
+        self._proc = None                     # live Popen while a poll runs
+        self._proc_lock = threading.Lock()
         self._thread = threading.Thread(
             target=self._run, name=f"monitor:{label}", daemon=True)
 
@@ -66,11 +110,21 @@ class _Monitor:
         self._thread.start()
 
     def stop(self):
+        """Signal the loop AND group-kill any in-flight child. Without the
+        kill, 'exit' (or a monitor replace) orphans the running poll — a
+        daemon thread dies with the process but its subprocess does not."""
         self._stop.set()
+        with self._proc_lock:
+            proc, self._proc = self._proc, None
+        _kill_group(proc)
+
+    def _register(self, proc):
+        with self._proc_lock:
+            self._proc = proc
 
     def _run(self):
         while not self._stop.is_set():
-            out = _run_once(self.command, self.cmd_timeout)
+            out = _run_once(self.command, self.cmd_timeout, register=self._register)
             if self._stop.is_set():
                 break  # stopped during the poll — don't inject a straggler
             if out and not (self.dedup and out == self._last):
