@@ -273,6 +273,17 @@ def _restore_terminal():
             # Use a try-except here as well because we might be in a weird state
         except Exception:
             pass
+    else:
+        # Fallback: save current settings (canonical + echo), then restore them.
+        # This handles the case where cbreak was never applied but prompt_toolkit
+        # or another library left the terminal in a non-canonical state on exit.
+        cur = termios.tcgetattr(sys.stdin)
+        # Force canonical mode (ICANON) and echo (ECHO | ECHOCTL | ECHOKE)
+        cur[3] = cur[3] | termios.ICANON | termios.ECHO | termios.ECHOCTL | termios.ECHOKE
+        try:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, cur)
+        except Exception:
+            pass
 
 
 atexit.register(_restore_terminal)
