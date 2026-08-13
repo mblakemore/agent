@@ -69,5 +69,53 @@ class TestExitApp(unittest.TestCase):
         sess.exit_app()  # must swallow
 
 
+@unittest.skipUnless(tui._AVAILABLE, "prompt_toolkit not installed")
+class TestInterruptPromptBorrow(unittest.TestCase):
+    """Terminal-borrow primitives for interactive slash commands."""
+
+    def _session(self):
+        return tui.TuiSession(
+            history=[], summary_state={"text": "", "up_to": 0},
+            config={}, ctx_size=1000,
+            cb=mock.Mock(verbose=False),
+            estimate_tokens=lambda m: 1,
+        )
+
+    def test_returns_false_when_no_app_running(self):
+        sess = self._session()
+        self.assertFalse(sess.interrupt_prompt("MARK"))
+
+    def test_schedules_exit_with_result_and_preserves_buffer(self):
+        sess = self._session()
+        fake_app = mock.Mock()
+        fake_app.is_running = True
+        fake_app.current_buffer.text = "half-typed line"
+        scheduled = []
+        fake_app.loop.call_soon_threadsafe = lambda fn: scheduled.append(fn)
+        sess._session.app = fake_app
+        self.assertTrue(sess.interrupt_prompt("MARK"))
+        scheduled[0]()
+        fake_app.exit.assert_called_once_with(result="MARK")
+        self.assertEqual(sess._resume_default, "half-typed line")
+
+    def test_prompt_line_reseeds_and_clears_resume_default(self):
+        sess = self._session()
+        sess._resume_default = "half-typed line"
+        with mock.patch.object(sess._session, "prompt",
+                               return_value="half-typed line done") as m:
+            out = sess.prompt_line()
+        m.assert_called_once_with(default="half-typed line")
+        self.assertEqual(out, "half-typed line done")
+        self.assertEqual(sess._resume_default, "")
+
+    def test_borrow_mark_survives_strip(self):
+        # prompt_line strips whitespace; the borrow sentinel must not be
+        # mangled or the input thread would queue it as user text.
+        sess = self._session()
+        with mock.patch.object(sess._session, "prompt",
+                               return_value="\x00__TERMINAL_BORROW__"):
+            self.assertEqual(sess.prompt_line(), "\x00__TERMINAL_BORROW__")
+
+
 if __name__ == "__main__":
     unittest.main()

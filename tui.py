@@ -295,6 +295,10 @@ if _AVAILABLE:
             # exactly one keystroke — acceptable staleness.
             self._ctx_cache_key: tuple[int, int] | None = None
             self._ctx_cache_val: float = 0.0
+            # Text captured from the buffer when interrupt_prompt() fires;
+            # re-seeded as the next prompt's default so a half-typed line
+            # survives a terminal borrow.
+            self._resume_default: str = ""
             # True between an esc-esc press and the turn acknowledging the
             # cancel — the toolbar renders "⏳ cancelling…" so the operator
             # sees the intent registered even while a blocking tool takes a
@@ -418,8 +422,50 @@ if _AVAILABLE:
             returns typed text) and no tui_mode / _prompt_active toggling (the
             concurrent loop sets tui_mode once for the whole session and wraps
             the process in patch_stdout, so output routing is handled globally).
+
+            A line captured by interrupt_prompt() (terminal borrow) is
+            re-seeded as this prompt's editable default.
             """
-            return self._session.prompt().strip()
+            default = self._resume_default
+            self._resume_default = ""
+            return self._session.prompt(default=default).strip()
+
+        def interrupt_prompt(self, result) -> bool:
+            """Force a running prompt to return `result` (thread-safe).
+
+            Unlike wake(), this fires even when the operator has text in
+            the buffer — the in-flight text is captured into
+            _resume_default and restored as the next prompt's default.
+            Used by the live-input host to BORROW the terminal for
+            interactive slash commands (/model's input() picker): while
+            the always-running prompt owns the keyboard, a nested input()
+            never sees a keystroke. Returns True if an exit was scheduled,
+            False if no app was running (caller should retry briefly — the
+            input thread may be between prompts). Never raises.
+            """
+            try:
+                app = self._session.app
+            except Exception:
+                return False
+            if app is None or not getattr(app, "is_running", False):
+                return False
+            loop = getattr(app, "loop", None)
+            if loop is None:
+                return False
+
+            def _do():
+                try:
+                    if app.is_running:
+                        self._resume_default = app.current_buffer.text
+                        app.exit(result=result)
+                except Exception:
+                    pass
+
+            try:
+                loop.call_soon_threadsafe(_do)
+                return True
+            except Exception:
+                return False
 
         def wake(self) -> None:
             """Wake an idle prompt so it returns MONITOR_WAKE (thread-safe).

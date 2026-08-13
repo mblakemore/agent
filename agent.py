@@ -3716,9 +3716,46 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     # requests cancellation of a running turn.
     _skip_blocking = tui_session is not None and _live_input
     if _skip_blocking:
+        from contextlib import contextmanager as _contextmanager
         from prompt_toolkit.patch_stdout import patch_stdout as _patch_stdout
         _input_stop = threading.Event()
         _EXIT_MARK = "\x00__LIVE_INPUT_EXIT__"
+        # Terminal borrow: interactive slash commands (/model's input()
+        # picker) need real stdin, but the always-running prompt owns the
+        # keyboard — every keystroke feeds the prompt app, so a nested
+        # input() never returns. The main loop borrows the terminal by
+        # forcing the prompt to return _BORROW_MARK; the input thread then
+        # parks on _borrow_release instead of repainting a fresh prompt.
+        _BORROW_MARK = "\x00__TERMINAL_BORROW__"
+        _borrow_ack = threading.Event()
+        _borrow_release = threading.Event()
+
+        @_contextmanager
+        def _borrowed_terminal():
+            """Suspend the live prompt while the body runs input()-style IO.
+
+            Retries the interrupt briefly — the common dispatch pattern
+            (user submits '/model', main dequeues it instantly) races the
+            input thread's NEXT prompt starting up, so the first attempt
+            often finds no running app. Degrades to running the command
+            anyway if no prompt appears within ~0.5s (no worse than the
+            pre-borrow behavior). Half-typed text in the interrupted
+            prompt is preserved via TuiSession._resume_default.
+            """
+            _borrow_ack.clear()
+            _borrow_release.clear()
+            borrowed = False
+            for _ in range(10):
+                if tui_session.interrupt_prompt(_BORROW_MARK):
+                    borrowed = True
+                    break
+                time.sleep(0.05)
+            if borrowed:
+                _borrow_ack.wait(timeout=2.0)
+            try:
+                yield
+            finally:
+                _borrow_release.set()
 
         def _live_input_thread():
             try:
@@ -3729,6 +3766,13 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                         except (EOFError, KeyboardInterrupt):
                             monitor_bus.put_user(_EXIT_MARK)
                             return
+                        if _line == _BORROW_MARK:
+                            # Main thread borrowed the terminal for an
+                            # interactive command — park (don't repaint a
+                            # prompt over its input()) until released.
+                            _borrow_ack.set()
+                            _borrow_release.wait()
+                            continue
                         if _line:
                             monitor_bus.put_user(_line)
                             # An exit line ends this thread HERE, before the
@@ -3754,7 +3798,9 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 setup_logger=_setup_logger, pick_model=_pick_model_interactive,
                 set_model=_set_model_for_role, render_context_bar=_render_context_bar,
                 refresh_cb_log=_refresh_cb_log)
-            if _commands.handle_command(_ui, ctx):
+            with _borrowed_terminal():
+                handled = _commands.handle_command(_ui, ctx)
+            if handled:
                 initial_files = ctx.initial_files
                 log = ctx.log
                 log_path = ctx.log_path
