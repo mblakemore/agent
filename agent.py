@@ -3730,6 +3730,12 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                             return
                         if _line:
                             monitor_bus.put_user(_line)
+                            # An exit line ends this thread HERE, before the
+                            # loop repaints a fresh prompt + toolbar the main
+                            # thread is about to tear down — that repaint was
+                            # the stale screen the shell used to land in.
+                            if _line.lower() in ("exit", "quit"):
+                                return
             except Exception as _e:  # never let the input thread die silently
                 log.error("live-input thread crashed: %s", _e)
                 monitor_bus.put_user(_EXIT_MARK)
@@ -3793,7 +3799,22 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                                  async_summarizer=_async_summarizer)
         finally:
             _input_stop.set()
+            # Stop the input app cleanly so prompt_toolkit erases its render
+            # and the terminal is left on a fresh line, not mid-paint. Two
+            # attempts cover the narrow window where the thread was between
+            # prompts (exit_app no-ops) when the first shot fired.
+            for _ in range(2):
+                tui_session.exit_app()
+                _it.join(timeout=1.0)
+                if not _it.is_alive():
+                    break
             set_tui_mode(False)
+            if _it.is_alive():
+                # Could not stop the app — best-effort scrub of the painted
+                # prompt/toolbar rows so the shell doesn't land mid-screen.
+                sys.stdout.write("\033[0J")
+            sys.stdout.write("\n")
+            sys.stdout.flush()
 
     while not _skip_blocking:
         # Monitor idle-wake pre-check (TUI only): if a monitor queued output

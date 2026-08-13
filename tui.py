@@ -340,6 +340,39 @@ if _AVAILABLE:
             except Exception:
                 pass
 
+        def exit_app(self) -> None:
+            """Stop a running prompt app from another thread (idempotent).
+
+            Used by the live-input host at shutdown: schedules
+            app.exit(exception=EOFError) on the app's own event loop, so a
+            prompt_line() blocked in the input thread raises EOFError, the
+            thread's patch_stdout context unwinds, and prompt_toolkit
+            erases its render — leaving the terminal on a clean line
+            instead of mid-paint. No-op when no app is running. Never
+            raises.
+            """
+            try:
+                app = self._session.app
+            except Exception:
+                return
+            if app is None or not getattr(app, "is_running", False):
+                return
+            loop = getattr(app, "loop", None)
+            if loop is None:
+                return
+
+            def _do():
+                try:
+                    if app.is_running:
+                        app.exit(exception=EOFError)
+                except Exception:
+                    pass
+
+            try:
+                loop.call_soon_threadsafe(_do)
+            except Exception:
+                pass
+
         def set_cb(self, cb: TerminalCallbacks) -> None:
             """Swap the callback reference (toolbar reads verbose from it)."""
             self.cb = cb
