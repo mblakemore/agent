@@ -81,7 +81,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cancel import cancellable, check_cancelled, CancelledError, set_tui_mode
-from cancel import reset as cancel_reset
+from cancel import reset as cancel_reset, tui_mode as cancel_tui_mode
 try:
     from circuit_breaker import CircuitBreakerError
 except ImportError:
@@ -3794,12 +3794,10 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 else:
                     # A monitor ping consumed while idle IS the task (raw text).
                     conversation_history.append({"role": "user", "content": _text})
-                # Cancel-flag lifetime is the TURN in live-input mode:
-                # cancellable() skips its per-region reset under tui_mode
-                # (a reset there erased esc-esc presses that landed between
-                # regions), so reset exactly once per dispatch — this also
-                # discards a stray esc-esc pressed while idle at the prompt.
-                cancel_reset()
+                # Cancel-flag reset happens at run_agent_single entry (the
+                # turn boundary — single authority for tui_mode flag
+                # lifetime); here we only drop the toolbar's cancelling
+                # feedback segment before the new turn starts.
                 tui_session.clear_cancelling()
                 run_agent_single(conversation_history, summary_state, initial_files, log,
                                  gen["temperature"], gen["top_p"], gen["top_k"],
@@ -4019,6 +4017,15 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                      ctx_size=_DEFAULT_CONFIG["context"]["ctx_size"],
                      start_turn=0, async_summarizer=None):
     """Run the agentic loop with turn limits and wind-down."""
+
+    # In TUI/live-input mode the cancel flag's lifetime is the TURN:
+    # cancellable() deliberately skips its per-region reset there (a reset
+    # per region erased esc-esc presses landing between regions), so the
+    # turn boundary — here, the single entry point every caller shares —
+    # is where a stale flag is discarded. This also drops an esc-esc
+    # pressed while idle at the prompt, which must not cancel the next turn.
+    if cancel_tui_mode():
+        cancel_reset()
 
     turn = start_turn
 
