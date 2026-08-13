@@ -3590,6 +3590,23 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     _live_input = bool(_iv.get("live_input", True)) if isinstance(_iv, dict) else True
     if tui and not auto:
         import tui as _tuimod
+        if _tuimod._AVAILABLE and _live_input:
+            # Disable CPR (cursor-position requests) BEFORE the session is
+            # built: prompt_toolkit's Renderer caches CPR support at
+            # construction (renderer.py CPR_Support), so this must precede
+            # TuiSession(). Why: on CPR-capable terminals every streamed
+            # line's run_in_terminal cycle awaits outstanding CPR responses
+            # with the input detached — a response landing in that window is
+            # lost, after which every redraw stalls in
+            # wait_for_cpr_responses: the prompt/spinner freezes and
+            # streamed text lands BELOW the stale paint (field report
+            # 2026-08-13). The CPR-less relative-positioning path renders
+            # the same stream correctly (verified via pyte replay both
+            # ways). Cost: the bottom toolbar needs height-known and stops
+            # rendering — the working indicator lives on the prompt line,
+            # which every terminal renders. Blocking / --no-tui modes never
+            # set this.
+            os.environ["PROMPT_TOOLKIT_NO_CPR"] = "1"
         if _tuimod._AVAILABLE:
             tui_session = _tuimod.TuiSession(
                 history=conversation_history,

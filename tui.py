@@ -372,9 +372,13 @@ if _AVAILABLE:
                 except OSError:
                     width = 80
                 seg = self._plain(seg, max(24, width - 12))
+                # Aurora pulse (violet→sky→mint), same gradient the classic
+                # \r spinner sweeps — per-render inline color, animated by
+                # the invalidate ticker.
+                r, g, b = _theme.pulse_rgb(elapsed)
                 return [
                     ("class:prompt", "\n"),
-                    ("class:prompt-spinner", seg + " "),
+                    (f"fg:#{r:02x}{g:02x}{b:02x}", seg + " "),
                     ("class:prompt", "You: "),
                 ]
             except Exception:
