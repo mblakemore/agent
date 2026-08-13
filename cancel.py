@@ -243,10 +243,15 @@ class cancellable:
         self._cbreak = None
 
     def __enter__(self):
-        reset()
         if _tui_mode:
             # A TUI host owns the keyboard; it will call request_cancel().
+            # Do NOT reset here: in live-input mode a turn opens several
+            # cancellable regions (stream, tool batch, retry), and a
+            # per-region reset silently erases an esc-esc that landed
+            # between regions — the flag's lifetime is the TURN, so the
+            # host calls reset() once per turn dispatch instead.
             return self
+        reset()
         if _POSIX_TTY and sys.stdin.isatty():
             self._cbreak = cbreak_mode()
             self._cbreak.__enter__()

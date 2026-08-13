@@ -200,7 +200,17 @@ if _AVAILABLE:
                     yield comp
 
 
-    def _build_key_bindings(enable_cancel: bool = False) -> KeyBindings:
+    # Double-press window for the cancel key. Generous enough to absorb the
+    # parser's escape-flush delay (ttimeoutlen, tuned to 0.2s below): the
+    # second physical ESC surfaces as a key up to one flush interval after
+    # the first, so the observed gap between handler calls exceeds the gap
+    # between keypresses.
+    _CANCEL_WINDOW_S = 0.6
+
+    def _build_key_bindings(
+        enable_cancel: bool = False,
+        on_cancel: Callable[[], None] | None = None,
+    ) -> KeyBindings:
         kb = KeyBindings()
 
         @kb.add("enter")
@@ -213,13 +223,37 @@ if _AVAILABLE:
 
         if enable_cancel:
             # Concurrent-input mode owns the keyboard continuously, so the
-            # cbreak double-escape monitor is disabled (cancel.set_tui_mode).
-            # Bind ESC-ESC here to request cancellation of a running turn —
-            # exactly the contract cancel.py documents (the TUI host calls
-            # request_cancel itself). Leaves the input line untouched.
-            @kb.add("escape", "escape")
+            # cbreak double-escape monitor is disabled (cancel.set_tui_mode);
+            # cancellation must come from a binding here. The old
+            # ("escape","escape") chord sat behind prompt_toolkit's
+            # sequence-ambiguity timeout — the first ESC was held while PT
+            # waited to see if a longer match followed, which made esc-esc
+            # feel dead. Instead: an EAGER single-escape handler with its
+            # own double-press window (mirrors cancel.py's cbreak monitor).
+            # Fires the instant the second Escape key arrives. Trade-off,
+            # documented: eager escape shadows meta-key (Alt-x) emacs
+            # bindings inside the prompt; none are advertised in this UI.
+            state = {"t": 0.0}
+
+            @kb.add("escape", eager=True)
             def _(event) -> None:
-                cancel.request_cancel()
+                buf = event.current_buffer
+                if getattr(buf, "complete_state", None) is not None:
+                    # ESC while the completion menu is open keeps its
+                    # conventional meaning: dismiss the menu, don't count
+                    # toward a cancel.
+                    buf.cancel_completion()
+                    state["t"] = 0.0
+                    return
+                now = time.monotonic()
+                if now - state["t"] <= _CANCEL_WINDOW_S:
+                    state["t"] = 0.0
+                    if on_cancel is not None:
+                        on_cancel()
+                    else:
+                        cancel.request_cancel()
+                else:
+                    state["t"] = now
 
         return kb
 
@@ -259,11 +293,19 @@ if _AVAILABLE:
             # exactly one keystroke — acceptable staleness.
             self._ctx_cache_key: tuple[int, int] | None = None
             self._ctx_cache_val: float = 0.0
+            # True between an esc-esc press and the turn acknowledging the
+            # cancel — the toolbar renders "⏳ cancelling…" so the operator
+            # sees the intent registered even while a blocking tool takes a
+            # second to notice the flag.
+            self.cancelling = False
 
             self._session: PromptSession = PromptSession(
                 message=[("class:prompt", "\nYou: ")],
                 multiline=False,
-                key_bindings=_build_key_bindings(enable_cancel=enable_cancel_key),
+                key_bindings=_build_key_bindings(
+                    enable_cancel=enable_cancel_key,
+                    on_cancel=self._on_cancel_key,
+                ),
                 completer=LlmboxCompleter(),
                 complete_while_typing=False,
                 bottom_toolbar=self._toolbar,
@@ -272,6 +314,22 @@ if _AVAILABLE:
                 enable_history_search=True,
                 history=InMemoryHistory(),
             )
+            if enable_cancel_key:
+                # Shorten the parser's lone-ESC flush so the double-press
+                # lands fast (default 0.5s made even the eager binding lag).
+                try:
+                    self._session.app.ttimeoutlen = 0.2
+                except Exception:
+                    pass
+
+        def _on_cancel_key(self) -> None:
+            """esc-esc handler: request cancellation + visible feedback."""
+            self.cancelling = True
+            cancel.request_cancel()
+
+        def clear_cancelling(self) -> None:
+            """Drop the '⏳ cancelling…' toolbar segment (turn boundary)."""
+            self.cancelling = False
 
         # -- public API ------------------------------------------------
 
@@ -466,6 +524,13 @@ if _AVAILABLE:
             except OSError:
                 width = 80
             spin_plain, spin_html = self._spinner_segment(width)
+            if self.cancelling:
+                # Cancel feedback outranks the spinner segment.
+                spin_plain = " ⏳ cancelling… │"
+                spin_html = (
+                    f'<style fg="{_AMBER_HEX}" bg="{_BAR_BG_HEX}">'
+                    f"{html.escape(spin_plain)}</style>"
+                )
             left = spin_html + left
             visible_base = f" {cwd}  │  {model}  │  {msgs} msgs  │  {ctx_label} "
             visible_len = (
@@ -585,6 +650,12 @@ if _AVAILABLE:
                     print(text, end=end, flush=True)
             else:
                 print(text, end=end, flush=True)
+
+        def on_cancelled(self, where: str) -> None:
+            # The turn has acknowledged the cancel — drop the toolbar's
+            # "⏳ cancelling…" segment before the banner prints.
+            self.tui.clear_cancelling()
+            super().on_cancelled(where)
 
         def on_session_start(self, info: dict) -> None:
             # Base banner already renders main+summary. TUI key hints now

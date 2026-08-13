@@ -81,6 +81,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cancel import cancellable, check_cancelled, CancelledError, set_tui_mode
+from cancel import reset as cancel_reset
 try:
     from circuit_breaker import CircuitBreakerError
 except ImportError:
@@ -3793,6 +3794,13 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 else:
                     # A monitor ping consumed while idle IS the task (raw text).
                     conversation_history.append({"role": "user", "content": _text})
+                # Cancel-flag lifetime is the TURN in live-input mode:
+                # cancellable() skips its per-region reset under tui_mode
+                # (a reset there erased esc-esc presses that landed between
+                # regions), so reset exactly once per dispatch — this also
+                # discards a stray esc-esc pressed while idle at the prompt.
+                cancel_reset()
+                tui_session.clear_cancelling()
                 run_agent_single(conversation_history, summary_state, initial_files, log,
                                  gen["temperature"], gen["top_p"], gen["top_k"],
                                  gen["presence_penalty"], max_tokens, ctx_size,
@@ -6087,6 +6095,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         result_str = f"Error: Unknown tool '{func_name}'"
                     else:
                         try:
+                            # Last check before dispatch: an esc-esc that
+                            # landed during argument parsing / gate checks
+                            # should stop the batch here, not after another
+                            # long tool run.
+                            check_cancelled()
                             result_str = str(MAP_FN[func_name](**func_args))
                         except CircuitBreakerError as e:
                             # Tool temporarily unavailable - return graceful degradation

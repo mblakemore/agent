@@ -53,11 +53,24 @@ class TuiModeTests(unittest.TestCase):
         self.assertIsNone(cancel.check_cancelled())
 
     def test_cancellable_resets_flag_on_entry(self):
+        # Non-TUI (blocking) mode: entry resets a stale flag. Mock stdin as
+        # non-tty so no real cbreak/termios calls happen.
         cancel.request_cancel()
         self.assertTrue(cancel.is_cancelled())
-        cancel.set_tui_mode(True)  # avoid touching real stdin
+        cancel.set_tui_mode(False)
+        with patch.object(cancel.sys.stdin, "isatty", return_value=False):
+            with cancel.cancellable():
+                self.assertFalse(cancel.is_cancelled())
+
+    def test_cancellable_preserves_flag_in_tui_mode(self):
+        # TUI/live-input mode: the flag's lifetime is the TURN, not the
+        # region — an esc-esc landing between cancellable regions must
+        # survive entry (plan/live-input-display-fixes.md Fix E; the host
+        # calls cancel.reset() once per turn dispatch instead).
+        cancel.request_cancel()
+        cancel.set_tui_mode(True)
         with cancel.cancellable():
-            self.assertFalse(cancel.is_cancelled())
+            self.assertTrue(cancel.is_cancelled())
 
     def test_request_cancel_works_in_tui_mode(self):
         cancel.set_tui_mode(True)
