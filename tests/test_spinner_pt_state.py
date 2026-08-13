@@ -101,7 +101,12 @@ class TestSharedSpinnerState(unittest.TestCase):
         self.assertEqual(len(frames), len(spinner._BRAILLE))
 
 
-class TestToolbarSpinnerSegment(unittest.TestCase):
+class TestToolbarStaysStable(unittest.TestCase):
+    """The working indicator lives on the PROMPT LINE only. Rendering it in
+    the toolbar too doubled it up in terminals where the toolbar draws
+    (field report 2026-08-13) — so the toolbar must NOT reflect spinner or
+    cancelling state, and must always build valid HTML()."""
+
     def setUp(self):
         import tui
         if not tui._AVAILABLE:
@@ -116,77 +121,28 @@ class TestToolbarSpinnerSegment(unittest.TestCase):
             estimate_tokens=lambda m: 1,
         )
 
-    def test_segment_absent_when_idle(self):
+    def test_toolbar_ignores_active_spinner(self):
         sess = self._session()
-        plain, seg_html = sess._spinner_segment(120)
-        self.assertEqual((plain, seg_html), ("", ""))
-
-    def test_segment_renders_label_and_elapsed(self):
-        sess = self._session()
-        with mock.patch.object(spinner, "get_active",
-                               return_value=("running tests", time.monotonic() - 5)):
-            plain, seg_html = sess._spinner_segment(120)
-        self.assertIn("running tests", plain)
-        self.assertIn("s", plain)
-        self.assertIn("running tests", seg_html)
-
-    def test_segment_appends_stream_tail(self):
-        sess = self._session()
-        sess.cb = mock.Mock(verbose=False, stream_tail="end of current line")
-        with mock.patch.object(spinner, "get_active",
-                               return_value=("streaming", time.monotonic())):
-            plain, _ = sess._spinner_segment(200)
-        self.assertIn("end of current line", plain)
-
-    def test_segment_capped_to_half_width(self):
-        sess = self._session()
-        sess.cb = mock.Mock(verbose=False, stream_tail="x" * 300)
-        with mock.patch.object(spinner, "get_active",
-                               return_value=("y" * 300, time.monotonic())):
-            plain, _ = sess._spinner_segment(80)
-        self.assertLessEqual(theme.visible_len(plain), 40 + len(" │"))
-
-    def test_toolbar_includes_segment(self):
-        sess = self._session()
-        with mock.patch.object(spinner, "get_active",
-                               return_value=("toolbar spin", time.monotonic())):
-            out = sess._toolbar()
-        self.assertIn("toolbar spin", out.value)
-
-    def test_truncated_segment_contains_no_control_chars(self):
-        """Field crash 2026-08-13: truncate_middle inserts a RESET escape
-        before its marker; HTML() parses via expat and a raw ESC byte is an
-        invalid XML token — the render loop died every frame. The segment
-        must be pure printable text however hard it is truncated."""
-        sess = self._session()
-        sess.cb = mock.Mock(verbose=False, stream_tail="t" * 200)
+        sess.cb = mock.Mock(verbose=False, stream_tail="tail text here")
         with mock.patch.object(spinner, "get_active",
                                return_value=("streaming", time.monotonic() - 3)):
-            plain, seg_html = sess._spinner_segment(80)  # forces truncation
-        self.assertNotIn("\x1b", plain)
-        self.assertNotIn("\x1b", seg_html)
-        for ch in plain:
-            self.assertGreaterEqual(ord(ch), 0x20, f"control char {ch!r}")
+            out = sess._toolbar()  # must not raise (HTML() built inside)
+        self.assertNotIn("streaming", out.value)
+        self.assertNotIn("tail text here", out.value)
+        self.assertFalse(any(0x2800 <= ord(c) <= 0x28FF for c in out.value),
+                         "braille frame leaked into the toolbar")
 
-    def test_toolbar_parses_as_html_under_truncation(self):
-        """End-to-end: the exact field repro — active spinner + long stream
-        tail + ~80-col width. Constructing the toolbar builds HTML(); an
-        invalid token raises right here."""
-        sess = self._session()
-        sess.cb = mock.Mock(verbose=False,
-                            stream_tail="x" * 120 + " & <b> \x07 weird")
-        with mock.patch.object(spinner, "get_active",
-                               return_value=("streaming", time.monotonic() - 1)), \
-             mock.patch.object(self.tui.os, "get_terminal_size",
-                               return_value=os.terminal_size((80, 24))):
-            out = sess._toolbar()  # must not raise
-        self.assertIn("streaming", out.value)
-
-    def test_toolbar_parses_with_cancelling_segment(self):
+    def test_toolbar_ignores_cancelling_flag(self):
         sess = self._session()
         sess.cancelling = True
         out = sess._toolbar()  # must not raise
-        self.assertIn("cancelling", out.value)
+        self.assertNotIn("cancelling", out.value)
+
+    def test_toolbar_still_valid_html_with_hostile_model_name(self):
+        sess = self._session()
+        sess.config = {"llm": {"model": "we&ird<model>"}}
+        out = sess._toolbar()  # html.escape guard — must not raise
+        self.assertIn("we&amp;ird", out.value)
 
 
 class TestPromptMessageSpinner(unittest.TestCase):

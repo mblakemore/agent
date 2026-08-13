@@ -135,7 +135,9 @@ class TestEagerDoubleEscapeBinding(unittest.TestCase):
         self.assertFalse(sess.cancelling)
         cancel.reset()
 
-    def test_toolbar_shows_cancelling_segment(self):
+    def test_prompt_line_shows_cancelling_feedback(self):
+        # Cancelling feedback lives on the PROMPT LINE (not the toolbar —
+        # that doubled the indicator in terminals where the toolbar draws).
         sess = self.tui.TuiSession(
             history=[], summary_state={"text": "", "up_to": 0},
             config={"llm": {"model": "m"}}, ctx_size=1000,
@@ -143,8 +145,8 @@ class TestEagerDoubleEscapeBinding(unittest.TestCase):
             estimate_tokens=lambda m: 1,
         )
         sess.cancelling = True
-        out = sess._toolbar()
-        self.assertIn("cancelling", out.value)
+        text = "".join(t for _, t in sess._prompt_message())
+        self.assertIn("cancelling", text)
 
 
 if __name__ == "__main__":

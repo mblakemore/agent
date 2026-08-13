@@ -556,34 +556,6 @@ if _AVAILABLE:
             self._ctx_cache_val = pct
             return pct
 
-        def _spinner_segment(self, width: int) -> tuple[str, str]:
-            """(plain, html) toolbar segment for an active spinner, or ("", "").
-
-            Renders `⠙ label 12.3s` plus the live tail of the in-progress
-            streamed line when one exists — this is the progress feedback
-            live-input mode lost when the \\r spinner was suppressed under
-            patch_stdout. Animated by spinner's invalidate ticker.
-            """
-            act = _spinner.get_active()
-            if act is None:
-                return "", ""
-            label, t0 = act
-            elapsed = time.monotonic() - t0
-            seg = f" {_spinner.frame_at(elapsed)} {label} {elapsed:.1f}s"
-            tail = getattr(self.cb, "stream_tail", "")
-            if tail:
-                seg += f" · {tail}"
-            # Cap at half the bar so cwd/model/ctx stay visible. _plain
-            # strips escapes and control bytes — truncate_middle inserts a
-            # RESET escape before its marker, and HTML() parses via expat
-            # where ANY raw control byte is an invalid XML token that
-            # crashes the whole render loop (field crash 2026-08-13).
-            seg = self._plain(seg, max(16, width // 2)) + " │"
-            seg_html = (
-                f'<style fg="{_MINT_HEX}" bg="{_BAR_BG_HEX}">{html.escape(seg)}</style>'
-            )
-            return seg, seg_html
-
         def _toolbar(self):
             # Escape anything user/config-controlled that lands in HTML() —
             # expat treats a stray & or < as fatally as the ESC byte above.
@@ -629,19 +601,14 @@ if _AVAILABLE:
                 width = os.get_terminal_size().columns
             except OSError:
                 width = 80
-            spin_plain, spin_html = self._spinner_segment(width)
-            if self.cancelling:
-                # Cancel feedback outranks the spinner segment.
-                spin_plain = " ⏳ cancelling… │"
-                spin_html = (
-                    f'<style fg="{_AMBER_HEX}" bg="{_BAR_BG_HEX}">'
-                    f"{html.escape(spin_plain)}</style>"
-                )
-            left = spin_html + left
+            # No spinner/cancelling segment here: the working indicator
+            # lives on the PROMPT LINE (see _prompt_message) — rendering it
+            # in both places doubled it up in terminals where the toolbar
+            # draws (field report 2026-08-13). The toolbar keeps its stable
+            # identity: cwd / model / msgs / ctx / hints.
             visible_base = f" {cwd}  │  {model}  │  {msgs} msgs  │  {ctx_label} "
             visible_len = (
-                len(spin_plain)
-                + len(visible_base)
+                len(visible_base)
                 + (len("  │   verbose ") if verbose else 0)
                 + len(right_hint)
             )
