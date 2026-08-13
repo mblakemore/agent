@@ -450,8 +450,61 @@ if _AVAILABLE:
             super().__init__(verbose=verbose)
             self.tui = tui_session
             self.tui.set_cb(self)
+            # Pending partial line of streamed assistant text (live-input
+            # mode only). Under patch_stdout a partial line shares its row
+            # with the redrawn prompt and is erased by the next flush — so
+            # on_stream_chunk buffers here and emits complete lines only.
+            self._stream_buf = ""
+
+        # -- live-input streaming (defect #2) --------------------------
+
+        @staticmethod
+        def _live_app_active() -> bool:
+            """True while a prompt_toolkit app owns the terminal.
+
+            In concurrent live-input mode the input thread runs the prompt
+            continuously and holds a process-wide patch_stdout; the app is
+            visible from any thread via the shared default AppSession.
+            """
+            try:
+                from prompt_toolkit.application import get_app_or_none
+                return get_app_or_none() is not None
+            except Exception:
+                return False
+
+        def on_stream_chunk(self, text: str) -> None:
+            if not self._live_app_active():
+                super().on_stream_chunk(text)
+                return
+            # patch_stdout renders by erase-prompt → write → redraw-prompt:
+            # only text ending in "\n" survives in scrollback. Buffer the
+            # stream and emit whole lines; the final partial line is
+            # committed by _flush_stream_buf at the next non-stream output
+            # or at end of turn (on_assistant_text).
+            self._last_was_stream = True
+            self._stream_buf += text
+            if "\n" in self._stream_buf:
+                complete, self._stream_buf = self._stream_buf.rsplit("\n", 1)
+                print(complete + "\n", end="", flush=True)
+
+        def _flush_stream_buf(self) -> None:
+            """Commit any pending partial stream line to scrollback."""
+            if self._stream_buf:
+                buf, self._stream_buf = self._stream_buf, ""
+                print(buf, flush=True)
+
+        def on_assistant_text(self, text: str) -> None:
+            # End of turn: the base class skips re-printing streamed text
+            # without touching _print, so flush the tail explicitly here.
+            self._flush_stream_buf()
+            super().on_assistant_text(text)
 
         def _print(self, text: str = "", end: str = "\n") -> None:
+            # All non-stream output funnels through here — flushing the
+            # stream buffer first guarantees scrollback ordering (partial
+            # response line lands before the notice/tool header that
+            # interrupted it).
+            self._flush_stream_buf()
             if _prompt_is_active():
                 from prompt_toolkit.patch_stdout import patch_stdout
                 with patch_stdout(raw=True):
