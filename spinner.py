@@ -6,6 +6,7 @@ Phase 2 (streaming): Live token count + t/s in the terminal title bar.
 Phase 3 (done):      Dim summary line, terminal title reset.
 """
 
+import shutil
 import sys
 import threading
 import time
@@ -74,9 +75,16 @@ class StreamStatus:
             self._thread.start()
         else:
             # Non-interactive: just print the prefix once so downstream output
-            # still has its header.
+            # still has its header. On a real TTY that a prompt_toolkit app
+            # owns, an over-width prefix would wrap across rows in the
+            # scrollback — middle-truncate it. Piped output (NO_COLOR /
+            # non-TTY) keeps the full line: log files want everything.
             if self._prefix:
-                sys.stdout.write(self._prefix)
+                out = self._prefix
+                if not theme._no_color():
+                    cols = shutil.get_terminal_size((80, 24)).columns
+                    out = theme.truncate_middle(out, cols - 1)
+                sys.stdout.write(out + "\n")
                 sys.stdout.flush()
 
     def _spin(self):
@@ -86,8 +94,18 @@ class StreamStatus:
             frame = _BRAILLE[i % len(_BRAILLE)]
             color = theme.pulse_escape(elapsed)
             reset = RESET if color else ""
+            elapsed_txt = f"{elapsed:.1f}s"
+            # Re-query the width every frame (handles resize) and budget the
+            # prefix so `prefix + frame + " " + elapsed` can never exceed
+            # width-1. A wrapped spinner line defeats \r + CLEAR_LINE — they
+            # only reach the last wrapped row, so every redraw scrolls one
+            # duplicate line while the counter ticks. Middle truncation keeps
+            # the head and tail of the line visible.
+            cols = shutil.get_terminal_size((80, 24)).columns
+            budget = max(8, cols - 1 - (2 + len(elapsed_txt)))
+            prefix = theme.truncate_middle(self._prefix, budget)
             sys.stdout.write(
-                f"{CLEAR_LINE}{self._prefix}{color}{frame}{reset} {theme.dim(f'{elapsed:.1f}s')}"
+                f"{CLEAR_LINE}{prefix}{color}{frame}{reset} {theme.dim(elapsed_txt)}"
             )
             sys.stdout.flush()
             i += 1
@@ -103,7 +121,10 @@ class StreamStatus:
             self._thread = None
         self._first_token_time = time.monotonic()
         if self._interactive:
-            sys.stdout.write(f"{CLEAR_LINE}{self._prefix}")
+            cols = shutil.get_terminal_size((80, 24)).columns
+            sys.stdout.write(
+                f"{CLEAR_LINE}{theme.truncate_middle(self._prefix, cols - 1)}"
+            )
             sys.stdout.flush()
         # Non-interactive: prefix was already written in start()
 

@@ -94,7 +94,7 @@ class TestSpinnerInteractivity(unittest.TestCase):
                 # Thread should not have been started
                 self.assertIsNone(status._thread)
                 # Prefix should have been written at least once
-                m_stdout.write.assert_any_call("hello ")
+                m_stdout.write.assert_any_call("hello \n")
             status.finish()
 
 
@@ -106,7 +106,7 @@ class TestStreamStatusFullLifecycle(unittest.TestCase):
             with mock.patch("sys.stdout") as m_stdout:
                 status.start(prefix="\n\nHello")
                 m_stdout.write.assert_any_call("\n\n")
-                m_stdout.write.assert_any_call("Hello")
+                m_stdout.write.assert_any_call("Hello\n")
             status.finish()
 
     def test_interactive_lifecycle(self):

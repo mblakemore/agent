@@ -8,6 +8,7 @@ to 256-color or plain text when truecolor isn't available.
 
 import math
 import os
+import re
 import sys
 
 # ── Palette (24-bit RGB) ────────────────────────────────────────────────
@@ -46,6 +47,80 @@ else:
 # Terminal control sequences. Suppressed when piping or NO_COLOR, same as
 # color escapes — noisy escape output in a log file is never what you want.
 CLEAR_LINE = "" if _no_color() else "\r\033[K"
+
+
+# ── Width-safe line helpers ─────────────────────────────────────────────
+# CSI sequences (SGR colors, cursor moves, clears) and OSC sequences
+# (terminal title). Both render zero-width, so display-width math must
+# ignore them.
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;?]*[ -/]*[@-~]"            # CSI … final byte
+    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?"  # OSC … BEL or ST
+)
+
+
+def strip_ansi(text):
+    """Return text with ANSI CSI/OSC escape sequences removed."""
+    return _ANSI_RE.sub("", text)
+
+
+def visible_len(text):
+    """Display width of text: length with zero-width escapes stripped."""
+    return len(strip_ansi(text))
+
+
+def truncate_middle(text, width, marker="…"):
+    """Middle-truncate text to at most `width` visible columns.
+
+    Keeps the head and tail, drops the middle — a too-long tool line stays
+    readable at both ends instead of hard-wrapping. ANSI escapes are
+    preserved (they cost zero columns); a RESET is inserted before the
+    marker so head styling can't bleed into it. Styling opened in the
+    dropped middle is lost for the tail — acceptable for status lines,
+    which are styled at the edges, not the middle.
+
+    Returns text unchanged when it already fits.
+    """
+    if width <= 0:
+        return ""
+    if visible_len(text) <= width:
+        return text
+    mlen = len(marker)
+    if width <= mlen:
+        return marker[:width]
+    keep = width - mlen
+    head_n = (keep + 1) // 2
+    tail_n = keep - head_n
+
+    # Tokenize into escape sequences (zero-width) and single characters.
+    tokens = []
+    pos = 0
+    for m in _ANSI_RE.finditer(text):
+        if m.start() > pos:
+            tokens.extend(text[pos:m.start()])
+        tokens.append(m.group())
+        pos = m.end()
+    tokens.extend(text[pos:])
+
+    def _is_visible(tok):
+        return len(tok) == 1 and tok != "\x1b"
+
+    head, count, i = [], 0, 0
+    while i < len(tokens) and count < head_n:
+        head.append(tokens[i])
+        if _is_visible(tokens[i]):
+            count += 1
+        i += 1
+
+    tail, count, j = [], 0, len(tokens) - 1
+    while j >= i and count < tail_n:
+        tail.append(tokens[j])
+        if _is_visible(tokens[j]):
+            count += 1
+        j -= 1
+    tail.reverse()
+
+    return "".join(head) + RESET + marker + "".join(tail)
 
 
 def cursor_up_clear(n):

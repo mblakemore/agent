@@ -5949,10 +5949,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                     if use_spinner:
                         tool_status = StreamStatus(emit=_emit)
                         if func_name == "exec_command":
-                            import shutil as _shutil
-                            _term_cols = _shutil.get_terminal_size((80, 24)).columns
-                            _budget = max(20, _term_cols - len("  -> exec_command () ⠋ 9.9s"))
-                            _cmd_preview = func_args.get("command", "").split("\n", 1)[0][:_budget]
+                            # Full first line of the command — width fitting
+                            # happens at render time now (StreamStatus middle-
+                            # truncates every frame against the live terminal
+                            # width), so no fixed budget that assumed a "9.9s"
+                            # counter and broke past 100s.
+                            _cmd_preview = func_args.get("command", "").split("\n", 1)[0]
                             prefix = f"  -> exec_command ({_cmd_preview}) "
                         else:
                             prefix = f"  -> {func_name} "

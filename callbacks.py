@@ -17,6 +17,7 @@ Rules (see plan/ui-upgrade-from-llmbox-cli.md § 7):
 
 from __future__ import annotations
 
+import shutil
 from collections import deque
 from typing import Any, Optional
 
@@ -187,6 +188,18 @@ class TerminalCallbacks(NullCallbacks):
     def _note(self, text: str) -> None:
         self._print(theme.dim(f"  {text}"))
 
+    def _fit_line(self, line: str) -> str:
+        """Middle-truncate a status/tool line to the terminal width on a TTY.
+
+        Keeps the head and tail visible instead of letting the terminal
+        hard-wrap. Piped output (NO_COLOR / non-TTY) is returned untouched —
+        log files want the full line.
+        """
+        if theme._no_color():
+            return line
+        cols = shutil.get_terminal_size((80, 24)).columns
+        return theme.truncate_middle(line, cols - 1)
+
     def _compact_args(self, args: dict, max_val: int = 50) -> str:
         if not isinstance(args, dict):
             return str(args)[:max_val]
@@ -319,7 +332,8 @@ class TerminalCallbacks(NullCallbacks):
         self._print(theme.dim(f"\nExecuting {_nplural(count, 'tool call', 'tool calls')}..."))
 
     def on_tool_start(self, name: str, args: dict) -> None:
-        self._print(f"{theme.CLEAR_LINE}  -> {name}({self._compact_args(args)})")
+        line = f"  -> {name}({self._compact_args(args)})"
+        self._print(f"{theme.CLEAR_LINE}{self._fit_line(line)}")
 
     def on_tool_result(self, name: str, args: dict, result: str, is_error: bool) -> None:
         # D12 invariant: this callback only styles output. The raw `result`
@@ -348,10 +362,14 @@ class TerminalCallbacks(NullCallbacks):
             )
 
         color = theme.ROSE if is_error else None
-        if color:
-            self._print(f"    Result: {theme.c(color, display)}")
-        else:
-            self._print(f"    Result: {display}")
+        text = f"    Result: {theme.c(color, display) if color else display}"
+        if not self.verbose:
+            # Compact mode: fit each physical line to the terminal width so a
+            # single long line (minified JSON, one-line command output) can't
+            # dominate the screen. Verbose mode wraps naturally — the operator
+            # asked for everything.
+            text = "\n".join(self._fit_line(ln) for ln in text.split("\n"))
+        self._print(text)
 
     def on_tool_skip(self, name: str, count: int) -> None:
         self._print(f"  [skipping — {name} failed {count} times]")
