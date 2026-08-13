@@ -153,6 +153,41 @@ class TestToolbarSpinnerSegment(unittest.TestCase):
             out = sess._toolbar()
         self.assertIn("toolbar spin", out.value)
 
+    def test_truncated_segment_contains_no_control_chars(self):
+        """Field crash 2026-08-13: truncate_middle inserts a RESET escape
+        before its marker; HTML() parses via expat and a raw ESC byte is an
+        invalid XML token — the render loop died every frame. The segment
+        must be pure printable text however hard it is truncated."""
+        sess = self._session()
+        sess.cb = mock.Mock(verbose=False, stream_tail="t" * 200)
+        with mock.patch.object(spinner, "get_active",
+                               return_value=("streaming", time.monotonic() - 3)):
+            plain, seg_html = sess._spinner_segment(80)  # forces truncation
+        self.assertNotIn("\x1b", plain)
+        self.assertNotIn("\x1b", seg_html)
+        for ch in plain:
+            self.assertGreaterEqual(ord(ch), 0x20, f"control char {ch!r}")
+
+    def test_toolbar_parses_as_html_under_truncation(self):
+        """End-to-end: the exact field repro — active spinner + long stream
+        tail + ~80-col width. Constructing the toolbar builds HTML(); an
+        invalid token raises right here."""
+        sess = self._session()
+        sess.cb = mock.Mock(verbose=False,
+                            stream_tail="x" * 120 + " & <b> \x07 weird")
+        with mock.patch.object(spinner, "get_active",
+                               return_value=("streaming", time.monotonic() - 1)), \
+             mock.patch.object(self.tui.os, "get_terminal_size",
+                               return_value=os.terminal_size((80, 24))):
+            out = sess._toolbar()  # must not raise
+        self.assertIn("streaming", out.value)
+
+    def test_toolbar_parses_with_cancelling_segment(self):
+        sess = self._session()
+        sess.cancelling = True
+        out = sess._toolbar()  # must not raise
+        self.assertIn("cancelling", out.value)
+
 
 if __name__ == "__main__":
     unittest.main()

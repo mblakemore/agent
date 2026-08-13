@@ -474,15 +474,27 @@ if _AVAILABLE:
             if tail:
                 seg += f" · {tail}"
             # Cap at half the bar so cwd/model/ctx stay visible.
-            seg = _theme.truncate_middle(seg, max(16, width // 2)) + " │"
+            seg = _theme.truncate_middle(seg, max(16, width // 2))
+            # truncate_middle inserts a RESET escape (\x1b[0m) before its
+            # marker, and HTML() parses via expat — ANY raw control byte is
+            # an invalid XML token that crashes the whole render loop
+            # (field crash 2026-08-13, "not well-formed: column 62"). This
+            # segment is plain text by construction: strip escapes, then
+            # drop every remaining control character as defense against
+            # model output leaking oddities through the stream tail.
+            seg = _theme.strip_ansi(seg)
+            seg = "".join(ch for ch in seg if ch >= " " or ch == "\t")
+            seg += " │"
             seg_html = (
                 f'<style fg="{_MINT_HEX}" bg="{_BAR_BG_HEX}">{html.escape(seg)}</style>'
             )
             return seg, seg_html
 
         def _toolbar(self):
-            cwd = Path(os.getcwd()).name or "/"
-            model = self.config.get("llm", {}).get("model", "?")
+            # Escape anything user/config-controlled that lands in HTML() —
+            # expat treats a stray & or < as fatally as the ESC byte above.
+            cwd = html.escape(Path(os.getcwd()).name or "/")
+            model = html.escape(self.config.get("llm", {}).get("model", "?"))
             msgs = len(self.history)
             pct = self._ctx_pct() * 100.0
             verbose = bool(getattr(self.cb, "verbose", False))
