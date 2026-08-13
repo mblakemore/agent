@@ -157,11 +157,11 @@ class TestPromptMessageSpinner(unittest.TestCase):
             self.skipTest("prompt_toolkit not installed")
         self.tui = tui
 
-    def _session(self, tail=""):
+    def _session(self, partial=""):
         return self.tui.TuiSession(
             history=[], summary_state={"text": "", "up_to": 0},
             config={"llm": {"model": "m"}}, ctx_size=1000,
-            cb=mock.Mock(verbose=False, stream_tail=tail),
+            cb=mock.Mock(verbose=False, stream_partial=partial),
             estimate_tokens=lambda m: 1,
         )
 
@@ -184,15 +184,33 @@ class TestPromptMessageSpinner(unittest.TestCase):
         self.assertTrue(any(0x2800 <= ord(c) <= 0x28FF for c in text),
                         f"no braille frame in {text!r}")
 
-    def test_active_spinner_includes_stream_tail(self):
-        sess = self._session(tail="latest words")
+    def test_layout_partial_above_spinner_above_prompt(self):
+        """Field-specified layout: streaming text, then newline, then the
+        bare spinner line, then newline + You: — the partial is REAL text
+        above the spinner, never a tail inside the spinner line."""
+        sess = self._session(partial="the block currently streaming")
         with mock.patch.object(spinner, "get_active",
                                return_value=("streaming", time.monotonic())):
             text = self._text(sess._prompt_message())
-        self.assertIn("latest words", text)
+        i_partial = text.index("the block currently streaming")
+        i_frame = next(i for i, c in enumerate(text) if 0x2800 <= ord(c) <= 0x28FF)
+        i_you = text.index("You: ")
+        self.assertLess(i_partial, i_frame, "partial must precede spinner")
+        self.assertLess(i_frame, i_you, "spinner must precede prompt")
+        # bare spinner line: no '·' tail separator, newline between the three
+        self.assertNotIn("·", text)
+        self.assertEqual(text[i_partial + len("the block currently streaming")], "\n")
+
+    def test_no_partial_line_when_buffer_empty(self):
+        sess = self._session(partial="")
+        with mock.patch.object(spinner, "get_active",
+                               return_value=("Assistant:", time.monotonic())):
+            text = self._text(sess._prompt_message())
+        # exactly two newlines: leading one and the one before You:
+        self.assertEqual(text.count("\n"), 2)
 
     def test_spinner_fragments_are_control_free(self):
-        sess = self._session(tail="x" * 300 + "\x07")
+        sess = self._session(partial="x" * 300)
         with mock.patch.object(spinner, "get_active",
                                return_value=("streaming", time.monotonic())):
             text = self._text(sess._prompt_message())
@@ -200,6 +218,11 @@ class TestPromptMessageSpinner(unittest.TestCase):
             if ch == "\n":
                 continue
             self.assertGreaterEqual(ord(ch), 0x20, f"control char {ch!r}")
+
+    def test_stream_partial_property_sanitizes(self):
+        cb = self.tui.TuiCallbacks(mock.Mock())
+        cb._stream_buf = "\x1b[2mdim text\x1b[0m with \x07 bell"
+        self.assertEqual(cb.stream_partial, "dim text with  bell")
 
     def test_cancelling_outranks_spinner(self):
         sess = self._session()

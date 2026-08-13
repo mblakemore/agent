@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import html
 import os
+import textwrap
 import threading
 import time
 from pathlib import Path
@@ -363,24 +364,48 @@ if _AVAILABLE:
                     return [("class:prompt", "\nYou: ")]
                 label, t0 = act
                 elapsed = time.monotonic() - t0
-                seg = f"{_spinner.frame_at(elapsed)} {label} {elapsed:.1f}s"
-                tail = getattr(self.cb, "stream_tail", "")
-                if tail:
-                    seg += f" · {tail}"
                 try:
                     width = os.get_terminal_size().columns
                 except OSError:
                     width = 80
-                seg = self._plain(seg, max(24, width - 12))
+                # Layout while a turn runs (field-specified 2026-08-13):
+                #   <completed blocks — scrollback, committed on newline>
+                #   <actively streaming text — full width, wraps, grows live>
+                #   ⠇ <label> 10.8s
+                #   You:
+                # The partial line is REAL text in the prompt region, not a
+                # truncated tail inside the spinner line — it re-renders per
+                # invalidate, then commits to scrollback when its newline
+                # arrives and the region resets.
+                frags = [("class:prompt", "\n")]
+                partial = getattr(self.cb, "stream_partial", "")
+                if partial:
+                    # prompt_toolkit renders a long message line truncated,
+                    # not wrapped (verified via replay: a growing paragraph
+                    # froze at its first screen row). Wrap explicitly and
+                    # keep the LAST rows — the operator watches the growing
+                    # END of the block, bounded so the region can't eat the
+                    # screen.
+                    rows = []
+                    for seg_line in partial.split("\n"):
+                        rows.extend(
+                            textwrap.wrap(seg_line, width=max(20, width - 1),
+                                          drop_whitespace=False,
+                                          replace_whitespace=False) or [""]
+                        )
+                    frags.append(("", "\n".join(rows[-6:])))
+                    frags.append(("", "\n"))
+                seg = self._plain(
+                    f"{_spinner.frame_at(elapsed)} {label} {elapsed:.1f}s",
+                    max(24, width - 2),
+                )
                 # Aurora pulse (violet→sky→mint), same gradient the classic
                 # \r spinner sweeps — per-render inline color, animated by
                 # the invalidate ticker.
                 r, g, b = _theme.pulse_rgb(elapsed)
-                return [
-                    ("class:prompt", "\n"),
-                    (f"fg:#{r:02x}{g:02x}{b:02x}", seg + " "),
-                    ("class:prompt", "You: "),
-                ]
+                frags.append((f"fg:#{r:02x}{g:02x}{b:02x}", seg))
+                frags.append(("class:prompt", "\nYou: "))
+                return frags
             except Exception:
                 return [("class:prompt", "\nYou: ")]
 
@@ -699,15 +724,21 @@ if _AVAILABLE:
                 print(buf, flush=True)
 
         @property
-        def stream_tail(self) -> str:
-            """Last ~50 visible chars of the in-progress streamed line.
+        def stream_partial(self) -> str:
+            """The in-progress streamed line, sanitized for prompt rendering.
 
-            Rendered by the toolbar spinner segment so the operator sees
-            generation progressing between the newlines that commit whole
-            lines to scrollback.
+            The line buffer flushes complete lines to scrollback the moment
+            a newline arrives, so this is always exactly the tail-in-flight.
+            Rendered as REAL full-width text inside the prompt region (above
+            the spinner line), where prompt_toolkit re-renders it on every
+            invalidate — so the operator watches the current block grow
+            in place, then sees it commit to scrollback when it completes.
+            Escapes/control chars stripped (prompt fragments must be plain);
+            capped to the last 4000 chars against pathological render cost.
             """
-            tail = self._stream_buf.rsplit("\n", 1)[-1]
-            return _theme.strip_ansi(tail)[-50:]
+            partial = _theme.strip_ansi(self._stream_buf)
+            partial = "".join(ch for ch in partial if ch >= " " or ch == "\t")
+            return partial[-4000:]
 
         def on_assistant_text(self, text: str) -> None:
             # End of turn: the base class skips re-printing streamed text
