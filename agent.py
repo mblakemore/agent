@@ -5958,7 +5958,11 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             prefix = f"  -> exec_command ({_cmd_preview}) "
                         else:
                             prefix = f"  -> {func_name} "
-                        tool_status.start(prefix)
+                        # pt_header=False: in live-input mode the toolbar
+                        # spinner carries this status; the scrollback header
+                        # is printed once by on_tool_start after the tool
+                        # completes (printing both duplicated every line).
+                        tool_status.start(prefix, pt_header=False)
 
                     # T5.18 — pre-write content snapshot for similarity
                     # detection. Captured before dispatch so the post-write

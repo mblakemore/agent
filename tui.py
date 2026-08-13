@@ -29,10 +29,13 @@ from __future__ import annotations
 import html
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Callable
 
 import cancel
+import spinner as _spinner
+import theme as _theme
 from callbacks import TerminalCallbacks
 
 
@@ -362,6 +365,30 @@ if _AVAILABLE:
             self._ctx_cache_val = pct
             return pct
 
+        def _spinner_segment(self, width: int) -> tuple[str, str]:
+            """(plain, html) toolbar segment for an active spinner, or ("", "").
+
+            Renders `⠙ label 12.3s` plus the live tail of the in-progress
+            streamed line when one exists — this is the progress feedback
+            live-input mode lost when the \\r spinner was suppressed under
+            patch_stdout. Animated by spinner's invalidate ticker.
+            """
+            act = _spinner.get_active()
+            if act is None:
+                return "", ""
+            label, t0 = act
+            elapsed = time.monotonic() - t0
+            seg = f" {_spinner.frame_at(elapsed)} {label} {elapsed:.1f}s"
+            tail = getattr(self.cb, "stream_tail", "")
+            if tail:
+                seg += f" · {tail}"
+            # Cap at half the bar so cwd/model/ctx stay visible.
+            seg = _theme.truncate_middle(seg, max(16, width // 2)) + " │"
+            seg_html = (
+                f'<style fg="{_MINT_HEX}" bg="{_BAR_BG_HEX}">{html.escape(seg)}</style>'
+            )
+            return seg, seg_html
+
         def _toolbar(self):
             cwd = Path(os.getcwd()).name or "/"
             model = self.config.get("llm", {}).get("model", "?")
@@ -405,9 +432,12 @@ if _AVAILABLE:
                 width = os.get_terminal_size().columns
             except OSError:
                 width = 80
+            spin_plain, spin_html = self._spinner_segment(width)
+            left = spin_html + left
             visible_base = f" {cwd}  │  {model}  │  {msgs} msgs  │  {ctx_label} "
             visible_len = (
-                len(visible_base)
+                len(spin_plain)
+                + len(visible_base)
                 + (len("  │   verbose ") if verbose else 0)
                 + len(right_hint)
             )
@@ -492,6 +522,17 @@ if _AVAILABLE:
             if self._stream_buf:
                 buf, self._stream_buf = self._stream_buf, ""
                 print(buf, flush=True)
+
+        @property
+        def stream_tail(self) -> str:
+            """Last ~50 visible chars of the in-progress streamed line.
+
+            Rendered by the toolbar spinner segment so the operator sees
+            generation progressing between the newlines that commit whole
+            lines to scrollback.
+            """
+            tail = self._stream_buf.rsplit("\n", 1)[-1]
+            return _theme.strip_ansi(tail)[-50:]
 
         def on_assistant_text(self, text: str) -> None:
             # End of turn: the base class skips re-printing streamed text
