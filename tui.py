@@ -155,6 +155,8 @@ if _AVAILABLE:
     def _build_style() -> Style:
         return Style.from_dict({
             "prompt":                             f"{_VIOLET_HEX} bold",
+            "prompt-spinner":                     f"{_MINT_HEX}",
+            "prompt-cancelling":                  f"{_AMBER_HEX}",
             "bottom-toolbar":                     f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX} noreverse",
             "bottom-toolbar.cwd":                 f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX} bold",
             "bottom-toolbar.sep":                 f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX}",
@@ -300,7 +302,7 @@ if _AVAILABLE:
             self.cancelling = False
 
             self._session: PromptSession = PromptSession(
-                message=[("class:prompt", "\nYou: ")],
+                message=self._prompt_message,
                 multiline=False,
                 key_bindings=_build_key_bindings(
                     enable_cancel=enable_cancel_key,
@@ -321,6 +323,58 @@ if _AVAILABLE:
                     self._session.app.ttimeoutlen = 0.2
                 except Exception:
                     pass
+
+        @staticmethod
+        def _plain(text: str, limit: int) -> str:
+            """Escape- and control-free text, middle-truncated to limit.
+
+            Everything rendered into the prompt/toolbar goes through here:
+            prompt fragments tolerate no raw control bytes (and the toolbar's
+            HTML() path parses XML), so sanitize once, uniformly.
+            """
+            text = _theme.truncate_middle(text, limit)
+            text = _theme.strip_ansi(text)
+            return "".join(ch for ch in text if ch >= " " or ch == "\t")
+
+        def _prompt_message(self):
+            """Prompt text, re-evaluated on every render.
+
+            While the agent works, the spinner lives HERE — on the input
+            line — not only in the bottom toolbar: prompt_toolkit hides the
+            toolbar entirely when it cannot learn the terminal height (CPR
+            unsupported — observed in the field), which made the toolbar
+            spinner invisible exactly when it mattered. The prompt line is
+            the one surface the app always renders. Animated by spinner's
+            invalidate ticker. Must never raise (render path).
+            """
+            try:
+                if self.cancelling:
+                    return [
+                        ("class:prompt", "\n"),
+                        ("class:prompt-cancelling", "⏳ cancelling… "),
+                        ("class:prompt", "You: "),
+                    ]
+                act = _spinner.get_active()
+                if act is None:
+                    return [("class:prompt", "\nYou: ")]
+                label, t0 = act
+                elapsed = time.monotonic() - t0
+                seg = f"{_spinner.frame_at(elapsed)} {label} {elapsed:.1f}s"
+                tail = getattr(self.cb, "stream_tail", "")
+                if tail:
+                    seg += f" · {tail}"
+                try:
+                    width = os.get_terminal_size().columns
+                except OSError:
+                    width = 80
+                seg = self._plain(seg, max(24, width - 12))
+                return [
+                    ("class:prompt", "\n"),
+                    ("class:prompt-spinner", seg + " "),
+                    ("class:prompt", "You: "),
+                ]
+            except Exception:
+                return [("class:prompt", "\nYou: ")]
 
         def _on_cancel_key(self) -> None:
             """esc-esc handler: request cancellation + visible feedback."""
@@ -473,18 +527,12 @@ if _AVAILABLE:
             tail = getattr(self.cb, "stream_tail", "")
             if tail:
                 seg += f" · {tail}"
-            # Cap at half the bar so cwd/model/ctx stay visible.
-            seg = _theme.truncate_middle(seg, max(16, width // 2))
-            # truncate_middle inserts a RESET escape (\x1b[0m) before its
-            # marker, and HTML() parses via expat — ANY raw control byte is
-            # an invalid XML token that crashes the whole render loop
-            # (field crash 2026-08-13, "not well-formed: column 62"). This
-            # segment is plain text by construction: strip escapes, then
-            # drop every remaining control character as defense against
-            # model output leaking oddities through the stream tail.
-            seg = _theme.strip_ansi(seg)
-            seg = "".join(ch for ch in seg if ch >= " " or ch == "\t")
-            seg += " │"
+            # Cap at half the bar so cwd/model/ctx stay visible. _plain
+            # strips escapes and control bytes — truncate_middle inserts a
+            # RESET escape before its marker, and HTML() parses via expat
+            # where ANY raw control byte is an invalid XML token that
+            # crashes the whole render loop (field crash 2026-08-13).
+            seg = self._plain(seg, max(16, width // 2)) + " │"
             seg_html = (
                 f'<style fg="{_MINT_HEX}" bg="{_BAR_BG_HEX}">{html.escape(seg)}</style>'
             )

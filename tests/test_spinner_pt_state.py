@@ -189,5 +189,77 @@ class TestToolbarSpinnerSegment(unittest.TestCase):
         self.assertIn("cancelling", out.value)
 
 
+class TestPromptMessageSpinner(unittest.TestCase):
+    """The prompt-line spinner (the always-rendered surface). The bottom
+    toolbar is hidden whenever prompt_toolkit cannot learn the terminal
+    height (CPR unsupported — field report 2026-08-13), so the working
+    indicator must live in the prompt message itself."""
+
+    def setUp(self):
+        import tui
+        if not tui._AVAILABLE:
+            self.skipTest("prompt_toolkit not installed")
+        self.tui = tui
+
+    def _session(self, tail=""):
+        return self.tui.TuiSession(
+            history=[], summary_state={"text": "", "up_to": 0},
+            config={"llm": {"model": "m"}}, ctx_size=1000,
+            cb=mock.Mock(verbose=False, stream_tail=tail),
+            estimate_tokens=lambda m: 1,
+        )
+
+    @staticmethod
+    def _text(fragments):
+        return "".join(t for _, t in fragments)
+
+    def test_idle_prompt_is_plain_you(self):
+        sess = self._session()
+        self.assertEqual(self._text(sess._prompt_message()), "\nYou: ")
+
+    def test_active_spinner_renders_on_prompt_line(self):
+        sess = self._session()
+        with mock.patch.object(spinner, "get_active",
+                               return_value=("Assistant:", time.monotonic() - 2)):
+            frags = sess._prompt_message()
+        text = self._text(frags)
+        self.assertIn("Assistant:", text)
+        self.assertTrue(text.endswith("You: "))
+        self.assertTrue(any(0x2800 <= ord(c) <= 0x28FF for c in text),
+                        f"no braille frame in {text!r}")
+
+    def test_active_spinner_includes_stream_tail(self):
+        sess = self._session(tail="latest words")
+        with mock.patch.object(spinner, "get_active",
+                               return_value=("streaming", time.monotonic())):
+            text = self._text(sess._prompt_message())
+        self.assertIn("latest words", text)
+
+    def test_spinner_fragments_are_control_free(self):
+        sess = self._session(tail="x" * 300 + "\x07")
+        with mock.patch.object(spinner, "get_active",
+                               return_value=("streaming", time.monotonic())):
+            text = self._text(sess._prompt_message())
+        for ch in text:
+            if ch == "\n":
+                continue
+            self.assertGreaterEqual(ord(ch), 0x20, f"control char {ch!r}")
+
+    def test_cancelling_outranks_spinner(self):
+        sess = self._session()
+        sess.cancelling = True
+        with mock.patch.object(spinner, "get_active",
+                               return_value=("streaming", time.monotonic())):
+            text = self._text(sess._prompt_message())
+        self.assertIn("cancelling", text)
+        self.assertNotIn("streaming", text)
+
+    def test_never_raises_even_when_state_explodes(self):
+        sess = self._session()
+        with mock.patch.object(spinner, "get_active",
+                               side_effect=RuntimeError("boom")):
+            self.assertEqual(self._text(sess._prompt_message()), "\nYou: ")
+
+
 if __name__ == "__main__":
     unittest.main()
