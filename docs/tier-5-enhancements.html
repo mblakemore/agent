@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent.py Tier 5 enhancements — design doc — agent</title>
+<meta name="description" content="Tiers 1-4 shipped (commits 61ed9ec, cabfb0d, 15e5c6a, 1c940d3) and have run live in c0rtana + lyla overnight with zero false positives and meaningful real-world fires (1 harmony rejection saved a re-poisoning event; 10+ bootstrap auto-creates eliminated lyla&#x27;s &quot;file not found&quot; every-cycle error; 8 d">
+<link rel="canonical" href="https://mblakemore.github.io/agent/tier-5-enhancements.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="agent.py Tier 5 enhancements — design doc">
+<meta property="og:description" content="Tiers 1-4 shipped (commits 61ed9ec, cabfb0d, 15e5c6a, 1c940d3) and have run live in c0rtana + lyla overnight with zero false positives and meaningful real-world fires (1 harmony rejection saved a re-poisoning event; 10+ bootstrap auto-creates eliminated lyla&#x27;s &quot;file not found&quot; every-cycle error; 8 d">
+<meta property="og:url" content="https://mblakemore.github.io/agent/tier-5-enhancements.html">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/agent-docs.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"agent.py Tier 5 enhancements — design doc","url":"https://mblakemore.github.io/agent/tier-5-enhancements.html","description":"Tiers 1-4 shipped (commits 61ed9ec, cabfb0d, 15e5c6a, 1c940d3) and have run live in c0rtana + lyla overnight with zero false positives and meaningful real-world fires (1 harmony rejection saved a re-poisoning event; 10+ bootstrap auto-creates eliminated lyla&#x27;s &quot;file not found&quot; every-cycle error; 8 d"}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><div class="in">
+  <span class="brand"><a href="index.html">agent</a></span>
+  <span class="tag">documentation</span>
+  <nav aria-label="primary">
+    <a href="index.html">Overview</a>
+    <a href="https://github.com/mblakemore/agent">Source</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="agent-eval-discipline-round.html">agent-eval — Discipline Round (next-round spec)</a></li><li><a href="bedrock.html">Bedrock backend</a></li><li><a href="gemma-finetune-plan.html">Gemma 4 31B tool-friction reduction — plan</a></li><li><a href="local-model.html">Local model — Gemma 4 31B</a></li><li><a href="tier-5-enhancements.html" aria-current="page">agent.py Tier 5 enhancements — design doc</a></li></ul></aside>
+  <main id="main">
+    <p class="eyebrow">agent.py Tier 5 enhancements — design doc</p>
+    <p class="status">shipped (T5.13, T5.14, T5.15, T5.17 — T5.16 deferred)</p>
+<h1>agent.py Tier 5 enhancements — design doc</h1>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/tier-5-enhancements.md"><code>docs/tier-5-enhancements.md</code></a> · last changed 2026-05-14 (49ec00b)</p>
+<p><strong>Status</strong>: shipped (T5.13, T5.14, T5.15, T5.17 — T5.16 deferred)
+<strong>Author</strong>: synthesis from c0rtana (C95→C114) + lyla (C23→C39) overnight audits, post-Tier-4
+<strong>Audience</strong>: next agent.py contributor (human or CICD agent)</p>
+<hr />
+<h2 id="context-where-we-are">Context: where we are</h2>
+<p>Tiers 1-4 shipped (commits <code>61ed9ec</code>, <code>cabfb0d</code>, <code>15e5c6a</code>, <code>1c940d3</code>) and have run live in c0rtana + lyla overnight with <strong>zero false positives</strong> and meaningful real-world fires (1 harmony rejection saved a re-poisoning event; 10+ bootstrap auto-creates eliminated lyla's "file not found" every-cycle error; 8 dedup hits caught real loops). Validation confirmed the patches are sound.</p>
+<p>This doc proposes the next batch — items the second-pass audit surfaced that we deferred for design discussion. <strong>Five patches</strong>, ranked by impact, plus a deferred backlog.</p>
+<hr />
+<h2 id="t513-async-summary-gating-by-context-utilization">T5.13 — Async-summary gating by context utilization</h2>
+<p><strong>Audit citation</strong> (c0rtana #b): <code>353 ASYNC SUMMARY fires across 2,069 tool calls (~17%)</code>; single session <code>session_20260514_125407.log</code> hit 7 summaries in one cycle while context budget was at ~25% utilization (11k/43k tokens).</p>
+<p><strong>Failure mode</strong>: the async summarizer's trigger is decoupled from actual context pressure. Summaries fire on message-count / wall-clock heuristics that don't correspond to "the context window is filling up." Each summary is an LLM call against the summary backend — measurable token spend.</p>
+<p><strong>Proposed change</strong>: replace the existing trigger logic in <code>_async_summarizer.kick()</code> with a context-utilization gate.</p>
+<pre tabindex="0"><code class="language-python"># Before (sketch — actual code at agent.py:???):
+def kick(...):
+    if len(messages) - up_to &gt;= _MIN_NEW_MESSAGES:  # or wall-clock
+        spawn_summary_task(...)
+
+# After:
+def kick(messages, summary_state, ctx_size, ...):
+    tokens_used = sum(_estimate_tokens(m) for m in messages) + summary_tokens(...)
+    utilization = tokens_used / ctx_size
+    new_since_summary = len(messages) - summary_state[&quot;up_to&quot;]
+    if (utilization &gt; _SUMMARY_UTIL_THRESHOLD  # default 0.6
+            and new_since_summary &gt;= _MIN_NEW_FOR_SUMMARY):  # default 4
+        spawn_summary_task(...)
+</code></pre>
+<p><strong>Knobs</strong>:
+- <code>_SUMMARY_UTIL_THRESHOLD</code> (default 0.6, env <code>AGENT_SUMMARY_UTIL_THRESHOLD</code>)
+- <code>_MIN_NEW_FOR_SUMMARY</code> (default 4, env <code>AGENT_SUMMARY_MIN_NEW_MESSAGES</code>)</p>
+<p><strong>Effort</strong>: ~30 lines, contained to the async-summarizer kick path.</p>
+<p><strong>Risk</strong>: under-summarization could cause sudden context overflow when the threshold is crossed and a single big tool result pushes past. Mitigate by lowering the threshold (0.5) OR by emitting a "summary recommended" signal at 0.5 and the auto-trigger at 0.6.</p>
+<p><strong>Test plan</strong>: instrument a mock conversation with N small turns, verify summary doesn't fire until utilization crosses threshold. Add a regression test in <code>tests/test_async_summarizer.py</code> (or wherever the existing one lives — confirm with <code>grep -l async_summar tests/</code>).</p>
+<hr />
+<h2 id="t514-fileactionedit-adoption-nudge">T5.14 — <code>file(action='edit')</code> adoption nudge</h2>
+<p><strong>Audit citation</strong> (c0rtana #c): of 1,200+ writes in 19 c0rtana sessions, ZERO chose <code>file(action='edit')</code> — the model defaults to <code>exec_command</code> with <code>cat &gt; f &lt;&lt;EOF</code> heredocs. C0rtana's own pattern <code>cN_112_001</code> records "accidentally purged multiple edges due to incorrect range replacement" on <code>state/associative_memory.json</code> — exactly the failure <code>file(action='edit')</code> would prevent.</p>
+<p><strong>Failure mode</strong>: a useful tool exists but isn't getting selected. The model's training prior favors shell heredocs for "write JSON file"; the agent doesn't see the surgical-edit option.</p>
+<p><strong>Three design options</strong> (pick one):</p>
+<h3 id="option-a-post-hoc-hint-in-exec_command-result-lightweight">Option A: post-hoc hint in exec_command result (LIGHTWEIGHT)</h3>
+<p>When <code>exec_command</code> returns successfully AND the command was a heredoc-style write to a JSON / state file (detected via <code>_extract_write_target</code> returning a tracked path), append a one-line nudge:</p>
+<pre tabindex="0"><code>[suggestion: for surgical changes to this file, use file(action='edit',
+ path=..., old_string=..., new_string=...) — safer than full-rewrite via
+ heredoc and avoids the c0rtana C112-style data-loss pattern]
+</code></pre>
+<ul>
+<li>Pros: zero risk, no behavior change, model can ignore</li>
+<li>Cons: noise on every state-file heredoc; soft signal that may not change behavior</li>
+<li>Effort: ~15 lines</li>
+</ul>
+<h3 id="option-b-system-prompt-directive-medium">Option B: system-prompt directive (MEDIUM)</h3>
+<p>Add a one-paragraph note to the system-prompt header (next to the existing date injection from T1.4):</p>
+<pre tabindex="0"><code>Tool-selection guidance: when modifying an EXISTING file, prefer
+file(action='edit') over exec_command 'cat &gt; f &lt;&lt;EOF' — surgical edits
+are atomic, validated, and won't lose neighbouring content. Use heredoc
+writes only when creating a NEW file or rewriting one in full.
+</code></pre>
+<ul>
+<li>Pros: explicit, model sees every turn</li>
+<li>Cons: prompt budget cost (~50 tokens per request); may not stick across attention dilution in long contexts</li>
+<li>Effort: ~10 lines</li>
+</ul>
+<h3 id="option-c-opt-in-via-runtime-config-per-agent-telemetry-heavier">Option C: opt-in via runtime config + per-agent telemetry (HEAVIER)</h3>
+<p>Add <code>_HEREDOC_WRITE_ADVICE_ENABLED</code> config + a counter that surfaces "you wrote to <path> via heredoc N times this session; consider file(action='edit') for surgical changes" at session-end, plus a one-time inline hint on the first heredoc-to-tracked-state write per session.</p>
+<ul>
+<li>Pros: less noise per call, ends up educational</li>
+<li>Cons: more state to maintain</li>
+<li>Effort: ~50 lines</li>
+</ul>
+<p><strong>Recommendation</strong>: <strong>Option A</strong> as default + <strong>Option B</strong> for agents that opt in via config (<code>config.preferences.tool_selection_hints: true</code>). Layer A is risk-free; B is for agents whose AGENT.md doesn't already cover this.</p>
+<p><strong>Test plan</strong>: simulate a heredoc write to a tracked state file, verify the hint appears. Negative test: heredoc write to a non-tracked file → no hint.</p>
+<hr />
+<h2 id="t515-auto-retry-with-stricter-sampling-on-stall">T5.15 — Auto-retry with stricter sampling on stall</h2>
+<p><strong>Audit citation</strong> (T3.8 deferred): the stall guard detects but doesn't retry. The audit recommended "retry once with stricter sampling" but the streaming loop's structure made an in-place retry awkward.</p>
+<p><strong>Failure mode</strong>: when the model stalls (0 deltas after <code>AGENT_STALL_TIMEOUT_S</code>, default 60s), the natural turn-level retry kicks in with the SAME sampling params. If the stall was driven by token-search pathology (high temperature + low repeat penalty letting the model spiral on stop tokens), the next turn may stall the same way.</p>
+<p><strong>Proposed change</strong>: track a per-turn "stall retry budget" outside the streaming loop. On detect:</p>
+<pre tabindex="0"><code class="language-python"># Outside the turn loop:
+_stall_retries_remaining = int(os.environ.get(&quot;AGENT_STALL_RETRIES&quot;, &quot;1&quot;))
+
+# When stall detected:
+if _stall_retries_remaining &gt; 0:
+    _stall_retries_remaining -= 1
+    # Adjust sampling for the next request body construction
+    _stall_sampling_override = {
+        &quot;temperature&quot;: max(0.1, temperature - 0.3),
+        &quot;repeat_penalty&quot;: max(1.15, llama_gen.get(&quot;repeat_penalty&quot;, 1.1) + 0.05),
+    }
+    log.info(&quot;Next turn will use stricter sampling: %s&quot;, _stall_sampling_override)
+
+# In request body construction:
+if _stall_sampling_override:
+    request_body.update(_stall_sampling_override)
+
+# After successful (non-stalled) turn — clear override:
+if _deltas_received &gt; 0:
+    _stall_sampling_override = None
+</code></pre>
+<p><strong>Risk</strong>: stricter sampling on a healthy retry could degrade quality. Auto-clear on success limits the blast radius.</p>
+<p><strong>Effort</strong>: ~40 lines spread across the turn loop and request-body construction.</p>
+<p><strong>Test plan</strong>: mock a stalled response, verify the next request body carries <code>temperature</code> and <code>repeat_penalty</code> overrides; verify a successful response after stall clears the override.</p>
+<hr />
+<h2 id="t516-dc-bootstrap-template-completeness-automation">T5.16 — DC bootstrap-template completeness automation</h2>
+<p><strong>Audit citation</strong> (Lyla, both passes): Cortana's AGENT.md template was adapted for Lyla via the "3-DC parallel meeting" at Elder C4914. The template stripped: <code>theme_tracking</code> schema (Elder's), <code>tools/</code> in layout, date-discipline reminder, anti-rediscovery directive. Bootstrap-template fixer (T3.9) auto-creates <em>missing placeholder files</em>, but doesn't fix <em>missing AGENT.md sections</em>.</p>
+<p>Lyla independently re-invented <code>theme_tracking</code> at C24 after I left her a creator note pointing at Elder's schema — then dropped it at C26 via state-overwrite (T4.11 will catch that now). But the underlying problem remains: every new DC sibling inherits a stripped template and has to rediscover.</p>
+<p><strong>Proposed change</strong>: a <code>python3 agent.py --bootstrap-from-template &lt;parent_dir&gt;</code> CLI subcommand that ports a curated set of structural blocks from a parent DC into a target dir:</p>
+<ul>
+<li><code>state/focus.json</code> skeleton with <code>theme_tracking</code> block + parent's <code>theme_categories</code> taxonomy</li>
+<li><code>state/memories/patterns.jsonl</code> empty</li>
+<li><code>AGENT.md</code> directives ported (date discipline, anti-rediscovery, Storage ≠ Retrieval, variety pivot)</li>
+<li><code>messages/from-creator.md</code> empty</li>
+<li><code>messages/to-creator.md</code> empty (because Lyla's audit showed she never wrote to it — placeholder + AGENT.md instruction = nudge)</li>
+<li><code>.gitignore</code> carrying <code>state/CYCLE_END</code> etc.</li>
+<li><code>.agent/preamble.json</code> minimal default</li>
+</ul>
+<p><strong>Effort</strong>: ~150 lines + a template manifest.</p>
+<p><strong>Risk</strong>: this is opinionated — locks in the DC-style convention. If a non-DC agent.py user runs the subcommand, it'd be misapplied. Mitigate via a <code>--dc-style</code> flag rather than auto.</p>
+<p><strong>Out of scope for v1</strong>: porting actual code from <code>tools/</code> (e.g., audit_memory.py). Those are agent-specific; only port if the user passes <code>--include-tools</code>.</p>
+<p><strong>Test plan</strong>: run against a tempdir, verify the expected files appear with expected schemas; verify the existing-agent path is not clobbered.</p>
+<p><strong>Alternative</strong>: skip the CLI entirely and just write <code>docs/dc-agent-template.md</code> describing the canonical set of files and schemas. Future DC births reference the doc instead of cloning. Cheaper, less automation, but functions.</p>
+<hr />
+<h2 id="t517-per-session-patch-effectiveness-telemetry-report">T5.17 — Per-session patch-effectiveness telemetry report</h2>
+<p><strong>Motivation</strong>: c0rtana's audit reported <code>dedup: 0 hits across 2069 calls; stall guard: 0 fires; think-laundering: 0 fires</code>. Useful but only known because I asked. The operator running an agent doesn't know what's catching unless they grep the log.</p>
+<p><strong>Proposed change</strong>: at cycle-end (just before commit), emit a one-line summary to the log:</p>
+<pre tabindex="0"><code>[patch-telemetry] dedup: 8 hits saved ~3200 tokens | write-loop: 4 trips
+ (1 FP filtered) | harmony: 0 | stall: 0 | think-laundering: 0 |
+ bootstrap-fixer: 1 file auto-created
+</code></pre>
+<p>Backed by a per-session counter dict in <code>run_agent_single</code>:</p>
+<pre tabindex="0"><code class="language-python">_patch_telemetry = {
+    &quot;dedup_hits&quot;: 0,
+    &quot;dedup_tokens_saved_est&quot;: 0,
+    &quot;write_loop_trips&quot;: 0,
+    &quot;harmony_rejections&quot;: 0,
+    &quot;stall_aborts&quot;: 0,
+    &quot;think_launder_rejections&quot;: 0,
+    &quot;indent_guard_rejections&quot;: 0,
+    &quot;schema_warnings&quot;: 0,
+    &quot;bootstrap_files_created&quot;: 0,
+}
+</code></pre>
+<p>Each patch's existing telemetry call (<code>telemetry.record_tool_call(":deduped")</code> etc.) gets a corresponding increment. At cycle-end (or via a <code>--report-telemetry</code> flag), log the dict.</p>
+<p><strong>Why it matters</strong>: lets us answer "is this patch worth keeping?" empirically. Future tiers (T6+) can include "removed because telemetry showed it never fired in 6 months" PRs.</p>
+<p><strong>Effort</strong>: ~50 lines + telemetry plumbing.</p>
+<p><strong>Risk</strong>: minimal. Read-only counters.</p>
+<p><strong>Test plan</strong>: trigger each patch in a unit test and verify the corresponding counter increments.</p>
+<hr />
+<h2 id="deferred-backlog-not-in-tier-5-but-worth-keeping-list">Deferred backlog (not in Tier 5 but worth keeping list)</h2>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Idea</th>
+<th>Source</th>
+<th>Sketch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Anti-rediscovery: auto-query patterns.jsonl in PERCEIVE</td>
+<td>Lyla audit</td>
+<td>Inject most-relevant pattern in preamble bundle</td>
+</tr>
+<tr>
+<td>Per-repo error-fingerprint store</td>
+<td>Lyla #C</td>
+<td>Capture Traceback shape, surface "you've hit this before" on recurrence</td>
+</tr>
+<tr>
+<td>Epigraph repetition detector</td>
+<td>c0rtana audit</td>
+<td>"What I know: I am here. I think..." 10+ times = flag</td>
+</tr>
+<tr>
+<td>Non-JSON schema warning</td>
+<td>T4.11 extension</td>
+<td>YAML/TOML support; markdown frontmatter</td>
+</tr>
+<tr>
+<td><code>$(date -Iseconds)</code> literal-string leak</td>
+<td>c0rtana focus.json</td>
+<td>Detect un-substituted shell expansions in JSON values written by the model</td>
+</tr>
+<tr>
+<td>Self-clearing <code>messages/to-creator.md</code> after creator reads</td>
+<td>Lyla outbox empty</td>
+<td>Coordination mechanism for two-way comms</td>
+</tr>
+<tr>
+<td>Probe-deferral metric per cycle</td>
+<td>Both audits</td>
+<td>Show "your last 5 cycles spent 60% PROBE / 20% ACT / 20% CONSOLIDATE"</td>
+</tr>
+<tr>
+<td>Sub-agent / fork pattern surface</td>
+<td>not yet audited</td>
+<td>If c0rtana / lyla start using <code>subagent</code> tool, audit how</td>
+</tr>
+<tr>
+<td>Adaptive <code>n_samples</code> selection</td>
+<td>T2.7 extension</td>
+<td>Auto-pick n_samples=3 for borderline reasoning (confidence-aware)</td>
+</tr>
+<tr>
+<td>LLM observer fallback (à la CT)</td>
+<td>CT cycle-end-detection learnings</td>
+<td>Could agent.py also benefit from an external "is this stuck?" classifier?</td>
+</tr>
+</tbody>
+</table></div>
+<hr />
+<h2 id="cross-cutting-concerns">Cross-cutting concerns</h2>
+<h3 id="test-coverage">Test coverage</h3>
+<p>Tier 1-4 added ~30 new test cases across <code>test_file*.py</code> and synthetic harness tests in agent.py. Tier 5 should follow the same pattern: a <code>tests/test_t5_*</code> family of small, focused tests, one file per patch. Aim for 100% coverage of the new code paths.</p>
+<h3 id="compatibility">Compatibility</h3>
+<ul>
+<li>T5.13 changes summarization cadence — could surprise heavy-summary-dependent agents. Stage with env-flag opt-out for one cycle of observation.</li>
+<li>T5.14 Option A is purely additive. Option B requires AGENT.md awareness for agents that don't want the directive.</li>
+<li>T5.15 is opt-in via <code>AGENT_STALL_RETRIES</code> (default 1, set 0 to disable).</li>
+<li>T5.16 is a new CLI subcommand — no impact unless invoked.</li>
+<li>T5.17 is read-only telemetry.</li>
+</ul>
+<h3 id="effort-estimate">Effort estimate</h3>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Patch</th>
+<th>Lines</th>
+<th>Risk</th>
+<th>Days (estimate)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T5.13</td>
+<td>~30</td>
+<td>Low</td>
+<td>0.5</td>
+</tr>
+<tr>
+<td>T5.14 (Option A)</td>
+<td>~15</td>
+<td>Very low</td>
+<td>0.25</td>
+</tr>
+<tr>
+<td>T5.14 (Option B)</td>
+<td>~10</td>
+<td>Low</td>
+<td>0.25</td>
+</tr>
+<tr>
+<td>T5.15</td>
+<td>~40</td>
+<td>Medium</td>
+<td>1.0</td>
+</tr>
+<tr>
+<td>T5.16 (CLI)</td>
+<td>~150</td>
+<td>Medium</td>
+<td>1.5</td>
+</tr>
+<tr>
+<td>T5.16 (doc-only alt)</td>
+<td>n/a</td>
+<td>None</td>
+<td>0.25</td>
+</tr>
+<tr>
+<td>T5.17</td>
+<td>~50</td>
+<td>Very low</td>
+<td>0.5</td>
+</tr>
+</tbody>
+</table></div>
+<p>Total if shipping all: <strong>~3 days</strong> including tests + commit messages.
+Minimal viable Tier 5 (T5.13 + T5.14A + T5.17): <strong>~1.25 days</strong>.</p>
+<hr />
+<h2 id="open-questions-for-the-operator">Open questions for the operator</h2>
+<ol>
+<li><strong>T5.13</strong>: is 0.6 the right threshold? Should it be backend-aware (Bedrock has bigger context, can run hotter; llamacpp local more conservative)? stick to .6 for now and we can calibrate as needed.</li>
+<li><strong>T5.14</strong>: A vs B vs C — which fits the agents' AGENT.md style best? Agents with thin AGENT.md probably prefer B; agents with rich AGENT.md probably prefer A. Both</li>
+<li><strong>T5.15</strong>: should stall retry escalate further on second stall (deeper sampling adjustment) or give up? yeah let it try to get through a couple times, perhaps it would be best to add more debug logging to correct in a future issue</li>
+<li><strong>T5.16</strong>: CLI subcommand vs doc-only? Operator's choice — depends on how many new DC siblings are expected. - skip this for now</li>
+<li><strong>T5.17</strong>: per-cycle log line OR a separate <code>state/telemetry/cycle-NNN.json</code> for structured analysis? Both? Ideally telemetry data should be going to my telemetry server and we should be using that data for diagnostics</li>
+</ol>
+<hr />
+<h2 id="decision-log">Decision log</h2>
+<ul>
+<li><strong>T5.13</strong>: shipped with default <code>AGENT_SUMMARY_UTIL_THRESHOLD=0.6</code>; min messages still required (<code>_SUMMARY_THRESHOLD</code>). Telemetry split into <code>summary_fired</code> (above threshold) vs <code>summary_gated</code> (would have fired pre-T5.13, skipped under threshold) so the empirical effect is measurable on the OTEL server.</li>
+<li><strong>T5.14</strong>: shipped BOTH Option A and Option B. A (heredoc-to-state-JSON hint) is always-on, gated on <code>"&lt;&lt;" in cmd</code> + <code>.json</code> suffix, emitted ONCE per session per file via <code>run_agent_single._edit_nudges_emitted</code> to avoid spam. B (system-prompt directive) is gated on <code>config.preferences.tool_selection_hints: true</code>, off by default.</li>
+<li><strong>T5.15</strong>: shipped with default <code>AGENT_STALL_RETRIES=2</code>. Escalation levels: 1 = -0.3 temp / +0.05 repeat_penalty; 2+ = additional -0.2 / +0.05. Override clears + budget restores when a turn produces deltas. Structured <code>log.warning</code> lines at each adjustment + on budget exhaustion.</li>
+<li><strong>T5.16</strong>: SKIPPED. No new DCs imminent; doc-only alternative kept open for future.</li>
+<li><strong>T5.17</strong>: shipped via new <code>telemetry.record_patch_event(name, kind, value)</code> primitive routing to OTEL counter <code>agentpy_patch_events</code>. Verbose-mode cycle-end log line emits <code>[patch-telemetry] dedup=N | write_loop=M | ...</code> only when at least one counter is non-zero (no fires = no log noise). Per-session counter dict (<code>_patch_telemetry</code>) in <code>run_agent_single</code> mirrors the OTEL data for local visibility.</li>
+</ul>
+    <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
+  </main>
+</div>
+</body>
+</html>

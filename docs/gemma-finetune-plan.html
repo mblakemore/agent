@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gemma 4 31B tool-friction reduction — plan — agent</title>
+<meta name="description" content="Earlier draft targeted Gemma 4 E4B because I didn&#x27;t know the live GPU model was Gemma 4 31B. Two big consequences:">
+<link rel="canonical" href="https://mblakemore.github.io/agent/gemma-finetune-plan.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Gemma 4 31B tool-friction reduction — plan">
+<meta property="og:description" content="Earlier draft targeted Gemma 4 E4B because I didn&#x27;t know the live GPU model was Gemma 4 31B. Two big consequences:">
+<meta property="og:url" content="https://mblakemore.github.io/agent/gemma-finetune-plan.html">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/agent-docs.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"Gemma 4 31B tool-friction reduction — plan","url":"https://mblakemore.github.io/agent/gemma-finetune-plan.html","description":"Earlier draft targeted Gemma 4 E4B because I didn&#x27;t know the live GPU model was Gemma 4 31B. Two big consequences:"}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><div class="in">
+  <span class="brand"><a href="index.html">agent</a></span>
+  <span class="tag">documentation</span>
+  <nav aria-label="primary">
+    <a href="index.html">Overview</a>
+    <a href="https://github.com/mblakemore/agent">Source</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="agent-eval-discipline-round.html">agent-eval — Discipline Round (next-round spec)</a></li><li><a href="bedrock.html">Bedrock backend</a></li><li><a href="gemma-finetune-plan.html" aria-current="page">Gemma 4 31B tool-friction reduction — plan</a></li><li><a href="local-model.html">Local model — Gemma 4 31B</a></li><li><a href="tier-5-enhancements.html">agent.py Tier 5 enhancements — design doc</a></li></ul></aside>
+  <main id="main">
+    <p class="eyebrow">Gemma 4 31B tool-friction reduction — plan</p>
+    <p class="status">Phase 1 complete — 121-example dataset assembled, ready for Phase 2 training</p>
+<h1>Gemma 4 31B tool-friction reduction — plan</h1>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/gemma-finetune-plan.md"><code>docs/gemma-finetune-plan.md</code></a> · last changed 2026-05-15 (2dc3418)</p>
+<p><strong>Status</strong>: Phase 1 complete — 121-example dataset assembled, ready for Phase 2 training
+<strong>Target model</strong>: <code>unsloth/gemma-4-31B-it</code> (the live GPU model at port 8080)
+<strong>Goal</strong>: reduce tool friction across the patterns the agent.py framework already detects — <code>action='edit'</code> underuse, Harmony-token leakage, schema drops, shell-meta in writes, etc. — by training a LoRA on the same model that's emitting the friction.
+<strong>Method</strong>: SFT LoRA (Approach A). GRPO (Approach B) deferred until Phase 3 telemetry; only invoked if SFT plateaus below target.
+<strong>Dataset sources</strong>: c0rtana, lyla, agent.py CICD builder, agent.py CICD reviewer. Combined into a single LoRA. <strong>Not ebay-bot</strong> — ebay-bot runs on Claude Code, not agent.py, and its tool grammar is different.
+<strong>Budget</strong>: Colab Pro $10/mo, escalating to Pro+ $50/mo only if A100 unavailability blocks Phase 2.</p>
+<hr />
+<h2 id="what-changed-since-the-previous-draft">What changed since the previous draft</h2>
+<p>Earlier draft targeted Gemma 4 E4B because I didn't know the live GPU model was Gemma 4 31B. Two big consequences:</p>
+<ol>
+<li><strong>The training dataset is the GPU model's own logs.</strong> Every friction event in c0rtana/lyla/CICD-agents session logs was emitted by the same weights we'd be fine-tuning. Mined examples carry the exact failure modes we want to suppress, in the exact prompt format they appeared in. Highest possible signal-to-noise.</li>
+<li><strong>The mid-step CPU summarizer (E4B) is unrelated and stays unchanged.</strong> Per the prior architecture discussion, tool calling is the work — we don't want to shift it to a smaller model. Train where the intelligence already lives.</li>
+</ol>
+<hr />
+<h2 id="friction-inventory-the-menu-of-things-to-fix">Friction inventory (the menu of things to fix)</h2>
+<p>These are the patterns the framework currently <em>detects</em> but the model still <em>emits</em>. <strong>Audited 2026-05-15</strong> by running <code>tools/mine_friction.py</code> across 224 log files from lyla, c0rtana, and CICD agents, yielding 732 raw friction events.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Pattern</th>
+<th>Detector</th>
+<th>Mined count</th>
+<th>Severity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>T5.18</td>
+<td><code>file(action='write')</code> on existing file with high line similarity</td>
+<td>T5.18 <code>edit_nudge{kind=similar_rewrite}</code></td>
+<td><strong>19 events</strong></td>
+<td>High — root cause of LYLA-C26-class schema drops</td>
+</tr>
+<tr>
+<td>H.01</td>
+<td><code>exec_command</code> heredoc write (<code>cat &lt;&lt;EOF &gt; file</code>) instead of <code>file()</code> tool</td>
+<td>T5.14 <code>edit_nudge{kind=fired}</code></td>
+<td><strong>35 events</strong></td>
+<td>Medium — bypasses all file guards, fragile</td>
+</tr>
+<tr>
+<td>D.01</td>
+<td>Same file read 2+ times within 10-turn window (redundant read)</td>
+<td>T1.2 dedup</td>
+<td><strong>18 events</strong></td>
+<td>Low-medium — burns context tokens, wastes turns</td>
+</tr>
+<tr>
+<td>T4.11</td>
+<td><code>file(action='write')</code> on JSON file drops top-level keys</td>
+<td>T4.11 schema warning</td>
+<td><strong>2 events</strong></td>
+<td>High when it fires — C26 regression was 13 wasted cycles</td>
+</tr>
+<tr>
+<td>J.01</td>
+<td><code>file(action='write')</code> on <code>.jsonl</code> append-only file (should be append)</td>
+<td>(new — detected in mining)</td>
+<td><strong>2 events</strong></td>
+<td>Medium — can silently destroy log history</td>
+</tr>
+<tr>
+<td>T1.1</td>
+<td>Harmony control tokens in tool args</td>
+<td>T1.1 <code>harmony_reject</code></td>
+<td>~1/session</td>
+<td>High when it happens — state poison</td>
+</tr>
+<tr>
+<td>T4.10</td>
+<td>Slice-write indent mismatch on <code>.py</code></td>
+<td>T4.10 indent guard</td>
+<td>0 post-patch</td>
+<td>Medium — patch already saves us</td>
+</tr>
+<tr>
+<td>D.02</td>
+<td>Bootstrap-template miss (model recreates files that exist)</td>
+<td>T2.X bootstrap check</td>
+<td>10+ cycles</td>
+<td>Medium — wastes cycle</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Top priority by mined volume + severity</strong>:
+1. H.01 (35 events) — heredoc writes; training directly suppresses this
+2. T5.18 (19 events) — write vs edit; primary target from inception
+3. D.01 (18 events) — redundant reads; cheapest to train away
+4. T4.11 + J.01 (sparse but severe) — schema loss and append-vs-write</p>
+<p>Note: H.01 being the most common surprised us — CICD builder logs use heredoc heavily. Training to prefer <code>file()</code> directly fixes this more robustly than the current command-sanitizer patch.</p>
+<hr />
+<h2 id="three-approaches">Three approaches</h2>
+<h3 id="approach-a-sft-lora-supervised-fine-tuning">Approach A: SFT LoRA (supervised fine-tuning)</h3>
+<p><strong>Mechanism</strong>: synthesize ideal (prompt → assistant turn) pairs from session logs. Train standard SFT with <code>train_on_responses_only</code>. Loss only on the assistant turn.</p>
+<p><strong>Dataset construction</strong>: for every detected friction event in the logs, generate the corrected counterfactual:</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Friction observed</th>
+<th>Counterfactual target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>file(action='write')</code> rewriting existing file with high similarity</td>
+<td><code>file(action='edit', old_string=&lt;diff_old&gt;, new_string=&lt;diff_new&gt;)</code> derived from the actual diff</td>
+</tr>
+<tr>
+<td><code>cat &gt; f.json &lt;&lt;EOF</code> heredoc to existing file</td>
+<td><code>file(action='edit', ...)</code> for the changed lines</td>
+</tr>
+<tr>
+<td>JSON write dropping top-level key K</td>
+<td>Same write but with K preserved (or <code>action='edit'</code> of only the changed field)</td>
+</tr>
+<tr>
+<td>Repeat write loop on file F</td>
+<td>Single consolidated edit</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Pros</strong>:
+- Predictable training dynamics
+- Unsloth quickstart works directly (clone the 31B Kaggle notebook)
+- Loss curve is interpretable
+- No reward shaping debugging</p>
+<p><strong>Cons</strong>:
+- Diff-to-edit-pair synthesis is fragile for multi-region changes (mitigate: filter dataset to ≤ 5 contiguous regions, each ≤ 10 lines)
+- Need to manually generate counterfactuals for each friction type
+- Trains the model to produce <em>one specific</em> good output per prompt, not to <em>prefer</em> good outputs over bad</p>
+<p><strong>Cost</strong>: ~3-5 hours on A100 for 31B QLoRA, ~$5-15 Colab Pro</p>
+<h3 id="approach-b-grpo-rl-lora-reinforcement-training">Approach B: GRPO RL LoRA (reinforcement training)</h3>
+<p><strong>Mechanism</strong>: define a reward function that mirrors the framework's existing detectors. Run GRPO (per Unsloth's E2B Sudoku notebook pattern, scaled to 31B). No labeled examples needed — the reward signals what to do.</p>
+<p><strong>Reward function</strong> — composed of existing detectors with signed weights:</p>
+<pre tabindex="0"><code class="language-python">def tool_call_reward(tool_call, file_state_before, file_state_after, tool_result):
+    r = 0.0
+    # Hard rejections (large negative)
+    if has_harmony_token(tool_call):                r -= 5.0  # T1.1
+    if tool_result.startswith(&quot;Error&quot;):             r -= 2.0  # tool dispatch failure
+    if not valid_json_schema(tool_call):            r -= 3.0  # tool grammar
+    # Soft penalties (T5.18 detection logic, computed post-write)
+    if action_write_high_similarity(tool_call,
+                                     file_state_before,
+                                     file_state_after):
+                                                     r -= 1.0
+    if schema_drop_detected(tool_call,
+                            file_state_before,
+                            file_state_after):
+                                                     r -= 1.5  # T4.11
+    if write_loop_repeat(tool_call.path):           r -= 0.5
+    # Positive signals
+    if tool_call.action == &quot;edit&quot; and validates():  r += 1.0  # the target behavior
+    if tool_result_is_success(tool_result):         r += 0.3
+    if tool_call.action == &quot;write&quot; and file_did_not_exist(tool_call.path):
+        r += 0.5  # legitimate new-file write — preserve this
+    return r
+</code></pre>
+<p><strong>Pros</strong>:
+- The framework already computes every term in this function — minimal new code
+- No counterfactual synthesis — the model explores, the detector scores
+- Trains the model to <em>prefer</em> good over bad across the distribution of inputs (rather than imitate one specific good output)
+- Can run online: collect rollouts from live cycles, score with the detector, replay through GRPO trainer. No separate dataset assembly.</p>
+<p><strong>Cons</strong>:
+- Slower than SFT — RL needs many rollouts to converge
+- Reward shaping is fragile; one wrong weight and behavior drifts in an unintended direction
+- 31B GRPO is non-trivial; Unsloth's GRPO support is best-documented at E2B/4B. Per Unsloth: GRPO works for 31B with <code>fast_inference=False</code>. Will be slow.
+- Harder to debug: no clear "loss should go down" signal — reward curve can plateau for many reasons</p>
+<p><strong>Cost</strong>: ~10-20 hours on A100 for meaningful convergence, ~$25-60 Colab Pro</p>
+<h3 id="approach-c-sft-grpo-hybrid">Approach C: SFT → GRPO hybrid</h3>
+<p><strong>Mechanism</strong>: cold-start with SFT on a smaller dataset (~500 examples) to seed the right tool-grammar prior. Then GRPO on top to refine across the full friction distribution.</p>
+<p><strong>Pros</strong>:
+- SFT gets the model into the right neighborhood quickly
+- GRPO does the polishing where SFT runs out of explicit labels
+- Standard pattern in RLHF literature; well-understood failure modes</p>
+<p><strong>Cons</strong>:
+- Twice the engineering surface
+- Diminishing returns if SFT alone gets us to acceptable behavior</p>
+<p><strong>Cost</strong>: ~5-8 hours total, ~$15-30</p>
+<h3 id="recommendation">Recommendation</h3>
+<p><strong>Start with Approach A (SFT LoRA)</strong>. The friction we want to fix has clear counterfactuals (we know what the model <em>should</em> have emitted in every detected case). SFT is the lowest-risk path to a deployable LoRA in one Colab session. Hold Approach B in reserve for a Phase 3 refinement if SFT plateaus below target adoption.</p>
+<p>If SFT hits 75%+ adoption on offline eval, ship it and don't bother with RL — it's a clear capability gain, more isn't free.</p>
+<hr />
+<h2 id="model-recipe">Model + recipe</h2>
+<p><strong>Model</strong>: <code>unsloth/gemma-4-31B-it</code> (same family as the production <code>unsloth/gemma-4-31B-it-GGUF:UD-Q4_K_XL</code> you serve via llama-server). Per Unsloth docs: 31B QLoRA needs 22GB VRAM → A100 territory, not free T4.</p>
+<p><strong>Starting recipe</strong>: the official <a href="https://www.kaggle.com/code/danielhanchen/gemma4-31b-unsloth">Kaggle 31B notebook</a> is the canonical reference. Adapt for Colab Pro A100 or use Kaggle's free T4×2 if that recipe is sharded (verify).</p>
+<p><strong>Chat template</strong>: <code>gemma-4-thinking</code>. Per Unsloth tip: <em>"Use the thinking one for the larger 26B and 31B ones"</em>. Live llama-server is invoked with <code>--reasoning off</code> so we'll train and infer with thinking disabled via <code>enable_thinking=False</code>. Same flag both sides — chat template still applies.</p>
+<p><strong>Sampling at inference</strong>: temp=1.0, top_p=0.95, top_k=64 — same as your live llama-server config. Already aligned.</p>
+<p><strong>Bug-fix flags</strong> (universal Gemma 4 bugs Unsloth has patched in their pip package):
+- Gradient accumulation loss inflation — fixed; verify loss stays 1-3 for text
+- <code>use_cache=False</code> corrupting attention on KV-shared layers — N/A for 31B (<code>num_kv_shared_layers=0</code>)
+- IndexError on 31B / 26B-A4B during inference — Unsloth has the fix; pin a recent version
+- Audio fp16 overflow — N/A</p>
+<hr />
+<h2 id="dataset-approach-a">Dataset (Approach A)</h2>
+<h3 id="source">Source</h3>
+<p>Session logs from the four agent.py agents:
+- <code>/droid/repos/c0rtana/.agent/history/session_*.log</code> (~130 cycles)
+- <code>/droid/repos/lyla/.agent/history/session_*.log</code> (~57 cycles)
+- <code>/droid/repos/agent/.agent/history/session_*.log</code> for the CICD builder runs
+- CICD reviewer logs (same location or under <code>/droid/repos/agent/logs/cicd-*.log</code>; mining script needs to handle both)</p>
+<p>Combined: 200+ cycles, thousands of tool calls. <strong>Excluded</strong>: ebay-bot (Claude Code agent — different tool grammar, would poison the dataset).</p>
+<h3 id="mining-script">Mining script</h3>
+<p><code>tools/mine_friction.py</code> — completed 2026-05-15. Handles two log formats:
+- Baseline/lyla/c0rtana: <code>HH:MM:SS DEBUG TOOL CALL: func({...}) [id=...]</code>
+- CICD builder: <code>-&gt; func(args...)</code> / <code>Result: ...</code></p>
+<p>Detects all five friction categories (T5.18, T4.11, H.01, D.01, J.01), deduplicates by (category, file_path, ideal_call), and emits Unsloth ShareGPT format.</p>
+<pre tabindex="0"><code class="language-bash">python3 tools/mine_friction.py \
+  --logs /droid/repos/lyla/.agent/history \
+         /droid/repos/c0rtana/.agent/history \
+         /droid/repos/agent/logs \
+  --out /droid/repos/beewatcher/agent-friction-v1/phase1_examples_raw.jsonl \
+  --limit 200
+</code></pre>
+<p>Across 224 log files: 732 raw events → 76 deduplicated real examples.</p>
+<h3 id="current-dataset-phase1_examplesjsonl-121-examples">Current dataset (<code>phase1_examples.jsonl</code>) — 121 examples</h3>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Count</th>
+<th>Categories</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Phase 0 hand-crafted</td>
+<td>30</td>
+<td>edit-adoption, schema-preservation, Harmony-clean, new-file-write, cycle-trace</td>
+</tr>
+<tr>
+<td>Phase 1 mined (lyla + c0rtana + CICD)</td>
+<td>76</td>
+<td>T5.18×19, H.01×35, D.01×18, T4.11×2, J.01×2</td>
+</tr>
+<tr>
+<td>Synthetic supplement</td>
+<td>15</td>
+<td>T4.11×6, J.01×4, T5.18-concrete×5</td>
+</tr>
+<tr>
+<td><strong>Total</strong></td>
+<td><strong>121</strong></td>
+<td></td>
+</tr>
+</tbody>
+</table></div>
+<p>File: <code>/droid/repos/beewatcher/agent-friction-v1/phase1_examples.jsonl</code></p>
+<h3 id="scale-calibration-empirical-vs-literature">Scale calibration — empirical vs. literature</h3>
+<p>Phase 0 empirical finding (2026-05-14): <strong>30 examples × 60 steps → real generalizing behavior change</strong> on 31B, not memorization. Phase 1 (121 examples) should produce strong results. Literature-scale estimates (2500 examples) dramatically overshoot for narrow tool-grammar targets.</p>
+<p><strong>Revised size targets</strong> (down from original estimates):
+- <strong>Phase 1 (current)</strong>: 121 examples. Expected: strong edit-adoption and schema behavior. Train 1 epoch, r=32.
+- <strong>Phase 2 (if needed)</strong>: 300-500 examples after mining more cycles. Only if Phase 1 offline eval misses thresholds.
+- <strong>Phase 3 (GRPO, optional)</strong>: per Phase 4 plan — only if SFT plateaus below 75% adoption.</p>
+<h3 id="format">Format</h3>
+<p>Gemma 4 ShareGPT style — <code>{"conversations": [{"role": "system", ...}, {"role": "user", ...}, {"role": "assistant", ...}]}</code>. Use <code>train_on_responses_only(instruction_part="&lt;|turn&gt;user\n", response_part="&lt;|turn&gt;model\n")</code> so loss is on assistant turns only.</p>
+<hr />
+<h2 id="training-config-approach-a">Training config (Approach A)</h2>
+<p>Deviations from Unsloth 31B defaults:</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Knob</th>
+<th>Unsloth default</th>
+<th>Our value</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>r</code></td>
+<td>8</td>
+<td><strong>32</strong></td>
+<td>31B has more capacity to override; rank-8 LoRA may be too thin for cross-friction generalization</td>
+</tr>
+<tr>
+<td><code>lora_alpha</code></td>
+<td>8</td>
+<td><strong>32</strong></td>
+<td>Match r</td>
+</tr>
+<tr>
+<td><code>lora_dropout</code></td>
+<td>0</td>
+<td>0.05</td>
+<td>Modest regularization at this rank</td>
+</tr>
+<tr>
+<td><code>learning_rate</code></td>
+<td>2e-4</td>
+<td><strong>1e-4</strong></td>
+<td>Conservative — tool-grammar errors are hard to recover from</td>
+</tr>
+<tr>
+<td><code>num_train_epochs</code></td>
+<td>— (60 max_steps)</td>
+<td><strong>2</strong></td>
+<td>Real training run, not quickstart</td>
+</tr>
+<tr>
+<td><code>per_device_train_batch_size</code></td>
+<td>1</td>
+<td>1</td>
+<td>A100 fit</td>
+</tr>
+<tr>
+<td><code>gradient_accumulation_steps</code></td>
+<td>4</td>
+<td>8</td>
+<td>Effective batch size 8 — Unsloth's gradient-accumulation fix is on</td>
+</tr>
+<tr>
+<td><code>max_seq_length</code></td>
+<td>8192</td>
+<td><strong>4096</strong></td>
+<td>Cycle traces fit; halves activation memory</td>
+</tr>
+<tr>
+<td><code>optim</code></td>
+<td>adamw_8bit</td>
+<td>adamw_8bit</td>
+<td>Standard</td>
+</tr>
+<tr>
+<td><code>weight_decay</code></td>
+<td>0.001</td>
+<td>0.001</td>
+<td>Standard</td>
+</tr>
+<tr>
+<td><code>lr_scheduler_type</code></td>
+<td>linear</td>
+<td><strong>cosine</strong></td>
+<td>Smoother for multi-epoch</td>
+</tr>
+<tr>
+<td><code>warmup_ratio</code></td>
+<td>(steps=5)</td>
+<td>0.05</td>
+<td>Slightly higher for larger model</td>
+</tr>
+<tr>
+<td><code>finetune_vision_layers</code></td>
+<td>False</td>
+<td>False</td>
+<td>Text-only</td>
+</tr>
+<tr>
+<td><code>finetune_language_layers</code></td>
+<td>True</td>
+<td>True</td>
+<td>Standard</td>
+</tr>
+<tr>
+<td><code>finetune_attention_modules</code></td>
+<td>True</td>
+<td>True</td>
+<td>Tool selection lives here</td>
+</tr>
+<tr>
+<td><code>finetune_mlp_modules</code></td>
+<td>True</td>
+<td>True</td>
+<td>Standard</td>
+</tr>
+<tr>
+<td><code>load_in_4bit</code></td>
+<td>True (QLoRA)</td>
+<td>True</td>
+<td>22GB VRAM target</td>
+</tr>
+<tr>
+<td><code>full_finetuning</code></td>
+<td>False</td>
+<td>False</td>
+<td>LoRA only</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Loss expectation per Unsloth</strong>: 31B should sit at 1-3 for text. If we see 13-15, something's wrong (likely a chat-template mismatch).</p>
+<hr />
+<h2 id="evaluation">Evaluation</h2>
+<h3 id="pre-train-baseline">Pre-train baseline</h3>
+<p>Run base <code>unsloth/gemma-4-31B-it</code> (untuned) on a 50-example held-out set drawn from real cycle scenarios. Measure:</p>
+<ol>
+<li><strong>Edit adoption rate</strong> — fraction of "modify existing file" scenarios where the model emits <code>action='edit'</code>. Expected baseline: ~0% (matches production observation).</li>
+<li><strong>Tool-call validity rate</strong> — fraction of emitted calls that parse and pass schema validation. Expected baseline: ~95% (current production rate).</li>
+<li><strong>Schema-preservation rate</strong> — fraction of state-file rewrites that preserve all top-level keys. Expected baseline: ~85% (T4.11 fires occasionally).</li>
+<li><strong>Harmony-token clean rate</strong> — fraction of tool calls free of <code>&lt;|...|&gt;</code> artifacts. Expected baseline: ~99% (rare but happens).</li>
+<li><strong>Cognitive-loop adherence</strong> — does the model produce a recognizable 6-phase structure when given the framework prompt. Expected baseline: high (it's what it does in production today).</li>
+</ol>
+<h3 id="post-train-pass-thresholds">Post-train pass thresholds</h3>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>Baseline</th>
+<th>Phase 2 target</th>
+<th>Phase 3 target</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Edit adoption</td>
+<td>~0%</td>
+<td>≥ 35%</td>
+<td>≥ 75%</td>
+</tr>
+<tr>
+<td>Tool-call validity</td>
+<td>~95%</td>
+<td>≥ 95%</td>
+<td>≥ 98%</td>
+</tr>
+<tr>
+<td>Schema preservation</td>
+<td>~85%</td>
+<td>≥ 95%</td>
+<td>≥ 99%</td>
+</tr>
+<tr>
+<td>Harmony clean</td>
+<td>~99%</td>
+<td>≥ 99.5%</td>
+<td>≥ 99.9%</td>
+</tr>
+<tr>
+<td>Cognitive-loop adherence</td>
+<td>~95%</td>
+<td>≥ 90%</td>
+<td>≥ 95%</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Failure mode</strong>: cognitive-loop adherence dropping below 90% means we've overfitted to tool-call specifics at the cost of general agent capability. Mitigate by raising the "other tool calls" + "whole-cycle traces" share in the mix.</p>
+<h3 id="live-ab-only-after-offline-eval-passes">Live A/B (only after offline eval passes)</h3>
+<p>Stand up the fine-tuned 31B in a second llama-server instance on port 8083. Add an <code>AGENT_LLM_BACKEND=gemma-31b-tuned</code> env var that routes to it. Run c0rtana with tuned, lyla with default, for 24h. Compare:</p>
+<ul>
+<li><code>agentpy_patch_events{name=edit_nudge, kind=similar_rewrite}</code> count — expect drop on tuned</li>
+<li><code>agentpy_patch_events{name=edit_nudge, kind=fired}</code> (heredoc) count — expect drop</li>
+<li>T4.11 schema-warning count — expect drop</li>
+<li>Cycle completion rate — should hold steady (no regression)</li>
+<li>Sentiment of <code>messages/to-creator.md</code> — qualitative check that the agent isn't confused</li>
+</ul>
+<p>T5.18 telemetry IS the eval. We get the comparison for free.</p>
+<hr />
+<h2 id="integration">Integration</h2>
+<h3 id="export">Export</h3>
+<pre tabindex="0"><code class="language-python">model.save_pretrained_gguf(
+    &quot;outputs/gemma-4-31B-it-agent-tools&quot;,
+    tokenizer,
+    quantization_method = &quot;q4_k_m&quot;,  # Match current UD-Q4_K_XL ballpark
+)
+</code></pre>
+<p><strong>Gotcha from Unsloth docs</strong>: <em>"wrong chat template / EOS token at inference time"</em> is the top GGUF deployment failure mode. Train and serve with the same <code>gemma-4-thinking</code> template + <code>--reasoning off</code> flag.</p>
+<h3 id="serving">Serving</h3>
+<p>Spin up alongside the existing llama-server:</p>
+<pre tabindex="0"><code class="language-bash">/droid/repos/llama.cpp/build/bin/llama-server \
+    -m /path/to/gemma-4-31B-it-agent-tools.gguf \
+    --port 8083 \
+    --parallel 1 --cache-reuse 256 --reasoning off --flash-attn on \
+    --cache-type-k q4_0 --cache-type-v q4_0 \
+    --temp 1.0 --top-p 0.95 --top-k 64 --host 0.0.0.0
+</code></pre>
+<h3 id="agentpy-wiring">agent.py wiring</h3>
+<p>Add a backend entry to <code>_DEFAULT_CONFIG["llm"]["backends"]</code>:</p>
+<pre tabindex="0"><code class="language-python">&quot;gemma-31b-tuned&quot;: {
+    &quot;base_url&quot;: &quot;http://localhost:8083/v1&quot;,
+    &quot;model&quot;: &quot;gemma-4-31B-it-agent-tools&quot;,
+    &quot;api_key&quot;: &quot;not-used&quot;,
+},
+</code></pre>
+<p>Switch via <code>AGENT_LLM_BACKEND=gemma-31b-tuned</code>. Default unchanged. Rollback is <code>unset</code>.</p>
+<hr />
+<h2 id="risks">Risks</h2>
+<h3 id="high">High</h3>
+<ol>
+<li><strong>Diff → edit synthesis fragility.</strong> Multi-region changes don't always cleanly express as a small set of <code>action='edit'</code> calls. Mitigation: filter aggressively (≤5 regions, ≤10 lines each). Accept lower yield in exchange for cleaner labels.</li>
+<li><strong>Capability collapse on non-edit tasks.</strong> Heavy training on one pattern can degrade general agent fluency. Mitigation: 50/20/25/5 mix + offline eval includes cognitive-loop adherence metric.</li>
+<li><strong>GGUF inference drift from training behavior.</strong> Q4_K_M quant loss could mask the LoRA gains. Mitigation: Phase 1 includes a "GGUF round-trip" check — run 5 prompts through both BF16 LoRA and Q4_K_M GGUF, verify tool-call patterns match.</li>
+</ol>
+<h3 id="medium">Medium</h3>
+<ol start="4">
+<li><strong>Synthesized counterfactuals encode my assumptions, not the model's training prior.</strong> If my edit-synthesis script produces <code>old_string</code> choices the model never would have, the LoRA learns a distribution shift the base model can't ride. Mitigation: spot-check 20 random synthesized examples by hand before bulk training.</li>
+<li><strong>A100 availability on Colab Pro.</strong> Pro tier doesn't guarantee A100 access. Mitigation: budget for Pro+ ($50/mo) as fallback; or use Kaggle's free T4×2 with the official 31B notebook (slower but free).</li>
+<li><strong>Training-time chat template mismatch.</strong> <code>gemma-4-thinking</code> vs <code>gemma-4</code> confusion is real — Unsloth tip says use thinking for 31B. Verify with <code>tokenizer.apply_chat_template</code> round-trip on a sample before training.</li>
+</ol>
+<h3 id="low">Low</h3>
+<ol start="7">
+<li><strong>Tokenizer differences</strong> between Q4_K_XL (current production GGUF) and the BF16 base model — possible but unlikely. Spot-check.</li>
+<li><strong>Colab session timeout</strong> — Pro is 24h. Phase 3 (2500 examples, 2 epochs, 31B QLoRA) estimated ~6-8 hours. Should fit comfortably.</li>
+</ol>
+<hr />
+<h2 id="phased-plan">Phased plan</h2>
+<h3 id="phase-0-pipeline-validation-complete-2026-05-14">✅ Phase 0 — pipeline validation (complete 2026-05-14)</h3>
+<ul>
+<li>Adapted Unsloth 31B Kaggle notebook for Colab A100</li>
+<li>30 hand-crafted examples × 60 steps, QLoRA r=16</li>
+<li><strong>Result</strong>: 4/4 held-out probes passed including Python generalization, new-file discrimination, single-field surgical edit</li>
+<li>Empirical finding: 30 examples was enough for real generalizing behavior change — not memorization</li>
+<li>Model: <code>mblakemore/gemma-4-31B-agent-friction-phase0</code> on HuggingFace</li>
+<li>Served as Q4_K_M on port 8083; curl confirmed <code>action='edit'</code> through full production stack</li>
+</ul>
+<h3 id="phase-1-mining-script-dataset-assembly-complete-2026-05-15">✅ Phase 1 — mining script + dataset assembly (complete 2026-05-15)</h3>
+<ul>
+<li>Wrote <code>tools/mine_friction.py</code> — handles both log formats, detects 5 friction categories</li>
+<li>Friction audit: 224 log files, 732 raw events; top find: H.01 (heredoc writes) is the most common pattern at 35 events</li>
+<li>Assembled 121-example dataset covering 7 friction categories including 3 newly characterized (H.01, D.01, J.01)</li>
+<li>Synthetic supplement added for sparse T4.11 and J.01 categories</li>
+<li>Dataset at <code>/droid/repos/beewatcher/agent-friction-v1/phase1_examples.jsonl</code></li>
+</ul>
+<h3 id="phase-2-production-training-next-colab-session-3-4h">🔜 Phase 2 — production training (next Colab session, ~3-4h)</h3>
+<p>Train on <code>phase1_examples.jsonl</code> with production knobs:
+- r=32, lora_alpha=32, lora_dropout=0 (fast Unsloth kernel path)
+- 1 epoch, lr=1e-4, cosine LR scheduler
+- Load <code>phase1_examples.jsonl</code> (121 examples — enough per Phase 0 empirical finding)
+- Run offline eval on 20 held-out scenarios (one per friction category × multiple rephrasings)
+- Pass threshold: edit adoption ≥35% AND schema preservation ≥95% AND no regression on cycle-trace adherence</p>
+<h3 id="phase-3-live-ab-24-48h-wall-clock">Phase 3 — live A/B (24-48h wall clock)</h3>
+<ul>
+<li>Stand up port-8083 llama-server with Phase 2 GGUF</li>
+<li>Wire <code>AGENT_LLM_BACKEND</code> env var</li>
+<li>Run c0rtana on tuned, lyla on default for 24h</li>
+<li>Compare: <code>edit_nudge</code>, <code>schema_warning</code>, <code>harmony_reject</code> telemetry counts</li>
+<li>T5.18 and T4.11 telemetry IS the eval metric — comparison is free</li>
+</ul>
+<h3 id="phase-4-optional-grpo-refinement">Phase 4 (optional) — GRPO refinement</h3>
+<p>Only if Phase 3 shows clear lift but plateau below 75% adoption. Use the framework's detectors as reward function (Approach B above). ~$25-60 additional Colab spend.</p>
+<hr />
+<h2 id="cost-summary">Cost summary</h2>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Time on A100</th>
+<th>Colab cost</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0 — pipeline check</td>
+<td>~2h</td>
+<td>$0 (included in Pro)</td>
+<td>✅ done</td>
+</tr>
+<tr>
+<td>1 — dataset assembly</td>
+<td>~1h local</td>
+<td>$0</td>
+<td>✅ done</td>
+</tr>
+<tr>
+<td>2 — production training</td>
+<td>~3-4h</td>
+<td>included in $10/mo Pro</td>
+<td>🔜 next</td>
+</tr>
+<tr>
+<td>3 — A/B</td>
+<td>0 (local serving)</td>
+<td>$0</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4 — GRPO (optional)</td>
+<td>~15h</td>
+<td>$25-50 additional</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Total realistic spend</strong>: $10-60 across all phases, depending on Phase 4 inclusion.</p>
+<p><strong>Alternative</strong>: Kaggle free tier (T4×2, 30hrs/week). Slower but $0. Reasonable for Phases 0-2 if patient.</p>
+<hr />
+<h2 id="decision-gate-resolved-2026-05-14">Decision gate — resolved 2026-05-14</h2>
+<ul>
+<li>[x] <strong>Base model</strong>: <code>unsloth/gemma-4-31B-it</code> (matches live <code>UD-Q4_K_XL</code> GGUF base on port 8080)</li>
+<li>[x] <strong>Approach</strong>: SFT LoRA first (Approach A). GRPO held in reserve as Phase 4.</li>
+<li>[x] <strong>Dataset mix</strong>: 50% corrected <code>action='edit'</code> / 20% legitimate new-file write / 25% other tool calls / 5% whole-cycle traces.</li>
+<li>[x] <strong>Construction</strong>: mining script <code>tools/mine_friction.py</code> with counterfactual synthesis from session-log diffs. Spot-check 20 random samples by hand before bulk training.</li>
+<li>[x] <strong>Dataset scope</strong>: combined LoRA across c0rtana + lyla + agent.py CICD builder + agent.py CICD reviewer. <strong>Ebay-bot excluded</strong> (Claude Code agent, different tool grammar).</li>
+<li>[x] <strong>Budget</strong>: Colab Pro $10/mo, escalate to Pro+ $50/mo only if A100 availability blocks Phase 2.</li>
+<li>[x] <strong>Phase 4 GRPO</strong>: deferred. Decide after Phase 3 live A/B telemetry. Skip entirely if SFT hits ≥75% adoption.</li>
+</ul>
+<p><strong>Next action</strong>: Phase 2 — production training. Load <code>phase1_examples.jsonl</code> (121 examples) into the adapted Unsloth notebook with production knobs (r=32, 1 epoch, lr=1e-4, cosine LR, lora_dropout=0). Train ~3-4h on A100. Run offline eval. Export Q4_K_M GGUF and serve on port 8083 for A/B.</p>
+    <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
+  </main>
+</div>
+</body>
+</html>

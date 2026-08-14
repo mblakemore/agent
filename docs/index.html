@@ -1,0 +1,732 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent — agent</title>
+<meta name="description" content="A local, tool-driven coding assistant that talks to an OpenAI-compatible LLM endpoint (e.g. llama-server from llama.cpp) and runs an autonomous file/shell tool loop. Built to survive long sessions: checkpoints every turn, summarizes older history in the background, recovers from malformed tool calls">
+<link rel="canonical" href="https://mblakemore.github.io/agent/">
+<meta property="og:type" content="article">
+<meta property="og:title" content="agent">
+<meta property="og:description" content="A local, tool-driven coding assistant that talks to an OpenAI-compatible LLM endpoint (e.g. llama-server from llama.cpp) and runs an autonomous file/shell tool loop. Built to survive long sessions: checkpoints every turn, summarizes older history in the background, recovers from malformed tool calls">
+<meta property="og:url" content="https://mblakemore.github.io/agent/">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/agent-docs.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"agent","url":"https://mblakemore.github.io/agent/","description":"A local, tool-driven coding assistant that talks to an OpenAI-compatible LLM endpoint (e.g. llama-server from llama.cpp) and runs an autonomous file/shell tool loop. Built to survive long sessions: checkpoints every turn, summarizes older history in the background, recovers from malformed tool calls"}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><div class="in">
+  <span class="brand"><a href="index.html">agent</a></span>
+  <span class="tag">documentation</span>
+  <nav aria-label="primary">
+    <a href="index.html">Overview</a>
+    <a href="https://github.com/mblakemore/agent">Source</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html" aria-current="page">agent</a></li><li><a href="agent-eval-discipline-round.html">agent-eval — Discipline Round (next-round spec)</a></li><li><a href="bedrock.html">Bedrock backend</a></li><li><a href="gemma-finetune-plan.html">Gemma 4 31B tool-friction reduction — plan</a></li><li><a href="local-model.html">Local model — Gemma 4 31B</a></li><li><a href="tier-5-enhancements.html">agent.py Tier 5 enhancements — design doc</a></li></ul></aside>
+  <main id="main">
+    <p class="eyebrow">agent</p>
+<h1>agent</h1>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/README.md"><code>README.md</code></a> · last changed 2026-07-17 (02622d9)</p>
+<p>A local, tool-driven coding assistant that talks to an OpenAI-compatible LLM endpoint (e.g. <code>llama-server</code> from <code>llama.cpp</code>) and runs an autonomous file/shell tool loop. Built to survive long sessions: checkpoints every turn, summarizes older history in the background, recovers from malformed tool calls, and catches common hallucinations before they poison context.</p>
+<p><img alt="agent TUI screenshot" src="../img/screenshot.png" /></p>
+<h2 id="install">Install</h2>
+<pre tabindex="0"><code class="language-bash">pip install --user -r requirements.txt
+</code></pre>
+<p>On Ubuntu 24.04+ (PEP 668 / externally-managed system python), add <code>--break-system-packages</code>, or install into a venv:</p>
+<pre tabindex="0"><code class="language-bash">python3 -m venv .venv &amp;&amp; .venv/bin/pip install -r requirements.txt
+</code></pre>
+<h2 id="windows-git-bash-setup">Windows (Git-Bash) setup</h2>
+<p>The runtime is cross-platform Python. The <code>exec_command</code> tool shells out to <code>bash</code> so shell idioms (heredocs, pipes, <code>&amp;&amp;</code>, <code>/tmp/...</code>) run unchanged — on Windows that bash comes from Git-Bash, <strong>not</strong> <code>cmd</code> or PowerShell.</p>
+<ol>
+<li><strong>Install <a href="https://git-scm.com/download/win">Git for Windows</a>.</strong> It bundles a standalone <code>bash.exe</code> (MSYS2) and <code>git</code> — no WSL required.</li>
+<li><strong>Install Python 3.10+</strong> for Windows, then <code>pip install -r requirements.txt</code>. (Install the GitHub CLI <code>gh</code> too if you run the CICD pipeline.)</li>
+<li><strong>Make <code>bash</code> resolvable.</strong> The runtime locates Git-Bash itself and <strong>deliberately ignores <code>C:\Windows\System32\bash.exe</code></strong> — that's the WSL launcher stub, which fails every command with <em>"Windows Subsystem for Linux has no installed distributions"</em> if you don't run WSL. (Bare <code>bash</code> would re-resolve straight back to that stub, so it's not used as a fallback.) Resolution order:
+   - <code>AGENT_BASH_EXE</code> env var pointing at the full path (e.g. <code>C:\Program Files\Git\bin\bash.exe</code>, or <code>%LOCALAPPDATA%\Programs\Git\bin\bash.exe</code> for a per-user Git install) — <strong>set this if auto-detection fails</strong>, <strong>then</strong>
+   - known Git-Bash install locations (<code>C:\Program Files\Git\bin\bash.exe</code>, the <code>(x86)</code> variant, and the per-user <code>%LOCALAPPDATA%</code> path), <strong>then</strong>
+   - <strong>derived from <code>git</code> on <code>PATH</code></strong> — Git for Windows keeps <code>bash.exe</code> in a sibling <code>bin\</code> of <code>git.exe</code>, so if <code>git</code> works, Git-Bash is found even when only Git's <code>cmd\</code> (not <code>bin\</code>) is on <code>PATH</code>, <strong>then</strong>
+   - <code>where bash</code> on <code>PATH</code>, excluding the System32 WSL stub and any <code>WindowsApps</code> Store alias.</li>
+<li><strong>Run from a Git-Bash shell</strong>, not <code>cmd</code>/PowerShell:
+   <code>bash
+   python agent.py "fix the failing test in tests/test_parser.py"</code>
+   For the CICD pipeline: <code>bash CICD/cicd.sh &lt;repo-url&gt;</code> from Git-Bash. (A native PowerShell launcher is a separate, not-yet-done port.)</li>
+<li><strong>(Optional) shorten the launch command</strong> — run <code>/alias</code> inside the agent to install an <code>agent</code> shell alias (<code>&lt;python&gt; /path/to/agent.py</code> → <code>agent</code>). On Git-Bash it writes to <code>~/.bashrc</code>; <code>source ~/.bashrc</code> (or open a new shell) and then just run <code>agent</code>.</li>
+</ol>
+<p><strong>Platform notes:</strong></p>
+<ul>
+<li>Double-Escape cancellation is a POSIX-tty feature and is a no-op on the Windows console — use <code>Ctrl+C</code>, or a TUI host's cancel keybinding.</li>
+<li>The bedrock credential-store lock uses <code>msvcrt</code> on Windows (<code>fcntl</code> on POSIX); both auto-release on process exit.</li>
+<li>State lives under <code>%USERPROFILE%\.config\agent\</code>.</li>
+<li>Native Windows validation is pending a <code>windows-2022</code> runner; the suite is currently validated on Linux plus platform-simulation tests (<code>tests/test_windows_compat.py</code>).</li>
+</ul>
+<h2 id="quick-start">Quick start</h2>
+<ol>
+<li>Start an OpenAI-compatible LLM server locally (default endpoint <code>http://127.0.0.1:8080</code>):
+   <code>bash
+   llama-server -m your-model.gguf --port 8080</code></li>
+<li>(Optional) create a <code>config.json</code> in your working directory — see <a href="#configuration">Configuration</a>.</li>
+<li>Run:
+   <code>bash
+   python agent.py "fix the failing test in tests/test_parser.py"</code></li>
+</ol>
+<p><strong>Recommended models:</strong></p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Model</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Main (GPU)</td>
+<td><a href="https://huggingface.co/unsloth/Qwen3.6-27B-MTP-GGUF">Qwen3.6-27B</a> or <a href="https://huggingface.co/google/gemma-4-31b-it">gemma-4-31B-it</a> via <code>llama-server</code></td>
+</tr>
+<tr>
+<td>Summary (CPU)</td>
+<td><a href="https://huggingface.co/unsloth/Qwen3-4B-GGUF">Qwen3-4B</a> or <a href="https://huggingface.co/google/gemma-4-e4b-it">gemma-4-E4B-it</a></td>
+</tr>
+</tbody>
+</table></div>
+<p>Run a second <code>llama-server</code> instance on CPU for the summary backend (see <a href="#configuration">Configuration</a>) — it handles short summarisation calls so the main GPU model stays free for reasoning.</p>
+<p><strong>Fine-tuned variants</strong> (optional) — trained to reduce common tool-use friction patterns:</p>
+<ul>
+<li>Qwen3.6-based: <a href="https://huggingface.co/mblakemore/qwen3.6-35b-agent-friction-phase1">mblakemore/qwen3.6-35b-agent-friction-phase1</a></li>
+<li>Gemma 4-based: <a href="https://huggingface.co/mblakemore/gemma-4-31B-agent-friction-phase9">mblakemore/gemma-4-31B-agent-friction-phase9</a></li>
+</ul>
+<p>See <a href="local-model.html">docs/local-model.md</a> for download, quantize, and serve instructions.</p>
+<h2 id="cli">CLI</h2>
+<pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
+</code></pre>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-a</code>, <code>--auto</code></td>
+<td>Automation mode — run the prompt and exit; no interactive loop.</td>
+</tr>
+<tr>
+<td><code>-c</code>, <code>--continue</code></td>
+<td>Resume from the last checkpoint. Combine with <code>-a</code> for auto-resume-and-exit.</td>
+</tr>
+<tr>
+<td><code>-r N</code>, <code>--repeat N</code></td>
+<td>Run the prompt <code>N</code> times with fresh state each run (<code>0</code> = indefinitely). Implies <code>-a</code>.</td>
+</tr>
+<tr>
+<td><code>--nudge</code></td>
+<td>When the model returns a text-only response, auto-nudge it to keep going. Off by default.</td>
+</tr>
+<tr>
+<td><code>--no-tui</code></td>
+<td>Use a plain <code>input()</code> prompt instead of the <code>prompt_toolkit</code> TUI.</td>
+</tr>
+<tr>
+<td><code>--verbose</code></td>
+<td>Start with full (uncompacted) tool output. Toggle in-session with <code>/verbose</code>.</td>
+</tr>
+<tr>
+<td><code>--backend-main</code></td>
+<td>Override the main backend kind (<code>llamacpp</code> or <code>bedrock</code>).</td>
+</tr>
+<tr>
+<td><code>--backend-summary</code></td>
+<td>Override the summary backend kind (<code>llamacpp</code> or <code>bedrock</code>).</td>
+</tr>
+<tr>
+<td><code>-cc [HOST:PORT]</code></td>
+<td>Launch an Anthropic-compatible gateway for <strong>Claude Code</strong> (default <code>127.0.0.1:8788</code>) that forwards to the configured main backend, then exit. See <a href="#claude-code-gateway--cc">Claude Code gateway</a>.</td>
+</tr>
+<tr>
+<td><code>PROMPT...</code></td>
+<td>Initial prompt. Optional in interactive mode.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Press <strong>Escape twice</strong> within 400ms to cancel a streaming response.</p>
+<h3 id="claude-code-gateway-cc">Claude Code gateway (<code>-cc</code>)</h3>
+<p><code>agent.py -cc</code> stands up an Anthropic-native <code>/v1/messages</code> endpoint and points it at whichever backend <code>agent.py</code> is configured for (<code>llamacpp</code>, <code>bedrock</code>, or <code>foundry</code>). This lets <a href="https://docs.claude.com/en/docs/claude-code">Claude Code</a> — or anything that speaks the Anthropic Messages API — drive your local/self-hosted model.</p>
+<pre tabindex="0"><code class="language-bash">python agent.py -cc                      # listen on 127.0.0.1:8788
+python agent.py -cc 0.0.0.0:9000         # explicit host:port
+python agent.py -cc --backend-main bedrock   # forward to a different backend
+</code></pre>
+<p>Then point Claude Code at it:</p>
+<pre tabindex="0"><code class="language-bash">export ANTHROPIC_BASE_URL=http://localhost:8788
+export ANTHROPIC_API_KEY=dummy           # any non-empty value; the gateway ignores it
+claude
+</code></pre>
+<p>How it works:</p>
+<ul>
+<li>It is a <strong>stateless translator</strong> — Anthropic Messages in, OpenAI chat-completions to the backend, and the streamed reply translated back to Anthropic SSE. Tool definitions, <code>tool_use</code>/<code>tool_result</code> blocks, images, and streaming tool calls are all converted in both directions.</li>
+<li>Claude Code runs its <strong>own</strong> agentic loop and resends the full conversation each turn, so the gateway bypasses <code>agent.py</code>'s session pipeline (no checkpointing, summarization, or cycle limits) and forces a fresh backend conversation per request.</li>
+<li>The model id Claude Code sends is ignored; requests always go to the configured main backend's model. Gemma <code>&lt;think&gt;</code> reasoning is suppressed so it doesn't surface as message content.</li>
+<li><code>GET /health</code> reports backend reachability; <code>POST /v1/messages/count_tokens</code> returns an estimate.</li>
+</ul>
+<p><strong>Resilience for slow/flaky backends.</strong> If the backend cuts a stream <em>after</em> tokens have started flowing (e.g. a Bedrock proxy behind an API Gateway with a ~29s timeout), the gateway closes the turn cleanly with <code>stop_reason: max_tokens</code> instead of letting the client see "stream ended prematurely". If the backend fails <em>before</em> any content reaches the client, the gateway retries with backoff (only then — once tokens stream, retrying would duplicate output). Tunable via env vars:</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CC_GATEWAY_MAX_RETRIES</code></td>
+<td><code>2</code></td>
+<td>Retries when the backend fails before producing any content. Each retry can cost up to one read-timeout, so keep it small. <code>0</code> disables.</td>
+</tr>
+<tr>
+<td><code>CC_GATEWAY_RETRY_BASE_DELAY</code></td>
+<td><code>1.0</code></td>
+<td>Initial backoff (seconds); doubles each retry.</td>
+</tr>
+<tr>
+<td><code>CC_GATEWAY_RETRY_MAX_DELAY</code></td>
+<td><code>8.0</code></td>
+<td>Cap on backoff (seconds).</td>
+</tr>
+<tr>
+<td><code>CC_GATEWAY_CONNECT_TIMEOUT</code></td>
+<td><code>30</code></td>
+<td>Connect timeout to the backend (seconds).</td>
+</tr>
+<tr>
+<td><code>CC_GATEWAY_READ_TIMEOUT</code></td>
+<td><code>600</code></td>
+<td>Read timeout — a slow backend can hold the stream this long.</td>
+</tr>
+<tr>
+<td><code>AGENT_FOLD_SYSTEM</code></td>
+<td><code>auto</code></td>
+<td>Workaround for backends that silently drop <code>role:"system"</code>. <code>auto</code> probes the backend once (~20 tokens, ~1.5s) and caches the result per <code>(base_url, model)</code> for 7 days; <code>always</code> folds without probing; <code>never</code> disables. Applies to both <code>-cc</code> and the main agent loop.</td>
+</tr>
+<tr>
+<td><code>AGENT_CACHE_DIR</code></td>
+<td><code>~/.cache/agent</code></td>
+<td>Where the probe result is cached (<code>backend_caps.json</code>).</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="backends-that-silently-drop-system-messages">Backends that silently drop <code>system</code> messages</h3>
+<p>Some OpenAI-compatible gateways accept a <code>role:"system"</code> message, return HTTP 200,
+and never show it to the model — no error, no warning. The symptom is an agent that
+appears to ignore its instructions. This was measured against a Bedrock proxy behind
+API Gateway, where a 9-word system prompt is dropped exactly like a 6000-token one
+(<code>developer</code> too); the likely cause is that Bedrock's <code>Converse</code> API takes <code>system</code>
+as a top-level parameter rather than a message role, so it is lost in translation.</p>
+<p>When <code>AGENT_FOLD_SYSTEM=auto</code> (the default), the backend is probed once and, if it
+drops <code>system</code>, system content is merged into the following user message — which
+every backend delivers. Backends that honour <code>system</code> (e.g. local llama.cpp) are
+left untouched.</p>
+<p>The probe <strong>fails safe</strong>: any error, timeout or ambiguous reply folds. Folding a
+backend that works is harmless; not folding one that drops <code>system</code> silently
+discards the entire system prompt.</p>
+<p>This is a workaround — the durable fix is server-side. The 7-day cache TTL means a
+server-side fix is picked up automatically without a config change.</p>
+<p>These mitigate transient failures but cannot make a turn that genuinely needs longer than the backend's hard timeout <em>complete</em> — that requires fixing the backend (e.g. streaming via a Lambda Function URL instead of API Gateway).</p>
+<p>Implemented in <code>cc_gateway.py</code>; requires <code>fastapi</code> + <code>uvicorn</code> (already in <code>requirements.txt</code>).</p>
+<h3 id="interactive-tui">Interactive TUI</h3>
+<p>The default TUI (<code>prompt_toolkit</code>) provides:</p>
+<ul>
+<li><strong>Bottom toolbar</strong> — <code>cwd · model · message count · context ~% · verbose state</code></li>
+<li><strong>Completion</strong> for slash commands (<code>/he&lt;Tab&gt;</code>) and <code>@path</code> file refs (<code>@src/&lt;Tab&gt;</code>)</li>
+<li><strong>Input history</strong> navigable with ↑ / ↓</li>
+<li><strong>Key bindings</strong>: <code>Enter</code> submits, <code>Ctrl-N</code> inserts a literal newline</li>
+</ul>
+<p>Falls back to plain <code>input()</code> automatically if <code>prompt_toolkit</code> isn't installed.</p>
+<h3 id="slash-commands">Slash commands</h3>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/help</code></td>
+<td>List available commands.</td>
+</tr>
+<tr>
+<td><code>/clear</code></td>
+<td>Clear conversation history and start a fresh session log.</td>
+</tr>
+<tr>
+<td><code>/context</code></td>
+<td>Show context usage as an Aurora-gradient bar with token counts.</td>
+</tr>
+<tr>
+<td><code>/model [main\|summary] [name]</code></td>
+<td>Set the <strong>main</strong> or <strong>summary</strong> model and persist it to <code>.agent/config.json</code> (survives restart). Bare <code>/model</code> picks the main model interactively; <code>/model summary</code> targets the summary backend; append a model id (<code>/model main gpt-4o</code>) to set it directly without the picker.</td>
+</tr>
+<tr>
+<td><code>/alias</code></td>
+<td>Detect the working Python and install an <code>agent</code> shell alias (<code>&lt;python&gt; /path/to/agent.py</code> → <code>agent</code>). Writes an idempotent block to <code>~/.bashrc</code> / <code>~/.zshrc</code> on Linux &amp; Git-Bash; prints PowerShell/cmd equivalents on native Windows.</td>
+</tr>
+<tr>
+<td><code>/verbose</code></td>
+<td>Toggle compact vs. full tool-result output.</td>
+</tr>
+<tr>
+<td><code>/tools [N\|all]</code></td>
+<td>Show buffered tool calls with a one-line result preview.</td>
+</tr>
+<tr>
+<td><code>exit</code> / <code>quit</code></td>
+<td>End the session.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="environment-variables">Environment variables</h3>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>NO_COLOR=1</code></td>
+<td>Disable all terminal colors and cursor escapes (also active when stdout is not a TTY).</td>
+</tr>
+<tr>
+<td><code>BEDROCK_API_URL</code></td>
+<td>Bedrock gateway URL — fallback when the keystore has no <code>up</code> entries.</td>
+</tr>
+<tr>
+<td><code>BEDROCK_API_KEY</code></td>
+<td>Bedrock API key — fallback.</td>
+</tr>
+<tr>
+<td><code>AGENT_BEDROCK_STORE</code></td>
+<td>Override path to the <code>bedrock_creds.json</code> keystore.</td>
+</tr>
+<tr>
+<td><code>BEDROCK_DAILY_CAP_USD</code></td>
+<td>Combined daily spend cap across roles (default <code>$10</code> main, <code>$1</code> summary).</td>
+</tr>
+<tr>
+<td><code>AGENT_HEALTH_TIMEOUT</code></td>
+<td>Seconds to wait for the startup backend health probe (default <code>10</code>). Raise it for cold-start endpoints (e.g. AWS API Gateway/Lambda) that are slow on the first request.</td>
+</tr>
+<tr>
+<td><code>AGENT_BASH_EXE</code></td>
+<td>Windows only — full path to <code>bash.exe</code> for the <code>exec_command</code> shell, overriding Git-Bash auto-detection.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="how-it-works">How it works</h2>
+<p>Each cycle is a turn loop:</p>
+<ol>
+<li>Build a context window from recent history plus an async summary of older history.</li>
+<li>Stream a response from the LLM.</li>
+<li>Execute any tool calls.</li>
+<li>Feed results back in and repeat until the model stops calling tools, a turn limit is hit, or the user cancels.</li>
+</ol>
+<p>Guardrails:</p>
+<ul>
+<li><strong>Checkpointing</strong> — history and summary state are written to <code>.agent/state/conversation_checkpoint.json</code> every turn. <code>--continue</code> resumes from there.</li>
+<li><strong>Async summarization</strong> — a background thread condenses older messages while the main model keeps working.</li>
+<li><strong>Cycle limits</strong> — after <code>cycle.max_turns</code> turns (default 100) the agent is asked to wrap up; after <code>cycle.wind_down_turns</code> more it is forced to stop.</li>
+<li><strong>Text-loop detection</strong> — three identical text responses in a row ends the cycle.</li>
+<li><strong>Hallucination guards</strong> — fabricated file-read messages are stripped and a correction injected. Malformed tool-call JSON is salvaged heuristically.</li>
+<li><strong>Tool recovery</strong> — recoverable tool errors (e.g. bad line numbers) are retried with corrected parameters via a lightweight LLM call.</li>
+<li><strong>Context overflow handling</strong> — three consecutive HTTP 500s are treated as context overflow; the agent trims history and retries.</li>
+</ul>
+<h2 id="project-layout">Project layout</h2>
+<pre tabindex="0"><code>agent.py            # Main loop, streaming, context management, checkpointing
+callbacks.py        # UI callback interface
+commands.py         # Slash-command dispatcher
+tui.py              # prompt_toolkit front-end
+cancel.py           # Double-escape cancel handler
+spinner.py          # Aurora-pulsed visual feedback
+theme.py            # Aurora color palette + ANSI escapes
+token_utils.py      # Tokenizer (Gemma) with char-based fallback
+tool_recovery.py    # Auto-recovery from recoverable tool errors
+llm_backend.py      # LLM backend abstraction (llamacpp, bedrock)
+bedrock_api.py      # AWS Bedrock Chat API integration
+cc_gateway.py       # Anthropic /v1/messages gateway for Claude Code (agent.py -cc)
+tools/
+  file.py           # read / write / insert / append / delete / list
+  exec_command.py   # Shell execution with background-session support
+  search_files.py   # Grep-like search with glob and case controls
+  read_pdf.py       # PDF text extraction (PyMuPDF)
+  web_fetch.py      # URL → markdown, saved to disk with inline preview
+  think.py          # Deep-reasoning tool via a separate thinking call
+  task_tracker.py   # Persistent task list in .agent/state/tasks.json
+  sleep.py          # Pause execution
+.agent/             # Runtime artifacts (created on first run, gitignored)
+  state/            # Checkpoint, tasks, cycle counter, web_fetch cache
+  history/          # Per-session verbose logs
+</code></pre>
+<p>Agent-specific tools in <code>./tools/</code> alongside your working directory are auto-discovered and registered on startup.</p>
+<h2 id="configuration">Configuration</h2>
+<p>Drop a <code>config.json</code> in the working directory (i.e. wherever you run <code>agent.py</code> from) to override defaults. All sections are optional; omitted keys use the defaults listed below.</p>
+<p>The agent looks for <code>.agent/config.json</code> first, then falls back to <code>config.json</code> in the working directory. Putting it under <code>.agent/</code> keeps your local, key-bearing config alongside the other runtime files. When you run inside a git repo, the agent best-effort adds <code>.agent/</code> and <code>config.json</code> to <code>.gitignore</code> so your config (which may hold API keys) and runtime state never get committed. Outside a repo it leaves the directory untouched.</p>
+<h3 id="backends"><code>backends</code></h3>
+<p>Preferred shape. Replaces the legacy <code>llm</code> / <code>summary</code> flat blocks (which still work — they are synthesized into <code>backends</code> at load time).</p>
+<pre tabindex="0"><code class="language-json">{
+  &quot;backends&quot;: {
+    &quot;main&quot;: {
+      &quot;kind&quot;:     &quot;llamacpp&quot;,
+      &quot;base_url&quot;: &quot;http://127.0.0.1:8080&quot;,
+      &quot;model&quot;:    &quot;my-model-name&quot;,
+      &quot;api_key&quot;:  &quot;&quot;,
+      &quot;stream&quot;:   true
+    },
+    &quot;summary&quot;: {
+      &quot;kind&quot;:     &quot;llamacpp&quot;,
+      &quot;base_url&quot;: &quot;http://127.0.0.1:8082&quot;,
+      &quot;model&quot;:    &quot;my-summary-model&quot;,
+      &quot;enabled&quot;:  true
+    }
+  }
+}
+</code></pre>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>kind</code></td>
+<td><code>"llamacpp"</code></td>
+<td>Backend type: <code>"llamacpp"</code>, <code>"bedrock"</code>, or <code>"foundry"</code>.</td>
+</tr>
+<tr>
+<td><code>base_url</code></td>
+<td><code>"http://127.0.0.1:8080"</code></td>
+<td>OpenAI-compatible endpoint.</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td><code>"gemma-4-31B"</code></td>
+<td>Model name passed to the endpoint (informational for llamacpp; selects the Bedrock model ID for bedrock).</td>
+</tr>
+<tr>
+<td><code>api_key</code></td>
+<td><code>""</code></td>
+<td>Bearer token sent as <code>Authorization: Bearer &lt;key&gt;</code>. Keep this file <code>chmod 600</code>.</td>
+</tr>
+<tr>
+<td><code>stream</code></td>
+<td><code>true</code></td>
+<td>Set <code>false</code> to use non-streaming completions (useful for debugging).</td>
+</tr>
+<tr>
+<td><code>enabled</code></td>
+<td><code>true</code> (main) / <code>true</code> (summary)</td>
+<td>Set <code>false</code> to disable the summary backend entirely.</td>
+</tr>
+</tbody>
+</table></div>
+<p>For <strong>Bedrock</strong>-specific keys (<code>api_url</code>, spend caps, keystore) see <a href="bedrock.html">docs/bedrock.md</a>.</p>
+<h3 id="generation"><code>generation</code></h3>
+<p>Inference parameters forwarded to the LLM on every request.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>temperature</code></td>
+<td><code>0.6</code></td>
+<td>Sampling temperature.</td>
+</tr>
+<tr>
+<td><code>top_p</code></td>
+<td><code>0.95</code></td>
+<td>Nucleus sampling threshold.</td>
+</tr>
+<tr>
+<td><code>top_k</code></td>
+<td><code>20</code></td>
+<td>Top-K sampling.</td>
+</tr>
+<tr>
+<td><code>min_p</code></td>
+<td><code>0.0</code></td>
+<td>Min-P sampling (0 = disabled).</td>
+</tr>
+<tr>
+<td><code>presence_penalty</code></td>
+<td><code>0.0</code></td>
+<td>Penalise tokens already present in context.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="context"><code>context</code></h3>
+<p>Controls context-window sizing and compaction.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ctx_size</code></td>
+<td><code>114688</code></td>
+<td>Context window size in tokens. Auto-detected from the server's <code>/props</code> endpoint when available; this value is the fallback cap.</td>
+</tr>
+<tr>
+<td><code>max_tokens</code></td>
+<td><code>16384</code></td>
+<td>Maximum tokens in a single completion.</td>
+</tr>
+<tr>
+<td><code>max_full_lines</code></td>
+<td><code>800</code></td>
+<td>Lines of tool output kept verbatim before compaction.</td>
+</tr>
+<tr>
+<td><code>preview_lines</code></td>
+<td><code>200</code></td>
+<td>Lines shown in the compacted preview.</td>
+</tr>
+<tr>
+<td><code>summary_threshold</code></td>
+<td><code>5</code></td>
+<td>Messages beyond which background summarisation fires.</td>
+</tr>
+<tr>
+<td><code>summary_max_chars</code></td>
+<td><code>3000</code></td>
+<td>Maximum characters in a generated summary chunk.</td>
+</tr>
+<tr>
+<td><code>max_context_messages</code></td>
+<td><code>30</code></td>
+<td>Hard cap on messages sent to the LLM per turn.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="cycle"><code>cycle</code></h3>
+<p>Per-session run limits.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>max_turns</code></td>
+<td><code>250</code></td>
+<td>Stop (or wind down) after this many turns.</td>
+</tr>
+<tr>
+<td><code>wind_down_turns</code></td>
+<td><code>10</code></td>
+<td>Turns of grace period after <code>max_turns</code> before a hard stop.</td>
+</tr>
+<tr>
+<td><code>max_text_only</code></td>
+<td><code>3</code></td>
+<td>Consecutive text-only responses that trigger a halt (loop detection).</td>
+</tr>
+<tr>
+<td><code>max_total_nudges</code></td>
+<td><code>6</code></td>
+<td>Total auto-nudges allowed before giving up (requires <code>preferences.nudge</code> or <code>--nudge</code>).</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="retry"><code>retry</code></h3>
+<p>Exponential-backoff settings for failed LLM requests.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>max_retries</code></td>
+<td><code>10</code></td>
+<td>Maximum retry attempts before the request fails.</td>
+</tr>
+<tr>
+<td><code>base_delay_seconds</code></td>
+<td><code>2</code></td>
+<td>Initial retry wait.</td>
+</tr>
+<tr>
+<td><code>max_delay_seconds</code></td>
+<td><code>60</code></td>
+<td>Cap on retry wait.</td>
+</tr>
+<tr>
+<td><code>backoff_multiplier</code></td>
+<td><code>2.0</code></td>
+<td>Multiplier applied to delay each retry.</td>
+</tr>
+<tr>
+<td><code>jitter_factor</code></td>
+<td><code>0.1</code></td>
+<td>Random jitter added to each delay (fraction of current delay).</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="bedrock"><code>bedrock</code></h3>
+<p>Bedrock-specific tuning (only relevant when <code>backends.main.kind</code> or <code>backends.summary.kind</code> is <code>"bedrock"</code>).</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>adaptive_max_tokens</code></td>
+<td><code>true</code></td>
+<td>Dynamically adjust <code>max_tokens</code> per request based on detected prompt complexity, staying within the model's limit.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="preferences"><code>preferences</code></h3>
+<p>Behavioural knobs that don't fit elsewhere.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>nudge</code></td>
+<td><code>false</code></td>
+<td>Auto-nudge the model when it returns a text-only response. Also settable with <code>--nudge</code> CLI flag.</td>
+</tr>
+<tr>
+<td><code>persist_nudge</code></td>
+<td><code>false</code></td>
+<td>After a text-only stop, check <code>git status</code>; if uncommitted changes exist and no commit happened this session, inject one nudge to commit. Intended for git-native agents.</td>
+</tr>
+<tr>
+<td><code>tool_selection_hints</code></td>
+<td><code>false</code></td>
+<td>Prepend a system-prompt directive recommending <code>file(action='edit')</code> over heredoc rewrites for existing-file edits.</td>
+</tr>
+<tr>
+<td><code>max_text_response_chars</code></td>
+<td><code>24000</code></td>
+<td>Cap on text-only response length per turn (characters). Only enforced when <code>nudge</code> is on. Prevents context-filling monologue spirals.</td>
+</tr>
+<tr>
+<td><code>max_post_tool_text_chars</code></td>
+<td><code>2000</code></td>
+<td>Cap on prose generated after tool calls in the same turn.</td>
+</tr>
+<tr>
+<td><code>extra_allowed_paths</code></td>
+<td><code>[]</code></td>
+<td>List of absolute directory paths the <code>file</code> tool is allowed to read/write outside the working directory.</td>
+</tr>
+<tr>
+<td><code>tools_whitelist</code></td>
+<td><code>null</code></td>
+<td>Restrict the tool schema sent to the LLM to this list of tool names. <code>null</code> = all tools. Example: <code>["file", "exec_command", "search_files", "think", "task_tracker"]</code>.</td>
+</tr>
+<tr>
+<td><code>initial_tasks</code></td>
+<td><code>[]</code></td>
+<td>Task descriptions pre-seeded into <code>task_tracker</code> at session start (only when the task list is empty — does not overwrite an in-progress cycle).</td>
+</tr>
+<tr>
+<td><code>seed_tasks_persistent</code></td>
+<td><code>false</code></td>
+<td>Re-seed <code>initial_tasks</code> at the start of every cycle, not just on a fresh task list.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="command_guards"><code>command_guards</code></h3>
+<p>A list of regex-pattern / message pairs that intercept <code>exec_command</code> calls before the shell sees them. When a command matches a pattern, execution is blocked and the message is returned to the agent as a tool error — the agent can then reason about it and try something else.</p>
+<p>Patterns are case-insensitive regexes matched against the full command string.</p>
+<pre tabindex="0"><code class="language-json">{
+  &quot;command_guards&quot;: [
+    {
+      &quot;pattern&quot;: &quot;\\b8080\\b&quot;,
+      &quot;message&quot;: &quot;BLOCKED: Port 8080 is used by the llama.cpp main inference server. Do not start processes on it or kill processes using it. Use a different port (e.g. 8765) for http.server.&quot;
+    },
+    {
+      &quot;pattern&quot;: &quot;\\b8082\\b&quot;,
+      &quot;message&quot;: &quot;BLOCKED: Port 8082 is used by the llama.cpp summary inference server. Do not use it.&quot;
+    },
+    {
+      &quot;pattern&quot;: &quot;rm\\s+-rf\\s+/&quot;,
+      &quot;message&quot;: &quot;BLOCKED: Refusing to run recursive delete from filesystem root.&quot;
+    }
+  ]
+}
+</code></pre>
+<p>Guards fire after the built-in hallucination guards (<code>/home/user</code>, <code>python</code>→<code>python3</code>) but before the command runs.</p>
+<h3 id="full-example">Full example</h3>
+<pre tabindex="0"><code class="language-json">{
+  &quot;backends&quot;: {
+    &quot;main&quot;:    { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8080&quot; },
+    &quot;summary&quot;: { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8082&quot;, &quot;enabled&quot;: true }
+  },
+  &quot;generation&quot;: { &quot;temperature&quot;: 0.8 },
+  &quot;context&quot;:    { &quot;ctx_size&quot;: 32768 },
+  &quot;cycle&quot;:      { &quot;max_turns&quot;: 50 },
+  &quot;preferences&quot;: {
+    &quot;nudge&quot;: true,
+    &quot;tools_whitelist&quot;: [&quot;file&quot;, &quot;exec_command&quot;, &quot;search_files&quot;, &quot;think&quot;, &quot;task_tracker&quot;]
+  },
+  &quot;command_guards&quot;: [
+    {
+      &quot;pattern&quot;: &quot;\\b8080\\b&quot;,
+      &quot;message&quot;: &quot;BLOCKED: Port 8080 is reserved for the llama.cpp server.&quot;
+    }
+  ]
+}
+</code></pre>
+<h2 id="bedrock-backend">Bedrock backend</h2>
+<p>The agent supports AWS Bedrock Chat gateway for either the main or summary model. See <a href="bedrock.html">docs/bedrock.md</a> for credentials, keystore management, spend caps, config examples, and known limitations.</p>
+<h2 id="dependencies">Dependencies</h2>
+<ul>
+<li>Python 3.7+</li>
+<li><code>requests</code> — HTTP to the LLM endpoint</li>
+<li><code>transformers</code> + <code>torch</code> — Gemma tokenizer (optional; falls back to char-based estimate)</li>
+<li><code>PyMuPDF</code> (<code>fitz</code>) — PDF extraction (<code>tools/read_pdf.py</code>)</li>
+<li><code>markdownify</code> — HTML → Markdown (<code>tools/web_fetch.py</code>)</li>
+<li><code>prompt_toolkit</code> — interactive TUI (optional; falls back to plain <code>input()</code> automatically)</li>
+<li>A running OpenAI-compatible LLM server</li>
+</ul>
+    <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
+  </main>
+</div>
+</body>
+</html>

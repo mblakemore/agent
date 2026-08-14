@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bedrock backend — agent</title>
+<meta name="description" content="The agent can use an AWS Bedrock Chat gateway (aws-samples/bedrock-chat) for either the main model, the summary model, or both.">
+<link rel="canonical" href="https://mblakemore.github.io/agent/bedrock.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Bedrock backend">
+<meta property="og:description" content="The agent can use an AWS Bedrock Chat gateway (aws-samples/bedrock-chat) for either the main model, the summary model, or both.">
+<meta property="og:url" content="https://mblakemore.github.io/agent/bedrock.html">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/agent-docs.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"Bedrock backend","url":"https://mblakemore.github.io/agent/bedrock.html","description":"The agent can use an AWS Bedrock Chat gateway (aws-samples/bedrock-chat) for either the main model, the summary model, or both."}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><div class="in">
+  <span class="brand"><a href="index.html">agent</a></span>
+  <span class="tag">documentation</span>
+  <nav aria-label="primary">
+    <a href="index.html">Overview</a>
+    <a href="https://github.com/mblakemore/agent">Source</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="agent-eval-discipline-round.html">agent-eval — Discipline Round (next-round spec)</a></li><li><a href="bedrock.html" aria-current="page">Bedrock backend</a></li><li><a href="gemma-finetune-plan.html">Gemma 4 31B tool-friction reduction — plan</a></li><li><a href="local-model.html">Local model — Gemma 4 31B</a></li><li><a href="tier-5-enhancements.html">agent.py Tier 5 enhancements — design doc</a></li></ul></aside>
+  <main id="main">
+    <p class="eyebrow">Bedrock backend</p>
+<h1>Bedrock backend</h1>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/bedrock.md"><code>docs/bedrock.md</code></a> · last changed 2026-05-15 (5951cf0)</p>
+<p>The agent can use an AWS Bedrock Chat gateway (<a href="https://github.com/aws-samples/bedrock-chat">aws-samples/bedrock-chat</a>) for either the main model, the summary model, or both.</p>
+<h2 id="credentials">Credentials</h2>
+<p>Resolved in this order at startup:</p>
+<ol>
+<li><strong>Keystore</strong> — first <code>up</code> entry in <code>~/.config/agent/bedrock_creds.json</code> (lowest <code>daily_spend_usd</code> wins; oldest <code>last_checked</code> breaks ties so stale entries get re-tested first). Override path via <code>AGENT_BEDROCK_STORE</code>.</li>
+<li><strong>Env vars</strong> — <code>BEDROCK_API_URL</code> + <code>BEDROCK_API_KEY</code> (back-compat fallback, useful for CI).</li>
+<li>Otherwise the agent fails fast.</li>
+</ol>
+<h3 id="keystore">Keystore</h3>
+<p>The keystore lets you register multiple gateway/key pairs and rotate to a sibling when one saturates or 5xx's. The file is created at <code>0o600</code>, with atomic writes and process-level <code>flock</code>.</p>
+<pre tabindex="0"><code class="language-bash"># add — runs a health probe and stores the result
+python agent.py bedrock add --name prod \
+  --url &quot;https://&lt;gw&gt;.execute-api.us-east-1.amazonaws.com/prod&quot; \
+  --key &quot;&lt;api-key&gt;&quot;
+
+# list — table view (--json for raw file)
+python agent.py bedrock list
+
+# retest — re-probe one entry or all
+python agent.py bedrock retest prod
+python agent.py bedrock retest --all
+
+# rm — remove by name (--yes skips prompt)
+python agent.py bedrock rm prod
+
+# prune — drop entries down longer than N days (default 30)
+python agent.py bedrock prune --stale-days 14
+</code></pre>
+<p><code>list</code> columns: <code>NAME</code>, <code>STATUS</code> (<code>up</code>/<code>down</code>/<code>unknown</code>), <code>SPEND</code>, <code>LAST_CHECKED</code>, <code>LAST_ERROR</code>. The store auto-rotates from a saturating entry to the next eligible sibling at session start.</p>
+<h2 id="spend-caps">Spend caps</h2>
+<p><code>BEDROCK_DAILY_CAP_USD</code> caps combined daily spend across roles. Default caps: <code>$10/day</code> main, <code>$1/day</code> summary. Override per-role via <code>backends.&lt;role&gt;.daily_cost_cap_usd</code> in <code>config.json</code>.</p>
+<h2 id="config-examples">Config examples</h2>
+<pre tabindex="0"><code class="language-json">// llamacpp main + llamacpp summary (default)
+{ &quot;backends&quot;: {
+    &quot;main&quot;:    { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8080&quot;, &quot;model&quot;: &quot;gemma-4-31B&quot; },
+    &quot;summary&quot;: { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8082&quot;, &quot;model&quot;: &quot;gemma-4-E4B&quot; }
+}}
+
+// llamacpp main + bedrock summary (cheapest way to try Bedrock)
+{ &quot;backends&quot;: {
+    &quot;main&quot;:    { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8080&quot;, &quot;model&quot;: &quot;gemma-4-31B&quot; },
+    &quot;summary&quot;: { &quot;kind&quot;: &quot;bedrock&quot;,  &quot;model&quot;: &quot;claude-v4.5-haiku&quot;, &quot;enabled&quot;: true, &quot;max_wait_on_save&quot;: 30 }
+}}
+
+// bedrock main + llamacpp summary
+{ &quot;backends&quot;: {
+    &quot;main&quot;:    { &quot;kind&quot;: &quot;bedrock&quot;,  &quot;model&quot;: &quot;claude-v4.5-sonnet&quot; },
+    &quot;summary&quot;: { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8082&quot;, &quot;model&quot;: &quot;gemma-4-E4B&quot; }
+}}
+
+// bedrock everywhere
+{ &quot;backends&quot;: {
+    &quot;main&quot;:    { &quot;kind&quot;: &quot;bedrock&quot;, &quot;model&quot;: &quot;claude-v4.5-sonnet&quot; },
+    &quot;summary&quot;: { &quot;kind&quot;: &quot;bedrock&quot;, &quot;model&quot;: &quot;claude-v4.5-haiku&quot; }
+}}
+</code></pre>
+<p>Per-run override: <code>--backend-main bedrock</code> / <code>--backend-summary bedrock</code>.</p>
+<h2 id="security">Security</h2>
+<ul>
+<li>Keystore forced to <code>0o600</code> on every write (atomic tempfile + <code>os.replace</code>, no widened-mode window).</li>
+<li><code>config.json</code> should be <code>chmod 600</code> if it contains an <code>api_key</code> directly. The agent warns at startup if the file is world-readable.</li>
+<li><code>BEDROCK_API_KEY</code> and stored entry keys are redacted at every log site (covered by <code>tests/test_bedrock_security.py</code>).</li>
+</ul>
+<h2 id="known-limitations">Known limitations</h2>
+<ul>
+<li><strong>Prompt overhead.</strong> Bedrock has no native tool-calling in the gateway; tools are serialized into the prompt text (~1.5–2k tokens per turn with the agent's ~10-tool set).</li>
+<li><strong>Gemma tokenizer approximation.</strong> Token counts for non-llamacpp backends use the Gemma-3 tokenizer and overshoot Claude text by ~10–20% (safe direction).</li>
+<li><strong>No progressive streaming.</strong> The gateway doesn't expose in-progress message text; Bedrock turns deliver a single content delta at the end.</li>
+</ul>
+<p>See <code>plan/bedrock-integration.md</code> § 8 for dev-mode prompt-stuffing details and § 18.5 for the operator runbook (5xx bursts, truncation exhaustion, key rotation, cost spikes, rollback).</p>
+    <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
+  </main>
+</div>
+</body>
+</html>

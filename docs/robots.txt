@@ -1,0 +1,5 @@
+# agent documentation
+User-agent: *
+Allow: /
+
+Sitemap: https://mblakemore.github.io/agent/sitemap.xml
