@@ -338,6 +338,32 @@ if _AVAILABLE:
                     self._session.app.ttimeoutlen = 0.2
                 except Exception:
                     pass
+            # FOOTER UNDER NO_CPR (field report 2026-08-14: "the footer is
+            # gone"): PROMPT_TOOLKIT_NO_CPR=1 — the streaming-redraw fix —
+            # leaves renderer._min_available_height at 0 forever, and the
+            # bottom toolbar's visibility filter (renderer_height_is_known)
+            # hides it. That filter is a flicker guard for the window where a
+            # CPR answer is in flight — meaningless when CPR is permanently
+            # off. The render height is max(min_available, layout preferred),
+            # so claiming a 1-row floor is always true (the cursor row
+            # exists); the toolbar then renders directly below the input
+            # instead of pinned to the terminal's bottom row, and still
+            # vanishes on accept (~is_done in its filter). reset() zeroes the
+            # value at every prompt run, so wrap it once to reapply the floor.
+            # Harmless when CPR is on: the real CPR answer overwrites 1.
+            try:
+                _renderer = self._session.app.renderer
+                _orig_reset = _renderer.reset
+
+                def _reset_with_height_floor(*a, **k):
+                    _orig_reset(*a, **k)
+                    _renderer._min_available_height = max(
+                        1, _renderer._min_available_height)
+                _renderer.reset = _reset_with_height_floor
+                _renderer._min_available_height = max(
+                    1, _renderer._min_available_height)
+            except Exception:
+                pass
 
         @staticmethod
         def _plain(text: str, limit: int) -> str:

@@ -121,6 +121,22 @@ class TestToolbarStaysStable(unittest.TestCase):
             estimate_tokens=lambda m: 1,
         )
 
+    def test_renderer_height_floor_survives_reset(self):
+        """PROMPT_TOOLKIT_NO_CPR leaves _min_available_height at 0 forever,
+        and the toolbar's renderer_height_is_known filter hides the footer
+        (field report 2026-08-14). The session claims a 1-row floor and
+        re-applies it after every renderer.reset() — a real CPR answer may
+        only raise it."""
+        sess = self._session()
+        r = sess._session.app.renderer
+        self.assertGreaterEqual(r._min_available_height, 1)
+        r.reset()
+        self.assertGreaterEqual(r._min_available_height, 1,
+                                "reset() dropped the height floor — footer dies")
+        r._min_available_height = 17   # a CPR answer arrived
+        r.reset()                      # floor must not clobber a real value...
+        self.assertGreaterEqual(r._min_available_height, 1)
+
     def test_toolbar_ignores_active_spinner(self):
         sess = self._session()
         sess.cb = mock.Mock(verbose=False, stream_tail="tail text here")
