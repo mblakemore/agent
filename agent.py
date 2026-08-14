@@ -1151,8 +1151,8 @@ def _llm_request_raw(log, **kwargs):
 
 
 def _is_failover_error(e):
-    """Check if an exception should trigger failover to llamacpp.
-    
+    """Check if an exception should trigger failover to the fallback backend.
+
     Handles both specific exception classes and generic exceptions containing
     failover keywords (useful for some mock tests and generic Bedrock errors).
     """
@@ -1164,35 +1164,77 @@ def _is_failover_error(e):
     failover_keywords = ["BedrockBudgetExceeded", "Capacity exceeded", "Rate limit exceeded"]
     return any(kw in err_msg for kw in failover_keywords)
 
-def _trigger_failover(log, backend_type):
-    """Swap Bedrock for llamacpp if Bedrock is failing.
-    
+def _trigger_failover(log, backend_type, cause=None):
+    """Swap failing backend for the other role's endpoint.
+
     Args:
         log: Logger instance.
         backend_type: Either 'main' or 'summary'.
+        cause: The exception that triggered failover, when the caller has it.
+            Lets budget trips refuse a fallback that would just move spend
+            to the other role's cap.
+
+    NOTE: uses the module globals directly, NOT ``from agent import ...`` —
+    under ``python3 agent.py`` this module is ``__main__``, so importing
+    ``agent`` would load a SECOND module instance whose ``_config`` never
+    saw ``_apply_backend_overrides`` (and whose top level re-runs).
     """
     global _main_backend, _summary_backend
-    
+
     try:
-        # Attempt to build a llamacpp backend. 
-        from llm_backend import build_backend
-        from agent import _config
-        
-        llamacpp_cfg = _config.get("backends", {}).get("llamacpp", {})
-        
-        new_backend = build_backend(llamacpp_cfg)
+        # Use the OTHER role's config as fallback target, but keep the spend
+        # cap and telemetry attributed to the role that will actually consume
+        # it — otherwise a budget-tripped main quietly spends under the
+        # summary role's daily cap.
+        other_role = "main" if backend_type == "summary" else "summary"
+        fallback_cfg = _cfg_with_role(_config.get("backends", {}), other_role)
+        fallback_cfg["role"] = backend_type
+
+        failing = _main_backend if backend_type == "main" else _summary_backend
+        same_endpoint = (
+            fallback_cfg.get("kind", "llamacpp") == getattr(failing, "kind", None)
+            and (fallback_cfg.get("base_url") or "") == (getattr(failing, "base_url", "") or "")
+            and (fallback_cfg.get("model") or "") == (getattr(failing, "model", "") or "")
+        )
+        if same_endpoint:
+            # Default single-server setups synthesize main and summary from
+            # the same llm block — "failing over" would rebuild the identical
+            # backend and retry the endpoint that just failed.
+            log.error(
+                "Failover skipped: %s and %s configs point at the same %s "
+                "endpoint — nothing to fail over to",
+                backend_type, other_role, fallback_cfg.get("kind", "?"),
+            )
+            return False
+        if isinstance(cause, BedrockBudgetExceeded) and \
+                fallback_cfg.get("kind") == "bedrock":
+            log.error(
+                "Failover skipped: %s daily cap tripped and the fallback is "
+                "also bedrock — swapping would re-trip (or evade) the cap",
+                backend_type,
+            )
+            return False
+
+        new_backend = _build_backend(fallback_cfg)
         healthy, msg = new_backend.health()
         if healthy:
             if backend_type == 'main':
                 _main_backend = new_backend
+                # Keep the TUI status bar on the live model, same as
+                # _apply_backend_overrides does on rebuild.
+                if getattr(new_backend, "model", None):
+                    _config["llm"]["model"] = new_backend.model
             else:
                 _summary_backend = new_backend
-            log.warning("Failover successful: %s backend is now llamacpp (%s)", backend_type, msg)
+            log.warning(
+                "Failover successful: %s backend -> %s (%s)",
+                backend_type, fallback_cfg.get("kind", "?"), msg,
+            )
             return True
         else:
-            log.error("Failover failed: llamacpp backend unhealthy (%s)", msg)
+            log.error("Failover failed: fallback backend unhealthy (%s)", msg)
             return False
-            
+
     except Exception as e:
         log.error("Failover critical failure: %s", e)
         return False
@@ -1230,7 +1272,7 @@ def _llm_request(log, **kwargs):
         return _main_backend.stream_chat(log, **kwargs)
     except Exception as e:
         if _is_failover_error(e):
-            if _trigger_failover(log, 'main'):
+            if _trigger_failover(log, 'main', cause=e):
                 log.info("Retrying request with failover backend...")
                 return _main_backend.stream_chat(log, **kwargs)
         raise e
@@ -2361,7 +2403,11 @@ def _generate_summary(old_summary, new_messages, log):
         return summary
     except (requests.ConnectionError, requests.Timeout,
             TimeoutError, BedrockBudgetExceeded) as e:
-        if _trigger_failover(log, 'summary'):
+        # BedrockBudgetExceeded lands here too: _trigger_failover refuses a
+        # bedrock->bedrock swap on budget trips, so the cap case degrades to
+        # _fallback_to_main — avoiding cascading context overflow from
+        # missing summaries without moving spend to the other role's cap.
+        if _trigger_failover(log, 'summary', cause=e):
             log.info("Retrying summary with failover backend...")
             try:
                 summary = _summary_request(prompt, log=log)
@@ -2371,10 +2417,6 @@ def _generate_summary(old_summary, new_messages, log):
             except Exception as e2:
                 log.error("Summary retry failed: %s", e2)
                 return _fallback_to_main(e2)
-        return _fallback_to_main(e)
-    except BedrockBudgetExceeded as e:
-        # Budget cap tripped — fall back to local main for the rest of the
-        # session. Avoids cascading context overflow from missing summaries.
         return _fallback_to_main(e)
     except Exception as e:
         # For any other summary-backend error, if the summary backend is
@@ -3904,7 +3946,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         except EOFError:
             break
         except KeyboardInterrupt:
-            _emit("on_notice", "info", "\n\nGoodbye!")
+            _emit("on_notice", "info", "\n\nGoodbye!\n")
             break
 
         # An idle prompt woken by a monitor returns the WAKE sentinel: drain
@@ -3921,7 +3963,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         if not user_input:
             continue
         if user_input.lower() in ["exit", "quit"]:
-            _emit("on_notice", "info", "Goodbye!")
+            _emit("on_notice", "info", "Goodbye!\n")
             break
         if user_input.startswith("/"):
             def _refresh_cb_log(new_log):
@@ -5212,6 +5254,7 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                             receiving_tools = True
                             if printed_header:
                                 _emit("on_notice", "info", "")
+                                status.finish()  # stop old spinner cleanly before reusing var
                                 status = StreamStatus(emit=_emit)
                                 status.start(f"{DIM}  preparing tool calls ")
                         for tc_delta in delta["tool_calls"]:

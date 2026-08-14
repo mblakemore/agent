@@ -55,3 +55,4 @@ config.local.json
 .env
 .env.*
 *.local.*
+config.json
