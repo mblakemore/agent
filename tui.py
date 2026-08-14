@@ -400,7 +400,9 @@ if _AVAILABLE:
                                           replace_whitespace=False) or [""]
                         )
                     frags.append(("class:prompt-stream", "\n".join(rows[-6:])))
-                    frags.append(("class:prompt-stream", "\n"))
+                    # Blank line between the streaming text and the spinner
+                    # line (field request 2026-08-14).
+                    frags.append(("class:prompt-stream", "\n\n"))
                 # Aurora pulse (violet→sky→mint), same gradient the classic
                 # \r spinner sweeps — per-render inline color, animated by
                 # the invalidate ticker. ONLY the frame glyph pulses; the

@@ -197,9 +197,11 @@ class TestPromptMessageSpinner(unittest.TestCase):
         i_you = text.index("You: ")
         self.assertLess(i_partial, i_frame, "partial must precede spinner")
         self.assertLess(i_frame, i_you, "spinner must precede prompt")
-        # bare spinner line: no '·' tail separator, newline between the three
+        # bare spinner line: no '·' tail separator; a BLANK line separates
+        # the streaming text from the spinner (field request 2026-08-14)
         self.assertNotIn("·", text)
-        self.assertEqual(text[i_partial + len("the block currently streaming")], "\n")
+        end = i_partial + len("the block currently streaming")
+        self.assertEqual(text[end:end + 2], "\n\n")
 
     def test_no_partial_line_when_buffer_empty(self):
         sess = self._session(partial="")
