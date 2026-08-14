@@ -5123,7 +5123,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         _deltas_received = 0
         _stall_detected = False
         status = StreamStatus(emit=_emit)
-        status.start("\nAssistant: ")
+        # Sky-blue header — the aurora family's complement to the violet
+        # "You:" prompt (NO_COLOR-safe; the PT spinner label strips ANSI).
+        status.start("\n" + theme.c(theme.SKY, "Assistant:", bold=True) + " ")
         renderer = _ReasoningRenderer(lambda t: _emit("on_stream_chunk", t))
 
         # TESTING NOTES: mock _llm_request to return one of:
