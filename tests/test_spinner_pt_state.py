@@ -233,6 +233,49 @@ class TestPromptMessageSpinner(unittest.TestCase):
         self.assertIn("cancelling", text)
         self.assertNotIn("streaming", text)
 
+    def test_only_frame_glyph_carries_pulse_color(self):
+        """Field report 2026-08-14: 'streaming 10.1s' animated with the
+        spinner. Only the braille glyph may carry the per-render fg pulse;
+        the label + elapsed must ride the steady prompt-status class."""
+        sess = self._session()
+        with mock.patch.object(spinner, "get_active",
+                               return_value=("streaming", time.monotonic() - 1)):
+            frags = sess._prompt_message()
+        pulse = [(s, t) for s, t in frags if "fg:#" in s]
+        self.assertEqual(len(pulse), 1, f"exactly one pulsed fragment: {frags}")
+        style, text = pulse[0]
+        self.assertTrue(all(0x2800 <= ord(c) <= 0x28FF for c in text),
+                        f"pulsed fragment must be the bare frame, got {text!r}")
+        label_frag = next((s, t) for s, t in frags if "streaming" in t)
+        self.assertEqual(label_frag[0], "class:prompt-status")
+
+    def test_partial_fragments_override_inherited_prompt_style(self):
+        """prompt_toolkit prepends `class:prompt ` (violet bold) to every
+        message fragment, so an empty style is NOT neutral — the streamed
+        text rendered violet in the field (2026-08-14). Partial fragments
+        must carry the prompt-stream override class."""
+        sess = self._session(partial="streamed words")
+        with mock.patch.object(spinner, "get_active",
+                               return_value=("streaming", time.monotonic())):
+            frags = sess._prompt_message()
+        partial_frags = [(s, t) for s, t in frags if "streamed words" in t]
+        self.assertTrue(partial_frags)
+        for style, _ in partial_frags:
+            self.assertEqual(style, "class:prompt-stream")
+
+    def test_style_classes_defeat_prompt_inheritance(self):
+        """The override classes must actually WIN the style merge — resolve
+        the merged strings through the real style sheet, as prompt_toolkit
+        will at render time (the C4318-class gap: asserting our own output
+        without feeding it to the consumer)."""
+        style = self.tui._build_style()
+        merged = style.get_attrs_for_style_str("class:prompt class:prompt-stream")
+        self.assertEqual(merged.color, "default")
+        self.assertFalse(merged.bold)
+        merged = style.get_attrs_for_style_str("class:prompt class:prompt-status")
+        self.assertNotEqual(merged.color, "7b4dff")
+        self.assertFalse(merged.bold)
+
     def test_never_raises_even_when_state_explodes(self):
         sess = self._session()
         with mock.patch.object(spinner, "get_active",

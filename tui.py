@@ -158,6 +158,12 @@ if _AVAILABLE:
             "prompt":                             f"{_VIOLET_HEX} bold",
             "prompt-spinner":                     f"{_MINT_HEX}",
             "prompt-cancelling":                  f"{_AMBER_HEX}",
+            # prompt_toolkit prepends `class:prompt ` (violet bold) to EVERY
+            # message fragment, so these must override explicitly — an
+            # empty-style fragment is violet, not neutral (field report
+            # 2026-08-13: streamed text rendered in the pulse start color).
+            "prompt-stream":                      "default nobold",
+            "prompt-status":                      f"{_BAR_FG_HEX} nobold",
             "bottom-toolbar":                     f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX} noreverse",
             "bottom-toolbar.cwd":                 f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX} bold",
             "bottom-toolbar.sep":                 f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX}",
@@ -393,17 +399,19 @@ if _AVAILABLE:
                                           drop_whitespace=False,
                                           replace_whitespace=False) or [""]
                         )
-                    frags.append(("", "\n".join(rows[-6:])))
-                    frags.append(("", "\n"))
-                seg = self._plain(
-                    f"{_spinner.frame_at(elapsed)} {label} {elapsed:.1f}s",
-                    max(24, width - 2),
-                )
+                    frags.append(("class:prompt-stream", "\n".join(rows[-6:])))
+                    frags.append(("class:prompt-stream", "\n"))
                 # Aurora pulse (violet→sky→mint), same gradient the classic
                 # \r spinner sweeps — per-render inline color, animated by
-                # the invalidate ticker.
+                # the invalidate ticker. ONLY the frame glyph pulses; the
+                # label + elapsed sit in steady grey (field report
+                # 2026-08-13: the whole line animating read as a glitch).
                 r, g, b = _theme.pulse_rgb(elapsed)
-                frags.append((f"fg:#{r:02x}{g:02x}{b:02x}", seg))
+                frags.append((f"fg:#{r:02x}{g:02x}{b:02x} nobold",
+                              _spinner.frame_at(elapsed)))
+                frags.append(("class:prompt-status",
+                              self._plain(f" {label} {elapsed:.1f}s",
+                                          max(22, width - 4))))
                 frags.append(("class:prompt", "\nYou: "))
                 return frags
             except Exception:
