@@ -82,6 +82,7 @@ from pathlib import Path
 
 from cancel import cancellable, check_cancelled, CancelledError, set_tui_mode
 from cancel import reset as cancel_reset, tui_mode as cancel_tui_mode
+from cancel import request_cancel as cancel_request
 try:
     from circuit_breaker import CircuitBreakerError
 except ImportError:
@@ -210,6 +211,15 @@ _BTW_FRAMING = (
     "your next natural stopping point.]"
 )
 
+# Control sentinel for the live-input thread's exit path. Module-level (not
+# local to run_agent_interactive) because the mid-burst drain below must
+# recognize it: an 'exit' typed while a turn is streaming lands on the same
+# bus as steering input, and without the filter it was framed as a background
+# note and delivered to the MODEL while the interactive loop — the only
+# consumer that knows what 'exit' means — never saw it (field report
+# 2026-08-14: input box gone, exit passed to the backend, loop wedged).
+_LIVE_EXIT_MARK = "\x00__LIVE_INPUT_EXIT__"
+
 
 def _drain_monitor_injections(conversation_history, framing=None):
     """Append any queued monitor output to conversation_history as a single
@@ -225,6 +235,12 @@ def _drain_monitor_injections(conversation_history, framing=None):
         items = monitor_bus.drain()
     except Exception:
         return False
+    if _LIVE_EXIT_MARK in items:
+        # A typed 'exit' is a CONTROL line, never model input. Re-enqueue it
+        # for the interactive main loop (which breaks on it at the turn
+        # boundary) and inject only what remains.
+        items = [i for i in items if i != _LIVE_EXIT_MARK]
+        monitor_bus.put_user(_LIVE_EXIT_MARK)
     if not items:
         return False
     body = "\n\n".join(items)
@@ -3778,7 +3794,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         from contextlib import contextmanager as _contextmanager
         from prompt_toolkit.patch_stdout import patch_stdout as _patch_stdout
         _input_stop = threading.Event()
-        _EXIT_MARK = "\x00__LIVE_INPUT_EXIT__"
+        _EXIT_MARK = _LIVE_EXIT_MARK
         # Terminal borrow: interactive slash commands (/model's input()
         # picker) need real stdin, but the always-running prompt owns the
         # keyboard — every keystroke feeds the prompt app, so a nested
@@ -3833,13 +3849,21 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                             _borrow_release.wait()
                             continue
                         if _line:
-                            monitor_bus.put_user(_line)
-                            # An exit line ends this thread HERE, before the
-                            # loop repaints a fresh prompt + toolbar the main
-                            # thread is about to tear down — that repaint was
-                            # the stale screen the shell used to land in.
+                            # An exit line is CONTROL, not conversation: it
+                            # must never ride the bus as text (mid-turn the
+                            # btw-drain would frame it and hand it to the
+                            # model). Deliver the mark instead, cancel any
+                            # running turn so the exit is prompt rather than
+                            # waiting out a long tool burst, and end this
+                            # thread HERE — before the loop repaints a fresh
+                            # prompt + toolbar the main thread is about to
+                            # tear down (that repaint was the stale screen
+                            # the shell used to land in).
                             if _line.lower() in ("exit", "quit"):
+                                cancel_request()
+                                monitor_bus.put_user(_EXIT_MARK)
                                 return
+                            monitor_bus.put_user(_line)
             except Exception as _e:  # never let the input thread die silently
                 log.error("live-input thread crashed: %s", _e)
                 monitor_bus.put_user(_EXIT_MARK)
