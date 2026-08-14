@@ -4722,6 +4722,13 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # the same file, inject a user turn telling the model to stop and rewrite.
     _edit_fail_counts: dict = {}
 
+    # "Agent:" header discipline (field report 2026-08-14): the label marks the
+    # START of a contiguous agent-output run and prints once per run — lazily,
+    # on the first TEXT token (a tool-only response never earns a bare label).
+    # A queued user message folded in mid-burst starts a new run, so the label
+    # re-appears after it as a continuation marker.
+    _agent_header_owed = True
+
     while True:
         turn += 1
         # Grind escalation (turn-budget): once per cycle, if a success_check is
@@ -4825,6 +4832,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         if monitor_bus.has_pending() and not _has_pending_tool_calls(conversation_history):
             if _drain_monitor_injections(conversation_history, framing=_BTW_FRAMING):
                 log.debug("mid-burst monitor injection delivered at turn %d", turn)
+                # A user message interrupted the output run — the next text the
+                # agent streams starts a new run and re-earns its header.
+                _agent_header_owed = True
 
         # Harvest any completed async summary before building context
         if _async_summarizer and _async_summarizer.harvest(summary_state):
@@ -5125,7 +5135,15 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
         status = StreamStatus(emit=_emit)
         # Sky-blue header — the aurora family's complement to the violet
         # "You:" prompt (NO_COLOR-safe; the PT spinner label strips ANSI).
-        status.start("\n" + theme.c(theme.SKY, "Assistant:", bold=True) + " ")
+        # DEFERRED to the first text token: a tool-only response shows only
+        # its tool status, never a bare label; once a run has its header,
+        # later iterations skip it (pt_header=False) until a queued user
+        # message resets the run (field report 2026-08-14).
+        if _agent_header_owed:
+            status.start("\n" + theme.c(theme.SKY, "Agent:", bold=True) + " ",
+                         defer_header=True)
+        else:
+            status.start("\nAgent: ", pt_header=False)
         renderer = _ReasoningRenderer(lambda t: _emit("on_stream_chunk", t))
 
         # TESTING NOTES: mock _llm_request to return one of:
@@ -5232,8 +5250,9 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
 
                     if delta.get("content"):
                         if not printed_header:
-                            status.first_token()
+                            status.first_token()   # prints the deferred header
                             printed_header = True
+                            _agent_header_owed = False
                         renderer.feed(delta["content"])
                         content_parts.append(delta["content"])
                         _content_chars += len(delta["content"])
@@ -5279,6 +5298,12 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
                         if not receiving_tools:
                             receiving_tools = True
                             if printed_header:
+                                # Complete the streamed block BEFORE any status
+                                # line: the renderer's tag-parsing holdback can
+                                # still own the tail of the last sentence, and
+                                # printing stats first split the block around
+                                # them (field report 2026-08-14).
+                                renderer.flush()
                                 _emit("on_notice", "info", "")
                                 status.finish()  # stop old spinner cleanly before reusing var
                                 status = StreamStatus(emit=_emit)

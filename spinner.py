@@ -131,13 +131,14 @@ class StreamStatus:
         self._first_token_time = None
         self._token_count = 0
         self._prefix = ""
+        self._deferred_header = None
         self._interactive = _interactive()
         self._tui_spin = False  # True when this instance published PT state
         self._emit = emit if emit is not None else lambda event, level, msg: print(msg)
 
     # -- Phase 1: spinner --------------------------------------------------
 
-    def start(self, prefix="", pt_header=True):
+    def start(self, prefix="", pt_header=True, defer_header=False):
         """Show an animated spinner with elapsed time.
 
         Any leading newlines in prefix are printed once upfront so the
@@ -149,16 +150,23 @@ class StreamStatus:
         per-tool spinner passes False — its header is printed by
         on_tool_start after the tool completes, and printing both
         duplicated every tool line in live-input mode.
+
+        defer_header: hold the scrollback header until first_token() — the
+        header is DATA-DRIVEN: it prints only when message text actually
+        arrives, so a tool-only response never prints a bare label (field
+        report 2026-08-14). Ignored in classic interactive mode, where the
+        spin thread owns the line and repaints the prefix itself.
         """
         stripped = prefix.lstrip("\n")
         leading = prefix[: len(prefix) - len(stripped)]
-        if leading:
-            sys.stdout.write(leading)
-            sys.stdout.flush()
         self._prefix = stripped
+        self._deferred_header = None
         self._start_time = time.monotonic()
         self._stop.clear()
         if self._interactive:
+            if leading:
+                sys.stdout.write(leading)
+                sys.stdout.flush()
             self._thread = threading.Thread(target=self._spin, daemon=True)
             self._thread.start()
         else:
@@ -180,7 +188,13 @@ class StreamStatus:
                 if not theme._no_color():
                     cols = shutil.get_terminal_size((80, 24)).columns
                     out = theme.truncate_middle(out, cols - 1)
-                sys.stdout.write(out + "\n")
+                if defer_header:
+                    self._deferred_header = leading + out + "\n"
+                    return
+                sys.stdout.write(leading + out + "\n")
+                sys.stdout.flush()
+            elif leading:
+                sys.stdout.write(leading)
                 sys.stdout.flush()
 
     def _spin(self):
@@ -216,6 +230,13 @@ class StreamStatus:
             self._thread.join()
             self._thread = None
         self._first_token_time = time.monotonic()
+        # Deferred header (defer_header=True in start): text has actually
+        # arrived, so the label is earned — print it now, ahead of the first
+        # streamed chunk (this runs synchronously before renderer.feed).
+        if getattr(self, "_deferred_header", None):
+            sys.stdout.write(self._deferred_header)
+            sys.stdout.flush()
+            self._deferred_header = None
         if self._tui_spin:
             # Keep the toolbar segment alive through streaming — the toolbar
             # appends the live tail of the in-progress line (cb.stream_tail),
