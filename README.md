@@ -4,6 +4,8 @@ A local, tool-driven coding assistant that talks to an OpenAI-compatible LLM end
 
 ![agent TUI screenshot](img/screenshot.png)
 
+📖 **[Documentation site](https://mblakemore.github.io/agent/)** — this README and the `docs/` guides, rendered.
+
 ## Install
 
 ```bash
