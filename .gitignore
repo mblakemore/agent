@@ -56,3 +56,11 @@ config.local.json
 .env.*
 *.local.*
 config.json
+
+# CICD + test run logs. Regenerated every run, timestamped, never referenced by name.
+# NOT the CICD loop's kept artifacts -- those (improvements/, progress, reviews) are
+# deliberately tracked under plan/CICD/, per the plan/* rule at the top of this file.
+logs/
+
+# Bedrock spend ledger -- runtime state that accumulates per run, not a source file.
+CICD/bedrock_spend.json
