@@ -202,6 +202,20 @@ class TestPromptMessageSpinner(unittest.TestCase):
         self.assertNotIn("·", text)
         end = i_partial + len("the block currently streaming")
         self.assertEqual(text[end:end + 2], "\n\n")
+        # CONTIGUOUS with scrollback: no leading blank before the partial —
+        # committed lines jumped past it on every commit (field 2026-08-14)
+        self.assertEqual(i_partial, 0)
+
+    def test_streaming_empty_buffer_holds_spinner_geometry(self):
+        """Between chunks (a line just committed) the buffer is briefly
+        empty; the spinner must keep its blank-line-above geometry rather
+        than jumping to the idle layout."""
+        sess = self._session(partial="")
+        with mock.patch.object(spinner, "get_active",
+                               return_value=("streaming", time.monotonic())):
+            text = self._text(sess._prompt_message())
+        self.assertTrue(text.startswith("\n"))
+        self.assertEqual(text.count("\n"), 2)
 
     def test_no_partial_line_when_buffer_empty(self):
         sess = self._session(partial="")

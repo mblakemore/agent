@@ -374,17 +374,25 @@ if _AVAILABLE:
                     width = os.get_terminal_size().columns
                 except OSError:
                     width = 80
-                # Layout while a turn runs (field-specified 2026-08-13):
+                # Layout while a turn runs (field-specified 2026-08-13/14):
                 #   <completed blocks — scrollback, committed on newline>
-                #   <actively streaming text — full width, wraps, grows live>
+                #   <actively streaming text — CONTIGUOUS with the block above>
+                #   <blank>
                 #   ⠇ <label> 10.8s
                 #   You:
                 # The partial line is REAL text in the prompt region, not a
                 # truncated tail inside the spinner line — it re-renders per
                 # invalidate, then commits to scrollback when its newline
                 # arrives and the region resets.
-                frags = [("class:prompt", "\n")]
+                #
+                # NO leading newline while streaming: the partial is the tail
+                # of the paragraph whose completed lines sit directly above in
+                # scrollback — a leading blank made every committed line
+                # visibly jump up past it (field report 2026-08-14). The
+                # blank line lives before the SPINNER instead. Idle/pre-token
+                # spinners keep the leading blank for breathing room.
                 partial = getattr(self.cb, "stream_partial", "")
+                streaming = label == "streaming"
                 if partial:
                     # prompt_toolkit renders a long message line truncated,
                     # not wrapped (verified via replay: a growing paragraph
@@ -399,10 +407,15 @@ if _AVAILABLE:
                                           drop_whitespace=False,
                                           replace_whitespace=False) or [""]
                         )
-                    frags.append(("class:prompt-stream", "\n".join(rows[-6:])))
-                    # Blank line between the streaming text and the spinner
-                    # line (field request 2026-08-14).
+                    frags = [("class:prompt-stream", "\n".join(rows[-6:]))]
                     frags.append(("class:prompt-stream", "\n\n"))
+                elif streaming:
+                    # Buffer momentarily empty between chunks (a line just
+                    # committed): hold the same blank-before-spinner geometry
+                    # so the spinner row doesn't jump.
+                    frags = [("class:prompt-stream", "\n")]
+                else:
+                    frags = [("class:prompt", "\n")]
                 # Aurora pulse (violet→sky→mint), same gradient the classic
                 # \r spinner sweeps — per-render inline color, animated by
                 # the invalidate ticker. ONLY the frame glyph pulses; the
