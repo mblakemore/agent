@@ -164,6 +164,10 @@ if _AVAILABLE:
             # 2026-08-13: streamed text rendered in the pulse start color).
             "prompt-stream":                      "default nobold",
             "prompt-status":                      f"{_BAR_FG_HEX} nobold",
+            # The accepted line's You: — mint, third stop of the aurora
+            # family (You: violet, Assistant: sky), so history reads apart
+            # from the live prompt at a glance.
+            "prompt-history":                     f"{_MINT_HEX} nobold",
             "bottom-toolbar":                     f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX} noreverse",
             "bottom-toolbar.cwd":                 f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX} bold",
             "bottom-toolbar.sep":                 f"bg:{_BAR_BG_HEX} {_BAR_FG_HEX}",
@@ -359,6 +363,16 @@ if _AVAILABLE:
             invalidate ticker. Must never raise (render path).
             """
             try:
+                # Final render on accept (is_done): THIS paint is what
+                # scrolls into history as the committed You: line. Mint
+                # instead of violet so past inputs read apart from the live
+                # prompt (field request 2026-08-14) — and no spinner/partial
+                # fragments, so transient state never commits to scrollback.
+                try:
+                    if self._session.app.is_done:
+                        return [("class:prompt-history", "\nYou: ")]
+                except Exception:
+                    pass
                 if self.cancelling:
                     return [
                         ("class:prompt", "\n"),

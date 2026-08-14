@@ -292,6 +292,24 @@ class TestPromptMessageSpinner(unittest.TestCase):
         self.assertNotEqual(merged.color, "7b4dff")
         self.assertFalse(merged.bold)
 
+    def test_final_render_commits_history_style_only(self):
+        """The is_done render is the paint that scrolls into history: it
+        must carry the prompt-history class (mint, not the live violet)
+        and drop spinner/partial fragments so transient state never
+        commits to scrollback."""
+        sess = self._session(partial="still streaming text")
+        sess._session.app = mock.Mock(is_done=True)
+        with mock.patch.object(spinner, "get_active",
+                               return_value=("streaming", time.monotonic())):
+            frags = sess._prompt_message()
+        self.assertEqual(frags, [("class:prompt-history", "\nYou: ")])
+
+    def test_history_style_overrides_live_prompt_style(self):
+        style = self.tui._build_style()
+        merged = style.get_attrs_for_style_str("class:prompt class:prompt-history")
+        self.assertEqual(merged.color, "5fffb0")
+        self.assertFalse(merged.bold)
+
     def test_never_raises_even_when_state_explodes(self):
         sess = self._session()
         with mock.patch.object(spinner, "get_active",
