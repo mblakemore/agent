@@ -723,7 +723,82 @@ def write_config(config_path, updates):
     return path
 
 
+# ── Local server discovery ────────────────────────────────────────────
+
+# Common local model-server ports: llama-server convention 8080+ (this
+# box runs GPU:8080 / CPU:8082), glm serve :8000, :5000 generic, ollama
+# :11434 (OpenAI-compatible under /v1).
+_SCAN_PORTS = (8080, 8081, 8082, 8083, 8084, 8085, 8086,
+               8000, 8001, 5000, 11434)
+
+
+def scan_local_servers(http=None, ports=_SCAN_PORTS, host="127.0.0.1"):
+    """Probe localhost for running OpenAI-compatible model servers.
+
+    Cheap and honest: /health or /v1/models decides presence; model name
+    and ctx come from the same metadata the role probes use. Returns
+    [{"base_url", "model", "ctx"}] in port order. A dead port is silence,
+    never an error."""
+    http = http or _default_http
+    found = []
+    for port in ports:
+        base = f"http://{host}:{port}"
+        status, _ = http(f"{base}/health", timeout=1)
+        if status != 200:
+            status2, body2 = http(f"{base}/v1/models", timeout=1)
+            if status2 != 200:
+                continue
+        model = None
+        status, body = http(f"{base}/v1/models", timeout=2)
+        if status == 200 and isinstance(body, dict):
+            data = body.get("data") or []
+            if data and isinstance(data[0], dict):
+                model = data[0].get("id")
+        ctx, _how = _probe_ctx(base, {}, http, body if status == 200 else None)
+        found.append({"base_url": base, "model": model, "ctx": ctx})
+    return found
+
+
+def _fmt_server(s):
+    model = s.get("model") or "(unknown model)"
+    ctx = f", ctx {s['ctx']:,}" if s.get("ctx") else ""
+    return f"{s['base_url']}  {model}{ctx}"
+
+
+def _ask_endpoint(label, current_url, found, input_fn, print_fn,
+                  fallback="http://127.0.0.1:8080"):
+    """base_url question, menu-aware: discovered servers are numbered
+    options, a typed URL always works, ENTER takes the default (current
+    config first, else the first discovered server, else the fallback)."""
+    if not found:
+        return _ask(label, current_url or fallback, input_fn)
+    for i, s in enumerate(found, 1):
+        print_fn(f"      {i}) {_fmt_server(s)}")
+    default = current_url or found[0]["base_url"]
+    ans = _ask(f"{label} — pick a number or type a URL", default,
+               input_fn).strip()
+    if ans.isdigit() and 1 <= int(ans) <= len(found):
+        return found[int(ans) - 1]["base_url"]
+    return ans
+
+
 # ── Interactive shell ─────────────────────────────────────────────────
+
+_INTRO = """──────────────────────────────────────────────────────────────
+Welcome to agent.py — an open-source, tool-rich, extensible
+autonomous agent engine.
+
+How it works, in one breath: your conversation lives in a ROLLING
+WINDOW, so the effective context is essentially unlimited. Messages
+that age out are auto-summarized by a background process — and that
+summarizer is its own model role, pointable at any endpoint (a common
+shape: the MAIN model on your GPU, a small SUMMARY model on CPU).
+A third role, the ADVISOR, is an on-demand tool you can aim at a
+bigger, slower model for the rare hard call.
+
+This wizard configures those three roles, probes each endpoint live,
+and calibrates the engine to what it actually measures.
+──────────────────────────────────────────────────────────────"""
 
 
 def _ask(prompt, default, input_fn):
@@ -764,7 +839,7 @@ def _consent_asker(input_fn, print_fn):
     return ask
 
 
-def _role_screen(role, current, input_fn, print_fn, http):
+def _role_screen(role, current, input_fn, print_fn, http, found=None):
     """One role's questions + inline probe. Returns (section_dict, report)."""
     print_fn(f"\n── {role.upper()} model ──")
     cur_kind = {"llamacpp": "1", "bedrock": "2", "foundry": "3"}.get(
@@ -816,9 +891,9 @@ def _role_screen(role, current, input_fn, print_fn, http):
             section.pop("api_url")
     else:
         section = {"kind": "llamacpp"}
-        section["base_url"] = _ask(
-            "base_url", current.get("base_url", "http://127.0.0.1:8080"),
-            input_fn)
+        section["base_url"] = _ask_endpoint(
+            "base_url", current.get("base_url", ""), found,
+            input_fn, print_fn)
         api_key = _ask("api_key (ENTER for none)", current.get("api_key", ""),
                        input_fn)
         if api_key:
@@ -841,7 +916,7 @@ def _role_screen(role, current, input_fn, print_fn, http):
     return section, report
 
 
-def _advisor_screen(current, input_fn, print_fn, http):
+def _advisor_screen(current, input_fn, print_fn, http, found=None):
     """Advisor endpoint (the escalation-tier tool agent.py probes at boot).
 
     Optional: ENTER on an empty URL skips/disables. A failing probe writes
@@ -849,18 +924,25 @@ def _advisor_screen(current, input_fn, print_fn, http):
     rather than persisting a dead endpoint as live."""
     print_fn("\n── ADVISOR endpoint (optional — feeds the advisor tool) ──")
     cur = current.get("base_url", "")
+    if found:
+        for i, s in enumerate(found, 1):
+            print_fn(f"      {i}) {_fmt_server(s)}")
+    pick = " pick a number," if found else ""
     if cur:
-        raw = input_fn(f"advisor base_url [{cur}] (ENTER = keep as-is, "
-                       "'-' = disable): ").strip()
+        raw = input_fn(f"advisor base_url [{cur}] ({pick.strip() + ' ' if pick else ''}"
+                       "ENTER = keep as-is, '-' = disable): ").strip()
         if raw == "":
             return None          # keep existing config untouched
     else:
-        raw = input_fn("advisor base_url (ENTER = skip, '-' = disable): ").strip()
+        raw = input_fn(f"advisor base_url ({pick.strip() + ' ' if pick else ''}"
+                       "ENTER = skip, '-' = disable): ").strip()
         if raw == "":
             return None          # never configured, nothing to write
     if raw == "-":
         print_fn("   advisor disabled")
         return {"enabled": False}
+    if found and raw.isdigit() and 1 <= int(raw) <= len(found):
+        raw = found[int(raw) - 1]["base_url"]
     base_url = raw
     api_key = _ask("advisor api_key (ENTER for none)",
                    current.get("api_key", ""), input_fn)
@@ -902,6 +984,20 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
     input_fn = input_fn or input
     print_fn = print_fn or print
     effective_cfg = effective_cfg or {}
+    found_servers = []
+    if jump_to is None:
+        print_fn(_INTRO)
+        do_scan = _ask("scan localhost for running model servers? (y/n)",
+                       "y", input_fn)
+        if do_scan.lower().startswith("y"):
+            print_fn("   scanning common local ports…")
+            found_servers = scan_local_servers(http=http)
+            if found_servers:
+                print_fn(f"   found {len(found_servers)} server(s):")
+                for s in found_servers:
+                    print_fn(f"      • {_fmt_server(s)}")
+            else:
+                print_fn("   none found — you can still type URLs directly.")
     current_cfg = {}
     try:
         loaded = json.loads(Path(config_path).read_text(encoding="utf-8",
@@ -917,7 +1013,8 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
 
     if jump_to in (None, "main"):
         section, main_report = _role_screen(
-            "main", current_cfg.get("llm", {}), input_fn, print_fn, http)
+            "main", current_cfg.get("llm", {}), input_fn, print_fn, http,
+            found=found_servers)
         updates["llm"] = section
         # P5/P6 (Phase 3): free on llamacpp; metered-trivial on foundry;
         # bedrock self-reports UNMEASURED.
@@ -950,7 +1047,8 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
                          f"{summary.get('base_url') or summary.get('api_url')} "
                          f"(shared)")
             else:
-                section, _ = _role_screen("summary", cur, input_fn, print_fn, http)
+                section, _ = _role_screen("summary", cur, input_fn,
+                                          print_fn, http, found=found_servers)
                 section["enabled"] = True
                 updates["summary"] = section
         else:
@@ -960,7 +1058,7 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
 
     if jump_to in (None, "advisor"):
         adv = _advisor_screen(current_cfg.get("advisor", {}),
-                              input_fn, print_fn, http)
+                              input_fn, print_fn, http, found=found_servers)
         if adv is not None:
             updates["advisor"] = adv
 

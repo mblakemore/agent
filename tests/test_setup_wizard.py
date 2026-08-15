@@ -174,7 +174,7 @@ class TestWizardScripted(unittest.TestCase):
 
     def test_full_run_defaults_shared_summary(self):
         # answers: kind, base_url, key, model, reuse-summary, accept-calibration
-        updates, on_disk, printed = self._run(["", "", "", "", "y", "", "y"])
+        updates, on_disk, printed = self._run(["n", "", "", "", "", "y", "", "y"])
         self.assertNotIn("advisor", updates)   # skipped -> untouched
         self.assertEqual(updates["llm"]["base_url"], "http://127.0.0.1:8080")
         self.assertEqual(updates["llm"]["model"], "qwen3.8-27b")   # auto-picked
@@ -186,7 +186,7 @@ class TestWizardScripted(unittest.TestCase):
         self.assertIn("_calibrated", on_disk)
 
     def test_declined_calibration_keeps_defaults(self):
-        updates, on_disk, _ = self._run(["", "", "", "", "y", "", "n"])
+        updates, on_disk, _ = self._run(["n", "", "", "", "", "y", "", "n"])
         self.assertNotIn("context", updates)
         self.assertNotIn("_calibrated", on_disk)
         self.assertIn("llm", on_disk)   # endpoint config still written
@@ -199,7 +199,7 @@ class TestWizardScripted(unittest.TestCase):
 
     def test_unreachable_endpoint_still_writes_no_calibration(self):
         updates, on_disk, printed = self._run(
-            ["", "http://dead:1", "", "", "y", "", "y"], routes={})
+            ["n", "", "http://dead:1", "", "", "y", "", "y"], routes={})
         self.assertEqual(updates["llm"]["base_url"], "http://dead:1")
         self.assertNotIn("context", updates)   # ctx unmeasured -> no knobs
         self.assertTrue(any("UNMEASURED" in s for s in printed))
@@ -307,7 +307,8 @@ class TestWizardBedrockScreen(unittest.TestCase):
     def test_bedrock_answers_produce_kinded_section(self):
         import llm_backend as L
         b = _FakeBackend(models=["claude-v4.6-opus"], ctx=180000)
-        answers = iter(["2", "https://gw.example", "sekrit",
+        answers = iter(["n",                          # scan: skip
+                        "2", "https://gw.example", "sekrit",
                         "claude-v4.6-opus", "25.5",  # main screen
                         "y",                          # summary: reuse main
                         "",                           # advisor: skip
@@ -568,3 +569,86 @@ class TestCommandDispatch(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestServerScanAndMenus(unittest.TestCase):
+    """Localhost discovery + endpoint menus (2026-08-15 ask)."""
+
+    @staticmethod
+    def _port_http(alive):
+        """alive: {port: (model, ctx)} — only those ports answer."""
+        def http(url, data=None, headers=None, timeout=20):
+            import re as _re
+            m = _re.search(r":(\d+)(/.*)$", url)
+            if not m or int(m.group(1)) not in alive:
+                return 0, "refused"
+            model, ctx = alive[int(m.group(1))]
+            path = m.group(2)
+            if path == "/health":
+                return 200, {"status": "ok"}
+            if path == "/v1/models":
+                return 200, {"data": [{"id": model}]}
+            if path == "/props":
+                return 200, {"default_generation_settings": {"n_ctx": ctx}}
+            return 404, ""
+        return http
+
+    def test_scan_finds_only_live_ports_with_metadata(self):
+        http = self._port_http({8080: ("gpu-27b", 196608),
+                                8082: ("cpu-4b", 40960)})
+        found = W.scan_local_servers(http=http)
+        self.assertEqual([s["base_url"] for s in found],
+                         ["http://127.0.0.1:8080", "http://127.0.0.1:8082"])
+        self.assertEqual(found[0]["model"], "gpu-27b")
+        self.assertEqual(found[1]["ctx"], 40960)
+
+    def test_scan_empty_when_nothing_listens(self):
+        self.assertEqual(W.scan_local_servers(http=self._port_http({})), [])
+
+    def test_menu_number_selects_discovered_server(self):
+        http = self._port_http({8080: ("gpu-27b", 196608),
+                                8082: ("cpu-4b", 40960)})
+        # scan y -> main pick 1 -> summary separate pick 2 -> advisor pick 1
+        answers = iter(["y",
+                        "", "1", "", "",       # main: kind, MENU 1, key, model
+                        "n",                    # summary: separate
+                        "", "2", "", "",        # summary: MENU 2
+                        "1", "",                # advisor: MENU 1, key
+                        "y", ""])               # calibration, (chain absent->n)
+        printed = []
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / ".agent" / "config.json"
+            updates = W.run_wizard(p, {}, input_fn=lambda _: next(answers, ""),
+                                   print_fn=printed.append, http=http)
+        self.assertEqual(updates["llm"]["base_url"], "http://127.0.0.1:8080")
+        self.assertEqual(updates["summary"]["base_url"], "http://127.0.0.1:8082")
+        self.assertEqual(updates["summary"]["model"], "cpu-4b")
+        self.assertEqual(updates["advisor"]["base_url"], "http://127.0.0.1:8080")
+        self.assertTrue(updates["advisor"]["enabled"])
+        joined = "\n".join(printed)
+        self.assertIn("Welcome to agent.py", joined)
+        self.assertIn("ROLLING", joined)
+        self.assertIn("found 2 server(s)", joined)
+
+    def test_typed_url_still_wins_over_menu(self):
+        http = self._port_http({8080: ("gpu-27b", 196608)})
+        answers = iter(["y", "", "http://elsewhere:9999", "", "",
+                        "y", "", "y", ""])
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / ".agent" / "config.json"
+            updates = W.run_wizard(p, {}, input_fn=lambda _: next(answers, ""),
+                                   print_fn=lambda s: None, http=http)
+        self.assertEqual(updates["llm"]["base_url"], "http://elsewhere:9999")
+
+    def test_intro_and_scan_only_on_full_runs(self):
+        printed = []
+        answers = iter(["", "http://s:9090", "", ""])
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / ".agent" / "config.json"
+            W.run_wizard(p, {}, jump_to="summary",
+                         input_fn=lambda _: next(answers, ""),
+                         print_fn=printed.append,
+                         http=self._port_http({9090: ("m", 100)}))
+        joined = "\n".join(printed)
+        self.assertNotIn("Welcome to agent.py", joined)
+        self.assertNotIn("scan localhost", " ".join(joined.split()))

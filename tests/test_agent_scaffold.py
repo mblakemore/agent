@@ -151,7 +151,8 @@ class TestSetupChain(unittest.TestCase):
         return http
 
     def test_setup_offers_agent_chain_and_launches_on_yes(self):
-        answers = iter(["", "", "", "",      # main defaults
+        answers = iter(["n",                  # scan: skip
+                        "", "", "", "",       # main defaults
                         "y",                  # summary: reuse
                         "",                   # advisor: skip
                         "y",                  # accept calibration
@@ -165,7 +166,7 @@ class TestSetupChain(unittest.TestCase):
             self.assertEqual(Path(agent_wiz.call_args.kwargs["cwd"]), Path(d))
 
     def test_setup_chain_defaults_to_no(self):
-        answers = iter(["", "", "", "", "y", "", "y"])   # chain answer absent
+        answers = iter(["n", "", "", "", "", "y", "", "y"])   # chain answer absent
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("agent_scaffold.run_agent_wizard") as agent_wiz:
             p = Path(d) / ".agent" / "config.json"
