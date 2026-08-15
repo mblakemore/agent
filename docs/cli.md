@@ -102,6 +102,8 @@ Falls back to plain `input()` automatically if `prompt_toolkit` isn't installed.
 | `/clear` | Clear conversation history and start a fresh session log. |
 | `/context` | Show context usage as an Aurora-gradient bar with token counts. |
 | `/model [main\|summary] [name]` | Set the **main** or **summary** model and persist it to `.agent/config.json` (survives restart). Bare `/model` picks the main model interactively; `/model summary` targets the summary backend; append a model id (`/model main gpt-4o`) to set it directly without the picker. |
+| `/setup [main\|summary\|advisor\|test\|calibrate]` | Configure and calibrate the model roles: intro + localhost server scan, per-role endpoint menus (llamacpp/bedrock/foundry), live probes (reach, auth, model, max-context, throughput, capabilities), probe-driven calibration with drift detection. `test` probes without changing or spending anything. Auto-launches on first run in an unconfigured folder (TTY sessions only). |
+| `/agent` | Scaffold an autonomous-agent identity here: type (creature/worker/minimal) then name, an AGENT.md/CLAUDE.md generated from the live config (real model table, advisor guidance, measured context), git provisioning when the folder isn't a repo (init / GitHub via `gh` / clone-it-yourself), and a finalizing `C0` init commit. |
 | `/alias` | Detect the working Python and install an `agent` shell alias (`<python> /path/to/agent.py` → `agent`). Writes an idempotent block to `~/.bashrc` / `~/.zshrc` on Linux & Git-Bash; prints PowerShell/cmd equivalents on native Windows. |
 | `/verbose` | Toggle compact vs. full tool-result output. |
 | `/tools [N\|all]` | Show buffered tool calls with a one-line result preview. |

@@ -18,8 +18,14 @@ A local, tool-driven coding assistant that talks to an OpenAI-compatible LLM end
    ```bash
    llama-server -m your-model.gguf --port 8080
    ```
-2. (Optional) create a `config.json` in your working directory — see [Configuration](#configuration).
-3. Run:
+2. Run interactively in a fresh folder — the **first-run setup wizard** launches
+   automatically, scans localhost for your running servers, and configures +
+   calibrates everything (see [Setup wizard](#setup-wizard--setup)):
+   ```bash
+   python agent.py
+   ```
+   Or skip the wizard and go straight to a task (a hand-written `config.json`
+   also works — see [Configuration](#configuration)):
    ```bash
    python agent.py "fix the failing test in tests/test_parser.py"
    ```
@@ -31,6 +37,71 @@ Fine-tuned variants of the Qwen3.6 and Gemma 4 lines are published too.
 See **[docs/models.md](docs/models.md)** for the full list and what to pick, **[docs/setup.md](docs/setup.md)**
 for download/quantize/serve instructions, and **[docs/configurations.md](docs/configurations.md)**
 for the `config.json` shapes that combine them.
+
+## Setup wizard — `/setup`
+
+Running `agent.py` interactively in a folder with no config (no `.agent/config.json`,
+no legacy `config.json`) launches a **first-run wizard** before the first prompt —
+real-TTY sessions only; `-a`/piped/scripted runs never block on it. The same wizard is
+available any time as `/setup`.
+
+It opens with a short intro (the rolling-window model, the three roles), then offers
+to **scan localhost for running model servers** — llama-server's 8080–8086,
+`glm serve` :8000/:8001, :5000, ollama :11434. Hits show their model name and context
+size and become numbered menu options, so a multi-endpoint setup is a few keystrokes:
+
+```
+found 2 server(s):
+   • http://127.0.0.1:8080  Qwen3.8-27B-GGUF, ctx 196,608
+   • http://127.0.0.1:8082  Qwen3-4B-GGUF:Q8_0, ctx 40,960
+```
+
+Each role — **main**, **summary**, **advisor** — is configured against `llamacpp`
+(any OpenAI-compatible endpoint), `bedrock`, or `foundry` (Azure), then **probed
+live**: reachability, auth (a 401 is kept distinct from unreachable), model resolve
+(auto-picks from `/v1/models`), **max context** (`/props` → `/slots` → model
+metadata → an empirical binary search that trusts the server's own token counts,
+consent-gated with a cost estimate on metered backends), throughput, and capability
+flags (tool-call roundtrip, reasoning parameter, server timings). A probe that
+cannot run reports `UNMEASURED` — never conflated with `FAILED`.
+
+**Calibration** derives the engine's context budget from what was actually measured
+— `ctx_size` (measured − 10%), summary threshold, message caps — and records the
+derivation in a `_calibrated` sidecar so later runs can report **drift**. Nothing
+unmeasured is ever written: shipped defaults stay, and the wizard says so.
+
+Forms: `/setup` (full run) · `/setup main|summary|advisor` (one section) ·
+`/setup test` (probe everything, change nothing, spend nothing) ·
+`/setup calibrate` (re-derive + drift report). Config lands in
+`.agent/config.json` (chmod 600 when a key is present); inside a git repo the
+engine auto-gitignores `.agent/` + `config.json` and **warns loudly if a config
+file is already tracked** — gitignore doesn't untrack, and the warning includes
+the exact `git rm --cached` fix.
+
+## Agent scaffold — `/agent`
+
+`/agent` mints an autonomous-agent identity in the current folder — an instructions
+file the agent *is*, plus its state tree. A full `/setup` run offers to chain
+straight into it at the end.
+
+- **Type first, then name**: `creature` (full six-phase cognitive loop with
+  patterns, anchors and creator messages), `worker` (4-phase task agent with a
+  decisions log), or `minimal` (bare loop). The name defaults to the folder's.
+- The generated `AGENT.md`/`CLAUDE.md` carries a first-person identity, a
+  wrong-repo guard (`git remote -v`, stop if it isn't yours), one-cycle-per-
+  invocation discipline, a verify-before-decide gate — and, generated from your
+  **live config**, a "My Models" table with the real endpoints and model names,
+  advisor escalation guidance only when an advisor is actually configured, and the
+  measured context window. No config → it points at `/setup`; nothing is invented.
+- **An agent requires a git repo** (the commit is its continuity). In a bare
+  folder the wizard offers: local `git init` · create a GitHub repo via an
+  authenticated `gh` CLI and wire it as `origin` · or stop cleanly so you can
+  clone a blank repo yourself first. Setup finalizes with an init commit
+  (`C0: <name> scaffolded — awakening pending`) of exactly the scaffolded files —
+  runtime state and logs stay untracked — and pushes when an origin exists.
+
+Both identity filenames load whole when referenced (`@AGENT.md` / `@CLAUDE.md`):
+start the agent with `@AGENT.md run the loop`.
 
 ## CLI
 
@@ -107,7 +178,7 @@ Agent-specific tools in `./tools/` alongside your working directory are auto-dis
 
 ## Configuration
 
-Drop a `config.json` in the working directory (i.e. wherever you run `agent.py` from) to override defaults. All sections are optional; omitted keys use the defaults listed below.
+Drop a `config.json` in the working directory (i.e. wherever you run `agent.py` from) to override defaults. All sections are optional; omitted keys use the defaults listed below. **You rarely need to write this by hand** — the [`/setup` wizard](#setup-wizard--setup) writes and calibrates it for you from live probes of your endpoints.
 
 The agent looks for `.agent/config.json` first, then falls back to `config.json` in the working directory. Putting it under `.agent/` keeps your local, key-bearing config alongside the other runtime files. When you run inside a git repo, the agent best-effort adds `.agent/` and `config.json` to `.gitignore` so your config (which may hold API keys) and runtime state never get committed. Outside a repo it leaves the directory untouched.
 
