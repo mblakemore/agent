@@ -137,7 +137,8 @@ class TestAdvisorEscalationWiring:
 
     def _run_adv(self, monkeypatch, advisor_cfg, side_effects):
         monkeypatch.setitem(_agent._config, "cycle",
-                            {**_agent._config["cycle"], "success_check": "false"})
+                            {**_agent._config["cycle"], "success_check": "false",
+                             "claim_trace_max_blocks": 2})
         if advisor_cfg is not None:
             monkeypatch.setitem(_agent._config, "advisor", advisor_cfg)
         history = [{"role": "user", "content": "Do the work."}]
@@ -347,7 +348,8 @@ class TestClaimVsTraceGate:
         # No success_check configured (the plain-agent case): a completion that
         # claims verification with no test run must be rejected with a correction.
         monkeypatch.setitem(_agent._config, "cycle",
-                            {**_agent._config["cycle"], "success_check": None})
+                            {**_agent._config["cycle"], "success_check": None,
+                             "claim_trace_max_blocks": 2})
         monkeypatch.setitem(_MAP_FN, "exec_command",
                             MagicMock(return_value="exit=0\ncommitted"))
         history = [{"role": "user", "content": "Fix inc in m.py."}]
@@ -376,7 +378,8 @@ class TestClaimVsTraceGate:
         # 'test passes' claim (no pytest ran) must still be caught + corrected.
         monkeypatch.setattr(_agent, "_NUDGE_ENABLED", True)
         monkeypatch.setitem(_agent._config, "cycle",
-                            {**_agent._config["cycle"], "success_check": None})
+                            {**_agent._config["cycle"], "success_check": None,
+                             "claim_trace_max_blocks": 2})
         monkeypatch.setitem(_MAP_FN, "exec_command",
                             MagicMock(return_value="exit=0\nwrote m.py"))
         history = [{"role": "user", "content": "Fix inc in m.py."}]

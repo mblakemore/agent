@@ -156,6 +156,7 @@ class TestSetupChain(unittest.TestCase):
                         "y",                  # summary: reuse
                         "",                   # advisor: skip
                         "y",                  # accept calibration
+                        "n",                  # claim guard: leave off
                         "y"])                 # configure an agent? YES
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("agent_scaffold.run_agent_wizard") as agent_wiz:

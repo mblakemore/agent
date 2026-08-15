@@ -4374,11 +4374,17 @@ def run_agent_single(conversation_history: list, summary_state: dict, initial_fi
     # run does not count as verification of the current state.
     _ran_verification = False
     _claim_trace_blocks = 0
+    # OFF BY DEFAULT (2026-08-15): the claim-phrase matcher false-positives
+    # on conversational/creative text — a story containing 'the test passes'
+    # drew a correction demanding a real tool run, and the model dutifully
+    # ls'd an empty folder and apologized. Coding sessions should turn it on
+    # (the /setup wizard asks, recommending it for coding projects); it
+    # writes cycle.claim_trace_max_blocks=2.
     try:
         _CLAIM_TRACE_MAX_BLOCKS = int(
-            (_config.get("cycle") or {}).get("claim_trace_max_blocks", 2) or 0)
+            (_config.get("cycle") or {}).get("claim_trace_max_blocks", 0) or 0)
     except Exception:
-        _CLAIM_TRACE_MAX_BLOCKS = 2
+        _CLAIM_TRACE_MAX_BLOCKS = 0
     # Advisor escalation (spike): suggest the heavyweight advisor tier at most
     # once per cycle when the gate fails repeatedly. Inert unless
     # _config["advisor"]["enabled"] — default-off, so no behavior change. The

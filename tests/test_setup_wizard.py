@@ -652,3 +652,42 @@ class TestServerScanAndMenus(unittest.TestCase):
         joined = "\n".join(printed)
         self.assertNotIn("Welcome to agent.py", joined)
         self.assertNotIn("scan localhost", " ".join(joined.split()))
+
+
+class TestClaimGuard(unittest.TestCase):
+    """The claim-vs-trace kick is OFF by default (prose false-positives on
+    chat/creative use) and /setup enables it for coding projects."""
+
+    ROUTES = LLAMA_ROUTES
+
+    def _run(self, answers, effective=None):
+        it = iter(answers)
+        printed = []
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / ".agent" / "config.json"
+            updates = W.run_wizard(p, effective or {},
+                                   input_fn=lambda _: next(it, ""),
+                                   print_fn=printed.append,
+                                   http=fake_http(self.ROUTES))
+        return updates, "\n".join(printed)
+
+    def test_engine_default_is_off(self):
+        import importlib, agent
+        self.assertEqual(
+            int((agent._DEFAULT_CONFIG.get("cycle") or {})
+                .get("claim_trace_max_blocks", 0) or 0), 0)
+
+    def test_wizard_defaults_to_no_and_writes_nothing(self):
+        updates, out = self._run(["n", "", "", "", "", "y", "", "y"])
+        self.assertNotIn("cycle", updates)
+        self.assertIn("CLAIM GUARD", out)
+        self.assertIn("CODING projects", out)
+
+    def test_yes_enables_with_two_blocks(self):
+        updates, _ = self._run(["n", "", "", "", "", "y", "", "y", "y"])
+        self.assertEqual(updates["cycle"]["claim_trace_max_blocks"], 2)
+
+    def test_no_when_currently_enabled_writes_explicit_zero(self):
+        updates, _ = self._run(["n", "", "", "", "", "y", "", "y", "n"],
+                               effective={"cycle": {"claim_trace_max_blocks": 2}})
+        self.assertEqual(updates["cycle"]["claim_trace_max_blocks"], 0)

@@ -1117,6 +1117,26 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
             else:
                 print_fn("    calibration skipped — defaults kept")
 
+    # Claim guard (off by default engine-wide): the end-of-response check
+    # that blocks a 'verified/committed' CLAIM with no matching tool call.
+    # Right for coding, wrong for chat/creative — prose false-positives.
+    if jump_to is None:
+        cur_blocks = int((effective_cfg.get("cycle") or {})
+                         .get("claim_trace_max_blocks", 0) or 0)
+        print_fn(_section("CLAIM GUARD"))
+        print_fn(
+            "When a response REPORTS running tests or committing but no such\n"
+            "tool call happened, inject a correction demanding the real\n"
+            "action. Use it for CODING projects; leave it off for chat or\n"
+            "creative use — story prose can false-positive as a claim.")
+        cg = _ask("enable the claim guard? (y/n)",
+                  "y" if cur_blocks > 0 else "n", input_fn)
+        if cg.lower().startswith("y"):
+            updates.setdefault("cycle", {})["claim_trace_max_blocks"] = 2
+        elif cur_blocks > 0:
+            updates.setdefault("cycle", {})["claim_trace_max_blocks"] = 0
+            print_fn("    claim guard disabled")
+
     # Recommendations (Phase 3): printed, never silently applied.
     recs = recommend(main_report or {}, throughput=main_throughput,
                      caps=main_caps,

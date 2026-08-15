@@ -70,6 +70,11 @@ cannot run reports `UNMEASURED` — never conflated with `FAILED`.
 derivation in a `_calibrated` sidecar so later runs can report **drift**. Nothing
 unmeasured is ever written: shipped defaults stay, and the wizard says so.
 
+The wizard also asks about the **claim guard** — the end-of-response check that
+blocks a "verified/committed" claim with no matching tool call. It's **off by
+default** (story prose can false-positive as a claim); enable it for coding
+projects.
+
 Forms: `/setup` (full run) · `/setup main|summary|advisor` (one section) ·
 `/setup test` (probe everything, change nothing, spend nothing) ·
 `/setup calibrate` (re-derive + drift report). Config lands in
