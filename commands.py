@@ -226,9 +226,25 @@ def _cmd_agent(ctx, args):
     cb_print = ctx.cb._print
     cb_print(theme.c(theme.SKY, "Agent Scaffold Wizard"))
     try:
-        A.run_agent_wizard(print_fn=cb_print)
+        A.run_agent_wizard(print_fn=cb_print, input_fn=_borrow_input)
     except (KeyboardInterrupt, EOFError):
         safe_cb(ctx.cb, "on_notice", "info", "\n/agent aborted — nothing written")
+
+
+def _borrow_input(prompt: str = "") -> str:
+    """input() for wizards running inside the terminal borrow.
+
+    Under patch_stdout, a promptless-newline prompt sits unflushed in the
+    proxy while the prompt app is suspended — input()'s own prompt never
+    appears and the wizard looks hung at its first question. Writing to
+    sys.__stdout__ ALSO vanishes in the borrowed-terminal state (measured,
+    QA 2026-08-15: input() was demonstrably waiting while neither channel
+    showed a byte). The one channel proven to render is the proxy with a
+    trailing newline — the same path every wizard print uses — so the
+    question becomes its own line and the answer is typed on the next."""
+    if prompt:
+        print(prompt)
+    return input("")
 
 
 def _cmd_setup(ctx: SimpleNamespace, args: str) -> None:
@@ -254,7 +270,8 @@ def _cmd_setup(ctx: SimpleNamespace, args: str) -> None:
     cfg_path = Path(os.getcwd()) / ".agent" / "config.json"
     try:
         updates = W.run_wizard(cfg_path, ctx.config,
-                               jump_to=(arg or None) if arg != "" else None)
+                               jump_to=(arg or None) if arg != "" else None,
+                               input_fn=_borrow_input)
     except (KeyboardInterrupt, EOFError):
         safe_cb(ctx.cb, "on_notice", "info", "\n/setup aborted — nothing written")
         return

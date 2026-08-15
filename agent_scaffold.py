@@ -330,17 +330,20 @@ _REPO_MENU = ("this folder is NOT a git repo, and an agent's cycles require "
 
 def provision_repo(cwd, name, input_fn, print_fn):
     """Ensure ``cwd`` is a git repo before scaffolding. Returns
-    (ok, remote_wanted): ok=False aborts the wizard (the user chose to
-    clone one themselves, or provisioning failed hard); remote_wanted is
-    the deferred gh-create request executed AFTER the init commit exists
-    (GitHub's --push path wants a commit to push)."""
+    (ok, remote_wanted, created): ok=False aborts the wizard (the user
+    chose to clone one themselves, or provisioning failed hard);
+    remote_wanted is the deferred gh-create request executed AFTER the
+    init commit exists (GitHub's --push path wants a commit to push);
+    created says whether THIS wizard made the repo — the init-commit
+    default is yes only then (a default-yes C0 into a pre-existing
+    project's history would be a surprise; QA 2026-08-15)."""
     if _in_repo(cwd):
-        return True, None
+        return True, None, False
     choice = _ask(_REPO_MENU, "1", input_fn).strip()
     if choice == "3":
         print_fn("   fine — clone your blank repo into this folder, then "
                  "run /agent again. Nothing was written.")
-        return False, None
+        return False, None, False
     if choice == "2":
         ok, why = _gh_ready(cwd)
         if not ok:
@@ -349,20 +352,20 @@ def provision_repo(cwd, name, input_fn, print_fn):
                             input_fn)
             if not fallback.lower().startswith("y"):
                 print_fn("   aborted — nothing written.")
-                return False, None
+                return False, None, False
             choice = "1"
     rc, out = _git(["git", "init", "-q"], cwd)
     if rc != 0:
         print_fn(f"   git init FAILED: {out} — aborted, nothing written.")
-        return False, None
+        return False, None, False
     print_fn("   local repo initialized.")
     if choice == "2":
         vis = _ask("   GitHub repo visibility — private/public", "private",
                    input_fn).strip().lower()
         repo_name = _ask("   GitHub repo name", name, input_fn)
         return True, {"name": repo_name,
-                      "private": vis != "public"}
-    return True, None
+                      "private": vis != "public"}, True
+    return True, None, True
 
 
 def finalize_commit(cwd, name, written, remote_wanted, print_fn):
@@ -443,7 +446,8 @@ def run_agent_wizard(cwd=None, input_fn=None, print_fn=None):
     # The cycles REQUIRE a repo (commit = continuity) — provision before
     # anything is written, and right after the name so the GitHub option
     # can default the repo name to the agent's.
-    repo_ok, remote_wanted = provision_repo(cwd, name, input_fn, print_fn)
+    repo_ok, remote_wanted, repo_created = provision_repo(
+        cwd, name, input_fn, print_fn)
     if not repo_ok:
         return []
 
@@ -504,7 +508,8 @@ def run_agent_wizard(cwd=None, input_fn=None, print_fn=None):
 
     # The init commit finalizes the setup (explicit paths, never add -A).
     if written:
-        do_commit = _ask("make the init commit now? (y/n)", "y", input_fn)
+        do_commit = _ask("make the init commit now? (y/n)",
+                         "y" if repo_created else "n", input_fn)
         if do_commit.lower().startswith("y"):
             finalize_commit(cwd, name, written, remote_wanted, print_fn)
         elif remote_wanted:
