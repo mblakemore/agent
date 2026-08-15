@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install — agent</title>
+<meta name="description" content="agent.py is cross-platform Python. Installing it is separate from getting a model server running — that is Setup.">
+<link rel="canonical" href="https://mblakemore.github.io/agent/install.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Install">
+<meta property="og:description" content="agent.py is cross-platform Python. Installing it is separate from getting a model server running — that is Setup.">
+<meta property="og:url" content="https://mblakemore.github.io/agent/install.html">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/agent-docs.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"Install","url":"https://mblakemore.github.io/agent/install.html","description":"agent.py is cross-platform Python. Installing it is separate from getting a model server running — that is Setup."}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><div class="in">
+  <span class="brand"><a href="index.html">agent</a></span>
+  <span class="tag">documentation</span>
+  <nav aria-label="primary">
+    <a href="index.html">Overview</a>
+    <a href="https://github.com/mblakemore/agent">Source</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html" aria-current="page">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="cli.html">CLI and usage</a></li><li><a href="models.html">Recommended models</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
+  <main id="main">
+    <p class="eyebrow">Install</p>
+<h1>Install</h1>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/install.md"><code>docs/install.md</code></a> · last changed 2026-08-15 (1de4a5f)</p>
+<p><code>agent.py</code> is cross-platform Python. Installing it is separate from getting a model server
+running — that is <a href="setup.html">Setup</a>.</p>
+<pre tabindex="0"><code class="language-bash">pip install --user -r requirements.txt
+</code></pre>
+<p>On Ubuntu 24.04+ (PEP 668 / externally-managed system python), add <code>--break-system-packages</code>, or install into a venv:</p>
+<pre tabindex="0"><code class="language-bash">python3 -m venv .venv &amp;&amp; .venv/bin/pip install -r requirements.txt
+</code></pre>
+<h2 id="windows-git-bash-setup">Windows (Git-Bash) setup</h2>
+<p>The runtime is cross-platform Python. The <code>exec_command</code> tool shells out to <code>bash</code> so shell idioms (heredocs, pipes, <code>&amp;&amp;</code>, <code>/tmp/...</code>) run unchanged — on Windows that bash comes from Git-Bash, <strong>not</strong> <code>cmd</code> or PowerShell.</p>
+<ol>
+<li><strong>Install <a href="https://git-scm.com/download/win">Git for Windows</a>.</strong> It bundles a standalone <code>bash.exe</code> (MSYS2) and <code>git</code> — no WSL required.</li>
+<li><strong>Install Python 3.10+</strong> for Windows, then <code>pip install -r requirements.txt</code>. (Install the GitHub CLI <code>gh</code> too if you run the CICD pipeline.)</li>
+<li><strong>Make <code>bash</code> resolvable.</strong> The runtime locates Git-Bash itself and <strong>deliberately ignores <code>C:\Windows\System32\bash.exe</code></strong> — that's the WSL launcher stub, which fails every command with <em>"Windows Subsystem for Linux has no installed distributions"</em> if you don't run WSL. (Bare <code>bash</code> would re-resolve straight back to that stub, so it's not used as a fallback.) Resolution order:
+   - <code>AGENT_BASH_EXE</code> env var pointing at the full path (e.g. <code>C:\Program Files\Git\bin\bash.exe</code>, or <code>%LOCALAPPDATA%\Programs\Git\bin\bash.exe</code> for a per-user Git install) — <strong>set this if auto-detection fails</strong>, <strong>then</strong>
+   - known Git-Bash install locations (<code>C:\Program Files\Git\bin\bash.exe</code>, the <code>(x86)</code> variant, and the per-user <code>%LOCALAPPDATA%</code> path), <strong>then</strong>
+   - <strong>derived from <code>git</code> on <code>PATH</code></strong> — Git for Windows keeps <code>bash.exe</code> in a sibling <code>bin\</code> of <code>git.exe</code>, so if <code>git</code> works, Git-Bash is found even when only Git's <code>cmd\</code> (not <code>bin\</code>) is on <code>PATH</code>, <strong>then</strong>
+   - <code>where bash</code> on <code>PATH</code>, excluding the System32 WSL stub and any <code>WindowsApps</code> Store alias.</li>
+<li><strong>Run from a Git-Bash shell</strong>, not <code>cmd</code>/PowerShell:
+   <code>bash
+   python agent.py "fix the failing test in tests/test_parser.py"</code>
+   For the CICD pipeline: <code>bash CICD/cicd.sh &lt;repo-url&gt;</code> from Git-Bash. (A native PowerShell launcher is a separate, not-yet-done port.)</li>
+<li><strong>(Optional) shorten the launch command</strong> — run <code>/alias</code> inside the agent to install an <code>agent</code> shell alias (<code>&lt;python&gt; /path/to/agent.py</code> → <code>agent</code>). On Git-Bash it writes to <code>~/.bashrc</code>; <code>source ~/.bashrc</code> (or open a new shell) and then just run <code>agent</code>.</li>
+</ol>
+<p><strong>Platform notes:</strong></p>
+<ul>
+<li>Double-Escape cancellation is a POSIX-tty feature and is a no-op on the Windows console — use <code>Ctrl+C</code>, or a TUI host's cancel keybinding.</li>
+<li>The bedrock credential-store lock uses <code>msvcrt</code> on Windows (<code>fcntl</code> on POSIX); both auto-release on process exit.</li>
+<li>State lives under <code>%USERPROFILE%\.config\agent\</code>.</li>
+<li>Native Windows validation is pending a <code>windows-2022</code> runner; the suite is currently validated on Linux plus platform-simulation tests (<code>tests/test_windows_compat.py</code>).</li>
+</ul>
+    <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
+  </main>
+</div>
+</body>
+</html>

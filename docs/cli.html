@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLI and usage — agent</title>
+<meta name="description" content="Command-line arguments, the interactive TUI, slash commands and environment variables.">
+<link rel="canonical" href="https://mblakemore.github.io/agent/cli.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="CLI and usage">
+<meta property="og:description" content="Command-line arguments, the interactive TUI, slash commands and environment variables.">
+<meta property="og:url" content="https://mblakemore.github.io/agent/cli.html">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/agent-docs.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"CLI and usage","url":"https://mblakemore.github.io/agent/cli.html","description":"Command-line arguments, the interactive TUI, slash commands and environment variables."}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><div class="in">
+  <span class="brand"><a href="index.html">agent</a></span>
+  <span class="tag">documentation</span>
+  <nav aria-label="primary">
+    <a href="index.html">Overview</a>
+    <a href="https://github.com/mblakemore/agent">Source</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="cli.html" aria-current="page">CLI and usage</a></li><li><a href="models.html">Recommended models</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
+  <main id="main">
+    <p class="eyebrow">CLI and usage</p>
+<h1>CLI and usage</h1>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-08-15 (1de4a5f)</p>
+<p>Command-line arguments, the interactive TUI, slash commands and environment variables.</p>
+<pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
+</code></pre>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-a</code>, <code>--auto</code></td>
+<td>Automation mode — run the prompt and exit; no interactive loop.</td>
+</tr>
+<tr>
+<td><code>-c</code>, <code>--continue</code></td>
+<td>Resume from the last checkpoint. Combine with <code>-a</code> for auto-resume-and-exit.</td>
+</tr>
+<tr>
+<td><code>-r N</code>, <code>--repeat N</code></td>
+<td>Run the prompt <code>N</code> times with fresh state each run (<code>0</code> = indefinitely). Implies <code>-a</code>.</td>
+</tr>
+<tr>
+<td><code>--nudge</code></td>
+<td>When the model returns a text-only response, auto-nudge it to keep going. Off by default.</td>
+</tr>
+<tr>
+<td><code>--no-tui</code></td>
+<td>Use a plain <code>input()</code> prompt instead of the <code>prompt_toolkit</code> TUI.</td>
+</tr>
+<tr>
+<td><code>--verbose</code></td>
+<td>Start with full (uncompacted) tool output. Toggle in-session with <code>/verbose</code>.</td>
+</tr>
+<tr>
+<td><code>--backend-main</code></td>
+<td>Override the main backend kind (<code>llamacpp</code> or <code>bedrock</code>).</td>
+</tr>
+<tr>
+<td><code>--backend-summary</code></td>
+<td>Override the summary backend kind (<code>llamacpp</code> or <code>bedrock</code>).</td>
+</tr>
+<tr>
+<td><code>-cc [HOST:PORT]</code></td>
+<td>Launch an Anthropic-compatible gateway for <strong>Claude Code</strong> (default <code>127.0.0.1:8788</code>) that forwards to the configured main backend, then exit. See <a href="#claude-code-gateway--cc">Claude Code gateway</a>.</td>
+</tr>
+<tr>
+<td><code>PROMPT...</code></td>
+<td>Initial prompt. Optional in interactive mode.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Press <strong>Escape twice</strong> within 400ms to cancel a streaming response.</p>
+<h3 id="claude-code-gateway-cc">Claude Code gateway (<code>-cc</code>)</h3>
+<p><code>agent.py -cc</code> stands up an Anthropic-native <code>/v1/messages</code> endpoint and points it at whichever backend <code>agent.py</code> is configured for (<code>llamacpp</code>, <code>bedrock</code>, or <code>foundry</code>). This lets <a href="https://docs.claude.com/en/docs/claude-code">Claude Code</a> — or anything that speaks the Anthropic Messages API — drive your local/self-hosted model.</p>
+<pre tabindex="0"><code class="language-bash">python agent.py -cc                      # listen on 127.0.0.1:8788
+python agent.py -cc 0.0.0.0:9000         # explicit host:port
+python agent.py -cc --backend-main bedrock   # forward to a different backend
+</code></pre>
+<p>Then point Claude Code at it:</p>
+<pre tabindex="0"><code class="language-bash">export ANTHROPIC_BASE_URL=http://localhost:8788
+export ANTHROPIC_API_KEY=dummy           # any non-empty value; the gateway ignores it
+claude
+</code></pre>
+<p>How it works:</p>
+<ul>
+<li>It is a <strong>stateless translator</strong> — Anthropic Messages in, OpenAI chat-completions to the backend, and the streamed reply translated back to Anthropic SSE. Tool definitions, <code>tool_use</code>/<code>tool_result</code> blocks, images, and streaming tool calls are all converted in both directions.</li>
+<li>Claude Code runs its <strong>own</strong> agentic loop and resends the full conversation each turn, so the gateway bypasses <code>agent.py</code>'s session pipeline (no checkpointing, summarization, or cycle limits) and forces a fresh backend conversation per request.</li>
+<li>The model id Claude Code sends is ignored; requests always go to the configured main backend's model. Gemma <code>&lt;think&gt;</code> reasoning is suppressed so it doesn't surface as message content.</li>
+<li><code>GET /health</code> reports backend reachability; <code>POST /v1/messages/count_tokens</code> returns an estimate.</li>
+</ul>
+<p><strong>Resilience for slow/flaky backends.</strong> If the backend cuts a stream <em>after</em> tokens have started flowing (e.g. a Bedrock proxy behind an API Gateway with a ~29s timeout), the gateway closes the turn cleanly with <code>stop_reason: max_tokens</code> instead of letting the client see "stream ended prematurely". If the backend fails <em>before</em> any content reaches the client, the gateway retries with backoff (only then — once tokens stream, retrying would duplicate output). Tunable via env vars:</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CC_GATEWAY_MAX_RETRIES</code></td>
+<td><code>2</code></td>
+<td>Retries when the backend fails before producing any content. Each retry can cost up to one read-timeout, so keep it small. <code>0</code> disables.</td>
+</tr>
+<tr>
+<td><code>CC_GATEWAY_RETRY_BASE_DELAY</code></td>
+<td><code>1.0</code></td>
+<td>Initial backoff (seconds); doubles each retry.</td>
+</tr>
+<tr>
+<td><code>CC_GATEWAY_RETRY_MAX_DELAY</code></td>
+<td><code>8.0</code></td>
+<td>Cap on backoff (seconds).</td>
+</tr>
+<tr>
+<td><code>CC_GATEWAY_CONNECT_TIMEOUT</code></td>
+<td><code>30</code></td>
+<td>Connect timeout to the backend (seconds).</td>
+</tr>
+<tr>
+<td><code>CC_GATEWAY_READ_TIMEOUT</code></td>
+<td><code>600</code></td>
+<td>Read timeout — a slow backend can hold the stream this long.</td>
+</tr>
+<tr>
+<td><code>AGENT_FOLD_SYSTEM</code></td>
+<td><code>auto</code></td>
+<td>Workaround for backends that silently drop <code>role:"system"</code>. <code>auto</code> probes the backend once (~20 tokens, ~1.5s) and caches the result per <code>(base_url, model)</code> for 7 days; <code>always</code> folds without probing; <code>never</code> disables. Applies to both <code>-cc</code> and the main agent loop.</td>
+</tr>
+<tr>
+<td><code>AGENT_CACHE_DIR</code></td>
+<td><code>~/.cache/agent</code></td>
+<td>Where the probe result is cached (<code>backend_caps.json</code>).</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="backends-that-silently-drop-system-messages">Backends that silently drop <code>system</code> messages</h3>
+<p>Some OpenAI-compatible gateways accept a <code>role:"system"</code> message, return HTTP 200,
+and never show it to the model — no error, no warning. The symptom is an agent that
+appears to ignore its instructions. This was measured against a Bedrock proxy behind
+API Gateway, where a 9-word system prompt is dropped exactly like a 6000-token one
+(<code>developer</code> too); the likely cause is that Bedrock's <code>Converse</code> API takes <code>system</code>
+as a top-level parameter rather than a message role, so it is lost in translation.</p>
+<p>When <code>AGENT_FOLD_SYSTEM=auto</code> (the default), the backend is probed once and, if it
+drops <code>system</code>, system content is merged into the following user message — which
+every backend delivers. Backends that honour <code>system</code> (e.g. local llama.cpp) are
+left untouched.</p>
+<p>The probe <strong>fails safe</strong>: any error, timeout or ambiguous reply folds. Folding a
+backend that works is harmless; not folding one that drops <code>system</code> silently
+discards the entire system prompt.</p>
+<p>This is a workaround — the durable fix is server-side. The 7-day cache TTL means a
+server-side fix is picked up automatically without a config change.</p>
+<p>These mitigate transient failures but cannot make a turn that genuinely needs longer than the backend's hard timeout <em>complete</em> — that requires fixing the backend (e.g. streaming via a Lambda Function URL instead of API Gateway).</p>
+<p>Implemented in <code>cc_gateway.py</code>; requires <code>fastapi</code> + <code>uvicorn</code> (already in <code>requirements.txt</code>).</p>
+<h3 id="interactive-tui">Interactive TUI</h3>
+<p>The default TUI (<code>prompt_toolkit</code>) provides:</p>
+<ul>
+<li><strong>Bottom toolbar</strong> — <code>cwd · model · message count · context ~% · verbose state</code></li>
+<li><strong>Completion</strong> for slash commands (<code>/he&lt;Tab&gt;</code>) and <code>@path</code> file refs (<code>@src/&lt;Tab&gt;</code>)</li>
+<li><strong>Input history</strong> navigable with ↑ / ↓</li>
+<li><strong>Key bindings</strong>: <code>Enter</code> submits, <code>Ctrl-N</code> inserts a literal newline</li>
+</ul>
+<p>Falls back to plain <code>input()</code> automatically if <code>prompt_toolkit</code> isn't installed.</p>
+<h3 id="slash-commands">Slash commands</h3>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/help</code></td>
+<td>List available commands.</td>
+</tr>
+<tr>
+<td><code>/clear</code></td>
+<td>Clear conversation history and start a fresh session log.</td>
+</tr>
+<tr>
+<td><code>/context</code></td>
+<td>Show context usage as an Aurora-gradient bar with token counts.</td>
+</tr>
+<tr>
+<td><code>/model [main\|summary] [name]</code></td>
+<td>Set the <strong>main</strong> or <strong>summary</strong> model and persist it to <code>.agent/config.json</code> (survives restart). Bare <code>/model</code> picks the main model interactively; <code>/model summary</code> targets the summary backend; append a model id (<code>/model main gpt-4o</code>) to set it directly without the picker.</td>
+</tr>
+<tr>
+<td><code>/alias</code></td>
+<td>Detect the working Python and install an <code>agent</code> shell alias (<code>&lt;python&gt; /path/to/agent.py</code> → <code>agent</code>). Writes an idempotent block to <code>~/.bashrc</code> / <code>~/.zshrc</code> on Linux &amp; Git-Bash; prints PowerShell/cmd equivalents on native Windows.</td>
+</tr>
+<tr>
+<td><code>/verbose</code></td>
+<td>Toggle compact vs. full tool-result output.</td>
+</tr>
+<tr>
+<td><code>/tools [N\|all]</code></td>
+<td>Show buffered tool calls with a one-line result preview.</td>
+</tr>
+<tr>
+<td><code>exit</code> / <code>quit</code></td>
+<td>End the session.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="environment-variables">Environment variables</h3>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>NO_COLOR=1</code></td>
+<td>Disable all terminal colors and cursor escapes (also active when stdout is not a TTY).</td>
+</tr>
+<tr>
+<td><code>BEDROCK_API_URL</code></td>
+<td>Bedrock gateway URL — fallback when the keystore has no <code>up</code> entries.</td>
+</tr>
+<tr>
+<td><code>BEDROCK_API_KEY</code></td>
+<td>Bedrock API key — fallback.</td>
+</tr>
+<tr>
+<td><code>AGENT_BEDROCK_STORE</code></td>
+<td>Override path to the <code>bedrock_creds.json</code> keystore.</td>
+</tr>
+<tr>
+<td><code>BEDROCK_DAILY_CAP_USD</code></td>
+<td>Combined daily spend cap across roles (default <code>$10</code> main, <code>$1</code> summary).</td>
+</tr>
+<tr>
+<td><code>AGENT_HEALTH_TIMEOUT</code></td>
+<td>Seconds to wait for the startup backend health probe (default <code>10</code>). Raise it for cold-start endpoints (e.g. AWS API Gateway/Lambda) that are slow on the first request.</td>
+</tr>
+<tr>
+<td><code>AGENT_BASH_EXE</code></td>
+<td>Windows only — full path to <code>bash.exe</code> for the <code>exec_command</code> shell, overriding Git-Bash auto-detection.</td>
+</tr>
+</tbody>
+</table></div>
+    <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
+  </main>
+</div>
+</body>
+</html>
