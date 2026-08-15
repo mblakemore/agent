@@ -315,11 +315,11 @@ class TestAgentWizard:
     def test_agent_wizard_creates_agent_md(self, monkeypatch, tmp_path):
         """Wizard with standard inputs creates AGENT.md containing the agent name."""
         self._run_wizard(monkeypatch, tmp_path, [
-            "TestBot",    # agent name
+            "1",          # agent type (creature)
+            "TestBot",    # agent name (AFTER type — 2026-08-15 reorder)
             "A test bot", # role
-            "6-phase",    # loop type
             "AGENT.md",   # filename
-            "",           # extras (none)
+            "",           # extras (type default)
         ])
         agent_md = tmp_path / "AGENT.md"
         assert agent_md.exists(), "AGENT.md was not created"
@@ -328,7 +328,7 @@ class TestAgentWizard:
     def test_agent_wizard_creates_state_files(self, monkeypatch, tmp_path):
         """Wizard creates state/current-state.json, state/focus.json, state/memories/context.json."""
         self._run_wizard(monkeypatch, tmp_path, [
-            "BotA", "", "", "", "",
+            "", "BotA", "", "", "",
         ])
         assert (tmp_path / "state" / "current-state.json").exists()
         assert (tmp_path / "state" / "focus.json").exists()
@@ -339,21 +339,21 @@ class TestAgentWizard:
         existing = tmp_path / "AGENT.md"
         existing.write_text("old")
         self._run_wizard(monkeypatch, tmp_path, [
-            "BotB", "", "", "", "",
+            "", "BotB", "", "", "",
         ])
         assert existing.read_text() == "old"
 
     def test_agent_wizard_memory_extras_patterns(self, monkeypatch, tmp_path):
         """Specifying 'patterns' in extras creates state/memories/patterns.jsonl."""
         self._run_wizard(monkeypatch, tmp_path, [
-            "BotC", "", "", "", "patterns",
+            "", "BotC", "", "", "patterns",
         ])
         assert (tmp_path / "state" / "memories" / "patterns.jsonl").exists()
 
     def test_agent_wizard_default_loop_is_six_phase(self, monkeypatch, tmp_path):
-        """Empty answer for loop type defaults to 6-phase (AGENT.md contains PERCEIVE)."""
+        """Default type (creature) yields the 6-phase loop."""
         self._run_wizard(monkeypatch, tmp_path, [
-            "BotD", "", "", "", "",
+            "", "BotD", "", "", "",
         ])
         content = (tmp_path / "AGENT.md").read_text()
         assert "PERCEIVE" in content or "6-phase" in content

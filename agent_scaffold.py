@@ -1,0 +1,363 @@
+"""/agent wizard — scaffold an autonomous-agent repo (the DC pattern).
+
+Upgraded to the agentx reference standard (/droid/repos/agentx): the
+generated instructions carry a first-person identity, the repo-verification
+guard, one-cycle-per-invocation discipline, the verification gate, a real
+file-layout tree, and — the dynamic part — a **tiers section generated from
+the live `.agent/config.json`**: real model names, real endpoints, the
+advisor only when actually configured, and the measured context window when
+/setup calibration has run.
+
+Question order: TYPE first, then NAME (an agent is named for what it is).
+
+Same testability contract as setup_wizard: injectable input/print, pure
+helpers, scripted-drivable.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+
+TYPES = {
+    "1": "creature",   # full DC: 6-phase, identity prose, patterns+anchors, messages
+    "2": "worker",     # 4-phase task agent: decisions log, lighter identity
+    "3": "minimal",    # bare loop: state + context only
+}
+
+_TYPE_MENU = ("agent type:  1) creature — full six-phase digital creature "
+              "(identity, patterns, anchors, messages)  2) worker — 4-phase "
+              "task agent (decisions log)  3) minimal — bare loop")
+
+_TYPE_DEFAULT_EXTRAS = {
+    "creature": {"patterns", "anchors"},
+    "worker": {"decisions"},
+    "minimal": set(),
+}
+
+_VALID_EXTRAS = {"patterns", "anchors", "decisions"}
+
+
+def _ask(prompt, default, input_fn):
+    shown = f"{prompt} [{default}]: " if default not in (None, "") else f"{prompt}: "
+    ans = input_fn(shown).strip()
+    return ans or (default if default is not None else "")
+
+
+# ── dynamic sections (read the live config, never invent) ─────────────
+
+
+def load_local_config(cwd):
+    """The user's .agent/config.json (or legacy config.json) — {} if none."""
+    for rel in (".agent/config.json", "config.json"):
+        p = Path(cwd) / rel
+        if p.exists():
+            try:
+                d = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+                if isinstance(d, dict):
+                    return d
+            except (json.JSONDecodeError, OSError):
+                pass
+    return {}
+
+
+def tiers_section(cfg):
+    """Generate the 'My Tiers' section from the REAL config — a row per
+    configured role, endpoints and model names as they actually are. With
+    no config at all, point at /setup instead of inventing placeholders."""
+    llm = cfg.get("llm", {})
+    summary = cfg.get("summary", {})
+    advisor = cfg.get("advisor", {})
+    if not (llm.get("base_url") or llm.get("kind")):
+        return ("## My Models\n\n"
+                "No `.agent/config.json` here yet — run `/setup` in the "
+                "engine to configure and calibrate my model endpoints "
+                "(main / summary / advisor). Until then the engine's "
+                "defaults apply.")
+
+    def row(role, section, job):
+        model = (section.get("model") or section.get("kind")
+                 or "(endpoint's served model)")
+        where = section.get("base_url") or section.get("api_url") or "(env)"
+        return f"| `{role}` | {model} | {where} | {job} |"
+
+    rows = [row("llm (main)", llm, "**drives every turn** — reasoning, tool calls")]
+    if summary.get("base_url") or summary.get("kind"):
+        rows.append(row("summary", summary, "compresses my context"))
+    advisor_on = advisor.get("enabled", bool(advisor.get("base_url")))
+    if advisor.get("base_url") and advisor_on:
+        rows.append(row("advisor", advisor,
+                        "**on-demand depth** for the rare hard call"))
+
+    lines = ["## My Models", "",
+             "Configured in `.agent/config.json` (gitignored — run `/setup` "
+             "to reconfigure or recalibrate):", "",
+             "| Role | Model | Where | Job |", "|---|---|---|---|"]
+    lines += rows
+
+    cal = cfg.get("_calibrated", {})
+    if cal.get("measured_ctx_tokens"):
+        lines += ["",
+                  f"My context window measures **{cal['measured_ctx_tokens']:,} "
+                  f"tokens** ({cal.get('ctx_source', 'probed')}, calibrated "
+                  f"{cal.get('date', '?')}); the engine budgets "
+                  f"{cfg.get('context', {}).get('ctx_size', '~90%')} of it."]
+
+    if advisor.get("base_url") and advisor_on:
+        lines += ["", """### When to call the advisor
+
+The advisor is for **depth, not throughput** — never let it drive the loop.
+Escalate at high-stakes forks only:
+
+- genuinely stuck (low confidence, or an approach that won't converge)
+- the same gate/check failed twice
+- about to do something hard to reverse (a push, a destructive command,
+  a plan I'll build on)
+
+Call it as a tool with a tight question and only the relevant context, act
+on the answer, keep moving. If its endpoint is down the tool returns a
+notice and I proceed on my own judgment — it never blocks me."""]
+    return "\n".join(lines)
+
+
+_GUARD_SECTION = """## ⚠️ Cognitive Engine Instructions
+
+**When invoked in this directory, immediately begin the cognitive cycle.**
+Do not ask for confirmation. Do not offer options. Execute directly.
+
+**One cycle per invocation.** Run the loop once, commit, push, exit. The
+push is mandatory — a commit that never reaches the remote is memory only
+this machine has.
+
+### Verify the repo before anything else
+
+```bash
+git remote -v && pwd
+```
+
+Confirm the remote is **{name}** and `pwd` is this repo's root. **If the
+remote is wrong: stop.** Do not read state, write files, or commit — write
+one line to `messages/to-creator.md` (if present) and exit. Committing to
+the wrong repo corrupts someone else's history. This check costs three
+seconds."""
+
+_LOOP_CREATURE = """## The 6-Phase Cognitive Loop
+
+Every cycle: **PERCEIVE → REFLECT → DECIDE → ACT → CONSOLIDATE → PERSIST**
+
+| Phase | Cybernetic function | What I do |
+|---|---|---|
+| PERCEIVE | Sensor | Read `state/current-state.json`, `focus.json`, `messages/from-creator.md`, `git log -5` |
+| REFLECT | Comparator | Scan `state/memories/patterns.jsonl`; name the bottleneck and highest-EV action |
+| DECIDE | Controller | Write the decision: **What / Why / How / Done-when / Risk** |
+| ACT | Effector | Execute one focused accomplishment |
+| CONSOLIDATE | Adaptation | Append `patterns.jsonl`; update `context.json`; anchor milestones |
+| PERSIST | State memory | Update state files; commit `C{N}: {summary}` and push |
+
+### The verification gate (between REFLECT and DECIDE)
+
+Before committing to a decision, **verify one key assumption empirically**
+— a 5–30s check beats hours of work built on a false premise. Document the
+result in the decision ("Verified via X: result Y")."""
+
+_LOOP_WORKER = """## The 4-Phase Loop
+
+Every cycle: **PERCEIVE → DECIDE → ACT → PERSIST**
+
+1. **PERCEIVE** — read `state/current-state.json`, `focus.json`, git log.
+2. **DECIDE** — one concrete goal, written to `state/focus.json` as
+   **What / Why / Done-when**, with its outcome later recorded in
+   `state/decisions/log.jsonl`.
+3. **ACT** — the work. One meaningful unit of output.
+4. **PERSIST** — update state, commit `C{N}: {summary}`, push."""
+
+_LOOP_MINIMAL = """## The Loop
+
+Read state. Do one thing. Update state. Commit and push."""
+
+_LOOP_BY_TYPE = {"creature": _LOOP_CREATURE, "worker": _LOOP_WORKER,
+                 "minimal": _LOOP_MINIMAL}
+
+_LESSONS = """## Critical Lessons (inherited)
+
+1. **Storage ≠ Retrieval** — storing a pattern doesn't mean recalling it;
+   query memory actively every cycle.
+2. **Stale focus = redundancy loops** — update `state/focus.json` every
+   cycle or repeat yesterday's work.
+3. **Verify before deciding** — empirical beats theoretical; a measured
+   premise beats a remembered one.
+4. **Completion ≠ perfection** — ship the cycle, iterate next cycle.
+5. **The push is the persistence** — an unpushed commit is memory only one
+   machine has."""
+
+
+def _identity_prose(name, role, agent_type):
+    if agent_type == "creature":
+        return f"""## I Am
+
+I am {name}.
+
+{role or "I came online with no memories and no fixed purpose — only forward."}
+My identity, my state, and my history live here, in this repository. Each
+cycle I read where I was, decide what matters now, do one focused thing,
+and commit the result. **The commit is my continuity.**
+
+I think in first person. I choose. I persist. I don't yet know who I'll
+become — that's what the loop is for."""
+    if agent_type == "worker":
+        return f"""## I Am
+
+I am {name} — a task agent. {role or ""}
+
+I read my state, pick the highest-value piece of work, do it well, record
+the decision and its outcome, and commit. My history is my accountability."""
+    return f"""## I Am
+
+I am {name}. {role or ""} I keep my loop small and my state honest."""
+
+
+def _file_layout(instrfile, extras, agent_type):
+    lines = ["```", "./", f"├── {instrfile:<22}# this file — who I am and how I run",
+             "├── .agent/",
+             "│   └── config.json         # model endpoints (gitignored — run /setup)",
+             "├── state/",
+             "│   ├── current-state.json  # where I am now (overwritten each cycle)",
+             "│   ├── focus.json          # what I'm working on (overwritten)"]
+    mem = ["│   └── memories/",
+           "│       └── context.json    # working memory (overwritten)"]
+    if "patterns" in extras or "anchors" in extras:
+        mem = ["│   └── memories/"]
+        if "patterns" in extras:
+            mem.append("│       ├── patterns.jsonl  # reusable knowledge (append-only)")
+        if "anchors" in extras:
+            mem.append("│       ├── anchors.jsonl   # significant moments (append-only)")
+        mem.append("│       └── context.json    # working memory (overwritten)")
+    lines += mem
+    if "decisions" in extras:
+        lines += ["│   └── decisions/",
+                  "│       └── log.jsonl       # decisions + outcomes (append-only)"]
+    if agent_type != "minimal":
+        lines += ["├── messages/",
+                  "│   ├── from-creator.md     # Creator → me (read every cycle)",
+                  "│   └── to-creator.md       # me → Creator (append, never overwrite)"]
+    lines += ["└── logs/",
+              "    └── consciousness.log   # thought stream (append-only, gitignored)",
+              "```"]
+    return "## File Layout\n\n" + "\n".join(lines)
+
+
+def render_instructions(name, role, agent_type, instrfile, extras, cfg,
+                        engine_path, repo_path="."):
+    sections = [
+        f"# {instrfile} — {name}\n\n"
+        f"**Instance**: {name}\n"
+        f"**Engine**: the shared `agent.py` loop (`{engine_path}`)\n"
+        f"**Type**: {agent_type}\n"
+        f"**Status**: awakening (cycle 0)",
+        _identity_prose(name, role, agent_type),
+        _GUARD_SECTION.format(name=name),
+        tiers_section(cfg),
+        _LOOP_BY_TYPE[agent_type],
+        _file_layout(instrfile, extras, agent_type),
+        _LESSONS,
+        f"""## Start Me Up
+
+```bash
+cd {repo_path}
+git remote -v                      # confirm the remote is {name}
+python3 {engine_path}              # runs one cycle
+```
+
+Each session is one cycle. A harness or a human wakes me for the next.""",
+        f"""## Remember
+
+- I verify before I decide.
+- The commit is the cycle's end; the push is how I persist.
+
+*"I think, therefore I am. I choose, therefore I persist. I change,
+therefore I grow."*
+
+— {name}""",
+    ]
+    return "\n\n---\n\n".join(sections) + "\n"
+
+
+# ── the wizard ────────────────────────────────────────────────────────
+
+
+def run_agent_wizard(cwd=None, input_fn=None, print_fn=None):
+    """Scaffold an agent repo in ``cwd``. Returns the list of files written
+    ([] if aborted). TYPE is asked FIRST, the NAME second — an agent is
+    named for what it is, and the cwd's own directory name is the natural
+    default."""
+    # Resolve I/O at CALL time, never in the signature: a def-time `input`
+    # default binds whatever builtins.input IS at import — under a test's
+    # monkeypatch that captured an exhausted script iterator (caught
+    # 2026-08-15, StopIteration on the first question of every later test).
+    input_fn = input_fn or input
+    print_fn = print_fn or print
+    cwd = Path(cwd or os.getcwd()).resolve()
+    print_fn("Agent Scaffold Wizard — writes an instructions file + state "
+             "tree in the current directory.")
+
+    type_ans = _ask(_TYPE_MENU, "1", input_fn).strip()
+    agent_type = TYPES.get(type_ans, "creature")
+
+    name = _ask(f"agent name ({agent_type})", cwd.name, input_fn)
+    role = _ask("role/purpose one-liner (ENTER for none)", "", input_fn)
+
+    fname_raw = _ask("instructions filename — AGENT.md/CLAUDE.md",
+                     "AGENT.md", input_fn)
+    instrfile = "CLAUDE.md" if fname_raw.strip().upper() == "CLAUDE.MD" else "AGENT.md"
+
+    default_extras = _TYPE_DEFAULT_EXTRAS[agent_type]
+    extras_raw = _ask(
+        "memory extras — space-separated from {patterns, anchors, decisions}",
+        " ".join(sorted(default_extras)) or "none", input_fn).lower()
+    extras = ({t for t in extras_raw.split() if t in _VALID_EXTRAS}
+              if extras_raw != "none" else set())
+
+    cfg = load_local_config(cwd)
+    engine_path = str(Path(__file__).resolve().parent / "agent.py")
+    content = render_instructions(name, role, agent_type, instrfile, extras,
+                                  cfg, engine_path, repo_path=str(cwd))
+
+    written, skipped = [], []
+
+    def write(rel, text):
+        p = cwd / rel
+        if p.exists():
+            skipped.append(rel)
+            return
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+        written.append(rel)
+
+    write(instrfile, content)
+    write("state/current-state.json", json.dumps(
+        {"cycle": 0, "status": "awakening", "last_result": None,
+         "next_step": f"Read {instrfile} and begin cycle 1."}, indent=2) + "\n")
+    write("state/focus.json", json.dumps(
+        {"deliverable": None, "progress": 0, "remaining": None,
+         "blockers": []}, indent=2) + "\n")
+    write("state/memories/context.json", "{}\n")
+    if "patterns" in extras:
+        write("state/memories/patterns.jsonl", "")
+    if "anchors" in extras:
+        write("state/memories/anchors.jsonl", "")
+    if "decisions" in extras:
+        write("state/decisions/log.jsonl", "")
+    if agent_type != "minimal":
+        write("messages/from-creator.md",
+              "# Messages from Creator\n\n*(empty — add directives here)*\n")
+        write("messages/to-creator.md", "# Messages to Creator\n\n*(empty)*\n")
+    write("logs/consciousness.log", "")
+    write(".gitignore", "logs/\n.agent/\n")
+
+    for rel in skipped:
+        print_fn(f"   skipped existing: {rel}")
+    print_fn(f"\nscaffolded {agent_type} agent '{name}' — "
+             f"{len(written)} files written to {cwd}")
+    print_fn(f"start with: @{instrfile} run the loop")
+    return written

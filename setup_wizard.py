@@ -882,7 +882,7 @@ def _advisor_screen(current, input_fn, print_fn, http):
 
 
 def run_wizard(config_path, effective_cfg=None, jump_to=None,
-               input_fn=input, print_fn=print, http=None):
+               input_fn=None, print_fn=None, http=None):
     """Interactive setup. Returns the updates dict written (or {} if aborted).
 
     ``jump_to``: None = full run; "main"/"summary"/"advisor" = that section
@@ -897,6 +897,10 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
     ``effective_cfg`` is used only where effective values are the right
     baseline: calibration's keep-default rules and the drift sidecar.
     """
+    # Call-time I/O resolution (def-time defaults bind a possibly-patched
+    # builtins.input at import — see agent_scaffold.run_agent_wizard).
+    input_fn = input_fn or input
+    print_fn = print_fn or print
     effective_cfg = effective_cfg or {}
     current_cfg = {}
     try:
@@ -1005,15 +1009,31 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
         return {}
     path = write_config(config_path, updates)
     print_fn(f"\nwrote {path}")
+
+    # Chain into the agent scaffold (full runs only): the config just
+    # written is exactly what the scaffold's dynamic tiers section reads,
+    # so this is the natural moment to mint an agent identity on top of it.
+    if jump_to is None:
+        nxt = _ask("\nconfigure an agent identity here now (AGENT.md scaffold, "
+                   "the /agent wizard)? (y/n)", "n", input_fn)
+        if nxt.lower().startswith("y"):
+            try:
+                import agent_scaffold
+                agent_scaffold.run_agent_wizard(
+                    cwd=Path(config_path).parent.parent,
+                    input_fn=input_fn, print_fn=print_fn)
+            except (KeyboardInterrupt, EOFError):
+                print_fn("\nagent scaffold aborted — /setup result kept")
     return updates
 
 
-def run_probe_report(current_cfg, print_fn=print, http=None):
+def run_probe_report(current_cfg, print_fn=None, http=None):
     """`/setup test` — probe the configured endpoints, change nothing.
 
     Spend-free by contract: no consent path is offered, so metered
     empirical probes can never fire from test mode (their absence reports
     as UNMEASURED, which is the honest state)."""
+    print_fn = print_fn or print
     any_run = False
     for role, section in (("main", current_cfg.get("llm", {})),
                           ("summary", current_cfg.get("summary", {})),
