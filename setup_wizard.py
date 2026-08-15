@@ -182,28 +182,10 @@ def _probe_ctx(base, hdrs, http, models_body):
     return None, "no metadata route"
 
 
-def _probe_ctx_empirical(base, hdrs, http, model, cap=_EMPIRICAL_CAP_TOKENS):
-    """Binary-search the largest accepted prompt via /v1/chat/completions.
-
-    Trusts the SERVER-reported prompt token count where present. ~8-10
-    requests of 1 output token each. Returns (tokens_or_None, detail).
-    """
-    def accepted(tokens):
-        pad = _PAD_SENTENCE * max(1, int(tokens * _CHARS_PER_TOKEN
-                                          / len(_PAD_SENTENCE)))
-        body = {"messages": [{"role": "user", "content": pad}],
-                "max_tokens": 1, "temperature": 0.0}
-        if model:
-            body["model"] = model
-        status, resp = http(f"{base}/v1/chat/completions", data=body,
-                            headers=hdrs, timeout=600)
-        if status != 200:
-            return False, None
-        measured = None
-        if isinstance(resp, dict):
-            measured = (resp.get("usage") or {}).get("prompt_tokens")
-        return True, measured
-
+def _binary_search_ctx(accepted, cap=_EMPIRICAL_CAP_TOKENS):
+    """Shared empirical search core. ``accepted(tokens) -> (ok, measured)``
+    where ``measured`` is the server-reported prompt token count when the
+    endpoint provides one. Returns (tokens_or_None, detail)."""
     ok, measured = accepted(1024)
     if not ok:
         return None, "empirical: even a 1k prompt rejected"
@@ -228,6 +210,209 @@ def _probe_ctx_empirical(base, hdrs, http, model, cap=_EMPIRICAL_CAP_TOKENS):
         else:
             hi = mid
     return (lo_measured or lo), f"empirical: largest accepted ~{lo} tokens"
+
+
+def _probe_ctx_empirical(base, hdrs, http, model, cap=_EMPIRICAL_CAP_TOKENS):
+    """OpenAI-shape empirical search (llamacpp kind, free local endpoints)."""
+    def accepted(tokens):
+        pad = _PAD_SENTENCE * max(1, int(tokens * _CHARS_PER_TOKEN
+                                          / len(_PAD_SENTENCE)))
+        body = {"messages": [{"role": "user", "content": pad}],
+                "max_tokens": 1, "temperature": 0.0}
+        if model:
+            body["model"] = model
+        status, resp = http(f"{base}/v1/chat/completions", data=body,
+                            headers=hdrs, timeout=600)
+        if status != 200:
+            return False, None
+        measured = None
+        if isinstance(resp, dict):
+            measured = (resp.get("usage") or {}).get("prompt_tokens")
+        return True, measured
+    return _binary_search_ctx(accepted, cap)
+
+
+def _probe_ctx_empirical_anthropic(base, api_key, http, model,
+                                   cap=_EMPIRICAL_CAP_TOKENS):
+    """Anthropic-messages-shape empirical search (foundry kind). METERED —
+    caller must hold operator consent before invoking (spec: consent gate
+    with a printed token estimate)."""
+    hdrs = {"x-api-key": api_key or "", "anthropic-version": "2023-06-01"}
+
+    def accepted(tokens):
+        pad = _PAD_SENTENCE * max(1, int(tokens * _CHARS_PER_TOKEN
+                                          / len(_PAD_SENTENCE)))
+        body = {"model": model, "max_tokens": 1,
+                "messages": [{"role": "user", "content": pad}]}
+        status, resp = http(f"{base.rstrip('/')}/v1/messages", data=body,
+                            headers=hdrs, timeout=600)
+        if status != 200:
+            return False, None
+        measured = None
+        if isinstance(resp, dict):
+            measured = (resp.get("usage") or {}).get("input_tokens")
+        return True, measured
+    return _binary_search_ctx(accepted, cap)
+
+
+def probe_gateway_backend(section, role, http=None, ask_consent=None):
+    """P1-P4 for bedrock/foundry via the constructed Backend object.
+
+    Uses the backend's own interface (health / list_models /
+    detect_ctx_size) so credential-resolution chains (env, bedrock_store,
+    AZURE_FOUNDRY_* per role) behave exactly as they will at runtime. A
+    ConfigError at construction IS the P1 verdict — the session would fail
+    the same way.
+
+    Foundry's health() is a no-probe stub, so reachability+auth there is a
+    1-token /v1/messages invoke (spec P1 endorses the 1-token probe;
+    metered but ~nothing). The EMPIRICAL context search is the costly one:
+    consent-gated via ``ask_consent(estimate_tokens) -> bool``; no consent
+    callback means never.
+    """
+    http = http or _default_http
+    kind = section.get("kind", "llamacpp")
+    report = {}
+    try:
+        from llm_backend import build_backend, ConfigError
+    except Exception as e:  # pragma: no cover - import environment issue
+        report["p1_reach"] = {"status": UNMEASURED,
+                              "detail": f"llm_backend unavailable: {e}"}
+        report["p2_auth"] = {"status": UNMEASURED, "detail": "no backend"}
+        report["p3_model"] = {"status": UNMEASURED, "value": section.get("model"),
+                              "detail": "no backend"}
+        report["p4_ctx"] = {"status": UNMEASURED, "value": None,
+                            "detail": "no backend"}
+        return report
+
+    cfg = dict(section)
+    cfg["role"] = role
+    try:
+        backend = build_backend(cfg)
+    except ConfigError as e:
+        detail = f"construction refused: {e}"
+        report["p1_reach"] = {"status": FAILED, "detail": detail}
+        report["p2_auth"] = {"status": FAILED, "detail": "credentials missing"}
+        report["p3_model"] = {"status": UNMEASURED, "value": section.get("model"),
+                              "detail": "no backend"}
+        report["p4_ctx"] = {"status": UNMEASURED, "value": None,
+                            "detail": "no backend"}
+        return report
+    except Exception as e:
+        report["p1_reach"] = {"status": FAILED, "detail": f"construction error: {e}"}
+        report["p2_auth"] = {"status": UNMEASURED, "detail": "no backend"}
+        report["p3_model"] = {"status": UNMEASURED, "value": section.get("model"),
+                              "detail": "no backend"}
+        report["p4_ctx"] = {"status": UNMEASURED, "value": None,
+                            "detail": "no backend"}
+        return report
+
+    # P1 + P2: the backend's own health probe. Foundry's is a stub, so a
+    # 1-token invoke does the honest reachability+auth work there.
+    invoked_ok = None
+    try:
+        healthy, msg = backend.health()
+    except Exception as e:
+        healthy, msg = False, str(e)
+    if kind == "foundry":
+        base = getattr(backend, "api_url", section.get("api_url", ""))
+        status, resp = http(
+            f"{base.rstrip('/')}/v1/messages",
+            data={"model": backend.model, "max_tokens": 1,
+                  "messages": [{"role": "user", "content": "hi"}]},
+            headers={"x-api-key": getattr(backend, "api_key", ""),
+                     "anthropic-version": "2023-06-01"})
+        invoked_ok = status == 200
+        if status == 200:
+            report["p1_reach"] = {"status": OK, "detail": "1-token invoke 200"}
+            report["p2_auth"] = {"status": OK, "detail": "authorized"}
+        elif status in (401, 403):
+            report["p1_reach"] = {"status": OK, "detail": f"reachable (HTTP {status})"}
+            report["p2_auth"] = {"status": FAILED,
+                                 "detail": f"HTTP {status} — key rejected"}
+        elif status == 0:
+            report["p1_reach"] = {"status": FAILED, "detail": f"unreachable: {resp}"}
+            report["p2_auth"] = {"status": UNMEASURED, "detail": "unreachable"}
+        else:
+            report["p1_reach"] = {"status": OK, "detail": f"reachable (HTTP {status})"}
+            report["p2_auth"] = {"status": UNMEASURED,
+                                 "detail": f"invoke HTTP {status}"}
+    else:
+        report["p1_reach"] = {"status": OK if healthy else FAILED,
+                              "detail": str(msg)}
+        report["p2_auth"] = ({"status": OK, "detail": "gateway accepted key"}
+                             if healthy else
+                             {"status": UNMEASURED,
+                              "detail": "health failed — auth unknown"})
+
+    # P3: model resolve
+    models = []
+    try:
+        models = backend.list_models() or []
+    except Exception:
+        models = []
+    model = section.get("model") or getattr(backend, "model", "")
+    if models:
+        if model and model in models:
+            report["p3_model"] = {"status": OK, "value": model,
+                                  "detail": "listed by backend"}
+        elif model:
+            report["p3_model"] = {"status": FAILED, "value": model,
+                                  "detail": f"'{model}' not in {models[:5]}"}
+        else:
+            report["p3_model"] = {"status": OK, "value": models[0],
+                                  "detail": f"auto-picked first of {len(models)}"}
+    elif invoked_ok:
+        report["p3_model"] = {"status": OK, "value": model,
+                              "detail": "resolved by 1-token invoke"}
+    else:
+        report["p3_model"] = {"status": UNMEASURED, "value": model,
+                              "detail": "no model listing on this kind"}
+
+    # P4: the backend's own table/metadata first; metered empirical only
+    # with explicit consent (foundry only — the bedrock gateway's request
+    # shape is not replicated here, an honest Phase 2 scope cut).
+    ctx = None
+    try:
+        ctx = backend.detect_ctx_size()
+    except Exception:
+        ctx = None
+    if ctx:
+        report["p4_ctx"] = {"status": OK, "value": int(ctx),
+                            "detail": "backend table/metadata"}
+    elif kind == "foundry" and ask_consent is not None:
+        estimate = _EMPIRICAL_CAP_TOKENS * 2  # worst-case total prompt tokens
+        if ask_consent(estimate):
+            val, how = _probe_ctx_empirical_anthropic(
+                getattr(backend, "api_url", ""), getattr(backend, "api_key", ""),
+                http, backend.model)
+            if val:
+                report["p4_ctx"] = {"status": OK, "value": int(val), "detail": how}
+            else:
+                report["p4_ctx"] = {"status": UNMEASURED, "value": None,
+                                    "detail": how}
+        else:
+            report["p4_ctx"] = {"status": UNMEASURED, "value": None,
+                                "detail": "metered empirical probe declined"}
+    else:
+        report["p4_ctx"] = {"status": UNMEASURED, "value": None,
+                            "detail": ("no table row; empirical via gateway "
+                                       "not implemented" if kind == "bedrock"
+                                       else "no metadata; no consent path")}
+    return report
+
+
+def probe_backend(section, role="main", http=None, ask_consent=None,
+                  allow_empirical=True):
+    """Kind dispatcher: llamacpp → HTTP probes; bedrock/foundry → backend
+    interface probes with the metered-consent gate."""
+    kind = (section.get("kind") or "llamacpp").lower()
+    if kind == "llamacpp":
+        return probe_llamacpp(section.get("base_url", ""),
+                              section.get("api_key"), section.get("model"),
+                              http=http, allow_empirical=allow_empirical)
+    return probe_gateway_backend(section, role, http=http,
+                                 ask_consent=ask_consent)
 
 
 # ── Calibration (probe report → config knobs) ─────────────────────────
@@ -347,30 +532,101 @@ def _fmt_probe(report):
     return "\n".join(lines)
 
 
+_BEDROCK_MODEL_DEFAULTS = {"main": "claude-v4.6-opus", "summary": "claude-v4.5-haiku"}
+
+
+def _bedrock_cap_default(role):
+    try:
+        from llm_backend import _DEFAULT_DAILY_CAPS
+        return _DEFAULT_DAILY_CAPS.get(role, 10.00)
+    except Exception:
+        return {"main": 60.00, "summary": 3.00}.get(role, 10.00)
+
+
+def _consent_asker(input_fn, print_fn):
+    def ask(estimate_tokens):
+        print_fn(f"   ⚠ empirical context probe sends up to ~{estimate_tokens:,} "
+                 "prompt tokens to a METERED endpoint (billed at your input "
+                 "rate).")
+        return _ask("   run the metered probe? (y/n)", "n",
+                    input_fn).lower().startswith("y")
+    return ask
+
+
 def _role_screen(role, current, input_fn, print_fn, http):
     """One role's questions + inline probe. Returns (section_dict, report)."""
     print_fn(f"\n── {role.upper()} model ──")
-    kind = _ask("backend kind: 1) llama.cpp / OpenAI-compatible  "
-                "2) AWS Bedrock  3) Azure (foundry)", "1", input_fn)
-    if kind.strip() != "1":
-        print_fn("   bedrock/foundry arrive in Phase 2 — using kind 1 for now.")
-    base_url = _ask("base_url", current.get("base_url", "http://127.0.0.1:8080"),
-                    input_fn)
-    api_key = _ask("api_key (ENTER for none)", current.get("api_key", ""), input_fn)
-    model = _ask("model (ENTER = auto-pick from /v1/models)",
-                 current.get("model", ""), input_fn)
+    cur_kind = {"llamacpp": "1", "bedrock": "2", "foundry": "3"}.get(
+        current.get("kind", "llamacpp"), "1")
+    kind_ans = _ask("backend kind: 1) llama.cpp / OpenAI-compatible  "
+                    "2) AWS Bedrock  3) Azure (foundry)", cur_kind,
+                    input_fn).strip()
+    kind = {"1": "llamacpp", "2": "bedrock", "3": "foundry"}.get(kind_ans,
+                                                                 "llamacpp")
+
+    if kind == "bedrock":
+        section = {"kind": "bedrock"}
+        api_url = _ask("gateway api_url (ENTER = env BEDROCK_API_URL / "
+                       "bedrock_store)", current.get("api_url", ""), input_fn)
+        api_key = _ask("gateway api_key (ENTER = env / store)",
+                       current.get("api_key", ""), input_fn)
+        model = _ask("model id",
+                     current.get("model", _BEDROCK_MODEL_DEFAULTS.get(role, "")),
+                     input_fn)
+        cap = _ask("daily cost cap USD",
+                   str(current.get("daily_cost_cap_usd",
+                                   _bedrock_cap_default(role))), input_fn)
+        if api_url:
+            section["api_url"] = api_url
+        if api_key:
+            section["api_key"] = api_key
+        if model:
+            section["model"] = model
+        try:
+            section["daily_cost_cap_usd"] = float(cap)
+        except ValueError:
+            print_fn(f"   cap {cap!r} not a number — default kept")
+    elif kind == "foundry":
+        section = {"kind": "foundry"}
+        section["api_url"] = _ask(
+            "endpoint url (ENTER = env AZURE_FOUNDRY_ENDPOINT_"
+            f"{role.upper()})", current.get("api_url", ""), input_fn)
+        api_key = _ask(f"api_key (ENTER = env AZURE_FOUNDRY_API_KEY_"
+                       f"{role.upper()})", current.get("api_key", ""), input_fn)
+        if api_key:
+            section["api_key"] = api_key
+        model = _ask("model deployment name (required)",
+                     current.get("model", ""), input_fn)
+        if not model:
+            model = _ask("   a deployment name is required — enter one", "",
+                         input_fn)
+        section["model"] = model
+        if not section["api_url"]:
+            section.pop("api_url")
+    else:
+        section = {"kind": "llamacpp"}
+        section["base_url"] = _ask(
+            "base_url", current.get("base_url", "http://127.0.0.1:8080"),
+            input_fn)
+        api_key = _ask("api_key (ENTER for none)", current.get("api_key", ""),
+                       input_fn)
+        if api_key:
+            section["api_key"] = api_key
+        model = _ask("model (ENTER = auto-pick from /v1/models)",
+                     current.get("model", ""), input_fn)
+        if model:
+            section["model"] = model
 
     print_fn("   probing…")
-    report = probe_llamacpp(base_url, api_key or None, model or None, http=http)
+    report = probe_backend(section, role=role, http=http,
+                           ask_consent=_consent_asker(input_fn, print_fn))
     print_fn(_fmt_probe(report))
-    section = {"base_url": base_url}
-    if api_key:
-        section["api_key"] = api_key
     resolved = report.get("p3_model", {}).get("value")
     if resolved:
         section["model"] = resolved
-    elif model:
-        section["model"] = model
+    if section.get("kind") == "llamacpp":
+        # legacy blocks imply llamacpp — keep them clean of the redundant key
+        section.pop("kind")
     return section, report
 
 
@@ -396,13 +652,14 @@ def run_wizard(config_path, current_cfg, jump_to=None,
             reuse = _ask("\nSUMMARY: reuse the main endpoint? (y/n)", "y", input_fn)
             if reuse.lower().startswith("y"):
                 base = updates.get("llm") or current_cfg.get("llm", {})
-                summary = {"enabled": True, "base_url": base.get("base_url", "")}
-                if base.get("api_key"):
-                    summary["api_key"] = base["api_key"]
-                if base.get("model"):
-                    summary["model"] = base["model"]
+                summary = {"enabled": True}
+                for key in ("kind", "base_url", "api_url", "api_key", "model"):
+                    if base.get(key):
+                        summary[key] = base[key]
                 updates["summary"] = summary
-                print_fn(f"   summary -> {summary.get('base_url')} (shared)")
+                print_fn(f"   summary -> "
+                         f"{summary.get('base_url') or summary.get('api_url')} "
+                         f"(shared)")
             else:
                 section, _ = _role_screen("summary", cur, input_fn, print_fn, http)
                 section["enabled"] = True
@@ -416,11 +673,11 @@ def run_wizard(config_path, current_cfg, jump_to=None,
     if jump_to in (None, "main", "calibrate"):
         if main_report is None:
             llm = (updates.get("llm") or current_cfg.get("llm") or {})
-            if llm.get("base_url"):
+            if llm.get("base_url") or llm.get("api_url") or llm.get("kind"):
                 print_fn("   probing main endpoint for calibration…")
-                main_report = probe_llamacpp(
-                    llm["base_url"], llm.get("api_key"), llm.get("model"),
-                    http=http)
+                main_report = probe_backend(
+                    llm, role="main", http=http,
+                    ask_consent=_consent_asker(input_fn, print_fn))
                 print_fn(_fmt_probe(main_report))
             else:
                 main_report = {}
@@ -444,18 +701,22 @@ def run_wizard(config_path, current_cfg, jump_to=None,
 
 
 def run_probe_report(current_cfg, print_fn=print, http=None):
-    """`/setup test` — probe the configured endpoints, change nothing."""
+    """`/setup test` — probe the configured endpoints, change nothing.
+
+    Spend-free by contract: no consent path is offered, so metered
+    empirical probes can never fire from test mode (their absence reports
+    as UNMEASURED, which is the honest state)."""
     any_run = False
     for role, section in (("main", current_cfg.get("llm", {})),
                           ("summary", current_cfg.get("summary", {}))):
-        base = section.get("base_url")
-        if not base:
-            print_fn(f"{role}: no base_url configured — skipped")
+        target = section.get("base_url") or section.get("api_url")
+        if not target and not section.get("kind"):
+            print_fn(f"{role}: nothing configured — skipped")
             continue
         any_run = True
-        print_fn(f"{role}: {base}")
-        report = probe_llamacpp(base, section.get("api_key"),
-                                section.get("model"), http=http)
+        print_fn(f"{role}: {section.get('kind', 'llamacpp')} @ {target or '(env creds)'}")
+        report = probe_backend(section, role=role, http=http,
+                               ask_consent=None, allow_empirical=False)
         print_fn(_fmt_probe(report))
     if not any_run:
         print_fn("no endpoints configured — run /setup first")

@@ -3437,6 +3437,42 @@ def _log_bedrock_session_spend(log):
             )
 
 
+def _maybe_first_run_wizard(auto, initial_prompt, continue_mode):
+    """First-run /setup (plan/setup-command.md Phase 2).
+
+    Fires ONLY when: interactive (not -a, no initial prompt, not a resumed
+    session), stdin is a real TTY, and this folder has neither .agent/ nor a
+    legacy ./config.json. Non-interactive contexts must NEVER block on the
+    wizard — they keep the defaults and get one log line. Runs pre-TUI, so
+    plain input() is safe. Returns True iff the wizard ran and wrote config.
+    """
+    cwd = Path(os.getcwd())
+    unconfigured = (not (cwd / ".agent").exists()
+                    and not (cwd / "config.json").exists())
+    interactive = (not auto and initial_prompt is None and not continue_mode
+                   and sys.stdin.isatty())
+    if not unconfigured:
+        return False
+    if not interactive:
+        logging.getLogger("agent").info(
+            "no local config — defaults in effect; run /setup to configure")
+        return False
+    try:
+        import setup_wizard as _setup_wizard
+        print("No .agent/ configuration found here — running first-time "
+              "setup (ctrl-C to skip and use defaults).")
+        updates = _setup_wizard.run_wizard(cwd / ".agent" / "config.json",
+                                           _config)
+        if updates:
+            _apply_setup_updates(updates)
+            return True
+    except (KeyboardInterrupt, EOFError):
+        print("\nsetup skipped — defaults in effect (`/setup` runs it later)")
+    except Exception as e:  # never let the wizard kill a session start
+        logging.getLogger("agent").warning("first-run wizard failed: %s", e)
+    return False
+
+
 def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, *, cb=None, tui=False, verbose=False, result_file=None):
     """Interactive agent that maintains conversation history.
 
@@ -3446,6 +3482,10 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     is optional — if prompt_toolkit isn't installed, a clean ImportError
     is raised at TuiSession construction time.
     """
+
+    # First-run wizard (plan/setup-command.md Phase 2) — BEFORE the ctx_size
+    # read so a first-run calibration applies to THIS session, not the next.
+    _maybe_first_run_wizard(auto, initial_prompt, continue_mode)
 
     ctx_size = _config["context"]["ctx_size"]
     max_tokens = _config["context"]["max_tokens"]

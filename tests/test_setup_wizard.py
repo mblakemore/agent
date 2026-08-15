@@ -204,6 +204,199 @@ class TestWizardScripted(unittest.TestCase):
         self.assertTrue(any("UNMEASURED" in s for s in printed))
 
 
+class _FakeBackend:
+    def __init__(self, healthy=True, models=None, ctx=None, kind="bedrock",
+                 model="claude-v4.6-opus"):
+        self._healthy, self._models, self._ctx = healthy, models or [], ctx
+        self.kind, self.model = kind, model
+        self.api_url = "https://gw.example"
+        self.api_key = "k"
+
+    def health(self):
+        return self._healthy, "gateway ok" if self._healthy else "down"
+
+    def list_models(self):
+        return self._models
+
+    def detect_ctx_size(self):
+        return self._ctx
+
+
+class TestGatewayProbes(unittest.TestCase):
+    """Phase 2: bedrock/foundry probing via the constructed backend."""
+
+    def _probe(self, section, backend=None, exc=None, http=None, consent=None):
+        import llm_backend as L
+        target = mock.Mock(side_effect=exc) if exc else mock.Mock(
+            return_value=backend)
+        with mock.patch.object(L, "build_backend", target):
+            return W.probe_gateway_backend(section, "main", http=http,
+                                           ask_consent=consent)
+
+    def test_config_error_is_the_p1_verdict(self):
+        import llm_backend as L
+        r = self._probe({"kind": "bedrock"}, exc=L.ConfigError("no creds"))
+        self.assertEqual(r["p1_reach"]["status"], W.FAILED)
+        self.assertIn("no creds", r["p1_reach"]["detail"])
+        self.assertEqual(r["p4_ctx"]["status"], W.UNMEASURED)
+
+    def test_healthy_bedrock_all_ok_from_table(self):
+        b = _FakeBackend(models=["claude-v4.6-opus"], ctx=180000)
+        r = self._probe({"kind": "bedrock", "model": "claude-v4.6-opus"}, b)
+        self.assertEqual(r["p1_reach"]["status"], W.OK)
+        self.assertEqual(r["p2_auth"]["status"], W.OK)
+        self.assertEqual(r["p3_model"]["status"], W.OK)
+        self.assertEqual(r["p4_ctx"]["value"], 180000)
+
+    def test_bedrock_no_table_row_is_unmeasured_not_probed(self):
+        b = _FakeBackend(ctx=None)
+        r = self._probe({"kind": "bedrock", "model": "m"}, b,
+                        consent=lambda est: True)  # consent must NOT matter
+        self.assertEqual(r["p4_ctx"]["status"], W.UNMEASURED)
+        self.assertIn("not implemented", r["p4_ctx"]["detail"])
+
+    def test_foundry_auth_reject_via_one_token_invoke(self):
+        b = _FakeBackend(kind="foundry", ctx=None, model="dep")
+        http = fake_http({"/v1/messages": (401, {"error": "bad key"})})
+        r = self._probe({"kind": "foundry", "model": "dep"}, b, http=http)
+        self.assertEqual(r["p1_reach"]["status"], W.OK)
+        self.assertEqual(r["p2_auth"]["status"], W.FAILED)
+
+    def test_foundry_consent_gate_declined_never_spends(self):
+        b = _FakeBackend(kind="foundry", ctx=None, model="dep")
+        http = fake_http({"/v1/messages": (200, {"usage": {"input_tokens": 3}})})
+        r = self._probe({"kind": "foundry", "model": "dep"}, b, http=http,
+                        consent=lambda est: False)
+        self.assertEqual(r["p4_ctx"]["status"], W.UNMEASURED)
+        self.assertIn("declined", r["p4_ctx"]["detail"])
+        # only the single 1-token P1 invoke — no search traffic
+        msg_calls = [c for c in http.calls if c[0].endswith("/v1/messages")]
+        self.assertEqual(len(msg_calls), 1)
+
+    def test_foundry_consented_empirical_measures(self):
+        limit = 30000
+
+        def messages(data):
+            if data.get("max_tokens") == 1 and data["messages"][0]["content"] == "hi":
+                return 200, {"usage": {"input_tokens": 3}}
+            n = len(data["messages"][0]["content"]) / W._CHARS_PER_TOKEN
+            if n > limit:
+                return 400, {"error": "too long"}
+            return 200, {"usage": {"input_tokens": int(n)}}
+        b = _FakeBackend(kind="foundry", ctx=None, model="dep")
+        http = fake_http({"/v1/messages": messages})
+        r = self._probe({"kind": "foundry", "model": "dep"}, b, http=http,
+                        consent=lambda est: True)
+        self.assertEqual(r["p4_ctx"]["status"], W.OK)
+        self.assertGreater(r["p4_ctx"]["value"], limit * 0.7)
+        self.assertLessEqual(r["p4_ctx"]["value"], limit)
+
+    def test_dispatcher_routes_by_kind(self):
+        r = W.probe_backend({"base_url": "http://x:8080"},
+                            http=fake_http(LLAMA_ROUTES))
+        self.assertEqual(r["p4_ctx"]["value"], 196608)  # llamacpp path
+        b = _FakeBackend(ctx=1000)
+        import llm_backend as L
+        with mock.patch.object(L, "build_backend", return_value=b):
+            r = W.probe_backend({"kind": "bedrock", "model": "m"})
+        self.assertEqual(r["p4_ctx"]["value"], 1000)    # gateway path
+
+
+class TestWizardBedrockScreen(unittest.TestCase):
+    def test_bedrock_answers_produce_kinded_section(self):
+        import llm_backend as L
+        b = _FakeBackend(models=["claude-v4.6-opus"], ctx=180000)
+        answers = iter(["2", "https://gw.example", "sekrit",
+                        "claude-v4.6-opus", "25.5",  # main screen
+                        "y",                          # summary: reuse main
+                        "y"])                         # accept calibration
+        printed = []
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(L, "build_backend", return_value=b):
+            p = Path(d) / ".agent" / "config.json"
+            updates = W.run_wizard(p, {},
+                                   input_fn=lambda _: next(answers, ""),
+                                   print_fn=printed.append)
+            on_disk = json.loads(p.read_text())
+            mode = os.stat(p).st_mode & 0o777
+        self.assertEqual(updates["llm"]["kind"], "bedrock")
+        self.assertEqual(updates["llm"]["daily_cost_cap_usd"], 25.5)
+        self.assertEqual(updates["summary"]["kind"], "bedrock")  # shared carries kind
+        self.assertEqual(updates["context"]["ctx_size"], int(180000 * 0.9))
+        self.assertEqual(on_disk["llm"]["kind"], "bedrock")
+        self.assertEqual(mode, stat.S_IRUSR | stat.S_IWUSR)  # key -> chmod 600
+
+
+class TestFirstRunGuard(unittest.TestCase):
+    """agent._maybe_first_run_wizard — the never-block contract."""
+
+    def setUp(self):
+        import agent
+        self.agent = agent
+
+    def _in_tmp(self, fn):
+        with tempfile.TemporaryDirectory() as d:
+            old = os.getcwd()
+            os.chdir(d)
+            try:
+                return fn(Path(d))
+            finally:
+                os.chdir(old)
+
+    def test_non_tty_never_launches(self):
+        def body(_d):
+            with mock.patch("sys.stdin") as stdin, \
+                 mock.patch("setup_wizard.run_wizard") as wiz:
+                stdin.isatty.return_value = False
+                ran = self.agent._maybe_first_run_wizard(False, None, False)
+                self.assertFalse(ran)
+                wiz.assert_not_called()
+        self._in_tmp(body)
+
+    def test_auto_mode_never_launches_even_on_tty(self):
+        def body(_d):
+            with mock.patch("sys.stdin") as stdin, \
+                 mock.patch("setup_wizard.run_wizard") as wiz:
+                stdin.isatty.return_value = True
+                self.assertFalse(self.agent._maybe_first_run_wizard(True, None, False))
+                self.assertFalse(self.agent._maybe_first_run_wizard(False, "do x", False))
+                self.assertFalse(self.agent._maybe_first_run_wizard(False, None, True))
+                wiz.assert_not_called()
+        self._in_tmp(body)
+
+    def test_existing_config_short_circuits(self):
+        def body(d):
+            (d / ".agent").mkdir()
+            with mock.patch("sys.stdin") as stdin, \
+                 mock.patch("setup_wizard.run_wizard") as wiz:
+                stdin.isatty.return_value = True
+                self.assertFalse(self.agent._maybe_first_run_wizard(False, None, False))
+                wiz.assert_not_called()
+        self._in_tmp(body)
+
+    def test_tty_unconfigured_launches_and_applies(self):
+        def body(_d):
+            with mock.patch("sys.stdin") as stdin, \
+                 mock.patch("setup_wizard.run_wizard",
+                            return_value={"llm": {"base_url": "http://x"}}) as wiz, \
+                 mock.patch.object(self.agent, "_apply_setup_updates") as applied:
+                stdin.isatty.return_value = True
+                ran = self.agent._maybe_first_run_wizard(False, None, False)
+                self.assertTrue(ran)
+                wiz.assert_called_once()
+                applied.assert_called_once()
+        self._in_tmp(body)
+
+    def test_wizard_crash_never_kills_session_start(self):
+        def body(_d):
+            with mock.patch("sys.stdin") as stdin, \
+                 mock.patch("setup_wizard.run_wizard",
+                            side_effect=RuntimeError("boom")):
+                stdin.isatty.return_value = True
+                self.assertFalse(self.agent._maybe_first_run_wizard(False, None, False))
+        self._in_tmp(body)
+
+
 class TestCommandDispatch(unittest.TestCase):
     def test_setup_registered_and_usage_guard(self):
         import commands
