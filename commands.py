@@ -38,7 +38,7 @@ def _cmd_help(ctx: SimpleNamespace, args: str) -> None:
         "  /clear         — clear conversation history and start a fresh session log",
         "  /context       — show current context usage (bar + token counts)",
         "  /model [main|summary] [name] — set+persist the main/summary model",
-        "  /setup [main|summary|test|calibrate] — configure endpoints, probe, calibrate",
+        "  /setup [main|summary|advisor|test|calibrate] — configure endpoints, probe, calibrate",
         "  /alias         — install an `agent` shell alias for this checkout",
         "  /verbose       — toggle compact/full tool output",
         "  /tools [N|all] — show buffered tool calls (default: all; N = last N only)",
@@ -431,9 +431,9 @@ def _cmd_setup(ctx: SimpleNamespace, args: str) -> None:
     import setup_wizard as W
 
     arg = args.strip().lower()
-    if arg not in ("", "test", "calibrate", "main", "summary"):
+    if arg not in ("", "test", "calibrate", "main", "summary", "advisor"):
         safe_cb(ctx.cb, "on_notice", "warn",
-                f"usage: /setup [main|summary|test|calibrate] — got: {args!r}")
+                f"usage: /setup [main|summary|advisor|test|calibrate] — got: {args!r}")
         return
 
     if arg == "test":

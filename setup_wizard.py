@@ -415,6 +415,215 @@ def probe_backend(section, role="main", http=None, ask_consent=None,
                                  ask_consent=ask_consent)
 
 
+# ── P5 throughput + P6 capabilities (Phase 3) ─────────────────────────
+
+
+def probe_throughput(section, role="main", http=None):
+    """P5 — one 64-token completion; returns
+    {"status", "gen_tps", "prompt_tps", "detail", "body"} ("body" = the raw
+    response for P6 to inspect, not persisted).
+
+    llamacpp: free, always runs; server-side ``timings`` preferred, wall
+    clock as the fallback (labeled as such — the two are different
+    instruments). bedrock: UNMEASURED — the backend's complete() cannot cap
+    output tokens, so a "small" probe can't be guaranteed small (honest
+    scope cut, same class as its empirical-ctx cut). foundry: 64-token
+    /v1/messages, metered-trivial (wizard-context only; /setup test never
+    calls P5 on metered kinds).
+    """
+    import time as _time
+    http = http or _default_http
+    kind = (section.get("kind") or "llamacpp").lower()
+    prompt = "Count from 1 to 50 as plain comma-separated numbers."
+
+    if kind == "bedrock":
+        return {"status": UNMEASURED, "gen_tps": None, "prompt_tps": None,
+                "detail": "bedrock complete() cannot cap tokens — not probed",
+                "body": None}
+
+    if kind == "foundry":
+        base = (section.get("api_url") or "").rstrip("/")
+        hdrs = {"x-api-key": section.get("api_key", ""),
+                "anthropic-version": "2023-06-01"}
+        t0 = _time.monotonic()
+        status, body = http(f"{base}/v1/messages",
+                            data={"model": section.get("model", ""),
+                                  "max_tokens": 64,
+                                  "messages": [{"role": "user",
+                                                "content": prompt}]},
+                            headers=hdrs, timeout=300)
+        wall = _time.monotonic() - t0
+        if status != 200 or not isinstance(body, dict):
+            return {"status": UNMEASURED, "gen_tps": None, "prompt_tps": None,
+                    "detail": f"probe HTTP {status}", "body": None}
+        out = (body.get("usage") or {}).get("output_tokens") or 64
+        return {"status": OK, "gen_tps": round(out / wall, 2) if wall else None,
+                "prompt_tps": None, "detail": f"wall-clock over {out} tokens",
+                "body": body}
+
+    base = (section.get("base_url") or "").rstrip("/")
+    hdrs = _auth_headers(section.get("api_key"))
+    req = {"messages": [{"role": "user", "content": prompt}],
+           "max_tokens": 64, "temperature": 0.0}
+    if section.get("model"):
+        req["model"] = section["model"]
+    t0 = _time.monotonic()
+    status, body = http(f"{base}/v1/chat/completions", data=req,
+                        headers=hdrs, timeout=300)
+    wall = _time.monotonic() - t0
+    if status != 200 or not isinstance(body, dict):
+        return {"status": UNMEASURED, "gen_tps": None, "prompt_tps": None,
+                "detail": f"probe HTTP {status}", "body": None}
+    t = body.get("timings") or {}
+    if t.get("predicted_per_second"):
+        return {"status": OK,
+                "gen_tps": round(t["predicted_per_second"], 2),
+                "prompt_tps": round(t.get("prompt_per_second") or 0, 1) or None,
+                "detail": "server timings", "body": body}
+    out = (body.get("usage") or {}).get("completion_tokens") or 64
+    return {"status": OK, "gen_tps": round(out / wall, 2) if wall else None,
+            "prompt_tps": None,
+            "detail": f"wall-clock over {out} tokens (no server timings)",
+            "body": body}
+
+
+_DUMMY_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_current_time",
+        "description": "Returns the current time. Call this tool.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+}
+
+
+def probe_capabilities(section, role="main", http=None, throughput=None):
+    """P6 — capability flags, llamacpp/OpenAI-compatible kinds.
+
+    Returns {"timings", "tools_accepted", "tool_roundtrip", "reasoning_param"}
+    each OK/FAILED/UNMEASURED. Tool support is the load-bearing one: the
+    agent cannot function without tool calling, so its absence is a FAILED,
+    not a footnote. Gateway kinds report UNMEASURED (their capability
+    surface is the backend class's own concern).
+    """
+    kind = (section.get("kind") or "llamacpp").lower()
+    if kind != "llamacpp":
+        u = {"status": UNMEASURED, "detail": f"{kind}: backend-owned surface"}
+        return {"timings": dict(u), "tools_accepted": dict(u),
+                "tool_roundtrip": dict(u), "reasoning_param": dict(u)}
+
+    http = http or _default_http
+    base = (section.get("base_url") or "").rstrip("/")
+    hdrs = _auth_headers(section.get("api_key"))
+    caps = {}
+
+    # timings: read off the P5 body when provided (no extra request)
+    body = (throughput or {}).get("body")
+    if isinstance(body, dict):
+        caps["timings"] = ({"status": OK, "detail": "server echoes timings"}
+                           if body.get("timings") else
+                           {"status": FAILED,
+                            "detail": "no timings in response — token stats "
+                                      "will be wall-clock estimates"})
+    else:
+        caps["timings"] = {"status": UNMEASURED, "detail": "no P5 body"}
+
+    # tools: accepted (no 400) + actual roundtrip (tool_calls in response)
+    req = {"messages": [{"role": "user",
+                         "content": "What time is it? Use the tool."}],
+           "max_tokens": 64, "temperature": 0.0,
+           "tools": [_DUMMY_TOOL], "tool_choice": "auto"}
+    if section.get("model"):
+        req["model"] = section["model"]
+    status, body = http(f"{base}/v1/chat/completions", data=req,
+                        headers=hdrs, timeout=300)
+    if status == 200 and isinstance(body, dict):
+        caps["tools_accepted"] = {"status": OK, "detail": "tools param accepted"}
+        msg = ((body.get("choices") or [{}])[0].get("message") or {})
+        caps["tool_roundtrip"] = (
+            {"status": OK, "detail": "model emitted a tool call"}
+            if msg.get("tool_calls") else
+            {"status": FAILED,
+             "detail": "no tool_calls in response — template/model may not "
+                       "support tool calling"})
+    elif status == 0:
+        caps["tools_accepted"] = {"status": UNMEASURED,
+                                  "detail": f"unreachable: {body}"}
+        caps["tool_roundtrip"] = {"status": UNMEASURED, "detail": "unreachable"}
+    else:
+        caps["tools_accepted"] = {"status": FAILED,
+                                  "detail": f"HTTP {status} with tools param "
+                                            "— the agent REQUIRES tool calls"}
+        caps["tool_roundtrip"] = {"status": UNMEASURED,
+                                  "detail": "tools param rejected"}
+
+    # reasoning: is the OpenAI-style reasoning_effort param accepted?
+    req = {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 8,
+           "reasoning_effort": "low"}
+    if section.get("model"):
+        req["model"] = section["model"]
+    status, _body = http(f"{base}/v1/chat/completions", data=req,
+                         headers=hdrs, timeout=300)
+    caps["reasoning_param"] = (
+        {"status": OK, "detail": "reasoning_effort accepted"} if status == 200
+        else {"status": UNMEASURED, "detail": f"HTTP {status}"} if status
+        else {"status": UNMEASURED, "detail": "unreachable"})
+    return caps
+
+
+def recommend(report, throughput=None, caps=None, main_section=None,
+              summary_section=None):
+    """Turn probe results into operator recommendations (pure; printed,
+    never silently applied — env and risk decisions stay with the human)."""
+    recs = []
+    tp = throughput or {}
+    if tp.get("status") == OK and tp.get("gen_tps") is not None:
+        if tp["gen_tps"] < 15:
+            recs.append(f"gen speed {tp['gen_tps']} t/s is slow — consider "
+                        "AGENT_STALL_TIMEOUT_S=120 (default 60) so long "
+                        "generations aren't killed as stalls")
+    c = caps or {}
+    if c.get("tools_accepted", {}).get("status") == FAILED:
+        recs.append("endpoint REJECTS the tools parameter — the agent cannot "
+                    "run against it; fix the server/template first")
+    elif c.get("tool_roundtrip", {}).get("status") == FAILED:
+        recs.append("model never emitted a tool call in the probe — check the "
+                    "chat template (--jinja) and tool support before relying "
+                    "on this endpoint")
+    if c.get("timings", {}).get("status") == FAILED:
+        recs.append("no server timings — token-rate stats in the footer will "
+                    "be coarse wall-clock estimates")
+    ms, ss = main_section or {}, summary_section or {}
+    m_url = ms.get("base_url") or ms.get("api_url")
+    if m_url and m_url == (ss.get("base_url") or ss.get("api_url")):
+        recs.append("main and summary share one endpoint — summaries queue "
+                    "behind main streams on single-slot servers (informational)")
+    return recs
+
+
+def check_drift(current_cfg, fresh_report):
+    """Compare a fresh P4 measurement against the _calibrated sidecar.
+
+    Returns (drifted: bool|None, message). None = no baseline to compare
+    (never calibrated, or ctx unmeasured now) — distinct from 'no drift'."""
+    side = current_cfg.get("_calibrated") or {}
+    baseline = side.get("measured_ctx_tokens")
+    fresh = (fresh_report.get("p4_ctx") or {}).get("value")
+    if not baseline:
+        return None, "no calibration baseline on record"
+    if not fresh:
+        return None, (f"baseline {baseline} on record, but ctx is UNMEASURED "
+                      "now — cannot compare")
+    delta = abs(fresh - baseline) / baseline
+    when = side.get("date", "unknown date")
+    if delta > 0.02:
+        return True, (f"ctx DRIFTED: {baseline} (calibrated {when}) -> "
+                      f"{fresh} measured now ({delta:+.1%}) — recalibration "
+                      "recommended")
+    return False, (f"no drift: measured {fresh} vs baseline {baseline} "
+                   f"(calibrated {when})")
+
+
 # ── Calibration (probe report → config knobs) ─────────────────────────
 
 
@@ -464,10 +673,12 @@ def calibrate(report, defaults, chars_per_token=_CHARS_PER_TOKEN):
     p["max_text_response_chars"] = min(default_cap, max(1500, ctx_chars // 10))
     notes.append(f"preferences.max_text_response_chars = {p['max_text_response_chars']}")
 
+    import datetime
     updates["_calibrated"] = {
         "measured_ctx_tokens": ctx_tokens,
         "ctx_source": p4.get("detail", "?"),
         "chars_per_token": chars_per_token,
+        "date": datetime.date.today().isoformat(),
     }
     return updates, notes
 
@@ -630,21 +841,79 @@ def _role_screen(role, current, input_fn, print_fn, http):
     return section, report
 
 
+def _advisor_screen(current, input_fn, print_fn, http):
+    """Advisor endpoint (the escalation-tier tool agent.py probes at boot).
+
+    Optional: ENTER on an empty URL skips/disables. A failing probe writes
+    enabled=false WITH the reason — matching the boot probe's behavior —
+    rather than persisting a dead endpoint as live."""
+    print_fn("\n── ADVISOR endpoint (optional — feeds the advisor tool) ──")
+    cur = current.get("base_url", "")
+    if cur:
+        raw = input_fn(f"advisor base_url [{cur}] (ENTER = keep as-is, "
+                       "'-' = disable): ").strip()
+        if raw == "":
+            return None          # keep existing config untouched
+    else:
+        raw = input_fn("advisor base_url (ENTER = skip, '-' = disable): ").strip()
+        if raw == "":
+            return None          # never configured, nothing to write
+    if raw == "-":
+        print_fn("   advisor disabled")
+        return {"enabled": False}
+    base_url = raw
+    api_key = _ask("advisor api_key (ENTER for none)",
+                   current.get("api_key", ""), input_fn)
+    print_fn("   probing…")
+    report = probe_llamacpp(base_url, api_key or None, http=http,
+                            allow_empirical=False)
+    print_fn(_fmt_probe(report))
+    section = {"base_url": base_url}
+    if api_key:
+        section["api_key"] = api_key
+    if report["p1_reach"]["status"] == OK:
+        section["enabled"] = True
+    else:
+        section["enabled"] = False
+        section["disabled_reason"] = report["p1_reach"]["detail"]
+        print_fn("   unreachable — written with enabled=false + reason "
+                 "(re-run /setup advisor when it is up)")
+    return section
+
+
 def run_wizard(config_path, current_cfg, jump_to=None,
                input_fn=input, print_fn=print, http=None):
     """Interactive setup. Returns the updates dict written (or {} if aborted).
 
-    ``jump_to``: None = full run; "main"/"summary" = that role only;
-    "calibrate" = probes + calibration against the current config only.
+    ``jump_to``: None = full run; "main"/"summary"/"advisor" = that section
+    only; "calibrate" = probes + calibration against the current config only
+    (with drift reporting against the _calibrated sidecar).
     """
     current_cfg = current_cfg or {}
     updates = {}
     main_report = None
+    main_throughput = None
+    main_caps = None
 
     if jump_to in (None, "main"):
         section, main_report = _role_screen(
             "main", current_cfg.get("llm", {}), input_fn, print_fn, http)
         updates["llm"] = section
+        # P5/P6 (Phase 3): free on llamacpp; metered-trivial on foundry;
+        # bedrock self-reports UNMEASURED.
+        main_throughput = probe_throughput(section, "main", http=http)
+        if main_throughput.get("status") == OK:
+            pt = main_throughput.get("prompt_tps")
+            print_fn(f"    speed  {main_throughput['gen_tps']} t/s gen"
+                     + (f" · {pt} t/s prompt" if pt else "")
+                     + f"  ({main_throughput['detail']})")
+        main_caps = probe_capabilities(section, "main", http=http,
+                                       throughput=main_throughput)
+        for name in ("timings", "tools_accepted", "tool_roundtrip",
+                     "reasoning_param"):
+            e = main_caps.get(name, {})
+            print_fn(f"    cap    {name:16s} {e.get('status', '?'):10s} "
+                     f"{e.get('detail', '')}")
 
     if jump_to in (None, "summary"):
         cur = current_cfg.get("summary", {})
@@ -669,6 +938,12 @@ def run_wizard(config_path, current_cfg, jump_to=None,
             section["enabled"] = True
             updates["summary"] = section
 
+    if jump_to in (None, "advisor"):
+        adv = _advisor_screen(current_cfg.get("advisor", {}),
+                              input_fn, print_fn, http)
+        if adv is not None:
+            updates["advisor"] = adv
+
     # Calibration rides on the MAIN endpoint's measurements.
     if jump_to in (None, "main", "calibrate"):
         if main_report is None:
@@ -681,6 +956,10 @@ def run_wizard(config_path, current_cfg, jump_to=None,
                 print_fn(_fmt_probe(main_report))
             else:
                 main_report = {}
+        # Drift report (Phase 3): fresh measurement vs _calibrated sidecar.
+        drifted, drift_msg = check_drift(current_cfg, main_report)
+        if drifted is not None or jump_to == "calibrate":
+            print_fn(f"    drift: {drift_msg}")
         cal_updates, notes = calibrate(main_report, current_cfg)
         print_fn("\n── CALIBRATION ──")
         for n in notes:
@@ -691,6 +970,17 @@ def run_wizard(config_path, current_cfg, jump_to=None,
                 updates.update(cal_updates)
             else:
                 print_fn("    calibration skipped — defaults kept")
+
+    # Recommendations (Phase 3): printed, never silently applied.
+    recs = recommend(main_report or {}, throughput=main_throughput,
+                     caps=main_caps,
+                     main_section=updates.get("llm") or current_cfg.get("llm"),
+                     summary_section=updates.get("summary")
+                     or current_cfg.get("summary"))
+    if recs:
+        print_fn("\n── RECOMMENDATIONS ──")
+        for r in recs:
+            print_fn(f"    • {r}")
 
     if not updates:
         print_fn("nothing to write.")
@@ -708,7 +998,8 @@ def run_probe_report(current_cfg, print_fn=print, http=None):
     as UNMEASURED, which is the honest state)."""
     any_run = False
     for role, section in (("main", current_cfg.get("llm", {})),
-                          ("summary", current_cfg.get("summary", {}))):
+                          ("summary", current_cfg.get("summary", {})),
+                          ("advisor", current_cfg.get("advisor", {}))):
         target = section.get("base_url") or section.get("api_url")
         if not target and not section.get("kind"):
             print_fn(f"{role}: nothing configured — skipped")
@@ -718,5 +1009,23 @@ def run_probe_report(current_cfg, print_fn=print, http=None):
         report = probe_backend(section, role=role, http=http,
                                ask_consent=None, allow_empirical=False)
         print_fn(_fmt_probe(report))
+        # P5/P6 only where free (llamacpp) — test mode never spends.
+        if role == "main" and (section.get("kind") or "llamacpp") == "llamacpp":
+            tp = probe_throughput(section, role, http=http)
+            if tp.get("status") == OK:
+                print_fn(f"    speed  {tp['gen_tps']} t/s gen ({tp['detail']})")
+            caps = probe_capabilities(section, role, http=http, throughput=tp)
+            for name in ("timings", "tools_accepted", "tool_roundtrip",
+                         "reasoning_param"):
+                e = caps.get(name, {})
+                print_fn(f"    cap    {name:16s} {e.get('status', '?'):10s} "
+                         f"{e.get('detail', '')}")
+            drifted, msg = check_drift(current_cfg, report)
+            if drifted is not None:
+                print_fn(f"    drift: {msg}")
+            for r in recommend(report, throughput=tp, caps=caps,
+                               main_section=section,
+                               summary_section=current_cfg.get("summary")):
+                print_fn(f"    • {r}")
     if not any_run:
         print_fn("no endpoints configured — run /setup first")

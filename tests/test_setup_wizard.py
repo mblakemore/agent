@@ -174,7 +174,8 @@ class TestWizardScripted(unittest.TestCase):
 
     def test_full_run_defaults_shared_summary(self):
         # answers: kind, base_url, key, model, reuse-summary, accept-calibration
-        updates, on_disk, printed = self._run(["", "", "", "", "y", "y"])
+        updates, on_disk, printed = self._run(["", "", "", "", "y", "", "y"])
+        self.assertNotIn("advisor", updates)   # skipped -> untouched
         self.assertEqual(updates["llm"]["base_url"], "http://127.0.0.1:8080")
         self.assertEqual(updates["llm"]["model"], "qwen3.8-27b")   # auto-picked
         self.assertEqual(updates["summary"]["base_url"],
@@ -185,7 +186,7 @@ class TestWizardScripted(unittest.TestCase):
         self.assertIn("_calibrated", on_disk)
 
     def test_declined_calibration_keeps_defaults(self):
-        updates, on_disk, _ = self._run(["", "", "", "", "y", "n"])
+        updates, on_disk, _ = self._run(["", "", "", "", "y", "", "n"])
         self.assertNotIn("context", updates)
         self.assertNotIn("_calibrated", on_disk)
         self.assertIn("llm", on_disk)   # endpoint config still written
@@ -198,7 +199,7 @@ class TestWizardScripted(unittest.TestCase):
 
     def test_unreachable_endpoint_still_writes_no_calibration(self):
         updates, on_disk, printed = self._run(
-            ["", "http://dead:1", "", "", "y", "y"], routes={})
+            ["", "http://dead:1", "", "", "y", "", "y"], routes={})
         self.assertEqual(updates["llm"]["base_url"], "http://dead:1")
         self.assertNotIn("context", updates)   # ctx unmeasured -> no knobs
         self.assertTrue(any("UNMEASURED" in s for s in printed))
@@ -309,6 +310,7 @@ class TestWizardBedrockScreen(unittest.TestCase):
         answers = iter(["2", "https://gw.example", "sekrit",
                         "claude-v4.6-opus", "25.5",  # main screen
                         "y",                          # summary: reuse main
+                        "",                           # advisor: skip
                         "y"])                         # accept calibration
         printed = []
         with tempfile.TemporaryDirectory() as d, \
@@ -325,6 +327,141 @@ class TestWizardBedrockScreen(unittest.TestCase):
         self.assertEqual(updates["context"]["ctx_size"], int(180000 * 0.9))
         self.assertEqual(on_disk["llm"]["kind"], "bedrock")
         self.assertEqual(mode, stat.S_IRUSR | stat.S_IWUSR)  # key -> chmod 600
+
+
+class TestThroughputAndCapabilities(unittest.TestCase):
+    """Phase 3: P5/P6 probes + recommendations."""
+
+    def test_p5_prefers_server_timings(self):
+        routes = {"/v1/chat/completions": (200, {
+            "timings": {"predicted_per_second": 44.5, "prompt_per_second": 200.0},
+            "usage": {"completion_tokens": 64},
+            "choices": [{"message": {"content": "1,2,3"}}]})}
+        tp = W.probe_throughput({"base_url": "http://x:8080"},
+                                http=fake_http(routes))
+        self.assertEqual(tp["status"], W.OK)
+        self.assertEqual(tp["gen_tps"], 44.5)
+        self.assertIn("server timings", tp["detail"])
+
+    def test_p5_wall_clock_fallback_labeled(self):
+        routes = {"/v1/chat/completions": (200, {
+            "usage": {"completion_tokens": 64},
+            "choices": [{"message": {"content": "x"}}]})}
+        tp = W.probe_throughput({"base_url": "http://x:8080"},
+                                http=fake_http(routes))
+        self.assertEqual(tp["status"], W.OK)
+        self.assertIn("wall-clock", tp["detail"])
+
+    def test_p5_bedrock_is_honest_unmeasured(self):
+        tp = W.probe_throughput({"kind": "bedrock", "model": "m"})
+        self.assertEqual(tp["status"], W.UNMEASURED)
+        self.assertIn("cannot cap", tp["detail"])
+
+    def test_p6_tool_roundtrip_detected(self):
+        def chat(data):
+            if data.get("tools"):
+                return 200, {"choices": [{"message": {"tool_calls": [
+                    {"id": "t1", "function": {"name": "get_current_time",
+                                              "arguments": "{}"}}]}}]}
+            return 200, {"choices": [{"message": {"content": "hi"}}],
+                         "timings": {"predicted_per_second": 10}}
+        routes = {"/v1/chat/completions": chat}
+        caps = W.probe_capabilities({"base_url": "http://x:8080"},
+                                    http=fake_http(routes))
+        self.assertEqual(caps["tools_accepted"]["status"], W.OK)
+        self.assertEqual(caps["tool_roundtrip"]["status"], W.OK)
+        self.assertEqual(caps["reasoning_param"]["status"], W.OK)
+
+    def test_p6_tools_rejected_is_failed(self):
+        def chat(data):
+            if data.get("tools"):
+                return 400, {"error": "tools unsupported"}
+            return 200, {"choices": [{"message": {"content": "hi"}}]}
+        caps = W.probe_capabilities({"base_url": "http://x:8080"},
+                                    http=fake_http({"/v1/chat/completions": chat}))
+        self.assertEqual(caps["tools_accepted"]["status"], W.FAILED)
+        self.assertEqual(caps["tool_roundtrip"]["status"], W.UNMEASURED)
+
+    def test_recommendations_fire_on_slow_and_toolless(self):
+        recs = W.recommend(
+            {}, throughput={"status": W.OK, "gen_tps": 8.0},
+            caps={"tools_accepted": {"status": W.FAILED}},
+            main_section={"base_url": "http://a"},
+            summary_section={"base_url": "http://a"})
+        text = " ".join(recs)
+        self.assertIn("AGENT_STALL_TIMEOUT_S", text)
+        self.assertIn("REJECTS the tools", text)
+        self.assertIn("share one endpoint", text)
+
+    def test_no_recommendations_when_healthy(self):
+        recs = W.recommend(
+            {}, throughput={"status": W.OK, "gen_tps": 45.0},
+            caps={"tools_accepted": {"status": W.OK},
+                  "tool_roundtrip": {"status": W.OK},
+                  "timings": {"status": W.OK}},
+            main_section={"base_url": "http://a"},
+            summary_section={"base_url": "http://b"})
+        self.assertEqual(recs, [])
+
+
+class TestAdvisorScreen(unittest.TestCase):
+    def _screen(self, answers, current=None, routes=None):
+        answers = iter(answers)
+        printed = []
+        section = W._advisor_screen(current or {},
+                                    lambda _: next(answers, ""),
+                                    printed.append,
+                                    fake_http(LLAMA_ROUTES if routes is None
+                                              else routes))
+        return section, printed
+
+    def test_empty_url_skips_writing_nothing(self):
+        section, _ = self._screen([""])
+        self.assertIsNone(section)
+
+    def test_dash_disables_explicitly(self):
+        section, _ = self._screen(["-"])
+        self.assertEqual(section, {"enabled": False})
+
+    def test_reachable_advisor_enabled(self):
+        section, _ = self._screen(["http://adv:9090", ""])
+        self.assertTrue(section["enabled"])
+        self.assertEqual(section["base_url"], "http://adv:9090")
+
+    def test_unreachable_advisor_written_disabled_with_reason(self):
+        section, printed = self._screen(["http://dead:1", ""], routes={})
+        self.assertFalse(section["enabled"])
+        self.assertIn("disabled_reason", section)
+
+    def test_keep_existing_returns_no_change(self):
+        section, _ = self._screen([""],
+                                  current={"base_url": "http://adv:9090",
+                                           "enabled": True})
+        self.assertIsNone(section)
+
+
+class TestDrift(unittest.TestCase):
+    def test_no_baseline_is_none_not_false(self):
+        drifted, msg = W.check_drift({}, {"p4_ctx": {"value": 100}})
+        self.assertIsNone(drifted)
+        self.assertIn("no calibration baseline", msg)
+
+    def test_drift_detected_over_2pct(self):
+        cfg = {"_calibrated": {"measured_ctx_tokens": 196608, "date": "2026-08-15"}}
+        drifted, msg = W.check_drift(cfg, {"p4_ctx": {"value": 96768}})
+        self.assertTrue(drifted)
+        self.assertIn("DRIFTED", msg)
+
+    def test_no_drift_within_2pct(self):
+        cfg = {"_calibrated": {"measured_ctx_tokens": 100000}}
+        drifted, msg = W.check_drift(cfg, {"p4_ctx": {"value": 100500}})
+        self.assertFalse(drifted)
+
+    def test_unmeasured_now_is_none_with_baseline_named(self):
+        cfg = {"_calibrated": {"measured_ctx_tokens": 100000}}
+        drifted, msg = W.check_drift(cfg, {"p4_ctx": {"value": None}})
+        self.assertIsNone(drifted)
+        self.assertIn("100000", msg)
 
 
 class TestFirstRunGuard(unittest.TestCase):
