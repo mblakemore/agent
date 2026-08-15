@@ -28,6 +28,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import theme
+
 OK = "OK"
 FAILED = "FAILED"
 UNMEASURED = "UNMEASURED"
@@ -784,21 +786,44 @@ def _ask_endpoint(label, current_url, found, input_fn, print_fn,
 
 # ── Interactive shell ─────────────────────────────────────────────────
 
-_INTRO = """──────────────────────────────────────────────────────────────
-Welcome to agent.py — an open-source, tool-rich, extensible
-autonomous agent engine.
+def _role_word(w):
+    """The role words (MAIN/SUMMARY/ADVISOR) and section headers share one
+    highlight color so the intro's vocabulary visibly maps onto the
+    screens that follow."""
+    return theme.c(theme.AMBER, w, bold=True)
 
-How it works, in one breath: your conversation lives in a ROLLING
-WINDOW, so the effective context is essentially unlimited. Messages
-that age out are auto-summarized by a background process — and that
-summarizer is its own model role, pointable at any endpoint (a common
-shape: the MAIN model on your GPU, a small SUMMARY model on CPU).
-A third role, the ADVISOR, is an on-demand tool you can aim at a
-bigger, slower model for the rare hard call.
 
-This wizard configures those three roles, probes each endpoint live,
-and calibrates the engine to what it actually measures.
-──────────────────────────────────────────────────────────────"""
+def _section(label, rest=""):
+    return "\n── " + _role_word(label) + rest + " ──"
+
+
+def _print_program_header(print_fn):
+    """The engine's session banner, reproduced for the wizard (the first-run
+    wizard fires BEFORE the real banner, so setup opened colorless)."""
+    bar = theme.c(theme.VIOLET, "─" * 60)
+    print_fn(bar)
+    print_fn(theme.c(theme.SKY, "agent", bold=True) + theme.dim("  ·  setup"))
+    print_fn(bar)
+
+
+def _intro_text():
+    return (
+        "Welcome to agent.py — an open-source, tool-rich, extensible\n"
+        "autonomous agent engine.\n"
+        "\n"
+        "How it works:\n"
+        "  • Your conversation lives in a " + theme.c(theme.SKY, "ROLLING WINDOW", bold=True)
+        + " — the effective\n    context is essentially unlimited.\n"
+        "  • Messages that age out are auto-summarized by a background\n"
+        "    process. The summarizer is its own model role, pointable at any\n"
+        "    endpoint — a common shape: " + _role_word("MAIN") + " on the GPU, a small\n    "
+        + _role_word("SUMMARY") + " model on CPU.\n"
+        "  • A third role, the " + _role_word("ADVISOR") + ", is an on-demand tool you can\n"
+        "    aim at a bigger, slower model for the rare hard call.\n"
+        "\n"
+        "This wizard configures those three roles, probes each endpoint\n"
+        "live, and calibrates the engine to what it actually measures."
+    )
 
 
 def _ask(prompt, default, input_fn):
@@ -841,7 +866,7 @@ def _consent_asker(input_fn, print_fn):
 
 def _role_screen(role, current, input_fn, print_fn, http, found=None):
     """One role's questions + inline probe. Returns (section_dict, report)."""
-    print_fn(f"\n── {role.upper()} model ──")
+    print_fn(_section(role.upper(), " model"))
     cur_kind = {"llamacpp": "1", "bedrock": "2", "foundry": "3"}.get(
         current.get("kind", "llamacpp"), "1")
     kind_ans = _ask("backend kind: 1) llama.cpp / OpenAI-compatible  "
@@ -922,7 +947,7 @@ def _advisor_screen(current, input_fn, print_fn, http, found=None):
     Optional: ENTER on an empty URL skips/disables. A failing probe writes
     enabled=false WITH the reason — matching the boot probe's behavior —
     rather than persisting a dead endpoint as live."""
-    print_fn("\n── ADVISOR endpoint (optional — feeds the advisor tool) ──")
+    print_fn(_section("ADVISOR", " endpoint (optional — feeds the advisor tool)"))
     cur = current.get("base_url", "")
     if found:
         for i, s in enumerate(found, 1):
@@ -986,7 +1011,8 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
     effective_cfg = effective_cfg or {}
     found_servers = []
     if jump_to is None:
-        print_fn(_INTRO)
+        _print_program_header(print_fn)
+        print_fn(_intro_text())
         do_scan = _ask("scan localhost for running model servers? (y/n)",
                        "y", input_fn)
         if do_scan.lower().startswith("y"):
@@ -1035,7 +1061,7 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
     if jump_to in (None, "summary"):
         cur = current_cfg.get("summary", {})
         if jump_to is None:
-            reuse = _ask("\nSUMMARY: reuse the main endpoint? (y/n)", "y", input_fn)
+            reuse = _ask("\n" + _role_word("SUMMARY") + ": reuse the main endpoint? (y/n)", "y", input_fn)
             if reuse.lower().startswith("y"):
                 base = updates.get("llm") or current_cfg.get("llm", {})
                 summary = {"enabled": True}
@@ -1081,7 +1107,7 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
         if drifted is not None or jump_to == "calibrate":
             print_fn(f"    drift: {drift_msg}")
         cal_updates, notes = calibrate(main_report, effective_cfg)
-        print_fn("\n── CALIBRATION ──")
+        print_fn(_section("CALIBRATION"))
         for n in notes:
             print_fn(f"    {n}")
         if cal_updates:
@@ -1098,7 +1124,7 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
                      summary_section=updates.get("summary")
                      or current_cfg.get("summary"))
     if recs:
-        print_fn("\n── RECOMMENDATIONS ──")
+        print_fn(_section("RECOMMENDATIONS"))
         for r in recs:
             print_fn(f"    • {r}")
 
@@ -1112,8 +1138,9 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
     # written is exactly what the scaffold's dynamic tiers section reads,
     # so this is the natural moment to mint an agent identity on top of it.
     if jump_to is None:
-        nxt = _ask("\nconfigure an agent identity here now (AGENT.md scaffold, "
-                   "the /agent wizard)? (y/n)", "n", input_fn)
+        nxt = _ask("\nWould you like to configure an agent identity here now "
+                   "(git repo, AGENT.md scaffold, the /agent wizard)? (y/n)",
+                   "n", input_fn)
         if nxt.lower().startswith("y"):
             try:
                 import agent_scaffold
