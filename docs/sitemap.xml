@@ -2,16 +2,19 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://mblakemore.github.io/agent/</loc>
-    <lastmod>2026-08-14</lastmod>
+    <lastmod>2026-08-15</lastmod>
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/setup.html</loc>
+    <lastmod>2026-08-15</lastmod>
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/models.html</loc>
+    <lastmod>2026-08-15</lastmod>
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/configurations.html</loc>
+    <lastmod>2026-08-15</lastmod>
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/bedrock.html</loc>
