@@ -72,14 +72,14 @@ loop and calls `consult_advisor` when it is stuck.
 }
 ```
 
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `enabled` | true when `base_url` is set | The tier is off unless you configure an endpoint. |
-| `base_url` | — | OpenAI-compatible endpoint for the advisor model. |
-| `model` | — | Model name passed to that endpoint. |
-| `api_key` | — | Bearer token, if the endpoint needs one. |
-| `max_calls_per_task` | `3` | Hard cap on consultations per task, so a stuck loop cannot spend the whole session waiting. |
-| `timeout_s` | `900` | Per-consultation timeout. On expiry the agent is told to proceed without the advice rather than stalling. |
+Two knobs matter most here: `max_calls_per_task` (default `3`) caps consultations so a stuck loop
+cannot spend the whole session waiting, and `timeout_s` (default `900`) bounds each one — on expiry
+the agent is told to proceed without the advice rather than stalling. The full key reference lives
+with the other config blocks in the [overview](index.html#advisor).
+
+The advisor **distills before it asks**: your context is compressed on the fast summary model down to
+`prefill_token_budget` before the slow model sees it, because prefill dominates at these speeds. And
+it **fails open** — any error, timeout or disabled config returns a notice and the loop continues.
 
 Serve GLM-5.2 on CPU with [colibri](https://github.com/JustVugg/colibri) (`glm serve`, port 8000 by
 convention) — see [Recommended models](models.html).

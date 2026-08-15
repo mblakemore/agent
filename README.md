@@ -201,6 +201,24 @@ Guardrails:
 - **Tool recovery** — recoverable tool errors (e.g. bad line numbers) are retried with corrected parameters via a lightweight LLM call.
 - **Context overflow handling** — three consecutive HTTP 500s are treated as context overflow; the agent trims history and retries.
 
+### Escalation — when the advisor is consulted
+
+When an `advisor` endpoint is configured, three signals can route to it, all through one policy:
+
+- **gate** — the success check has blocked repeatedly: the model declared itself done while it was
+  wrong. This *suggests* escalation.
+- **stall** — the model repeated a failing action *and* ignored a prior redirect. Auto-invokes.
+- **grind** — most of the turn budget is spent and the success check is still failing: distinct
+  plausible actions until wall-clock, without converging. Auto-invokes.
+
+`stall` and `grind` are the cases where a stuck model never cleanly declares done, so the gate never
+sees them. Escalation is deliberately biased toward *not* firing — a false escalation spends minutes
+of a slow model's latency for nothing — and is capped by `max_calls_per_task`.
+
+Two modes exist: **advisor** (default) is one bounded question and one answer, with the fast model
+keeping the loop; **takeover**, where the advisor drives a sub-loop, is reserved for a narrow class
+the fast model has repeatedly failed, because every turn of it pays the slow model's latency.
+
 ## Project layout
 
 ```
@@ -321,6 +339,56 @@ Exponential-backoff settings for failed LLM requests.
 | `max_delay_seconds` | `60` | Cap on retry wait. |
 | `backoff_multiplier` | `2.0` | Multiplier applied to delay each retry. |
 | `jitter_factor` | `0.1` | Random jitter added to each delay (fraction of current delay). |
+
+### `advisor`
+
+An optional third role alongside `main` and `summary`: a **heavyweight model consulted as a tool**,
+never as the driver. A very large model on CPU can be far too slow to run a loop and still be the
+best thing available for the rare hard sub-problem, so the fast model keeps the loop and calls
+`consult_advisor` when it is stuck.
+
+`advisor` is a **top-level block**, not one of `backends`. The tier is off unless you configure it.
+
+```json
+{
+  "advisor": {
+    "enabled":              true,
+    "base_url":             "http://127.0.0.1:8000",
+    "model":                "glm-5.2",
+    "prefill_token_budget": 1500,
+    "max_tokens":           512,
+    "max_calls_per_task":   3,
+    "timeout_s":            900
+  }
+}
+```
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `enabled` | true when `base_url` is set | Tier is off unless an endpoint is configured. |
+| `base_url` | — | OpenAI-compatible endpoint for the advisor model. |
+| `model` | — | Model name passed to that endpoint. |
+| `api_key` | `""` | Bearer token, if the endpoint needs one. |
+| `prefill_token_budget` | `1500` | Hard ceiling on the brief handed to the advisor (see below). |
+| `max_tokens` | `512` | Cap on the advisor's answer. |
+| `max_calls_per_task` | `3` | Consultations per task, so a stuck loop cannot spend the session waiting. |
+| `timeout_s` | `900` | Per-consultation timeout. |
+
+**It distills before it asks.** A slow model's prefill dominates: feeding a multi-thousand-token
+transcript to a ~3 pos/s prefill costs many minutes before it emits a word. So the caller's context
+is compressed on the fast **summary** model down to `prefill_token_budget` first — the advisor reads
+the brief, not the transcript. If distillation cannot get under budget, the escalation does **not**
+happen silently.
+
+**It fails open.** Any endpoint error, timeout, or disabled config returns a plain notice and the
+driver proceeds *without* the advice. An escalation tool must never block the loop it exists to help.
+
+**It is probed at startup.** If the endpoint is unreachable, `consult_advisor` is removed from the
+tool registry, so the model never sees a tool it cannot use and never wastes turns escalating to a
+server that is not running.
+
+See [docs/configurations.md](docs/configurations.md) for the full three-tier setup, and
+[docs/models.md](docs/models.md) for what to run as the advisor.
 
 ### `bedrock`
 
