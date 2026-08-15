@@ -2910,6 +2910,31 @@ def _ensure_gitignored(entries) -> None:
         pass  # non-fatal; best-effort only
 
 
+def _warn_if_config_tracked():
+    """Loud warning when a config file is TRACKED by git — .gitignore does
+    not untrack, so a key-bearing config that was committed before the
+    ignore line landed keeps committing forever. Warning only (never
+    auto-untrack: rewriting the user's index is their call), with the
+    exact fix command. stderr as well as the log: this is
+    actively-leaking-keys severity, not a hygiene note.
+    """
+    if not _in_git_repo():
+        return
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "--", ".agent/config.json", "config.json"],
+            capture_output=True, text=True, timeout=5, cwd=os.getcwd(),
+        ).stdout.strip()
+    except Exception:
+        return  # git absent/hung — the ignore-append above still ran
+    for path in out.splitlines():
+        msg = (f"{path} is TRACKED by git — .gitignore does not untrack it, "
+               f"so a key-bearing config keeps committing. "
+               f"Fix: git rm --cached {path}")
+        logging.getLogger("agent").warning(msg)
+        print(f"⚠ {msg}", file=sys.stderr)
+
+
 def _ensure_agent_dirs():
     """Create .agent/state and .agent/history on first use, and — when inside a
     git repo — gitignore .agent/ and config.json so runtime state and the
@@ -2918,6 +2943,7 @@ def _ensure_agent_dirs():
     os.makedirs(_STATE_DIR, exist_ok=True)
     os.makedirs(_HISTORY_DIR, exist_ok=True)
     _ensure_gitignored((".agent/", "config.json"))
+    _warn_if_config_tracked()
 
 
 _ensure_agent_dirs()

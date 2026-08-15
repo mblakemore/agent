@@ -28,14 +28,14 @@ def scripted(answers):
 
 class TestQuestionOrder(unittest.TestCase):
     def test_type_asked_before_name(self):
-        input_fn = scripted(["1", "sparky", "", "", ""])
+        input_fn = scripted(["1", "sparky", "1", "", "", "", "n"])
         with tempfile.TemporaryDirectory() as d:
             A.run_agent_wizard(cwd=d, input_fn=input_fn, print_fn=lambda s: None)
         self.assertIn("agent type", input_fn.prompts[0])
         self.assertIn("agent name", input_fn.prompts[1])
 
     def test_name_defaults_to_directory_name(self):
-        input_fn = scripted(["1", "", "", "", ""])   # ENTER on name
+        input_fn = scripted(["1", "", "1", "", "", "", "n"])   # ENTER on name
         with tempfile.TemporaryDirectory() as d:
             agent_dir = Path(d) / "emberling"
             agent_dir.mkdir()
@@ -59,7 +59,7 @@ class TestScaffoldByType(unittest.TestCase):
         return written, files, body
 
     def test_creature_full_tree(self):
-        _, files, body = self._run(["1", "dc", "", "", ""])
+        _, files, body = self._run(["1", "dc", "1", "", "", "", "n"])
         for f in ("AGENT.md", "state/current-state.json", "state/focus.json",
                   "state/memories/context.json", "state/memories/patterns.jsonl",
                   "state/memories/anchors.jsonl", "messages/from-creator.md",
@@ -71,18 +71,18 @@ class TestScaffoldByType(unittest.TestCase):
         self.assertIn("One cycle per invocation", body)
 
     def test_minimal_skips_messages_and_extras(self):
-        _, files, body = self._run(["3", "tiny", "", "", "none"])
+        _, files, body = self._run(["3", "tiny", "1", "", "", "none", "n"])
         self.assertNotIn("messages/from-creator.md", files)
         self.assertNotIn("state/memories/patterns.jsonl", files)
         self.assertIn("state/memories/context.json", files)
 
     def test_worker_gets_decisions_log(self):
-        _, files, body = self._run(["2", "worker", "", "", ""])
+        _, files, body = self._run(["2", "worker", "1", "", "", "", "n"])
         self.assertIn("state/decisions/log.jsonl", files)
         self.assertIn("4-Phase", body)
 
     def test_claude_md_filename_choice(self):
-        _, files, _ = self._run(["1", "x", "", "CLAUDE.md", ""])
+        _, files, _ = self._run(["1", "x", "1", "", "CLAUDE.md", "", "n"])
         self.assertIn("CLAUDE.md", files)
         self.assertNotIn("AGENT.md", files)
 
@@ -90,7 +90,7 @@ class TestScaffoldByType(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             cwd = Path(d)
             (cwd / "AGENT.md").write_text("precious")
-            A.run_agent_wizard(cwd=cwd, input_fn=scripted(["1", "x", "", "", ""]),
+            A.run_agent_wizard(cwd=cwd, input_fn=scripted(["1", "x", "1", "", "", "", "n"]),
                                print_fn=lambda s: None)
             self.assertEqual((cwd / "AGENT.md").read_text(), "precious")
 
@@ -130,7 +130,7 @@ class TestDynamicTiers(unittest.TestCase):
             cwd = Path(d)
             (cwd / ".agent").mkdir()
             (cwd / ".agent" / "config.json").write_text(json.dumps(self.CFG))
-            A.run_agent_wizard(cwd=cwd, input_fn=scripted(["1", "x", "", "", ""]),
+            A.run_agent_wizard(cwd=cwd, input_fn=scripted(["1", "x", "1", "", "", "", "n"]),
                                print_fn=lambda s: None)
             body = (cwd / "AGENT.md").read_text()
         self.assertIn("qwen3.8-27b", body)
@@ -220,3 +220,116 @@ class TestIdentityFileLoading(unittest.TestCase):
         self.assertIsNone(err)
         self.assertIn("AGENT IDENTITY FILE", expanded)
         self.assertIn("line 119", expanded)
+
+
+class TestRepoProvisioning(unittest.TestCase):
+    """The cycles require a repo: provision before writing, finalize with an
+    explicit-paths init commit, and honor 'I'll clone it myself' by writing
+    NOTHING."""
+
+    def test_wait_option_aborts_writing_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            written = A.run_agent_wizard(
+                cwd=d, input_fn=scripted(["1", "x", "3"]),
+                print_fn=lambda s: None)
+            leftover = [p for p in Path(d).rglob("*")]
+        self.assertEqual(written, [])
+        self.assertEqual(leftover, [])
+
+    def test_local_init_plus_init_commit(self):
+        with tempfile.TemporaryDirectory() as d:
+            A.run_agent_wizard(cwd=d,
+                               input_fn=scripted(["1", "dc", "1", "", "", "", "y"]),
+                               print_fn=lambda s: None)
+            rc, out = A._git(["git", "log", "--oneline"], d)
+            self.assertEqual(rc, 0)
+            self.assertIn("C0: dc scaffolded", out)
+            rc, tracked = A._git(["git", "ls-files"], d)
+            self.assertIn("AGENT.md", tracked)
+            self.assertIn(".gitignore", tracked)
+            self.assertNotIn(".agent/", tracked)     # runtime state never tracked
+            rc, status = A._git(["git", "status", "--porcelain"], d)
+            self.assertEqual(status, "", f"dirty after init commit: {status}")
+
+    def test_existing_repo_skips_provision_question(self):
+        with tempfile.TemporaryDirectory() as d:
+            A._git(["git", "init", "-q"], d)
+            input_fn = scripted(["1", "dc", "", "", "", "n"])
+            A.run_agent_wizard(cwd=d, input_fn=input_fn, print_fn=lambda s: None)
+            self.assertFalse(any("NOT a git repo" in p for p in input_fn.prompts))
+            self.assertTrue((Path(d) / "AGENT.md").exists())
+
+    def test_github_option_defers_create_until_after_commit(self):
+        calls = []
+        real_git = A._git
+
+        def spy(args, cwd, timeout=60):
+            calls.append(args)
+            if args[0] == "gh" and args[1] == "auth":
+                return 0, "authenticated"
+            if args[0] == "gh" and args[1] == "repo":
+                return 0, "created"
+            return real_git(args, cwd, timeout)
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(A, "_git", side_effect=spy):
+            A.run_agent_wizard(
+                cwd=d,
+                input_fn=scripted(["1", "hubbot", "2", "private", "",
+                                   "", "", "", "y"]),
+                print_fn=lambda s: None)
+        gh_create = [c for c in calls if c[:3] == ["gh", "repo", "create"]]
+        self.assertEqual(len(gh_create), 1)
+        self.assertIn("--private", gh_create[0])
+        self.assertIn("--push", gh_create[0])
+        commit_idx = next(i for i, c in enumerate(calls) if "commit" in c)
+        create_idx = next(i for i, c in enumerate(calls) if c[:3] == ["gh", "repo", "create"])
+        self.assertLess(commit_idx, create_idx, "gh create must ride ON the commit")
+
+    def test_gh_unavailable_falls_back_to_local(self):
+        real_git = A._git
+
+        def spy(args, cwd, timeout=60):
+            if args[0] == "gh":
+                return 1, "gh: command not found"
+            return real_git(args, cwd, timeout)
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(A, "_git", side_effect=spy):
+            written = A.run_agent_wizard(
+                cwd=d, input_fn=scripted(["1", "x", "2", "y", "", "", "", "y"]),
+                print_fn=lambda s: None)
+            self.assertTrue(written)
+            rc, out = real_git(["git", "log", "--oneline"], d)
+        self.assertEqual(rc, 0)
+
+
+class TestTrackedConfigWarning(unittest.TestCase):
+    def test_tracked_config_warns_loudly(self):
+        import agent, io
+        with tempfile.TemporaryDirectory() as d:
+            A._git(["git", "init", "-q"], d)
+            (Path(d) / "config.json").write_text('{"llm": {"api_key": "x"}}')
+            A._git(["git", "add", "config.json"], d)
+            A._git(["git", "commit", "-qm", "oops"], d)
+            old = os.getcwd()
+            os.chdir(d)
+            try:
+                with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                    agent._warn_if_config_tracked()
+            finally:
+                os.chdir(old)
+        self.assertIn("TRACKED by git", err.getvalue())
+        self.assertIn("git rm --cached config.json", err.getvalue())
+
+    def test_untracked_config_stays_silent(self):
+        import agent, io
+        with tempfile.TemporaryDirectory() as d:
+            A._git(["git", "init", "-q"], d)
+            (Path(d) / "config.json").write_text("{}")
+            old = os.getcwd()
+            os.chdir(d)
+            try:
+                with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                    agent._warn_if_config_tracked()
+            finally:
+                os.chdir(old)
+            self.assertEqual(err.getvalue(), "")

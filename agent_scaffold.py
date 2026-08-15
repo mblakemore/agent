@@ -290,6 +290,133 @@ therefore I grow."*
     return "\n\n---\n\n".join(sections) + "\n"
 
 
+# ── git provisioning (an agent's cycles REQUIRE a repo) ───────────────
+
+
+def _git(args, cwd, timeout=60):
+    """Run git/gh; returns (returncode, stdout+stderr). Never raises."""
+    import subprocess
+    try:
+        p = subprocess.run(args, cwd=str(cwd), capture_output=True,
+                           text=True, timeout=timeout)
+        return p.returncode, (p.stdout + p.stderr).strip()
+    except Exception as e:
+        return 1, str(e)
+
+
+def _in_repo(cwd):
+    rc, _ = _git(["git", "rev-parse", "--is-inside-work-tree"], cwd)
+    return rc == 0
+
+
+def _gh_ready(cwd):
+    """gh CLI present AND authenticated — the credential the github option
+    needs. Anything else (absent, unauthed) reports why."""
+    rc, out = _git(["gh", "auth", "status"], cwd, timeout=15)
+    if rc == 0:
+        return True, "gh authenticated"
+    return False, out.splitlines()[0] if out else "gh CLI not available"
+
+
+_REPO_MENU = ("this folder is NOT a git repo, and an agent's cycles require "
+              "one (the commit is its continuity).\n"
+              "   1) create a local repo here (git init)\n"
+              "   2) create a GitHub repo and wire it as origin (needs gh "
+              "CLI authenticated)\n"
+              "   3) I'll clone a blank repo here myself — stop the wizard "
+              "for now\n"
+              "provision how?")
+
+
+def provision_repo(cwd, name, input_fn, print_fn):
+    """Ensure ``cwd`` is a git repo before scaffolding. Returns
+    (ok, remote_wanted): ok=False aborts the wizard (the user chose to
+    clone one themselves, or provisioning failed hard); remote_wanted is
+    the deferred gh-create request executed AFTER the init commit exists
+    (GitHub's --push path wants a commit to push)."""
+    if _in_repo(cwd):
+        return True, None
+    choice = _ask(_REPO_MENU, "1", input_fn).strip()
+    if choice == "3":
+        print_fn("   fine — clone your blank repo into this folder, then "
+                 "run /agent again. Nothing was written.")
+        return False, None
+    if choice == "2":
+        ok, why = _gh_ready(cwd)
+        if not ok:
+            print_fn(f"   gh not usable ({why}).")
+            fallback = _ask("   fall back to a local git init? (y/n)", "y",
+                            input_fn)
+            if not fallback.lower().startswith("y"):
+                print_fn("   aborted — nothing written.")
+                return False, None
+            choice = "1"
+    rc, out = _git(["git", "init", "-q"], cwd)
+    if rc != 0:
+        print_fn(f"   git init FAILED: {out} — aborted, nothing written.")
+        return False, None
+    print_fn("   local repo initialized.")
+    if choice == "2":
+        vis = _ask("   GitHub repo visibility — private/public", "private",
+                   input_fn).strip().lower()
+        repo_name = _ask("   GitHub repo name", name, input_fn)
+        return True, {"name": repo_name,
+                      "private": vis != "public"}
+    return True, None
+
+
+def finalize_commit(cwd, name, written, remote_wanted, print_fn):
+    """The init commit that finalizes the setup — EXPLICIT paths only
+    (never add -A: the folder may hold the user's unrelated files), then
+    the deferred GitHub create+push when requested."""
+    # The scaffold's own .gitignore excludes some of what it writes (logs/,
+    # .agent/) — that's by design, so filter them out rather than letting
+    # git add fail on the whole batch (caught by the live-init test: the
+    # add bailed on logs/consciousness.log and the commit never happened).
+    rc, ignored = _git(["git", "check-ignore", "--"] + written, cwd)
+    ignored_set = set(ignored.splitlines()) if rc in (0, 1) else set()
+    to_add = [w for w in written if w not in ignored_set]
+    if not to_add:
+        print_fn("   nothing committable (all written files are gitignored)")
+        return False
+    rc, out = _git(["git", "add", "--"] + to_add, cwd)
+    if rc != 0:
+        print_fn(f"   git add failed: {out}")
+        return False
+    rc, out = _git(["git", "commit", "-m",
+                    f"C0: {name} scaffolded — awakening pending"], cwd)
+    if rc != 0:
+        print_fn(f"   init commit failed: {out}")
+        return False
+    print_fn(f"   init commit made ({len(written)} files).")
+
+    if remote_wanted:
+        vis_flag = "--private" if remote_wanted["private"] else "--public"
+        rc, out = _git(["gh", "repo", "create", remote_wanted["name"],
+                        vis_flag, "--source", str(cwd),
+                        "--remote", "origin", "--push"], cwd, timeout=120)
+        if rc == 0:
+            print_fn(f"   GitHub repo '{remote_wanted['name']}' created — "
+                     "origin wired and pushed.")
+        else:
+            print_fn(f"   gh repo create FAILED ({out.splitlines()[0] if out else rc}) "
+                     "— the local repo and commit stand; add a remote later "
+                     "with: git remote add origin <url> && git push -u origin HEAD")
+        return rc == 0
+
+    rc, out = _git(["git", "remote"], cwd)
+    if rc == 0 and out.strip():
+        rc, out = _git(["git", "push", "-u", "origin", "HEAD"], cwd,
+                       timeout=120)
+        print_fn("   pushed to origin." if rc == 0 else
+                 f"   push failed ({out.splitlines()[-1] if out else rc}) — "
+                 "commit stands locally; push manually when the remote is ready.")
+    else:
+        print_fn("   no remote configured — commit is local only; the "
+                 "instructions' push step activates once origin exists.")
+    return True
+
+
 # ── the wizard ────────────────────────────────────────────────────────
 
 
@@ -312,6 +439,14 @@ def run_agent_wizard(cwd=None, input_fn=None, print_fn=None):
     agent_type = TYPES.get(type_ans, "creature")
 
     name = _ask(f"agent name ({agent_type})", cwd.name, input_fn)
+
+    # The cycles REQUIRE a repo (commit = continuity) — provision before
+    # anything is written, and right after the name so the GitHub option
+    # can default the repo name to the agent's.
+    repo_ok, remote_wanted = provision_repo(cwd, name, input_fn, print_fn)
+    if not repo_ok:
+        return []
+
     role = _ask("role/purpose one-liner (ENTER for none)", "", input_fn)
 
     fname_raw = _ask("instructions filename — AGENT.md/CLAUDE.md",
@@ -366,5 +501,16 @@ def run_agent_wizard(cwd=None, input_fn=None, print_fn=None):
         print_fn(f"   skipped existing: {rel}")
     print_fn(f"\nscaffolded {agent_type} agent '{name}' — "
              f"{len(written)} files written to {cwd}")
+
+    # The init commit finalizes the setup (explicit paths, never add -A).
+    if written:
+        do_commit = _ask("make the init commit now? (y/n)", "y", input_fn)
+        if do_commit.lower().startswith("y"):
+            finalize_commit(cwd, name, written, remote_wanted, print_fn)
+        elif remote_wanted:
+            print_fn("   note: the GitHub repo was NOT created (it rides on "
+                     "the init commit) — commit and run "
+                     "`gh repo create` yourself when ready.")
+
     print_fn(f"start with: @{instrfile} run the loop")
     return written

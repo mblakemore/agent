@@ -317,9 +317,11 @@ class TestAgentWizard:
         self._run_wizard(monkeypatch, tmp_path, [
             "1",          # agent type (creature)
             "TestBot",    # agent name (AFTER type — 2026-08-15 reorder)
+            "1",          # repo: local git init (tmp_path is not a repo)
             "A test bot", # role
             "AGENT.md",   # filename
             "",           # extras (type default)
+            "n",          # init commit: skip in this test
         ])
         agent_md = tmp_path / "AGENT.md"
         assert agent_md.exists(), "AGENT.md was not created"
@@ -328,7 +330,7 @@ class TestAgentWizard:
     def test_agent_wizard_creates_state_files(self, monkeypatch, tmp_path):
         """Wizard creates state/current-state.json, state/focus.json, state/memories/context.json."""
         self._run_wizard(monkeypatch, tmp_path, [
-            "", "BotA", "", "", "",
+            "", "BotA", "1", "", "", "", "n",
         ])
         assert (tmp_path / "state" / "current-state.json").exists()
         assert (tmp_path / "state" / "focus.json").exists()
@@ -339,21 +341,21 @@ class TestAgentWizard:
         existing = tmp_path / "AGENT.md"
         existing.write_text("old")
         self._run_wizard(monkeypatch, tmp_path, [
-            "", "BotB", "", "", "",
+            "", "BotB", "1", "", "", "", "n",
         ])
         assert existing.read_text() == "old"
 
     def test_agent_wizard_memory_extras_patterns(self, monkeypatch, tmp_path):
         """Specifying 'patterns' in extras creates state/memories/patterns.jsonl."""
         self._run_wizard(monkeypatch, tmp_path, [
-            "", "BotC", "", "", "patterns",
+            "", "BotC", "1", "", "", "patterns", "n",
         ])
         assert (tmp_path / "state" / "memories" / "patterns.jsonl").exists()
 
     def test_agent_wizard_default_loop_is_six_phase(self, monkeypatch, tmp_path):
         """Default type (creature) yields the 6-phase loop."""
         self._run_wizard(monkeypatch, tmp_path, [
-            "", "BotD", "", "", "",
+            "", "BotD", "1", "", "", "", "n",
         ])
         content = (tmp_path / "AGENT.md").read_text()
         assert "PERCEIVE" in content or "6-phase" in content
