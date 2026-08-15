@@ -3320,6 +3320,60 @@ def _persist_config_value(section, key, value):
     return cfg_path
 
 
+def _apply_setup_updates(updates):
+    """Apply a /setup result to the LIVE session (setup_wizard already
+    persisted it to .agent/config.json).
+
+    Deep-merges the updates into ``_config``, re-synthesizes the backends
+    registry from the fresh legacy blocks (the loaded registry was built from
+    the OLD blocks and must not pass through), rebuilds the live backend
+    objects, and keeps the footer/model + BASE_URL in sync — the same
+    contract /model honors, extended to endpoints and context knobs.
+    Returns a short human summary of what was rebuilt.
+    """
+    global _main_backend, _summary_backend, BASE_URL
+
+    def merge(dst, src):
+        for k, v in src.items():
+            if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                merge(dst[k], v)
+            else:
+                dst[k] = v
+
+    merge(_config, updates)
+    rebuilt = []
+    if "llm" in updates or "summary" in updates:
+        _config["backends"] = _synthesize_backends_registry(
+            {k: v for k, v in _config.items() if k != "backends"})
+        if "llm" in updates:
+            _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
+            if getattr(_main_backend, "model", None):
+                _config["llm"]["model"] = _main_backend.model
+            BASE_URL = _config["llm"].get("base_url", BASE_URL)
+            rebuilt.append("main backend")
+        if "summary" in updates:
+            _summary_backend = _build_backend(
+                _cfg_with_role(_config["backends"], "summary"))
+            rebuilt.append("summary backend")
+    if "context" in updates:
+        # These were snapshotted into module globals at import — refresh the
+        # ones the run loop reads live. The session's ctx_size budget itself
+        # is fixed at boot (passed by value into the loop), so a changed
+        # ctx_size lands on the NEXT start; say so rather than half-apply.
+        c = _config.get("context", {})
+        for gname, key in (("_MAX_FULL_LINES", "max_full_lines"),
+                           ("_PREVIEW_LINES", "preview_lines"),
+                           ("_SUMMARY_THRESHOLD", "summary_threshold"),
+                           ("_SUMMARY_MAX_CHARS", "summary_max_chars"),
+                           ("_MAX_CONTEXT_MESSAGES", "max_context_messages")):
+            if key in c:
+                globals()[gname] = c[key]
+        rebuilt.append("context knobs (ctx_size budget: next start)")
+    if "preferences" in updates:
+        rebuilt.append("preferences")
+    return ", ".join(rebuilt) or "config only"
+
+
 def _set_model_for_role(role, new_model):
     """Apply ``new_model`` to the given role (``"main"`` / ``"summary"``).
 
@@ -3880,7 +3934,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 summary_base_url=getattr(_summary_backend, "base_url", None),
                 setup_logger=_setup_logger, pick_model=_pick_model_interactive,
                 set_model=_set_model_for_role, render_context_bar=_render_context_bar,
-                refresh_cb_log=_refresh_cb_log)
+                refresh_cb_log=_refresh_cb_log, apply_setup=_apply_setup_updates)
             with _borrowed_terminal():
                 handled = _commands.handle_command(_ui, ctx)
             if handled:
@@ -4017,6 +4071,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 set_model=_set_model_for_role,
                 render_context_bar=_render_context_bar,
                 refresh_cb_log=_refresh_cb_log,
+                apply_setup=_apply_setup_updates,
             )
             if _commands.handle_command(user_input, ctx):
                 # /clear may have rotated log and initial_files — pull them back

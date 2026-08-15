@@ -13,6 +13,8 @@ non-trivial belongs back in agent.py or a helper module.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
 
@@ -36,6 +38,7 @@ def _cmd_help(ctx: SimpleNamespace, args: str) -> None:
         "  /clear         — clear conversation history and start a fresh session log",
         "  /context       — show current context usage (bar + token counts)",
         "  /model [main|summary] [name] — set+persist the main/summary model",
+        "  /setup [main|summary|test|calibrate] — configure endpoints, probe, calibrate",
         "  /alias         — install an `agent` shell alias for this checkout",
         "  /verbose       — toggle compact/full tool output",
         "  /tools [N|all] — show buffered tool calls (default: all; N = last N only)",
@@ -417,8 +420,50 @@ loop, but don't assume prior state holds anything meaningful.
     cb_print(f"Start with: @{instrfile} run the loop")
 
 
+def _cmd_setup(ctx: SimpleNamespace, args: str) -> None:
+    """Configure roles/endpoints and calibrate from live probes.
+
+    Forms: `/setup` (full wizard) · `/setup main|summary` (one role) ·
+    `/setup test` (probe only, change nothing) · `/setup calibrate`
+    (re-derive context knobs from a fresh probe of the main endpoint).
+    Runs inside the terminal borrow like /model, so plain input() is safe.
+    """
+    import setup_wizard as W
+
+    arg = args.strip().lower()
+    if arg not in ("", "test", "calibrate", "main", "summary"):
+        safe_cb(ctx.cb, "on_notice", "warn",
+                f"usage: /setup [main|summary|test|calibrate] — got: {args!r}")
+        return
+
+    if arg == "test":
+        W.run_probe_report(ctx.config)
+        return
+
+    cfg_path = Path(os.getcwd()) / ".agent" / "config.json"
+    try:
+        updates = W.run_wizard(cfg_path, ctx.config,
+                               jump_to=(arg or None) if arg != "" else None)
+    except (KeyboardInterrupt, EOFError):
+        safe_cb(ctx.cb, "on_notice", "info", "\n/setup aborted — nothing written")
+        return
+    if not updates:
+        return
+    apply_fn = getattr(ctx, "apply_setup", None)
+    if apply_fn is not None:
+        applied = apply_fn(updates)
+        safe_cb(ctx.cb, "on_notice", "info",
+                theme.c(theme.MINT,
+                        f"setup applied live ({applied}) and persisted to {cfg_path}"))
+    else:
+        safe_cb(ctx.cb, "on_notice", "info",
+                f"setup persisted to {cfg_path} — restart to apply")
+    ctx.log.info("/setup wrote %s (sections: %s)", cfg_path, sorted(updates))
+
+
 _COMMANDS: dict[str, Callable[[SimpleNamespace, str], None]] = {
     "/help": _cmd_help,
+    "/setup": _cmd_setup,
     "/clear": _cmd_clear,
     "/context": _cmd_context,
     "/model": _cmd_model,
