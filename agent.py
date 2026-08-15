@@ -3303,7 +3303,11 @@ def _pick_model_interactive(current_model, base_url):
         marker = theme.c(theme.MINT, " *") if m == current_model else "  "
         _emit("on_notice", "info", f"{marker} {i}. {m}")
     try:
-        choice = input("Pick a model number (blank to cancel): ").strip()
+        # Prompt printed as its own line: under the terminal borrow a
+        # promptless-newline input() prompt never renders (QA 2026-08-15,
+        # same class as the /setup wizard's _borrow_input fix).
+        print("Pick a model number (blank to cancel):")
+        choice = input("").strip()
     except (EOFError, KeyboardInterrupt):
         _emit("on_notice", "info", "")
         return None
@@ -3469,7 +3473,12 @@ def _log_bedrock_session_spend(log):
             )
 
 
-def _maybe_first_run_wizard(auto, initial_prompt, continue_mode):
+# One-shot flag set by --setup: forces the wizard on the next interactive
+# start even when a config already exists (cleared after it runs).
+_FORCE_SETUP_WIZARD = False
+
+
+def _maybe_first_run_wizard(auto, initial_prompt, continue_mode, force=False):
     """First-run /setup (plan/setup-command.md Phase 2).
 
     Fires ONLY when: interactive (not -a, no initial prompt, not a resumed
@@ -3483,8 +3492,9 @@ def _maybe_first_run_wizard(auto, initial_prompt, continue_mode):
     # the state/history bootstrap creates .agent/ at boot, before this guard
     # runs (caught live 2026-08-15 — the dir-based check made the wizard
     # unreachable in exactly the empty-folder case it exists for).
-    unconfigured = (not (cwd / ".agent" / "config.json").exists()
-                    and not (cwd / "config.json").exists())
+    # force=True (--setup) runs the wizard regardless of existing config.
+    unconfigured = force or (not (cwd / ".agent" / "config.json").exists()
+                             and not (cwd / "config.json").exists())
     interactive = (not auto and initial_prompt is None and not continue_mode
                    and sys.stdin.isatty())
     if not unconfigured:
@@ -3521,7 +3531,11 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
 
     # First-run wizard (plan/setup-command.md Phase 2) — BEFORE the ctx_size
     # read so a first-run calibration applies to THIS session, not the next.
-    _maybe_first_run_wizard(auto, initial_prompt, continue_mode)
+    # --setup forces it even when a config exists (one-shot, then cleared).
+    global _FORCE_SETUP_WIZARD
+    _maybe_first_run_wizard(auto, initial_prompt, continue_mode,
+                            force=_FORCE_SETUP_WIZARD)
+    _FORCE_SETUP_WIZARD = False
 
     ctx_size = _config["context"]["ctx_size"]
     max_tokens = _config["context"]["max_tokens"]
@@ -7334,6 +7348,9 @@ def main():
                         help="Continue from last checkpoint (resume a crashed cycle)")
     parser.add_argument("-r", "--repeat", type=int, nargs="?", const=0, default=None,
                         help="Repeat N times (fresh each run). 0 or omit = indefinite. Implies -a.")
+    parser.add_argument("--setup", action="store_true", dest="run_setup",
+                        help="Run the setup wizard at startup even if a config exists "
+                             "(interactive TTY sessions only), then continue into the session.")
     parser.add_argument("--nudge", action="store_true",
                         help="Auto-nudge the model when it returns a text-only response.")
     parser.add_argument("--verbose", action="store_true",
@@ -7374,6 +7391,12 @@ def main():
 
     # Apply backend-kind overrides before any backend-dependent startup logic.
     _apply_backend_overrides(args.backend_main, args.backend_summary)
+
+    # --setup: force the wizard on session start (interactive path only;
+    # the TTY/auto guards inside _maybe_first_run_wizard still apply).
+    if getattr(args, "run_setup", False):
+        global _FORCE_SETUP_WIZARD
+        _FORCE_SETUP_WIZARD = True
 
     # -cc — stand up the Claude Code gateway against the configured main
     # backend and block here. Backend overrides above are already applied, so

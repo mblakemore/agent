@@ -11,6 +11,7 @@ python agent.py [OPTIONS] [PROMPT...]
 | `-a`, `--auto` | Automation mode — run the prompt and exit; no interactive loop. |
 | `-c`, `--continue` | Resume from the last checkpoint. Combine with `-a` for auto-resume-and-exit. |
 | `-r N`, `--repeat N` | Run the prompt `N` times with fresh state each run (`0` = indefinitely). Implies `-a`. |
+| `--setup` | Run the setup wizard at startup even when a config exists (interactive TTY sessions only), then continue into the session. |
 | `--nudge` | When the model returns a text-only response, auto-nudge it to keep going. Off by default. |
 | `--no-tui` | Use a plain `input()` prompt instead of the `prompt_toolkit` TUI. |
 | `--verbose` | Start with full (uncompacted) tool output. Toggle in-session with `/verbose`. |

@@ -282,6 +282,13 @@ def _restore_terminal():
         # Fallback: save current settings (canonical + echo), then restore them.
         # This handles the case where cbreak was never applied but prompt_toolkit
         # or another library left the terminal in a non-canonical state on exit.
+        # Non-tty stdin (pytest, pipes): nothing to restore — without this guard
+        # every test run ended with an ignored 'Inappropriate ioctl' traceback.
+        try:
+            if not sys.stdin.isatty():
+                return
+        except (ValueError, OSError):
+            return  # stdin already closed at interpreter exit
         cur = termios.tcgetattr(sys.stdin)
         # Force canonical mode (ICANON) and echo (ECHO | ECHOCTL | ECHOKE)
         cur[3] = cur[3] | termios.ICANON | termios.ECHO | termios.ECHOCTL | termios.ECHOKE

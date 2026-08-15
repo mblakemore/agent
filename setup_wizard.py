@@ -742,14 +742,14 @@ def scan_local_servers(http=None, ports=_SCAN_PORTS, host="127.0.0.1"):
     [{"base_url", "model", "ctx"}] in port order. A dead port is silence,
     never an error."""
     http = http or _default_http
-    found = []
-    for port in ports:
+
+    def probe_port(port):
         base = f"http://{host}:{port}"
         status, _ = http(f"{base}/health", timeout=1)
         if status != 200:
-            status2, body2 = http(f"{base}/v1/models", timeout=1)
+            status2, _b = http(f"{base}/v1/models", timeout=1)
             if status2 != 200:
-                continue
+                return None
         model = None
         status, body = http(f"{base}/v1/models", timeout=2)
         if status == 200 and isinstance(body, dict):
@@ -757,8 +757,15 @@ def scan_local_servers(http=None, ports=_SCAN_PORTS, host="127.0.0.1"):
             if data and isinstance(data[0], dict):
                 model = data[0].get("id")
         ctx, _how = _probe_ctx(base, {}, http, body if status == 200 else None)
-        found.append({"base_url": base, "model": model, "ctx": ctx})
-    return found
+        return {"base_url": base, "model": model, "ctx": ctx}
+
+    # Parallel: a firewalled DROP port costs its full timeout, and serially
+    # that made the scan feel hung (11 ports x 1s worst-case). Results keep
+    # port order regardless of completion order.
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(8, len(ports) or 1)) as ex:
+        results = list(ex.map(probe_port, ports))
+    return [r for r in results if r]
 
 
 def _fmt_server(s):

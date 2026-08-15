@@ -691,3 +691,37 @@ class TestClaimGuard(unittest.TestCase):
         updates, _ = self._run(["n", "", "", "", "", "y", "", "y", "n"],
                                effective={"cycle": {"claim_trace_max_blocks": 2}})
         self.assertEqual(updates["cycle"]["claim_trace_max_blocks"], 0)
+
+
+class TestForceSetupFlag(unittest.TestCase):
+    """--setup forces the wizard even when a config exists (one-shot)."""
+
+    def test_force_runs_wizard_despite_existing_config(self):
+        import agent, tempfile as tf
+        with tf.TemporaryDirectory() as d:
+            (Path(d) / ".agent").mkdir()
+            (Path(d) / ".agent" / "config.json").write_text("{}")
+            old = os.getcwd()
+            os.chdir(d)
+            try:
+                with mock.patch("sys.stdin") as stdin, \
+                     mock.patch("setup_wizard.run_wizard", return_value={}) as wiz:
+                    stdin.isatty.return_value = True
+                    agent._maybe_first_run_wizard(False, None, False, force=True)
+                    wiz.assert_called_once()
+            finally:
+                os.chdir(old)
+
+    def test_force_still_respects_non_tty(self):
+        import agent, tempfile as tf
+        with tf.TemporaryDirectory() as d:
+            old = os.getcwd()
+            os.chdir(d)
+            try:
+                with mock.patch("sys.stdin") as stdin, \
+                     mock.patch("setup_wizard.run_wizard") as wiz:
+                    stdin.isatty.return_value = False
+                    agent._maybe_first_run_wizard(False, None, False, force=True)
+                    wiz.assert_not_called()
+            finally:
+                os.chdir(old)
