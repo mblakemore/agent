@@ -3,7 +3,7 @@
 `config.json` lives in the working directory you run the agent from. Every block is optional — with
 a single model on the default port you need no config file at all.
 
-Full key-by-key reference is in the [overview](index.html#configuration). This page is the shapes
+Full key-by-key reference is in the [overview](../README.md#configuration). This page is the shapes
 that correspond to real setups, in increasing order of how much hardware they ask for.
 
 ## 1. One model, no config
@@ -75,14 +75,14 @@ loop and calls `consult_advisor` when it is stuck.
 Two knobs matter most here: `max_calls_per_task` (default `3`) caps consultations so a stuck loop
 cannot spend the whole session waiting, and `timeout_s` (default `900`) bounds each one — on expiry
 the agent is told to proceed without the advice rather than stalling. The full key reference lives
-with the other config blocks in the [overview](index.html#advisor).
+with the other config blocks in the [overview](../README.md#advisor).
 
 The advisor **distills before it asks**: your context is compressed on the fast summary model down to
 `prefill_token_budget` before the slow model sees it, because prefill dominates at these speeds. And
 it **fails open** — any error, timeout or disabled config returns a notice and the loop continues.
 
 Serve GLM-5.2 on CPU with [colibri](https://github.com/JustVugg/colibri) (`glm serve`, port 8000 by
-convention) — see [Recommended models](models.html).
+convention) — see [Recommended models](models.md).
 
 **The endpoint is probed at startup.** If it is unreachable, `consult_advisor` is removed from the
 tool registry entirely, so the model never sees a tool it cannot use and never wastes turns
@@ -92,4 +92,4 @@ not break it.
 ## Hosted backends
 
 `kind` also accepts `"bedrock"` and `"foundry"` instead of `"llamacpp"`, for a hosted endpoint
-rather than a local server. AWS Bedrock has its own guide: [Bedrock backend](bedrock.html).
+rather than a local server. AWS Bedrock has its own guide: [Bedrock backend](bedrock.md).

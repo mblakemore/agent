@@ -4,8 +4,8 @@ The agent is a tool-loop: the model's job is to emit well-formed tool calls, tur
 without drifting. That rewards different models than chat benchmarks do, so these are recommendations
 from running this agent, not general model rankings.
 
-Serving instructions are on [Setup](setup.html); the config shapes for combining these are on
-[Configurations](configurations.html).
+Serving instructions are on [Setup](setup.md); the config shapes for combining these are on
+[Configurations](configurations.md).
 
 ## Main driver — the model that runs the loop
 
@@ -26,7 +26,7 @@ tool loop than Gemma 4, and was the recommendation before Qwen3.8 shipped.
 
 **Gemma 4 31B** — what the agent was originally built and tuned against. It works, and it is no
 longer the recommendation: prefer Qwen. If you do run it, `--chat-template-file` is mandatory (see
-[Setup](setup.html)) and ROCm users need `HIP_VISIBLE_DEVICES=0`.
+[Setup](setup.md)) and ROCm users need `HIP_VISIBLE_DEVICES=0`.
 
 | Model | Notes |
 | --- | --- |
@@ -60,7 +60,7 @@ with `glm serve`, by convention on port `8000`.
 
 The agent probes the advisor endpoint at startup. If it is unreachable the `consult_advisor` tool is
 unloaded, so the model never sees a tool that cannot answer. Wiring is on
-[Configurations](configurations.html).
+[Configurations](configurations.md).
 
 ## Fine-tune history
 

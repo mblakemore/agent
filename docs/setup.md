@@ -1,11 +1,11 @@
 # Setup — getting a model server running
 
 `agent.py` does not run a model. It talks to an OpenAI-compatible endpoint, so setup is: **start one
-or more `llama-server` instances, then point the agent at them.** Install instructions for the agent
-itself are in the [overview](index.html); this page covers the server side.
+or more `llama-server` instances, then point the agent at them.** Installing the agent
+itself is [Install](install.md); this page covers the server side.
 
-Which model to serve is a separate question — see [Recommended models](models.html). The shapes of
-the config file are on [Configurations](configurations.html).
+Which model to serve is a separate question — see [Recommended models](models.md). The shapes of
+the config file are on [Configurations](configurations.md).
 
 ## The shortest path
 
@@ -76,15 +76,7 @@ Templates ship with llama.cpp under `models/templates/`.
 - **ROCm:** `export HIP_VISIBLE_DEVICES=0` before serving Gemma 4 — it prevents a segfault on
   Gemma 4's sliding-window attention combined with flash-attn.
 - **Summary and advisor tiers run on CPU.** Only the main driver needs the GPU. See
-  [Configurations](configurations.html).
-
-## Windows
-
-The runtime is cross-platform Python, but `exec_command` shells out to **bash** — on Windows that
-means Git-Bash, not `cmd` or PowerShell. Install [Git for Windows](https://git-scm.com/download/win),
-run the agent from a Git-Bash shell, and if auto-detection fails set `AGENT_BASH_EXE` to the full
-path of `bash.exe`. Full resolution order and platform caveats are in the
-[overview](index.html).
+  [Configurations](configurations.md).
 
 ## Checking it works
 

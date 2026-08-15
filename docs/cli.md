@@ -1,0 +1,121 @@
+# CLI and usage
+
+Command-line arguments, the interactive TUI, slash commands and environment variables.
+
+```
+python agent.py [OPTIONS] [PROMPT...]
+```
+
+| Flag | Description |
+| --- | --- |
+| `-a`, `--auto` | Automation mode — run the prompt and exit; no interactive loop. |
+| `-c`, `--continue` | Resume from the last checkpoint. Combine with `-a` for auto-resume-and-exit. |
+| `-r N`, `--repeat N` | Run the prompt `N` times with fresh state each run (`0` = indefinitely). Implies `-a`. |
+| `--nudge` | When the model returns a text-only response, auto-nudge it to keep going. Off by default. |
+| `--no-tui` | Use a plain `input()` prompt instead of the `prompt_toolkit` TUI. |
+| `--verbose` | Start with full (uncompacted) tool output. Toggle in-session with `/verbose`. |
+| `--backend-main` | Override the main backend kind (`llamacpp` or `bedrock`). |
+| `--backend-summary` | Override the summary backend kind (`llamacpp` or `bedrock`). |
+| `-cc [HOST:PORT]` | Launch an Anthropic-compatible gateway for **Claude Code** (default `127.0.0.1:8788`) that forwards to the configured main backend, then exit. See [Claude Code gateway](#claude-code-gateway--cc). |
+| `PROMPT...` | Initial prompt. Optional in interactive mode. |
+
+Press **Escape twice** within 400ms to cancel a streaming response.
+
+### Claude Code gateway (`-cc`)
+
+`agent.py -cc` stands up an Anthropic-native `/v1/messages` endpoint and points it at whichever backend `agent.py` is configured for (`llamacpp`, `bedrock`, or `foundry`). This lets [Claude Code](https://docs.claude.com/en/docs/claude-code) — or anything that speaks the Anthropic Messages API — drive your local/self-hosted model.
+
+```bash
+python agent.py -cc                      # listen on 127.0.0.1:8788
+python agent.py -cc 0.0.0.0:9000         # explicit host:port
+python agent.py -cc --backend-main bedrock   # forward to a different backend
+```
+
+Then point Claude Code at it:
+
+```bash
+export ANTHROPIC_BASE_URL=http://localhost:8788
+export ANTHROPIC_API_KEY=dummy           # any non-empty value; the gateway ignores it
+claude
+```
+
+How it works:
+
+- It is a **stateless translator** — Anthropic Messages in, OpenAI chat-completions to the backend, and the streamed reply translated back to Anthropic SSE. Tool definitions, `tool_use`/`tool_result` blocks, images, and streaming tool calls are all converted in both directions.
+- Claude Code runs its **own** agentic loop and resends the full conversation each turn, so the gateway bypasses `agent.py`'s session pipeline (no checkpointing, summarization, or cycle limits) and forces a fresh backend conversation per request.
+- The model id Claude Code sends is ignored; requests always go to the configured main backend's model. Gemma `<think>` reasoning is suppressed so it doesn't surface as message content.
+- `GET /health` reports backend reachability; `POST /v1/messages/count_tokens` returns an estimate.
+
+**Resilience for slow/flaky backends.** If the backend cuts a stream *after* tokens have started flowing (e.g. a Bedrock proxy behind an API Gateway with a ~29s timeout), the gateway closes the turn cleanly with `stop_reason: max_tokens` instead of letting the client see "stream ended prematurely". If the backend fails *before* any content reaches the client, the gateway retries with backoff (only then — once tokens stream, retrying would duplicate output). Tunable via env vars:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `CC_GATEWAY_MAX_RETRIES` | `2` | Retries when the backend fails before producing any content. Each retry can cost up to one read-timeout, so keep it small. `0` disables. |
+| `CC_GATEWAY_RETRY_BASE_DELAY` | `1.0` | Initial backoff (seconds); doubles each retry. |
+| `CC_GATEWAY_RETRY_MAX_DELAY` | `8.0` | Cap on backoff (seconds). |
+| `CC_GATEWAY_CONNECT_TIMEOUT` | `30` | Connect timeout to the backend (seconds). |
+| `CC_GATEWAY_READ_TIMEOUT` | `600` | Read timeout — a slow backend can hold the stream this long. |
+| `AGENT_FOLD_SYSTEM` | `auto` | Workaround for backends that silently drop `role:"system"`. `auto` probes the backend once (~20 tokens, ~1.5s) and caches the result per `(base_url, model)` for 7 days; `always` folds without probing; `never` disables. Applies to both `-cc` and the main agent loop. |
+| `AGENT_CACHE_DIR` | `~/.cache/agent` | Where the probe result is cached (`backend_caps.json`). |
+
+### Backends that silently drop `system` messages
+
+Some OpenAI-compatible gateways accept a `role:"system"` message, return HTTP 200,
+and never show it to the model — no error, no warning. The symptom is an agent that
+appears to ignore its instructions. This was measured against a Bedrock proxy behind
+API Gateway, where a 9-word system prompt is dropped exactly like a 6000-token one
+(`developer` too); the likely cause is that Bedrock's `Converse` API takes `system`
+as a top-level parameter rather than a message role, so it is lost in translation.
+
+When `AGENT_FOLD_SYSTEM=auto` (the default), the backend is probed once and, if it
+drops `system`, system content is merged into the following user message — which
+every backend delivers. Backends that honour `system` (e.g. local llama.cpp) are
+left untouched.
+
+The probe **fails safe**: any error, timeout or ambiguous reply folds. Folding a
+backend that works is harmless; not folding one that drops `system` silently
+discards the entire system prompt.
+
+This is a workaround — the durable fix is server-side. The 7-day cache TTL means a
+server-side fix is picked up automatically without a config change.
+
+These mitigate transient failures but cannot make a turn that genuinely needs longer than the backend's hard timeout *complete* — that requires fixing the backend (e.g. streaming via a Lambda Function URL instead of API Gateway).
+
+Implemented in `cc_gateway.py`; requires `fastapi` + `uvicorn` (already in `requirements.txt`).
+
+### Interactive TUI
+
+The default TUI (`prompt_toolkit`) provides:
+
+- **Bottom toolbar** — `cwd · model · message count · context ~% · verbose state`
+- **Completion** for slash commands (`/he<Tab>`) and `@path` file refs (`@src/<Tab>`)
+- **Input history** navigable with ↑ / ↓
+- **Key bindings**: `Enter` submits, `Ctrl-N` inserts a literal newline
+
+Falls back to plain `input()` automatically if `prompt_toolkit` isn't installed.
+
+### Slash commands
+
+| Command | Description |
+| --- | --- |
+| `/help` | List available commands. |
+| `/clear` | Clear conversation history and start a fresh session log. |
+| `/context` | Show context usage as an Aurora-gradient bar with token counts. |
+| `/model [main\|summary] [name]` | Set the **main** or **summary** model and persist it to `.agent/config.json` (survives restart). Bare `/model` picks the main model interactively; `/model summary` targets the summary backend; append a model id (`/model main gpt-4o`) to set it directly without the picker. |
+| `/alias` | Detect the working Python and install an `agent` shell alias (`<python> /path/to/agent.py` → `agent`). Writes an idempotent block to `~/.bashrc` / `~/.zshrc` on Linux & Git-Bash; prints PowerShell/cmd equivalents on native Windows. |
+| `/verbose` | Toggle compact vs. full tool-result output. |
+| `/tools [N\|all]` | Show buffered tool calls with a one-line result preview. |
+| `exit` / `quit` | End the session. |
+
+### Environment variables
+
+| Variable | Description |
+| --- | --- |
+| `NO_COLOR=1` | Disable all terminal colors and cursor escapes (also active when stdout is not a TTY). |
+| `BEDROCK_API_URL` | Bedrock gateway URL — fallback when the keystore has no `up` entries. |
+| `BEDROCK_API_KEY` | Bedrock API key — fallback. |
+| `AGENT_BEDROCK_STORE` | Override path to the `bedrock_creds.json` keystore. |
+| `BEDROCK_DAILY_CAP_USD` | Combined daily spend cap across roles (default `$10` main, `$1` summary). |
+| `AGENT_HEALTH_TIMEOUT` | Seconds to wait for the startup backend health probe (default `10`). Raise it for cold-start endpoints (e.g. AWS API Gateway/Lambda) that are slow on the first request. |
+| `AGENT_BASH_EXE` | Windows only — full path to `bash.exe` for the `exec_command` shell, overriding Git-Bash auto-detection. |
+
