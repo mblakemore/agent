@@ -881,15 +881,31 @@ def _advisor_screen(current, input_fn, print_fn, http):
     return section
 
 
-def run_wizard(config_path, current_cfg, jump_to=None,
+def run_wizard(config_path, effective_cfg=None, jump_to=None,
                input_fn=input, print_fn=print, http=None):
     """Interactive setup. Returns the updates dict written (or {} if aborted).
 
     ``jump_to``: None = full run; "main"/"summary"/"advisor" = that section
     only; "calibrate" = probes + calibration against the current config only
     (with drift reporting against the _calibrated sidecar).
+
+    Question defaults come from the USER's file at ``config_path`` — NOT
+    from ``effective_cfg`` (the defaults-merged runtime config), whose
+    shipped placeholder model names would otherwise present as keepable
+    answers and poison the auto-pick (caught live 2026-08-15: first run
+    wrote 'gemma-4-31B' instead of the server's real model).
+    ``effective_cfg`` is used only where effective values are the right
+    baseline: calibration's keep-default rules and the drift sidecar.
     """
-    current_cfg = current_cfg or {}
+    effective_cfg = effective_cfg or {}
+    current_cfg = {}
+    try:
+        loaded = json.loads(Path(config_path).read_text(encoding="utf-8",
+                                                        errors="replace"))
+        if isinstance(loaded, dict):
+            current_cfg = loaded
+    except (OSError, json.JSONDecodeError, ValueError):
+        current_cfg = {}
     updates = {}
     main_report = None
     main_throughput = None
@@ -957,10 +973,12 @@ def run_wizard(config_path, current_cfg, jump_to=None,
             else:
                 main_report = {}
         # Drift report (Phase 3): fresh measurement vs _calibrated sidecar.
-        drifted, drift_msg = check_drift(current_cfg, main_report)
+        drifted, drift_msg = check_drift(
+            current_cfg if current_cfg.get('_calibrated') else effective_cfg,
+            main_report)
         if drifted is not None or jump_to == "calibrate":
             print_fn(f"    drift: {drift_msg}")
-        cal_updates, notes = calibrate(main_report, current_cfg)
+        cal_updates, notes = calibrate(main_report, effective_cfg)
         print_fn("\n── CALIBRATION ──")
         for n in notes:
             print_fn(f"    {n}")

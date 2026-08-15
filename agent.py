@@ -3447,7 +3447,11 @@ def _maybe_first_run_wizard(auto, initial_prompt, continue_mode):
     plain input() is safe. Returns True iff the wizard ran and wrote config.
     """
     cwd = Path(os.getcwd())
-    unconfigured = (not (cwd / ".agent").exists()
+    # The CONFIG FILE is the configured-signal, NOT the .agent/ directory:
+    # the state/history bootstrap creates .agent/ at boot, before this guard
+    # runs (caught live 2026-08-15 — the dir-based check made the wizard
+    # unreachable in exactly the empty-folder case it exists for).
+    unconfigured = (not (cwd / ".agent" / "config.json").exists()
                     and not (cwd / "config.json").exists())
     interactive = (not auto and initial_prompt is None and not continue_mode
                    and sys.stdin.isatty())

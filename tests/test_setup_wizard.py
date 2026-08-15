@@ -504,11 +504,25 @@ class TestFirstRunGuard(unittest.TestCase):
     def test_existing_config_short_circuits(self):
         def body(d):
             (d / ".agent").mkdir()
+            (d / ".agent" / "config.json").write_text("{}")
             with mock.patch("sys.stdin") as stdin, \
                  mock.patch("setup_wizard.run_wizard") as wiz:
                 stdin.isatty.return_value = True
                 self.assertFalse(self.agent._maybe_first_run_wizard(False, None, False))
                 wiz.assert_not_called()
+        self._in_tmp(body)
+
+    def test_bare_agent_dir_without_config_still_launches(self):
+        """The state/history bootstrap creates .agent/ BEFORE this guard runs
+        (caught live 2026-08-15): the config FILE is the configured-signal,
+        never the directory."""
+        def body(d):
+            (d / ".agent" / "state").mkdir(parents=True)
+            with mock.patch("sys.stdin") as stdin, \
+                 mock.patch("setup_wizard.run_wizard", return_value={}) as wiz:
+                stdin.isatty.return_value = True
+                self.agent._maybe_first_run_wizard(False, None, False)
+                wiz.assert_called_once()
         self._in_tmp(body)
 
     def test_tty_unconfigured_launches_and_applies(self):
