@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setup — getting a model server running — agent</title>
+<meta name="description" content="agent.py does not run a model. It talks to an OpenAI-compatible endpoint, so setup is: start one or more llama-server instances, then point the agent at them. Install instructions for the agent itself are in the overview; this page covers the server side.">
+<link rel="canonical" href="https://mblakemore.github.io/agent/setup.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Setup — getting a model server running">
+<meta property="og:description" content="agent.py does not run a model. It talks to an OpenAI-compatible endpoint, so setup is: start one or more llama-server instances, then point the agent at them. Install instructions for the agent itself are in the overview; this page covers the server side.">
+<meta property="og:url" content="https://mblakemore.github.io/agent/setup.html">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/agent-docs.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"Setup — getting a model server running","url":"https://mblakemore.github.io/agent/setup.html","description":"agent.py does not run a model. It talks to an OpenAI-compatible endpoint, so setup is: start one or more llama-server instances, then point the agent at them. Install instructions for the agent itself are in the overview; this page covers the server side."}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><div class="in">
+  <span class="brand"><a href="index.html">agent</a></span>
+  <span class="tag">documentation</span>
+  <nav aria-label="primary">
+    <a href="index.html">Overview</a>
+    <a href="https://github.com/mblakemore/agent">Source</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="setup.html" aria-current="page">Setup — getting a model server running</a></li><li><a href="models.html">Recommended models</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
+  <main id="main">
+    <p class="eyebrow">Setup — getting a model server running</p>
+<h1>Setup — getting a model server running</h1>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/setup.md"><code>docs/setup.md</code></a></p>
+<p><code>agent.py</code> does not run a model. It talks to an OpenAI-compatible endpoint, so setup is: <strong>start one
+or more <code>llama-server</code> instances, then point the agent at them.</strong> Install instructions for the agent
+itself are in the <a href="index.html">overview</a>; this page covers the server side.</p>
+<p>Which model to serve is a separate question — see <a href="models.html">Recommended models</a>. The shapes of
+the config file are on <a href="configurations.html">Configurations</a>.</p>
+<h2 id="the-shortest-path">The shortest path</h2>
+<p>Serve a GGUF straight from Hugging Face; <code>llama-server</code> downloads and caches it.</p>
+<pre tabindex="0"><code class="language-bash">llama-server -hf unsloth/Qwen3.8-27B-GGUF:Q4_K_M --port 8080 --parallel 1
+</code></pre>
+<p>Then, in another shell:</p>
+<pre tabindex="0"><code class="language-bash">python agent.py &quot;fix the failing test in tests/test_parser.py&quot;
+</code></pre>
+<p>The default endpoint is <code>http://127.0.0.1:8080</code>, so with a single main model on that port no
+<code>config.json</code> is needed at all.</p>
+<h2 id="serving-a-local-or-fine-tuned-model">Serving a local or fine-tuned model</h2>
+<p>A model you have downloaded or trained needs converting to GGUF and quantizing first.</p>
+<pre tabindex="0"><code class="language-bash"># One-time: download, convert, quantize
+hf download &lt;hf-repo&gt; --local-dir /path/to/merged
+
+python3 llama.cpp/convert_hf_to_gguf.py /path/to/merged --outtype bf16 --use-temp-file
+
+llama.cpp/build/bin/llama-quantize \
+    /path/to/merged/&lt;model&gt;-BF16.gguf \
+    /path/to/merged/&lt;model&gt;-Q4_K_M.gguf \
+    Q4_K_M
+</code></pre>
+<p>Then serve it:</p>
+<pre tabindex="0"><code class="language-bash">llama-server \
+  -m /path/to/merged/&lt;model&gt;-Q4_K_M.gguf \
+  --port 8080 --parallel 1 --flash-attn on \
+  --cache-reuse 256 --reasoning off \
+  --cache-type-k q4_0 --cache-type-v q4_0
+</code></pre>
+<h2 id="the-one-that-silently-breaks-tools-chat-template-file">The one that silently breaks tools: <code>--chat-template-file</code></h2>
+<p><strong>If tools never execute, this is almost always why.</strong> Some GGUF builds ship a chat template with
+<strong>no tool-call support</strong>. Without a template that supports tools:</p>
+<ul>
+<li><code>llama-server</code> cannot inject tool definitions into the prompt.</li>
+<li>The model's native tool-call tokens arrive as plain text in <code>delta.content</code>.</li>
+<li>The agent's safety filter strips them — <strong>no tool ever runs</strong>, and the loop looks like a model that
+  simply refuses to act.</li>
+</ul>
+<p>The agent logs a <code>TOOL CALLS DISABLED</code> warning when it detects this. The fix is to pass a template
+that supports tools, e.g. for Gemma 4:</p>
+<pre tabindex="0"><code class="language-bash">llama-server -m &lt;model&gt;.gguf \
+  --chat-template-file llama.cpp/models/templates/google-gemma-4-31B-it-interleaved.jinja \
+  --port 8080
+</code></pre>
+<p>Templates ship with llama.cpp under <code>models/templates/</code>.</p>
+<h2 id="hardware-notes">Hardware notes</h2>
+<ul>
+<li><strong>ROCm:</strong> <code>export HIP_VISIBLE_DEVICES=0</code> before serving Gemma 4 — it prevents a segfault on
+  Gemma 4's sliding-window attention combined with flash-attn.</li>
+<li><strong>Summary and advisor tiers run on CPU.</strong> Only the main driver needs the GPU. See
+  <a href="configurations.html">Configurations</a>.</li>
+</ul>
+<h2 id="windows">Windows</h2>
+<p>The runtime is cross-platform Python, but <code>exec_command</code> shells out to <strong>bash</strong> — on Windows that
+means Git-Bash, not <code>cmd</code> or PowerShell. Install <a href="https://git-scm.com/download/win">Git for Windows</a>,
+run the agent from a Git-Bash shell, and if auto-detection fails set <code>AGENT_BASH_EXE</code> to the full
+path of <code>bash.exe</code>. Full resolution order and platform caveats are in the
+<a href="index.html">overview</a>.</p>
+<h2 id="checking-it-works">Checking it works</h2>
+<p>The agent probes each configured backend at startup and reports what it found. A healthy main
+backend prints its endpoint and model in the banner; an unreachable optional tier is reported and
+disabled rather than failing the run — an unreachable <strong>advisor</strong> endpoint, for instance, causes the
+<code>consult_advisor</code> tool to be unloaded so the model never sees a tool it cannot use.</p>
+    <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
+  </main>
+</div>
+</body>
+</html>

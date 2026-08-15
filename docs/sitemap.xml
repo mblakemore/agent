@@ -5,23 +5,16 @@
     <lastmod>2026-08-14</lastmod>
   </url>
   <url>
-    <loc>https://mblakemore.github.io/agent/agent-eval-discipline-round.html</loc>
-    <lastmod>2026-07-14</lastmod>
+    <loc>https://mblakemore.github.io/agent/setup.html</loc>
+  </url>
+  <url>
+    <loc>https://mblakemore.github.io/agent/models.html</loc>
+  </url>
+  <url>
+    <loc>https://mblakemore.github.io/agent/configurations.html</loc>
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/bedrock.html</loc>
     <lastmod>2026-05-15</lastmod>
-  </url>
-  <url>
-    <loc>https://mblakemore.github.io/agent/gemma-finetune-plan.html</loc>
-    <lastmod>2026-05-15</lastmod>
-  </url>
-  <url>
-    <loc>https://mblakemore.github.io/agent/local-model.html</loc>
-    <lastmod>2026-05-18</lastmod>
-  </url>
-  <url>
-    <loc>https://mblakemore.github.io/agent/tier-5-enhancements.html</loc>
-    <lastmod>2026-05-14</lastmod>
   </url>
 </urlset>

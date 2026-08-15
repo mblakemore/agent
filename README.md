@@ -55,21 +55,13 @@ The runtime is cross-platform Python. The `exec_command` tool shells out to `bas
    python agent.py "fix the failing test in tests/test_parser.py"
    ```
 
-**Recommended models:**
+**Recommended models:** the current recommendation is **Qwen3.8** for the main driver, a small
+model on CPU for summarisation, and optionally **GLM-5.2** on CPU as a consulted advisor tier.
+Fine-tuned variants of the Qwen3.6 and Gemma 4 lines are published too.
 
-| Role | Model |
-| --- | --- |
-| Main (GPU) | [Qwen3.6-27B](https://huggingface.co/unsloth/Qwen3.6-27B-MTP-GGUF) or [gemma-4-31B-it](https://huggingface.co/google/gemma-4-31b-it) via `llama-server` |
-| Summary (CPU) | [Qwen3-4B](https://huggingface.co/unsloth/Qwen3-4B-GGUF) or [gemma-4-E4B-it](https://huggingface.co/google/gemma-4-e4b-it) |
-
-Run a second `llama-server` instance on CPU for the summary backend (see [Configuration](#configuration)) — it handles short summarisation calls so the main GPU model stays free for reasoning.
-
-**Fine-tuned variants** (optional) — trained to reduce common tool-use friction patterns:
-
-- Qwen3.6-based: [mblakemore/qwen3.6-35b-agent-friction-phase1](https://huggingface.co/mblakemore/qwen3.6-35b-agent-friction-phase1)
-- Gemma 4-based: [mblakemore/gemma-4-31B-agent-friction-phase9](https://huggingface.co/mblakemore/gemma-4-31B-agent-friction-phase9)
-
-See [docs/local-model.md](docs/local-model.md) for download, quantize, and serve instructions.
+See **[docs/models.md](docs/models.md)** for the full list and what to pick, **[docs/setup.md](docs/setup.md)**
+for download/quantize/serve instructions, and **[docs/configurations.md](docs/configurations.md)**
+for the `config.json` shapes that combine them.
 
 ## CLI
 

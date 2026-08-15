@@ -28,7 +28,7 @@
   </nav>
 </div></header>
 <div class="wrap">
-  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html" aria-current="page">agent</a></li><li><a href="agent-eval-discipline-round.html">agent-eval — Discipline Round (next-round spec)</a></li><li><a href="bedrock.html">Bedrock backend</a></li><li><a href="gemma-finetune-plan.html">Gemma 4 31B tool-friction reduction — plan</a></li><li><a href="local-model.html">Local model — Gemma 4 31B</a></li><li><a href="tier-5-enhancements.html">agent.py Tier 5 enhancements — design doc</a></li></ul></aside>
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html" aria-current="page">agent</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="models.html">Recommended models</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
   <main id="main">
     <p class="eyebrow">agent</p>
 <h1>agent</h1>
@@ -75,32 +75,12 @@
    <code>bash
    python agent.py "fix the failing test in tests/test_parser.py"</code></li>
 </ol>
-<p><strong>Recommended models:</strong></p>
-<div class="tbl-wrap" tabindex="0"><table>
-<thead>
-<tr>
-<th>Role</th>
-<th>Model</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Main (GPU)</td>
-<td><a href="https://huggingface.co/unsloth/Qwen3.6-27B-MTP-GGUF">Qwen3.6-27B</a> or <a href="https://huggingface.co/google/gemma-4-31b-it">gemma-4-31B-it</a> via <code>llama-server</code></td>
-</tr>
-<tr>
-<td>Summary (CPU)</td>
-<td><a href="https://huggingface.co/unsloth/Qwen3-4B-GGUF">Qwen3-4B</a> or <a href="https://huggingface.co/google/gemma-4-e4b-it">gemma-4-E4B-it</a></td>
-</tr>
-</tbody>
-</table></div>
-<p>Run a second <code>llama-server</code> instance on CPU for the summary backend (see <a href="#configuration">Configuration</a>) — it handles short summarisation calls so the main GPU model stays free for reasoning.</p>
-<p><strong>Fine-tuned variants</strong> (optional) — trained to reduce common tool-use friction patterns:</p>
-<ul>
-<li>Qwen3.6-based: <a href="https://huggingface.co/mblakemore/qwen3.6-35b-agent-friction-phase1">mblakemore/qwen3.6-35b-agent-friction-phase1</a></li>
-<li>Gemma 4-based: <a href="https://huggingface.co/mblakemore/gemma-4-31B-agent-friction-phase9">mblakemore/gemma-4-31B-agent-friction-phase9</a></li>
-</ul>
-<p>See <a href="local-model.html">docs/local-model.md</a> for download, quantize, and serve instructions.</p>
+<p><strong>Recommended models:</strong> the current recommendation is <strong>Qwen3.8</strong> for the main driver, a small
+model on CPU for summarisation, and optionally <strong>GLM-5.2</strong> on CPU as a consulted advisor tier.
+Fine-tuned variants of the Qwen3.6 and Gemma 4 lines are published too.</p>
+<p>See <strong><a href="models.html">docs/models.md</a></strong> for the full list and what to pick, <strong><a href="setup.html">docs/setup.md</a></strong>
+for download/quantize/serve instructions, and <strong><a href="configurations.html">docs/configurations.md</a></strong>
+for the <code>config.json</code> shapes that combine them.</p>
 <h2 id="cli">CLI</h2>
 <pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
 </code></pre>
