@@ -2097,7 +2097,13 @@ def _expand_file_refs(text):
 
         lines = p.read_text(encoding='utf-8', errors='replace').splitlines(True)
         total = len(lines)
-        _is_agent_md = p.name.lower() == "agent.md"   # case-insensitive: agent.md / AGENT.md / Agent.md
+        # Identity files load WHOLE regardless of length — a preview-
+        # truncated identity is a lobotomy, not a summary. claude.md
+        # counts too (the DC/agentx convention; _bootstrap_template_check
+        # already treats both as the cognitive-instructions file — this
+        # loader disagreed and served 10-line stubs of >50-line CLAUDE.mds,
+        # caught in the 2026-08-15 scaffold review).
+        _is_agent_md = p.name.lower() in ("agent.md", "claude.md")
         if total <= _MAX_FULL_LINES or _is_agent_md:
             content = "".join(lines)
             header = f"[{ref}: {total} lines]"
@@ -2108,7 +2114,7 @@ def _expand_file_refs(text):
         resolved = str(p.resolve())
         if _is_agent_md:
             header = (f"[AGENT IDENTITY FILE: {ref} (loaded from {resolved}). "
-                      f"This is YOUR agent.md — do not search for it elsewhere. {total} lines]")
+                      f"This is YOUR identity file — do not search for it elsewhere. {total} lines]")
 
         attachments.append(f"{header}\n{content}")
         _emit("on_file_attached", header)
@@ -2116,7 +2122,7 @@ def _expand_file_refs(text):
     files_content = "\n\n".join(attachments)
     # Prepend working directory context when agent.md is loaded
     cwd = os.getcwd()
-    if any(Path(ref).name.lower() == "agent.md" for ref in seen):
+    if any(Path(ref).name.lower() in ("agent.md", "claude.md") for ref in seen):
         preamble = (
             f"[SYSTEM CONTEXT: Your working directory is {cwd}. "
             f"All relative paths resolve from here. "

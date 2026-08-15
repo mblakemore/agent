@@ -186,3 +186,37 @@ class TestSetupChain(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestIdentityFileLoading(unittest.TestCase):
+    """The engine must full-load BOTH identity filenames — a >50-line
+    CLAUDE.md was preview-truncated to 10 lines by @-reference (caught in
+    the 2026-08-15 scaffold review; agentx's own 192-line CLAUDE.md loaded
+    as a stub)."""
+
+    def _expand_in(self, d, fname):
+        import agent
+        body = "\n".join(f"line {i}: instruction detail" for i in range(120))
+        (Path(d) / fname).write_text(f"# {fname}\n{body}\n")
+        old = os.getcwd()
+        os.chdir(d)
+        try:
+            expanded, _files, err = agent._expand_file_refs(f"@{fname} run the loop")
+        finally:
+            os.chdir(old)
+        return expanded, err
+
+    def test_claude_md_loads_whole_with_identity_header(self):
+        with tempfile.TemporaryDirectory() as d:
+            expanded, err = self._expand_in(d, "CLAUDE.md")
+        self.assertIsNone(err)
+        self.assertIn("AGENT IDENTITY FILE", expanded)
+        self.assertIn("line 119", expanded, "CLAUDE.md was preview-truncated")
+        self.assertIn("SYSTEM CONTEXT", expanded)   # cwd preamble fires too
+
+    def test_agent_md_unchanged_contract(self):
+        with tempfile.TemporaryDirectory() as d:
+            expanded, err = self._expand_in(d, "AGENT.md")
+        self.assertIsNone(err)
+        self.assertIn("AGENT IDENTITY FILE", expanded)
+        self.assertIn("line 119", expanded)

@@ -39,6 +39,7 @@ def _cmd_help(ctx: SimpleNamespace, args: str) -> None:
         "  /context       — show current context usage (bar + token counts)",
         "  /model [main|summary] [name] — set+persist the main/summary model",
         "  /setup [main|summary|advisor|test|calibrate] — configure endpoints, probe, calibrate",
+        "  /agent         — scaffold an agent identity (AGENT.md + state tree) here",
         "  /alias         — install an `agent` shell alias for this checkout",
         "  /verbose       — toggle compact/full tool output",
         "  /tools [N|all] — show buffered tool calls (default: all; N = last N only)",

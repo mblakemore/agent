@@ -159,7 +159,14 @@ Every cycle: **PERCEIVE → REFLECT → DECIDE → ACT → CONSOLIDATE → PERSI
 
 Before committing to a decision, **verify one key assumption empirically**
 — a 5–30s check beats hours of work built on a false premise. Document the
-result in the decision ("Verified via X: result Y")."""
+result in the decision ("Verified via X: result Y").
+
+### First invocation = Cycle 1
+
+`state/current-state.json` starts at cycle 0 ("awakening"). If it shows a
+cycle greater than 0, you are RESUMING — trust the state, not this section.
+On the true first run: the state files are empty, and that's expected. Run
+the normal loop, make one small real change, and commit `C1: first breath`."""
 
 _LOOP_WORKER = """## The 4-Phase Loop
 
