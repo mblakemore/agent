@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">Configurations</p>
 <h1>Configurations</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/configurations.md"><code>docs/configurations.md</code></a> · last changed 2026-08-15 (239c68b)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/configurations.md"><code>docs/configurations.md</code></a> · last changed 2026-08-15 (24f0690)</p>
 <p><code>config.json</code> lives in the working directory you run the agent from. Every block is optional — with
 a single model on the default port you need no config file at all.</p>
 <p>Full key-by-key reference is in the <a href="index.html#configuration">overview</a>. This page is the shapes
@@ -86,47 +86,13 @@ loop and calls <code>consult_advisor</code> when it is stuck.</p>
   }
 }
 </code></pre>
-<div class="tbl-wrap" tabindex="0"><table>
-<thead>
-<tr>
-<th>Key</th>
-<th>Default</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>enabled</code></td>
-<td>true when <code>base_url</code> is set</td>
-<td>The tier is off unless you configure an endpoint.</td>
-</tr>
-<tr>
-<td><code>base_url</code></td>
-<td>—</td>
-<td>OpenAI-compatible endpoint for the advisor model.</td>
-</tr>
-<tr>
-<td><code>model</code></td>
-<td>—</td>
-<td>Model name passed to that endpoint.</td>
-</tr>
-<tr>
-<td><code>api_key</code></td>
-<td>—</td>
-<td>Bearer token, if the endpoint needs one.</td>
-</tr>
-<tr>
-<td><code>max_calls_per_task</code></td>
-<td><code>3</code></td>
-<td>Hard cap on consultations per task, so a stuck loop cannot spend the whole session waiting.</td>
-</tr>
-<tr>
-<td><code>timeout_s</code></td>
-<td><code>900</code></td>
-<td>Per-consultation timeout. On expiry the agent is told to proceed without the advice rather than stalling.</td>
-</tr>
-</tbody>
-</table></div>
+<p>Two knobs matter most here: <code>max_calls_per_task</code> (default <code>3</code>) caps consultations so a stuck loop
+cannot spend the whole session waiting, and <code>timeout_s</code> (default <code>900</code>) bounds each one — on expiry
+the agent is told to proceed without the advice rather than stalling. The full key reference lives
+with the other config blocks in the <a href="index.html#advisor">overview</a>.</p>
+<p>The advisor <strong>distills before it asks</strong>: your context is compressed on the fast summary model down to
+<code>prefill_token_budget</code> before the slow model sees it, because prefill dominates at these speeds. And
+it <strong>fails open</strong> — any error, timeout or disabled config returns a notice and the loop continues.</p>
 <p>Serve GLM-5.2 on CPU with <a href="https://github.com/JustVugg/colibri">colibri</a> (<code>glm serve</code>, port 8000 by
 convention) — see <a href="models.html">Recommended models</a>.</p>
 <p><strong>The endpoint is probed at startup.</strong> If it is unreachable, <code>consult_advisor</code> is removed from the

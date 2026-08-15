@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">agent</p>
 <h1>agent</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/README.md"><code>README.md</code></a> · last changed 2026-08-15 (239c68b)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/README.md"><code>README.md</code></a> · last changed 2026-08-15 (24f0690)</p>
 <p>A local, tool-driven coding assistant that talks to an OpenAI-compatible LLM endpoint (e.g. <code>llama-server</code> from <code>llama.cpp</code>) and runs an autonomous file/shell tool loop. Built to survive long sessions: checkpoints every turn, summarizes older history in the background, recovers from malformed tool calls, and catches common hallucinations before they poison context.</p>
 <p><img alt="agent TUI screenshot" src="assets/screenshot.png" /></p>
 <p>📖 <strong><a href="https://mblakemore.github.io/agent/">Documentation site</a></strong> — this README and the <code>docs/</code> guides, rendered.</p>
@@ -327,6 +327,21 @@ server-side fix is picked up automatically without a config change.</p>
 <li><strong>Tool recovery</strong> — recoverable tool errors (e.g. bad line numbers) are retried with corrected parameters via a lightweight LLM call.</li>
 <li><strong>Context overflow handling</strong> — three consecutive HTTP 500s are treated as context overflow; the agent trims history and retries.</li>
 </ul>
+<h3 id="escalation-when-the-advisor-is-consulted">Escalation — when the advisor is consulted</h3>
+<p>When an <code>advisor</code> endpoint is configured, three signals can route to it, all through one policy:</p>
+<ul>
+<li><strong>gate</strong> — the success check has blocked repeatedly: the model declared itself done while it was
+  wrong. This <em>suggests</em> escalation.</li>
+<li><strong>stall</strong> — the model repeated a failing action <em>and</em> ignored a prior redirect. Auto-invokes.</li>
+<li><strong>grind</strong> — most of the turn budget is spent and the success check is still failing: distinct
+  plausible actions until wall-clock, without converging. Auto-invokes.</li>
+</ul>
+<p><code>stall</code> and <code>grind</code> are the cases where a stuck model never cleanly declares done, so the gate never
+sees them. Escalation is deliberately biased toward <em>not</em> firing — a false escalation spends minutes
+of a slow model's latency for nothing — and is capped by <code>max_calls_per_task</code>.</p>
+<p>Two modes exist: <strong>advisor</strong> (default) is one bounded question and one answer, with the fast model
+keeping the loop; <strong>takeover</strong>, where the advisor drives a sub-loop, is reserved for a narrow class
+the fast model has repeatedly failed, because every turn of it pays the slow model's latency.</p>
 <h2 id="project-layout">Project layout</h2>
 <pre tabindex="0"><code>agent.py            # Main loop, streaming, context management, checkpointing
 callbacks.py        # UI callback interface
@@ -576,6 +591,87 @@ tools/
 </tr>
 </tbody>
 </table></div>
+<h3 id="advisor"><code>advisor</code></h3>
+<p>An optional third role alongside <code>main</code> and <code>summary</code>: a <strong>heavyweight model consulted as a tool</strong>,
+never as the driver. A very large model on CPU can be far too slow to run a loop and still be the
+best thing available for the rare hard sub-problem, so the fast model keeps the loop and calls
+<code>consult_advisor</code> when it is stuck.</p>
+<p><code>advisor</code> is a <strong>top-level block</strong>, not one of <code>backends</code>. The tier is off unless you configure it.</p>
+<pre tabindex="0"><code class="language-json">{
+  &quot;advisor&quot;: {
+    &quot;enabled&quot;:              true,
+    &quot;base_url&quot;:             &quot;http://127.0.0.1:8000&quot;,
+    &quot;model&quot;:                &quot;glm-5.2&quot;,
+    &quot;prefill_token_budget&quot;: 1500,
+    &quot;max_tokens&quot;:           512,
+    &quot;max_calls_per_task&quot;:   3,
+    &quot;timeout_s&quot;:            900
+  }
+}
+</code></pre>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td>true when <code>base_url</code> is set</td>
+<td>Tier is off unless an endpoint is configured.</td>
+</tr>
+<tr>
+<td><code>base_url</code></td>
+<td>—</td>
+<td>OpenAI-compatible endpoint for the advisor model.</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>—</td>
+<td>Model name passed to that endpoint.</td>
+</tr>
+<tr>
+<td><code>api_key</code></td>
+<td><code>""</code></td>
+<td>Bearer token, if the endpoint needs one.</td>
+</tr>
+<tr>
+<td><code>prefill_token_budget</code></td>
+<td><code>1500</code></td>
+<td>Hard ceiling on the brief handed to the advisor (see below).</td>
+</tr>
+<tr>
+<td><code>max_tokens</code></td>
+<td><code>512</code></td>
+<td>Cap on the advisor's answer.</td>
+</tr>
+<tr>
+<td><code>max_calls_per_task</code></td>
+<td><code>3</code></td>
+<td>Consultations per task, so a stuck loop cannot spend the session waiting.</td>
+</tr>
+<tr>
+<td><code>timeout_s</code></td>
+<td><code>900</code></td>
+<td>Per-consultation timeout.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>It distills before it asks.</strong> A slow model's prefill dominates: feeding a multi-thousand-token
+transcript to a ~3 pos/s prefill costs many minutes before it emits a word. So the caller's context
+is compressed on the fast <strong>summary</strong> model down to <code>prefill_token_budget</code> first — the advisor reads
+the brief, not the transcript. If distillation cannot get under budget, the escalation does <strong>not</strong>
+happen silently.</p>
+<p><strong>It fails open.</strong> Any endpoint error, timeout, or disabled config returns a plain notice and the
+driver proceeds <em>without</em> the advice. An escalation tool must never block the loop it exists to help.</p>
+<p><strong>It is probed at startup.</strong> If the endpoint is unreachable, <code>consult_advisor</code> is removed from the
+tool registry, so the model never sees a tool it cannot use and never wastes turns escalating to a
+server that is not running.</p>
+<p>See <a href="configurations.html">docs/configurations.md</a> for the full three-tier setup, and
+<a href="models.html">docs/models.md</a> for what to run as the advisor.</p>
 <h3 id="bedrock"><code>bedrock</code></h3>
 <p>Bedrock-specific tuning (only relevant when <code>backends.main.kind</code> or <code>backends.summary.kind</code> is <code>"bedrock"</code>).</p>
 <div class="tbl-wrap" tabindex="0"><table>
