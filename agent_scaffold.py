@@ -26,7 +26,7 @@ TYPES = {
     "3": "minimal",    # bare loop: state + context only
 }
 
-_TYPE_MENU = ("agent type:  1) creature — full six-phase digital creature "
+_TYPE_MENU = ("agent type:  1) creature — full six-phase agent "
               "(identity, patterns, anchors, messages)  2) worker — 4-phase "
               "task agent (decisions log)  3) minimal — bare loop")
 
