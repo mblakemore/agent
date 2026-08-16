@@ -31,7 +31,7 @@ class TestQuestionOrder(unittest.TestCase):
         input_fn = scripted(["1", "sparky", "1", "", "", "", "n"])
         with tempfile.TemporaryDirectory() as d:
             A.run_agent_wizard(cwd=d, input_fn=input_fn, print_fn=lambda s: None)
-        self.assertIn("agent type", input_fn.prompts[0])
+        self.assertIn("type", input_fn.prompts[0])
         self.assertIn("agent name", input_fn.prompts[1])
 
     def test_name_defaults_to_directory_name(self):

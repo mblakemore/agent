@@ -89,9 +89,10 @@ the exact `git rm --cached` fix.
 file the agent *is*, plus its state tree. A full `/setup` run offers to chain
 straight into it at the end.
 
-- **Type first, then name**: `creature` (full six-phase cognitive loop with
-  patterns, anchors and creator messages), `worker` (4-phase task agent with a
-  decisions log), or `minimal` (bare loop). The name defaults to the folder's.
+- **Type first, then name**: `six-phase` (the full agent — identity, patterns,
+  anchors, creator messages, verification gate), `worker` (4-phase task agent
+  with a decisions log), or `minimal` (bare loop). The name defaults to the
+  folder's.
 - The generated `AGENT.md`/`CLAUDE.md` carries a first-person identity, a
   wrong-repo guard (`git remote -v`, stop if it isn't yours), one-cycle-per-
   invocation discipline, a verify-before-decide gate — and, generated from your

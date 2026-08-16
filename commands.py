@@ -224,7 +224,6 @@ def _cmd_agent(ctx, args):
     import agent_scaffold as A
 
     cb_print = ctx.cb._print
-    cb_print(theme.c(theme.SKY, "Agent Scaffold Wizard"))
     try:
         A.run_agent_wizard(print_fn=cb_print, input_fn=_borrow_input)
     except (KeyboardInterrupt, EOFError):

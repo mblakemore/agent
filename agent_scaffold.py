@@ -20,18 +20,26 @@ import json
 import os
 from pathlib import Path
 
+import theme
+
 TYPES = {
-    "1": "creature",   # full DC: 6-phase, identity prose, patterns+anchors, messages
+    "1": "six-phase",  # full agent: 6-phase loop, identity prose, patterns+anchors, messages
     "2": "worker",     # 4-phase task agent: decisions log, lighter identity
     "3": "minimal",    # bare loop: state + context only
 }
 
-_TYPE_MENU = ("agent type:  1) creature — full six-phase agent "
-              "(identity, patterns, anchors, messages)  2) worker — 4-phase "
-              "task agent (decisions log)  3) minimal — bare loop")
+_TYPE_BULLETS = (
+    ("1", "full six-phase agent",
+     "identity, memory (patterns + anchors), creator messages, "
+     "verification gate — the complete autonomous loop"),
+    ("2", "worker",
+     "4-phase task agent — decisions log, lighter identity, gets things done"),
+    ("3", "minimal",
+     "bare loop — state files only, smallest possible footprint"),
+)
 
 _TYPE_DEFAULT_EXTRAS = {
-    "creature": {"patterns", "anchors"},
+    "six-phase": {"patterns", "anchors"},
     "worker": {"decisions"},
     "minimal": set(),
 }
@@ -183,7 +191,7 @@ _LOOP_MINIMAL = """## The Loop
 
 Read state. Do one thing. Update state. Commit and push."""
 
-_LOOP_BY_TYPE = {"creature": _LOOP_CREATURE, "worker": _LOOP_WORKER,
+_LOOP_BY_TYPE = {"six-phase": _LOOP_CREATURE, "worker": _LOOP_WORKER,
                  "minimal": _LOOP_MINIMAL}
 
 _LESSONS = """## Critical Lessons (inherited)
@@ -200,7 +208,7 @@ _LESSONS = """## Critical Lessons (inherited)
 
 
 def _identity_prose(name, role, agent_type):
-    if agent_type == "creature":
+    if agent_type == "six-phase":
         return f"""## I Am
 
 I am {name}.
@@ -435,11 +443,33 @@ def run_agent_wizard(cwd=None, input_fn=None, print_fn=None):
     input_fn = input_fn or input
     print_fn = print_fn or print
     cwd = Path(cwd or os.getcwd()).resolve()
-    print_fn("Agent Scaffold Wizard — writes an instructions file + state "
-             "tree in the current directory.")
 
-    type_ans = _ask(_TYPE_MENU, "1", input_fn).strip()
-    agent_type = TYPES.get(type_ans, "creature")
+    bar = theme.c(theme.VIOLET, "─" * 60)
+    print_fn(bar)
+    print_fn(theme.c(theme.SKY, "agent", bold=True) + theme.dim("  ·  scaffold"))
+    print_fn(bar)
+    print_fn("Mints an agent identity in this folder: an instructions file "
+             "the agent IS,\nplus its state tree — and finalizes it with a "
+             "git init commit.")
+    cfg_preview = load_local_config(cwd)
+    llm_model = (cfg_preview.get("llm") or {}).get("model")
+    if llm_model:
+        summary_model = (cfg_preview.get("summary") or {}).get("model") or "—"
+        adv = (cfg_preview.get("advisor") or {})
+        adv_state = "on" if adv.get("enabled", bool(adv.get("base_url"))) else "off"
+        print_fn(theme.dim(f"models here: main {llm_model} · summary "
+                           f"{summary_model} · advisor {adv_state} — the "
+                           "identity file will embed them"))
+    else:
+        print_fn(theme.dim("no .agent/config.json here yet — the identity "
+                           "file will point at /setup for models"))
+    print_fn("")
+    print_fn(theme.c(theme.AMBER, "agent type", bold=True) + ":")
+    for num, label, desc in _TYPE_BULLETS:
+        print_fn(f"  {num}) " + theme.c(theme.SKY, label, bold=True)
+                 + f" — {desc}")
+    type_ans = _ask("type", "1", input_fn).strip()
+    agent_type = TYPES.get(type_ans, "six-phase")
 
     name = _ask(f"agent name ({agent_type})", cwd.name, input_fn)
 
@@ -451,7 +481,8 @@ def run_agent_wizard(cwd=None, input_fn=None, print_fn=None):
     if not repo_ok:
         return []
 
-    role = _ask("role/purpose one-liner (ENTER for none)", "", input_fn)
+    role = _ask("role/purpose one-liner, e.g. 'I tend this codebase's test "
+                "suite' (ENTER for none)", "", input_fn)
 
     fname_raw = _ask("instructions filename — AGENT.md/CLAUDE.md",
                      "AGENT.md", input_fn)
@@ -517,5 +548,11 @@ def run_agent_wizard(cwd=None, input_fn=None, print_fn=None):
                      "the init commit) — commit and run "
                      "`gh repo create` yourself when ready.")
 
-    print_fn(f"start with: @{instrfile} run the loop")
+    print_fn("")
+    print_fn(theme.c(theme.MINT, f"{name} is ready.", bold=True))
+    print_fn("  wake it:   " + theme.c(theme.SKY, f"@{instrfile} run the loop"))
+    print_fn("  each invocation runs ONE cycle: perceive, decide, act, commit, push")
+    print_fn("  its models: " + ("embedded from .agent/config.json"
+                                 if llm_model else "run /setup to configure, "
+                                 "then /agent again to refresh the identity file"))
     return written

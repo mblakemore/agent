@@ -315,7 +315,7 @@ class TestAgentWizard:
     def test_agent_wizard_creates_agent_md(self, monkeypatch, tmp_path):
         """Wizard with standard inputs creates AGENT.md containing the agent name."""
         self._run_wizard(monkeypatch, tmp_path, [
-            "1",          # agent type (creature)
+            "1",          # agent type (six-phase)
             "TestBot",    # agent name (AFTER type — 2026-08-15 reorder)
             "1",          # repo: local git init (tmp_path is not a repo)
             "A test bot", # role
@@ -353,7 +353,7 @@ class TestAgentWizard:
         assert (tmp_path / "state" / "memories" / "patterns.jsonl").exists()
 
     def test_agent_wizard_default_loop_is_six_phase(self, monkeypatch, tmp_path):
-        """Default type (creature) yields the 6-phase loop."""
+        """Default type (six-phase) yields the 6-phase loop."""
         self._run_wizard(monkeypatch, tmp_path, [
             "", "BotD", "1", "", "", "", "n",
         ])
