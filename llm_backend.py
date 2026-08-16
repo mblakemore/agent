@@ -100,6 +100,30 @@ def _calc_retry_delay(attempt: int, cfg: dict) -> float:
     return round(delay, 2)
 
 
+def _is_conn_refused(e) -> bool:
+    """True for 'server not listening' — a dead port, distinct from a slow
+    5xx/timeout that might recover. Retrying a refused connection through the
+    full backoff is ~2min of scary tracebacks at a port that won't answer."""
+    s = str(e)
+    return "Connection refused" in s or "Failed to establish a new connection" in s
+
+
+def _refused_retry_cap(e, max_retries: int, base_url: str, log, attempt: int) -> int:
+    """Effective retry cap for this error. Refused connections get a short
+    budget (covers a server still starting up) instead of the full backoff,
+    with ONE plain actionable line naming the endpoint (2026-08-16: a user who
+    forgot to start llama-server got ~2min of NewConnectionError walls)."""
+    if not _is_conn_refused(e):
+        return max_retries
+    if attempt == 0:  # once, not on every short retry
+        port = base_url.rstrip("/").rsplit(":", 1)[-1]
+        log.warning(
+            "Cannot reach the model server at %s — is it running? "
+            "(e.g. `llama-server --port %s`). Short-retrying, then giving up.",
+            base_url, port)
+    return min(3, max_retries)
+
+
 def _debug_dump_payload(direction: str, body, *, kind: str = "request") -> None:
     """Dump a request/response payload when ``AGENT_DEBUG_PAYLOAD`` is set.
 
@@ -405,7 +429,8 @@ class LlamacppBackend:
                     requests.exceptions.Timeout,
                     requests.exceptions.HTTPError,
                 ) as e:
-                    if attempt == max_retries or _force_bail:
+                    _cap = _refused_retry_cap(e, max_retries, self.base_url, log, attempt)
+                    if attempt >= _cap or _force_bail:
                         raise
                     if isinstance(e, requests.exceptions.HTTPError):
                         resp = getattr(e, "response", None)
@@ -415,7 +440,7 @@ class LlamacppBackend:
                     log.warning(
                         "LLM request failed (attempt %d/%d): %s — retrying in %ds",
                         attempt + 1,
-                        max_retries + 1,
+                        _cap + 1,
                         e,
                         delay,
                     )
@@ -508,7 +533,8 @@ class LlamacppBackend:
                     requests.exceptions.Timeout,
                     requests.exceptions.HTTPError,
                 ) as e:
-                    if attempt == max_retries or _force_bail:
+                    _cap = _refused_retry_cap(e, max_retries, self.base_url, log, attempt)
+                    if attempt >= _cap or _force_bail:
                         raise
                     if isinstance(e, requests.exceptions.HTTPError):
                         resp = getattr(e, "response", None)
@@ -518,7 +544,7 @@ class LlamacppBackend:
                     log.warning(
                         "LLM request failed (attempt %d/%d): %s — retrying in %ds",
                         attempt + 1,
-                        max_retries + 1,
+                        _cap + 1,
                         e,
                         delay,
                     )
