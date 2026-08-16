@@ -146,3 +146,33 @@ class TestThemeCoverage(unittest.TestCase):
         with mock.patch.object(theme, "_no_color", return_value=False):
             esc = theme.pulse_escape(2.25)
             self.assertEqual(esc, theme.escape(theme.VIOLET))
+
+
+class TestSemanticAliases(unittest.TestCase):
+    """Step 1 of plan/tui-design-system.md: semantic tokens + to_hex."""
+
+    def test_aliases_map_onto_palette(self):
+        self.assertEqual(theme.HEADING, theme.SKY)
+        self.assertEqual(theme.CHROME, theme.VIOLET)
+        self.assertEqual(theme.GOOD, theme.MINT)
+        self.assertEqual(theme.WARN, theme.AMBER)
+        self.assertEqual(theme.ERR, theme.ROSE)
+
+    def test_aliases_are_distinct(self):
+        tokens = [theme.HEADING, theme.CHROME, theme.GOOD, theme.WARN,
+                  theme.ERR]
+        self.assertEqual(len(set(tokens)), 5,
+                         "semantic tokens must not share a pigment")
+
+    def test_to_hex_matches_tui_literals(self):
+        """The hand-restated hex palette in tui.py:111-115 must equal
+        to_hex of the tuples — pre-verifies step 7's substitution."""
+        self.assertEqual(theme.to_hex(theme.VIOLET), "#7b4dff")
+        self.assertEqual(theme.to_hex(theme.SKY), "#35c2f5")
+        self.assertEqual(theme.to_hex(theme.MINT), "#5fffb0")
+        self.assertEqual(theme.to_hex(theme.AMBER), "#ffbe3d")
+        self.assertEqual(theme.to_hex(theme.ROSE), "#ff4d6d")
+
+    def test_to_hex_pads_low_channels(self):
+        self.assertEqual(theme.to_hex((0, 0, 0)), "#000000")
+        self.assertEqual(theme.to_hex((1, 2, 3)), "#010203")

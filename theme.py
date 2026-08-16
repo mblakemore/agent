@@ -18,8 +18,25 @@ MINT   = (95, 255, 176)
 AMBER  = (255, 190, 61)
 ROSE   = (255, 77, 109)
 
+# ── Semantic aliases ────────────────────────────────────────────────────
+# UI code names the MEANING, never the pigment (plan/tui-design-system.md
+# § 2.1) — repaletting is an edit to these five lines only. WARN is for
+# warnings, never decoration.
+HEADING = SKY     # titles, section labels, role words, list headers
+CHROME  = VIOLET  # rules, bars, structural markers, reasoning delimiters
+GOOD    = MINT    # success, healthy, current selection
+WARN    = AMBER   # degraded, attention, cancelled
+ERR     = ROSE    # failures, invalid input
+
 # Gradient stops used by pulse animations (violet → sky → mint and back)
 _GRADIENT = [VIOLET, SKY, MINT]
+
+
+def to_hex(rgb):
+    """'#rrggbb' for an RGB triple — the single derivation of the palette's
+    hex form (prompt_toolkit styles want hex, not SGR escapes)."""
+    r, g, b = rgb
+    return f"#{r:02x}{g:02x}{b:02x}"
 
 def _no_color():
     """Return True when color output should be suppressed."""
