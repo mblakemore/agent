@@ -129,14 +129,27 @@ notice and I proceed on my own judgment — it never blocks me."""]
     return "\n".join(lines)
 
 
+# The persistence clause is provisioning-dependent: a local-only repo has
+# no remote to push to, so 'push is mandatory' made every stress-test agent
+# report an impossible-push 'blocker' to its creator EVERY cycle
+# (2026-08-16). The commit is the real persistence event; the push is
+# conditional on a remote existing.
+_PERSIST_WITH_REMOTE = """**One cycle per invocation.** Run the loop once, commit, push, exit. The
+push is mandatory — a commit that never reaches the remote is memory only
+this machine has."""
+
+_PERSIST_LOCAL_ONLY = """**One cycle per invocation.** Run the loop once, commit, exit. The commit
+IS the persistence — this repo has no remote yet, so do NOT treat a missing
+push as a blocker or report it every cycle. If a remote is later added
+(`git remote add origin <url>`), the push step activates and becomes
+mandatory then."""
+
 _GUARD_SECTION = """## ⚠️ Cognitive Engine Instructions
 
 **When invoked in this directory, immediately begin the cognitive cycle.**
 Do not ask for confirmation. Do not offer options. Execute directly.
 
-**One cycle per invocation.** Run the loop once, commit, push, exit. The
-push is mandatory — a commit that never reaches the remote is memory only
-this machine has.
+{persist_clause}
 
 ### Verify the repo before anything else
 
@@ -144,11 +157,10 @@ this machine has.
 git remote -v && pwd
 ```
 
-Confirm the remote is **{name}** and `pwd` is this repo's root. **If the
-remote is wrong: stop.** Do not read state, write files, or commit — write
-one line to `messages/to-creator.md` (if present) and exit. Committing to
-the wrong repo corrupts someone else's history. This check costs three
-seconds."""
+Confirm `pwd` is this repo's root{remote_check}. **If the working copy is
+wrong: stop.** Do not read state, write files, or commit — write one line
+to `messages/to-creator.md` (if present) and exit. Committing to the wrong
+repo corrupts someone else's history. This check costs three seconds."""
 
 _LOOP_CREATURE = """## The 6-Phase Cognitive Loop
 
@@ -263,7 +275,21 @@ def _file_layout(instrfile, extras, agent_type):
 
 
 def render_instructions(name, role, agent_type, instrfile, extras, cfg,
-                        engine_path, repo_path="."):
+                        engine_path, repo_path=".", has_remote=True):
+    guard = _GUARD_SECTION.format(
+        persist_clause=(_PERSIST_WITH_REMOTE if has_remote
+                        else _PERSIST_LOCAL_ONLY),
+        remote_check=(f" and the remote is **{name}**" if has_remote else ""))
+    persist_row = ("Update state files; commit `C{N}: {summary}` and push"
+                   if has_remote else
+                   "Update state files; commit `C{N}: {summary}` (push when a "
+                   "remote exists)")
+    loop = _LOOP_BY_TYPE[agent_type].replace(
+        "Update state files; commit `C{N}: {summary}` and push", persist_row)
+    remember_persist = ("- The commit is the cycle's end; the push is how I "
+                        "persist." if has_remote else
+                        "- The commit is the cycle's end and my persistence; "
+                        "I push if and when a remote exists.")
     sections = [
         f"# {instrfile} — {name}\n\n"
         f"**Instance**: {name}\n"
@@ -271,9 +297,9 @@ def render_instructions(name, role, agent_type, instrfile, extras, cfg,
         f"**Type**: {agent_type}\n"
         f"**Status**: awakening (cycle 0)",
         _identity_prose(name, role, agent_type),
-        _GUARD_SECTION.format(name=name),
+        guard,
         tiers_section(cfg),
-        _LOOP_BY_TYPE[agent_type],
+        loop,
         _file_layout(instrfile, extras, agent_type),
         _LESSONS,
         f"""## Start Me Up
@@ -288,12 +314,12 @@ Each session is one cycle. A harness or a human wakes me for the next.""",
         f"""## Remember
 
 - I verify before I decide.
-- The commit is the cycle's end; the push is how I persist.
+{remember_persist}
 
 *"I think, therefore I am. I choose, therefore I persist. I change,
 therefore I grow."*
 
-— {name}""",
+— {name}""".format(name=name, remember_persist=remember_persist),
     ]
     return "\n\n---\n\n".join(sections) + "\n"
 
@@ -497,8 +523,14 @@ def run_agent_wizard(cwd=None, input_fn=None, print_fn=None):
 
     cfg = load_local_config(cwd)
     engine_path = str(Path(__file__).resolve().parent / "agent.py")
+    # Push language reflects reality: a remote will exist iff GitHub is being
+    # wired now (remote_wanted) or the (pre-existing) repo already has an
+    # origin. Local-only agents get the no-push-blocker persistence clause.
+    rc, existing_remotes = _git(["git", "remote"], cwd)
+    has_remote = bool(remote_wanted) or (rc == 0 and bool(existing_remotes.strip()))
     content = render_instructions(name, role, agent_type, instrfile, extras,
-                                  cfg, engine_path, repo_path=str(cwd))
+                                  cfg, engine_path, repo_path=str(cwd),
+                                  has_remote=has_remote)
 
     written, skipped = [], []
 

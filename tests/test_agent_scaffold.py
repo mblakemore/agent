@@ -335,3 +335,36 @@ class TestTrackedConfigWarning(unittest.TestCase):
             finally:
                 os.chdir(old)
             self.assertEqual(err.getvalue(), "")
+
+
+class TestPushLanguageMatchesProvisioning(unittest.TestCase):
+    """A local-only repo has no remote — 'push is mandatory' made every
+    stress-test agent report an impossible-push blocker to its creator every
+    cycle (2026-08-16). Push language must reflect the provisioning."""
+
+    def _body(self, answers):
+        with tempfile.TemporaryDirectory() as d:
+            cwd = Path(d)
+            A.run_agent_wizard(cwd=cwd, input_fn=scripted(answers),
+                               print_fn=lambda s: None)
+            return (cwd / "AGENT.md").read_text()
+
+    def test_local_only_repo_has_no_push_blocker(self):
+        # type 1, name, provision=local init, role, fname, extras, commit=n
+        body = self._body(["1", "loc", "1", "", "", "", "n"])
+        self.assertIn("do NOT treat a missing", body)
+        self.assertNotIn("push is mandatory", body)
+        self.assertIn("push when a remote exists", body)
+
+    def test_existing_repo_with_origin_keeps_push_mandatory(self):
+        with tempfile.TemporaryDirectory() as d:
+            cwd = Path(d)
+            A._git(["git", "init", "-q"], cwd)
+            A._git(["git", "remote", "add", "origin",
+                    "https://example.com/x.git"], cwd)
+            A.run_agent_wizard(cwd=cwd,
+                               input_fn=scripted(["1", "rem", "", "", "", "n"]),
+                               print_fn=lambda s: None)
+            body = (cwd / "AGENT.md").read_text()
+        self.assertIn("push is mandatory", body)
+        self.assertIn("remote is **rem**", body)
