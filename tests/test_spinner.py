@@ -93,20 +93,27 @@ class TestSpinnerInteractivity(unittest.TestCase):
                 status.start(prefix="hello ")
                 # Thread should not have been started
                 self.assertIsNone(status._thread)
-                # Prefix should have been written at least once
-                m_stdout.write.assert_any_call("hello \n")
+                # Assert on the emitted byte stream, not write-call
+                # boundaries — batching is an implementation detail
+                # (5a8e2af coalesced writes; the old assert_any_call
+                # form broke on it in the sibling test below).
+                out = "".join(c.args[0] for c in m_stdout.write.call_args_list)
+                self.assertEqual(out, "hello \n")
             status.finish()
 
 
 class TestStreamStatusFullLifecycle(unittest.TestCase):
     def test_start_with_leading_newlines(self):
-        """Verify that leading newlines in prefix are printed immediately."""
+        """Leading newlines precede the prefix and the prefix is
+        newline-terminated — asserted on the concatenated stream, so the
+        test is indifferent to how start() batches its writes (one
+        coalesced write since 5a8e2af; two before)."""
         with mock.patch.object(theme, "_no_color", return_value=True):
             status = spinner.StreamStatus()
             with mock.patch("sys.stdout") as m_stdout:
                 status.start(prefix="\n\nHello")
-                m_stdout.write.assert_any_call("\n\n")
-                m_stdout.write.assert_any_call("Hello\n")
+                out = "".join(c.args[0] for c in m_stdout.write.call_args_list)
+                self.assertEqual(out, "\n\nHello\n")
             status.finish()
 
     def test_interactive_lifecycle(self):
