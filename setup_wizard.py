@@ -804,12 +804,29 @@ def _section(label, rest=""):
     return "\n── " + _role_word(label) + rest + " ──"
 
 
+def _version_suffix():
+    """' v0.1.0 (c2faf95)' from the engine, lazily — agent imports this
+    module, so the import here must stay inside the call, and any failure
+    degrades to no suffix rather than a broken header."""
+    try:
+        import agent as _agent
+        ver = getattr(_agent, "__version__", "")
+        sha = _agent._git_short_sha()
+        out = f" v{ver}" if ver else ""
+        if sha:
+            out += theme.dim(f" ({sha})")
+        return out
+    except Exception:
+        return ""
+
+
 def _print_program_header(print_fn):
     """The engine's session banner, reproduced for the wizard (the first-run
     wizard fires BEFORE the real banner, so setup opened colorless)."""
     bar = theme.c(theme.VIOLET, "─" * 60)
     print_fn(bar)
-    print_fn(theme.c(theme.SKY, "agent", bold=True) + theme.dim("  ·  setup"))
+    print_fn(theme.c(theme.SKY, "agent", bold=True) + _version_suffix()
+             + theme.dim("  ·  setup"))
     print_fn(bar)
 
 
@@ -829,7 +846,9 @@ def _intro_text():
         "    aim at a bigger, slower model for the rare hard call.\n"
         "\n"
         "This wizard configures those three roles, probes each endpoint\n"
-        "live, and calibrates the engine to what it actually measures."
+        "live, and calibrates the engine to what it actually measures.\n"
+        "\n"
+        "You can run this wizard again at any time with /setup."
     )
 
 
@@ -1020,6 +1039,7 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
     if jump_to is None:
         _print_program_header(print_fn)
         print_fn(_intro_text())
+        print_fn("")
         do_scan = _ask("scan localhost for running model servers? (y/n)",
                        "y", input_fn)
         if do_scan.lower().startswith("y"):
