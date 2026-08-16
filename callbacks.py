@@ -266,6 +266,18 @@ class TerminalCallbacks(NullCallbacks):
             else:
                 sum_line = theme.c(theme.AMBER, f"⚠ summary") + f" {s_tag}{s_detail} — falling back to main"
             self._print(sum_line)
+
+        # Advisor row — the consulted heavyweight tier. Only shown when
+        # configured (a healthy advisor got no line at all before, stress
+        # test 2026-08-16); ⚠ when configured-but-unreachable so its absence
+        # from escalation is visible, not silent.
+        if info.get("advisor_enabled"):
+            a_detail = info.get("advisor_detail", "")
+            if info.get("advisor_ok"):
+                self._print(theme.c(theme.MINT, "● advisor") + f" {a_detail}")
+            else:
+                self._print(theme.c(theme.AMBER, "⚠ advisor")
+                            + f" {a_detail} — consult_advisor unloaded")
         self._print("")
 
     def on_summarizer_status(self, status: str, detail: str) -> None:

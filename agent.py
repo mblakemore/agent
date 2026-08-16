@@ -3650,7 +3650,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     if advisor_enabled:
         _emit("on_boot_progress",
               f"checking advisor backend — {advisor_cfg.get('base_url', '?')} "
-              f"{advisor_cfg.get('model', 'glm')}")
+              f"{advisor_cfg.get('model') or '(served model)'}")
         try:
             from tools.consult_advisor import startup_check as _advisor_check
             advisor_ok, advisor_detail = _advisor_check(
@@ -4281,7 +4281,47 @@ def _claim_vs_trace_unsupported(text, ran_verification, has_committed):
     return out
 
 
-def run_agent_single(conversation_history: list, summary_state: dict, initial_files,
+_CYCLE_STATUS_PATH = _state_path("cycle_status.json")
+
+
+def _write_cycle_status(phase, result=None, turn=None, committed=None):
+    """Machine-readable cycle status for a SUPERVISING HARNESS (stress test
+    2026-08-16: a driver had nothing to poll but ANSI scrollback and misread
+    a live-input prompt repaint as 'done', killing a working cycle).
+
+    'running' on entry, the terminal result string ('done'/'error'/'stopped')
+    on exit — a harness watches this file, not the terminal. Best-effort:
+    never raise into the loop. Timestamp is omitted deliberately (Date.now()
+    unavailable in some sandboxes; the mtime carries the clock)."""
+    try:
+        payload = {"phase": phase}
+        if result is not None:
+            payload["result"] = result
+        if turn is not None:
+            payload["turn"] = turn
+        if committed is not None:
+            payload["committed_this_cycle"] = bool(committed)
+        os.makedirs(os.path.dirname(_CYCLE_STATUS_PATH), exist_ok=True)
+        with open(_CYCLE_STATUS_PATH, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception:
+        pass
+
+
+def run_agent_single(*args, **kwargs):
+    """Thin wrapper: stamp cycle_status.json running->terminal around the real
+    loop so a harness has a done-signal independent of terminal scrollback."""
+    _write_cycle_status("running")
+    try:
+        result = _run_agent_single_impl(*args, **kwargs)
+        _write_cycle_status("complete", result=result)
+        return result
+    except BaseException as e:
+        _write_cycle_status("complete", result=f"exception:{type(e).__name__}")
+        raise
+
+
+def _run_agent_single_impl(conversation_history: list, summary_state: dict, initial_files,
                      log: logging.Logger,
                      temperature=_DEFAULT_CONFIG["generation"]["temperature"],
                      top_p=_DEFAULT_CONFIG["generation"]["top_p"],
