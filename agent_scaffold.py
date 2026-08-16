@@ -562,7 +562,13 @@ def run_agent_wizard(cwd=None, input_fn=None, print_fn=None):
               "# Messages from Creator\n\n*(empty — add directives here)*\n")
         write("messages/to-creator.md", "# Messages to Creator\n\n*(empty)*\n")
     write("logs/consciousness.log", "")
-    write(".gitignore", "logs/\n.agent/\n")
+    # Python bytecode + pytest cache: forge committed 4 __pycache__ files in
+    # the 2026-08-16 stress test because the scaffold didn't ignore them (the
+    # engine's runtime guard caught it mid-loop, but preventing it is better
+    # than nudging it). Agents doing Python work generate these constantly.
+    write(".gitignore",
+          "logs/\n.agent/\nconfig.json\n"
+          "__pycache__/\n*.py[cod]\n.pytest_cache/\n")
 
     for rel in skipped:
         print_fn(f"   skipped existing: {rel}")
