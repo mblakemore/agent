@@ -716,8 +716,18 @@ def _cfg_with_role(backends: dict, role: str) -> dict:
     return entry
 
 
-_main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
-_summary_backend = _build_backend(_cfg_with_role(_config["backends"], "summary"))
+try:
+    _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
+    _summary_backend = _build_backend(_cfg_with_role(_config["backends"], "summary"))
+except ValueError as _be:
+    # A bad "kind" (or other unbuildable backend config) must not dump a raw
+    # import-time traceback on the user — build_backend already phrases these
+    # to name the config field and the fix. Same stderr-for-config-integrity
+    # contract as the malformed-config path in _load_config.
+    _emit("on_notice", "error", f"Backend config error: {_be}")
+    logging.getLogger("agent").error("backend build failed: %s", _be)
+    print(f"⚠ Backend config error: {_be}", file=sys.stderr)
+    sys.exit(2)
 
 
 def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) -> None:

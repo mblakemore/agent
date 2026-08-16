@@ -1745,24 +1745,70 @@ class FoundryBackend:
             yield {"choices": [{"delta": {"tool_calls": [tc]}}]}
 # ── Factory ────────────────────────────────────────────────────────────
 
+# The three canonical backend kinds, each with a one-line human label used in
+# error messages (so a typo tells the user what the valid choices actually are).
+_KIND_LABELS = {
+    "llamacpp": "local llama.cpp / OpenAI-compatible HTTP",
+    "bedrock": "AWS Bedrock",
+    "foundry": "Azure AI Foundry",
+}
+
+# Aliases people write by hand or carry over from other tools' docs. The wizard
+# advertises the main backend as "OpenAI-compatible", so `"kind": "openai"` is
+# the single most likely hand-edit — but the canonical kind is the unintuitive
+# `"llamacpp"` (it IS the OpenAI-shaped HTTP client). Map the obvious synonyms
+# instead of throwing a traceback at someone who guessed a reasonable name.
+_KIND_ALIASES = {
+    "openai": "llamacpp",
+    "openai-compatible": "llamacpp",
+    "openai_compatible": "llamacpp",
+    "oai": "llamacpp",
+    "llama": "llamacpp",
+    "llama.cpp": "llamacpp",
+    "llama-cpp": "llamacpp",
+    "llamacpp-openai": "llamacpp",
+    "local": "llamacpp",
+    "azure": "foundry",
+    "azure-foundry": "foundry",
+    "foundry-azure": "foundry",
+    "aws": "bedrock",
+    "aws-bedrock": "bedrock",
+}
+
+
+def normalize_kind(kind) -> str:
+    """Canonicalize a backend ``kind`` string: strip/lowercase, then map known
+    aliases (``openai`` → ``llamacpp``, ``azure`` → ``foundry``, …). Unknown
+    values pass through unchanged so ``build_backend`` can report them."""
+    k = (kind or "llamacpp").strip().lower()
+    return _KIND_ALIASES.get(k, k)
+
 
 def build_backend(cfg: dict) -> Backend:
     """Instantiate a concrete backend from a config dict.
 
-    The dict must carry a ``kind`` key. ``kind="llamacpp"`` returns a
-    ``LlamacppBackend``; ``kind="bedrock"`` returns a ``BedrockBackend``
-    (raises ``ConfigError`` when ``BEDROCK_API_URL`` / ``BEDROCK_API_KEY``
-    are missing — see plan § 12 / D8 / D11). Any other value raises
-    ``ValueError``.
+    The dict may carry a ``kind`` key (default ``llamacpp``). ``kind`` is
+    normalized through :func:`normalize_kind` first, so common synonyms like
+    ``openai`` / ``azure`` / ``llama.cpp`` resolve to the right backend.
+    ``bedrock`` raises ``ConfigError`` when ``BEDROCK_API_URL`` /
+    ``BEDROCK_API_KEY`` are missing (see plan § 12 / D8 / D11). A genuinely
+    unrecognized value raises ``ValueError`` naming the config field to fix and
+    the valid choices — never a bare "Unknown backend kind".
     """
-    kind = cfg.get("kind", "llamacpp")
+    raw = cfg.get("kind", "llamacpp")
+    kind = normalize_kind(raw)
     if kind == "llamacpp":
         return LlamacppBackend(cfg)
     if kind == "bedrock":
         return BedrockBackend(cfg)
     if kind == "foundry":
         return FoundryBackend(cfg)
-    raise ValueError(f"Unknown backend kind: {kind!r}")
+    valid = ", ".join(f"{k} ({v})" for k, v in _KIND_LABELS.items())
+    raise ValueError(
+        f"Unknown backend kind {raw!r} in .agent/config.json. "
+        f"Valid kinds: {valid}. "
+        f"Fix the \"kind\" field or re-run /setup."
+    )
 
 
 # ── System-message folding ──────────────────────────────────────────────

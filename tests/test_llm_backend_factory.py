@@ -13,6 +13,7 @@ from llm_backend import (
     ConfigError,
     LlamacppBackend,
     build_backend,
+    normalize_kind,
     ContextOverflowError,
 )
 
@@ -46,7 +47,44 @@ def test_build_backend_bedrock_requires_env(monkeypatch):
 def test_build_backend_unknown_kind():
     with pytest.raises(ValueError) as exc:
         build_backend({"kind": "wat"})
-    assert "Unknown backend kind" in str(exc.value)
+    msg = str(exc.value)
+    # A genuine typo must be actionable, not a bare "Unknown backend kind":
+    # it names the file to edit, the offending value, and the valid choices.
+    assert "wat" in msg
+    assert ".agent/config.json" in msg
+    assert "llamacpp" in msg and "bedrock" in msg and "foundry" in msg
+    assert "/setup" in msg
+
+
+@pytest.mark.parametrize(
+    "alias,expected_kind",
+    [
+        ("openai", "llamacpp"),
+        ("openai-compatible", "llamacpp"),
+        ("OpenAI", "llamacpp"),          # case-insensitive
+        (" llama.cpp ", "llamacpp"),     # whitespace-tolerant
+        ("llama", "llamacpp"),
+        ("local", "llamacpp"),
+        ("azure", "foundry"),
+        ("aws", "bedrock"),
+    ],
+)
+def test_normalize_kind_aliases(alias, expected_kind):
+    assert normalize_kind(alias) == expected_kind
+
+
+def test_normalize_kind_passthrough_and_default():
+    assert normalize_kind("llamacpp") == "llamacpp"
+    assert normalize_kind(None) == "llamacpp"     # missing → default
+    assert normalize_kind("") == "llamacpp"
+    assert normalize_kind("wat") == "wat"         # unknown passes through
+
+
+def test_build_backend_openai_alias_builds_llamacpp():
+    # The wizard advertises "OpenAI-compatible", so `"kind": "openai"` is the
+    # likeliest hand-edit — it must build, not throw a traceback at boot.
+    b = build_backend({"kind": "openai", "base_url": "http://x:1", "model": "m"})
+    assert isinstance(b, LlamacppBackend)
 
 
 def test_build_backend_default_kind_llamacpp():
