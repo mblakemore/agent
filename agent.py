@@ -7388,6 +7388,15 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             log.info("[patch-telemetry] %s", _summary)
 
 
+# Make the cycle_status wrapper (run_agent_single, defined above with a bare
+# ``*args, **kwargs`` shim) signature-transparent: point ``__wrapped__`` at the
+# real impl so ``inspect.signature(run_agent_single)`` and help() report the
+# actual parameters and their _DEFAULT_CONFIG-derived defaults, not (*args,
+# **kwargs). Without this the CICD-0025 defaults-sync regression guard can't see
+# the signature at all (KeyError), and introspecting callers get nothing useful.
+run_agent_single.__wrapped__ = _run_agent_single_impl
+
+
 def main():
     """Main entry point."""
     # Issue #405 — bedrock credential store CLI. Handled before argparse

@@ -77,6 +77,21 @@ class TestCycleStatusSignal(unittest.TestCase):
         with mock.patch.object(agent, "_CYCLE_STATUS_PATH", "/nonexistent\0/x"):
             agent._write_cycle_status("running")  # must not raise
 
+    def test_wrapper_is_signature_transparent(self):
+        """The cycle_status wrapper uses a bare (*args, **kwargs) shim; without
+        __wrapped__ pointing at the impl, inspect.signature(run_agent_single)
+        reports (*args, **kwargs) and the CICD-0025 defaults-sync guard can't
+        even find the parameters (KeyError). Lock the transparency here so a
+        future 'cleanup' of the __wrapped__ line fails loudly."""
+        import inspect
+        import agent
+        self.assertIs(agent.run_agent_single.__wrapped__, agent._run_agent_single_impl)
+        params = inspect.signature(agent.run_agent_single).parameters
+        for p in ("temperature", "top_p", "top_k", "presence_penalty",
+                  "max_tokens", "ctx_size"):
+            self.assertIn(p, params,
+                          f"{p} not visible through run_agent_single wrapper")
+
 
 if __name__ == "__main__":
     unittest.main()
