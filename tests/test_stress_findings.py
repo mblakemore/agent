@@ -1,6 +1,7 @@
 """Fixes surfaced by the 2026-08-16 six-phase stress test (agent 'forge'
 built lifebox on local models): the advisor banner row and the harness
 cycle-status done-signal."""
+from pathlib import Path
 import json
 import os
 import sys
@@ -79,3 +80,45 @@ class TestCycleStatusSignal(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMalformedConfigWarns(unittest.TestCase):
+    """A malformed .agent/config.json was silently swallowed — _load_config
+    runs at module import before _cb is wired, so its on_notice emit went
+    nowhere and the agent ran on defaults with no word (2026-08-16). Now
+    stderr + log always fire."""
+
+    def test_malformed_config_warns_to_stderr(self):
+        import io, tempfile, importlib
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / ".agent").mkdir()
+            (Path(d) / ".agent" / "config.json").write_text('{"llm": {,}')  # bad
+            old = os.getcwd()
+            os.chdir(d)
+            try:
+                import agent
+                with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                    cfg = agent._load_config()
+                out = err.getvalue()
+            finally:
+                os.chdir(old)
+        self.assertIn("could not parse", out)
+        self.assertIn("DEFAULTS", out)
+        # and it degraded to a usable default config, not a crash
+        self.assertIn("llm", cfg)
+
+    def test_valid_config_is_silent(self):
+        import io, tempfile
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / ".agent").mkdir()
+            (Path(d) / ".agent" / "config.json").write_text(
+                '{"llm": {"base_url": "http://x:8080"}}')
+            old = os.getcwd()
+            os.chdir(d)
+            try:
+                import agent
+                with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                    agent._load_config()
+                self.assertEqual(err.getvalue(), "")
+            finally:
+                os.chdir(old)

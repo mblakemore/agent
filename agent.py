@@ -645,7 +645,19 @@ def _load_config():
                                    if isinstance(val, dict) else val)
             _warn_if_world_readable_with_key(config_path, user_config)
         except (json.JSONDecodeError, IOError) as e:
-            _emit("on_notice", "warn", f"Warning: Could not load config.json, using defaults: {e}")
+            # _load_config runs at MODULE IMPORT, before _cb is wired, so the
+            # on_notice emit fires into the void (verified 2026-08-16: a
+            # malformed .agent/config.json was silently ignored and the agent
+            # ran on DEFAULTS with no word — the user's endpoint/model settings
+            # vanished invisibly). Stderr + log always reach the user; name the
+            # file and say defaults are now in effect. Same stderr-for-config-
+            # integrity pattern as _warn_if_config_tracked.
+            msg = (f"could not parse {config_path} ({e}) — ALL its settings are "
+                   f"IGNORED and engine DEFAULTS are in effect. Fix the JSON or "
+                   f"re-run /setup.")
+            _emit("on_notice", "warn", f"Warning: {msg}")
+            logging.getLogger("agent").error("config load failed: %s", msg)
+            print(f"⚠ {msg}", file=sys.stderr)
             user_config = None
 
     # Back-compat shim: if user provided an explicit `backends` block, use it
