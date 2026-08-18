@@ -13,6 +13,7 @@ class TestThinkCoverage(unittest.TestCase):
 
     def setUp(self):
         # Reset the injectable output to prevent pollution
+        think_mod._session_call_count = 0  # reset overuse counter (module global) — else prior tests' calls inject the overuse-warning prefix and break exact-match asserts
         self.original_output = think_mod._output
         think_mod._output = MagicMock()
 
@@ -468,9 +469,9 @@ class TestThinkNSamplesValidation(unittest.TestCase):
         # Lines 151–152: n_samples="2" coerces to 2, continues normally
         with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"), \
              patch("tools.think._single_call", side_effect=[
-                 ("answer1", None),
-                 ("answer2", None),
-                 ("consensus", None),
+                 ("", "answer1", None),
+                 ("", "answer2", None),
+                 ("", "consensus", None),
              ]), \
              patch("tools.think.check_cancelled"):
             think_mod._output = MagicMock()
@@ -509,6 +510,7 @@ class TestThinkStreamNonDataLine(unittest.TestCase):
     """Cover the `continue` branch for non-"data:"-prefixed SSE lines (line 78)."""
 
     def setUp(self):
+        think_mod._session_call_count = 0  # reset overuse counter (module global) — else prior tests' calls inject the overuse-warning prefix and break exact-match asserts
         self.original_output = think_mod._output
         think_mod._output = MagicMock()
 
@@ -539,6 +541,7 @@ class TestThinkSelfConsistency(unittest.TestCase):
     """Cover the n_samples > 1 self-consistency execution path."""
 
     def setUp(self):
+        think_mod._session_call_count = 0  # reset overuse counter (module global) — else prior tests' calls inject the overuse-warning prefix and break exact-match asserts
         self.original_output = think_mod._output
         think_mod._output = MagicMock()
 
@@ -549,9 +552,9 @@ class TestThinkSelfConsistency(unittest.TestCase):
         # Lines 191–239 main path: two samples succeed, consensus call returns answer
         with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"), \
              patch("tools.think._single_call", side_effect=[
-                 ("answer A", None),    # sample 1
-                 ("answer B", None),    # sample 2
-                 ("consensus C", None), # consensus extract
+                 ("", "answer A", None),    # sample 1
+                 ("", "answer B", None),    # sample 2
+                 ("", "consensus C", None), # consensus extract
              ]) as mock_call, \
              patch("tools.think.check_cancelled"):
             result = think_mod.fn("complex question", n_samples=2)
@@ -562,8 +565,8 @@ class TestThinkSelfConsistency(unittest.TestCase):
         # Line 203–204: all samples fail → "all self-consistency samples failed"
         with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"), \
              patch("tools.think._single_call", side_effect=[
-                 ("", "server error"),  # sample 1 fails
-                 ("", "timeout"),       # sample 2 fails
+                 ("", "", "server error"),  # sample 1 fails
+                 ("", "", "timeout"),       # sample 2 fails
              ]), \
              patch("tools.think.check_cancelled"):
             result = think_mod.fn("complex question", n_samples=2)
@@ -573,8 +576,8 @@ class TestThinkSelfConsistency(unittest.TestCase):
         # Lines 205–207: only one sample succeeds → return it directly (no consensus)
         with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"), \
              patch("tools.think._single_call", side_effect=[
-                 ("", "error"),         # sample 1 fails
-                 ("lone answer", None), # sample 2 succeeds
+                 ("", "", "error"),         # sample 1 fails
+                 ("", "lone answer", None), # sample 2 succeeds
              ]) as mock_call, \
              patch("tools.think.check_cancelled"):
             result = think_mod.fn("complex question", n_samples=2)
@@ -586,9 +589,9 @@ class TestThinkSelfConsistency(unittest.TestCase):
         # Lines 231–234: consensus-extract call fails → fallback concatenation
         with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"), \
              patch("tools.think._single_call", side_effect=[
-                 ("answer A", None),           # sample 1 succeeds
-                 ("answer B", None),           # sample 2 succeeds
-                 ("", "consensus-extract err"),# consensus fails
+                 ("", "answer A", None),           # sample 1 succeeds
+                 ("", "answer B", None),           # sample 2 succeeds
+                 ("", "", "consensus-extract err"),# consensus fails
              ]), \
              patch("tools.think.check_cancelled"):
             result = think_mod.fn("complex question", n_samples=2)
@@ -600,9 +603,9 @@ class TestThinkSelfConsistency(unittest.TestCase):
         # Line 239: consensus call succeeds but returns empty string
         with patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080"), \
              patch("tools.think._single_call", side_effect=[
-                 ("answer A", None),   # sample 1
-                 ("answer B", None),   # sample 2
-                 ("", None),           # consensus returns empty
+                 ("", "answer A", None),   # sample 1
+                 ("", "answer B", None),   # sample 2
+                 ("", "", None),           # consensus returns empty
              ]), \
              patch("tools.think.check_cancelled"):
             result = think_mod.fn("complex question", n_samples=2)
