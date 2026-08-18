@@ -467,6 +467,12 @@ _DEFAULT_CONFIG = {
         "top_k": 20,
         "min_p": 0.0,
         "presence_penalty": 0.0,
+        # Whether the MAIN loop generation may emit thinking. Default False: the
+        # design is no-thinking-in-main + the opt-in `think` tool, so the model
+        # chooses when to reason hard. Set True to let the main model think on
+        # every turn (bounded by max_tokens); the `think` tool stays available
+        # either way. Consumed at the main request_body (chat_template_kwargs).
+        "enable_thinking": False,
     },
     # `think` tool depth->max_tokens budgets. Preset names are fixed
     # (brief/normal/deep); values are tunable per deployment (a fast small model
@@ -5202,7 +5208,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 "top_k": top_k,
                 "presence_penalty": presence_penalty,
                 "max_tokens": _effective_max_tokens,
-                "chat_template_kwargs": {"enable_thinking": False},
+                "chat_template_kwargs": {
+                    "enable_thinking": _config["generation"].get("enable_thinking", False)},
                 "cache_prompt": True,
                 "tools": _session_tools,
                 "tool_choice": "auto",
