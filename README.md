@@ -234,6 +234,19 @@ Inference parameters forwarded to the LLM on every request.
 | `top_k` | `20` | Top-K sampling. |
 | `min_p` | `0.0` | Min-P sampling (0 = disabled). |
 | `presence_penalty` | `0.0` | Penalise tokens already present in context. |
+| `enable_thinking` | `false` | Whether the **main loop** may emit thinking. Default `false`: the design is no-thinking-in-main plus the opt-in [`think` tool](#think), so the model reasons hard only when it chooses to. Set `true` to let the main model think on every turn (bounded by `max_tokens`; the `think` tool stays available either way). On tasks a capable model handles, `true` is measurably slower (~2–6×) for no accuracy gain — reach for it on genuinely hard tasks, not as a default. Requires a thinking-capable model/server (e.g. Qwen3 with `llama-server --reasoning`). |
+
+### `think`
+
+Budgets for the opt-in `think` tool — a separate deep-reasoning call the model can invoke on demand. Independent of `generation.enable_thinking` above: the tool is always available regardless of that flag.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `depths.brief` | `2048` | `max_tokens` for a `brief` think — the default depth, sufficient for most decisions. |
+| `depths.normal` | `4096` | `max_tokens` for a `normal` think — complex multi-step reasoning. |
+| `depths.deep` | `16384` | `max_tokens` for a `deep` think — rarely needed. |
+
+The three preset **names** (`brief`/`normal`/`deep`) are fixed; only their token values are tunable — a fast small model may want smaller ceilings, a slow reasoning model larger. A malformed or non-positive override for any preset is ignored, keeping that preset's built-in default (a bad config can never zero out a budget).
 
 ### `context`
 
@@ -381,7 +394,8 @@ Guards fire after the built-in hallucination guards (`/home/user`, `python`→`p
     "main":    { "kind": "llamacpp", "base_url": "http://127.0.0.1:8080" },
     "summary": { "kind": "llamacpp", "base_url": "http://127.0.0.1:8082", "enabled": true }
   },
-  "generation": { "temperature": 0.8 },
+  "generation": { "temperature": 0.8, "enable_thinking": false },
+  "think":      { "depths": { "brief": 2048, "normal": 4096, "deep": 16384 } },
   "context":    { "ctx_size": 32768 },
   "cycle":      { "max_turns": 50 },
   "preferences": {
