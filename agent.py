@@ -5476,6 +5476,19 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         continue  # skip usage/stats chunks
                     delta = choices[0].get("delta", {})
 
+                    # Thinking deltas (reasoning_content — e.g. Qwen3 on
+                    # llama-server --reasoning, or any enable_thinking stream)
+                    # are the model ACTIVELY generating, not a stall. Credit
+                    # them as activity so the zero-deltas stall guard above does
+                    # not abort a legitimate thinking phase before the first
+                    # answer token arrives. (Measured 2026-08-18: with
+                    # enable_thinking on, a >60s think emitted only
+                    # reasoning_content, tripped the guard, and aborted the turn
+                    # with no output.) Not rendered here — thinking stays out of
+                    # the visible answer stream by default; it only counts.
+                    if delta.get("reasoning_content"):
+                        _deltas_received += 1
+
                     if delta.get("content"):
                         if not printed_header:
                             status.first_token()   # prints the deferred header
