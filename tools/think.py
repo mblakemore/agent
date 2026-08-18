@@ -16,11 +16,20 @@ from spinner import StreamStatus
 # callers (tests, scripts) get the plain print() default automatically.
 _output = print  # type: ignore[assignment]
 
-DEPTH_MAX_TOKENS = {
+# Default per-depth token budgets. The three preset NAMES (brief/normal/deep)
+# are fixed; only their token VALUES are tunable, via
+#   .agent/config.json -> {"think": {"depths": {"brief": N, "normal": N, "deep": N}}}
+# resolved at call time by _depth_budgets(). A fast small model may want smaller
+# ceilings; a slow reasoning model larger — without editing this file.
+_DEFAULT_DEPTH_MAX_TOKENS = {
     "brief": 2048,   # ~30-60s — default, sufficient for most decisions
     "normal": 4096,  # ~120-180s — use sparingly, only for complex multi-step reasoning
     "deep": 16384,   # ~5-10 min — very rarely needed; prefer brief or normal
 }
+# Back-compat alias: some callers/tests referenced the constant directly. It
+# holds the DEFAULTS; live budgets (with config overrides) come from
+# _depth_budgets().
+DEPTH_MAX_TOKENS = _DEFAULT_DEPTH_MAX_TOKENS
 
 # Per-session call counter. Injected into fn() results when overuse is detected.
 _session_call_count = 0
@@ -30,17 +39,41 @@ _OVERUSE_THRESHOLD = 2  # warn after this many calls
 _THINK_RE = re.compile(r'<\|channel>thought\n(.*?)<channel\|>', re.DOTALL)
 
 
+def _load_agent_config():
+    """Load the agent config the SAME way agent.py does: prefer
+    .agent/config.json, fall back to legacy config.json in cwd. Returns {} on
+    any problem — a tool must never crash on a missing/broken config.
+    (Previously this only read config.json, missing the .agent/config.json the
+    agent actually prefers — so per-config think budgets never took effect.)"""
+    for name in (os.path.join(".agent", "config.json"), "config.json"):
+        try:
+            p = os.path.join(os.getcwd(), name)
+            if os.path.exists(p):
+                with open(p, encoding="utf-8", errors="replace") as f:
+                    return json.load(f)
+        except Exception:
+            continue
+    return {}
+
+
 def _get_base_url():
-    """Read base_url from config.json if available, otherwise default."""
-    try:
-        config_path = os.path.join(os.getcwd(), "config.json")
-        if os.path.exists(config_path):
-            with open(config_path, encoding="utf-8", errors="replace") as f:
-                cfg = json.load(f)
-            return cfg.get("llm", {}).get("base_url", "http://127.0.0.1:8080")
-    except Exception:
-        pass
-    return "http://127.0.0.1:8080"
+    """Read base_url from the agent config if available, otherwise default."""
+    return _load_agent_config().get("llm", {}).get("base_url", "http://127.0.0.1:8080")
+
+
+def _depth_budgets():
+    """The three depth->max_tokens presets, values overridable via
+    config {"think": {"depths": {...}}}. Preset names are fixed; only values
+    tune. A malformed or non-positive override for a preset is IGNORED (that
+    preset keeps its default) so a bad config can never zero out a budget."""
+    budgets = dict(_DEFAULT_DEPTH_MAX_TOKENS)
+    overrides = _load_agent_config().get("think", {}).get("depths", {})
+    if isinstance(overrides, dict):
+        for name in budgets:                       # only the three known presets
+            v = overrides.get(name)
+            if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+                budgets[name] = v
+    return budgets
 
 
 _MAX_N_SAMPLES = 5
@@ -164,8 +197,9 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
         depth = "brief"
     if not isinstance(depth, str):
         return f"Error: depth must be a string, got {type(depth).__name__!r}"
-    if depth not in DEPTH_MAX_TOKENS:
-        valid = ", ".join(DEPTH_MAX_TOKENS)
+    _budgets = _depth_budgets()
+    if depth not in _budgets:
+        valid = ", ".join(_budgets)
         return f"Error: invalid depth {depth!r}. Use one of: {valid}."
     if isinstance(n_samples, bool):
         return "Error: n_samples must be a plain integer, got 'bool'"
@@ -178,7 +212,7 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
         return f"Error: n_samples must be in 1..{_MAX_N_SAMPLES}, got {n_samples}"
 
     log = logging.getLogger("agent")
-    max_tokens = DEPTH_MAX_TOKENS[depth]
+    max_tokens = _budgets[depth]
     base_url = _get_base_url()
 
     # <|think|> triggers Gemma 4 thinking; harmless no-op on Qwen3 (server --reasoning handles it)

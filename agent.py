@@ -468,6 +468,14 @@ _DEFAULT_CONFIG = {
         "min_p": 0.0,
         "presence_penalty": 0.0,
     },
+    # `think` tool depth->max_tokens budgets. Preset names are fixed
+    # (brief/normal/deep); values are tunable per deployment (a fast small model
+    # may want smaller ceilings, a slow reasoning model larger). Consumed by
+    # tools/think.py::_depth_budgets(); a bad/non-positive value falls back to
+    # the tool's built-in default for that preset.
+    "think": {
+        "depths": {"brief": 2048, "normal": 4096, "deep": 16384},
+    },
     "summary": {
         "base_url": "http://127.0.0.1:8082",
         "model": "gemma-4-E4B",
