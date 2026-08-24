@@ -38,10 +38,10 @@ def _plain(text: str) -> str:
 def _count_entries(plain_text: str) -> int:
     """Count the enumerated entry lines in `render_tools` output.
 
-    Each entry starts with two spaces, a ✓/✗ marker, a space, then
+    Each entry starts with two spaces, a ●/✗ marker, a space, then
     "<index>. <name>(…)". We count by the "<index>. " prefix.
     """
-    return len(re.findall(r"^  [✓✗] (\d+)\. ", plain_text, flags=re.MULTILINE))
+    return len(re.findall(r"^  [●✗] (\d+)\. ", plain_text, flags=re.MULTILINE))
 
 
 def _populate(cb: callbacks.TerminalCallbacks, n: int) -> None:

@@ -144,7 +144,7 @@ class TestTerminalCallbacks(unittest.TestCase):
         self.assertIn("Executing 2 tool calls", self.get_output())
         
         cb.on_tool_start("read_file", {"path": "test.txt"})
-        self.assertIn("-> read_file(path='test.txt')", self.get_output())
+        self.assertIn("→ read_file(path='test.txt')", self.get_output())
         
         # Test result truncation
         long_result = "A" * 1000

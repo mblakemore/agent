@@ -227,13 +227,13 @@ class TerminalCallbacks(NullCallbacks):
             _sys.stdout.write(theme.cursor_up_clear(self._boot_lines_printed))
             _sys.stdout.flush()
             self._boot_lines_printed = 0
-        bar = theme.c(theme.VIOLET, "─" * 60)
+        bar = theme.c(theme.CHROME, "─" * 60)
         version = info.get("version", "")
         sha = info.get("sha", "")
         ver_suffix = f" v{version}" if version else ""
         if sha:
             ver_suffix += theme.dim(f" ({sha})")
-        title = theme.c(theme.SKY, "agent", bold=True) + ver_suffix
+        title = theme.c(theme.HEADING, "agent", bold=True) + ver_suffix
         self._print(bar)
         self._print(title)
         self._print(bar)
@@ -249,9 +249,9 @@ class TerminalCallbacks(NullCallbacks):
         kind = info.get("main_kind", "")
         tag = f"[{kind}]  " if kind else ""
         if ok:
-            main_line = theme.c(theme.MINT, f"● main   ") + f"{tag}{model}"
+            main_line = theme.c(theme.GOOD, f"● main   ") + f"{tag}{model}"
         else:
-            main_line = theme.c(theme.AMBER, f"⚠ main   ") + f"{tag}{detail}"
+            main_line = theme.c(theme.WARN, f"⚠ main   ") + f"{tag}{detail}"
         self._print(main_line)
 
         # Summary indicator (single line; silent when summary is disabled)
@@ -262,9 +262,9 @@ class TerminalCallbacks(NullCallbacks):
             s_detail = info.get("summary_detail", "")
             s_tag = f"[{s_kind}]  " if s_kind else ""
             if s_ok:
-                sum_line = theme.c(theme.MINT, f"● summary") + f" {s_tag}{s_model}"
+                sum_line = theme.c(theme.GOOD, f"● summary") + f" {s_tag}{s_model}"
             else:
-                sum_line = theme.c(theme.AMBER, f"⚠ summary") + f" {s_tag}{s_detail} — falling back to main"
+                sum_line = theme.c(theme.WARN, f"⚠ summary") + f" {s_tag}{s_detail} — falling back to main"
             self._print(sum_line)
 
         # Advisor row — the consulted heavyweight tier. Only shown when
@@ -274,9 +274,9 @@ class TerminalCallbacks(NullCallbacks):
         if info.get("advisor_enabled"):
             a_detail = info.get("advisor_detail", "")
             if info.get("advisor_ok"):
-                self._print(theme.c(theme.MINT, "● advisor") + f" {a_detail}")
+                self._print(theme.c(theme.GOOD, "● advisor") + f" {a_detail}")
             else:
-                self._print(theme.c(theme.AMBER, "⚠ advisor")
+                self._print(theme.c(theme.WARN, "⚠ advisor")
                             + f" {a_detail} — consult_advisor unloaded")
         self._print("")
 
@@ -302,8 +302,8 @@ class TerminalCallbacks(NullCallbacks):
         self._print("  [no checkpoint found — starting fresh]")
 
     def on_repeat_run_start(self, label: str) -> None:
-        bar = theme.c(theme.VIOLET, "─" * 60)
-        title = theme.c(theme.SKY, label, bold=True)
+        bar = theme.c(theme.CHROME, "─" * 60)
+        title = theme.c(theme.HEADING, label, bold=True)
         self._print(f"\n{bar}\n{title}\n{bar}")
 
     def on_repeat_done(self, runs: int) -> None:
@@ -344,7 +344,7 @@ class TerminalCallbacks(NullCallbacks):
         self._print(theme.dim(f"\nExecuting {_nplural(count, 'tool call', 'tool calls')}..."))
 
     def on_tool_start(self, name: str, args: dict) -> None:
-        line = f"  -> {name}({self._compact_args(args)})"
+        line = f"  → {name}({self._compact_args(args)})"
         self._print(f"{theme.CLEAR_LINE}{self._fit_line(line)}")
 
     def on_tool_result(self, name: str, args: dict, result: str, is_error: bool) -> None:
@@ -362,7 +362,7 @@ class TerminalCallbacks(NullCallbacks):
         # and the assistant sees the full output via history. `/verbose` shows
         # everything.
         if not self.verbose and name == "exec_command" and not is_error:
-            self._print(f"    {theme.c(theme.MINT, 'OK')}")
+            self._print(f"    {theme.c(theme.GOOD, 'OK')}")
             return
 
         if self.verbose or len(result) <= self.compact_limit:
@@ -373,7 +373,7 @@ class TerminalCallbacks(NullCallbacks):
                 f"\n    … [truncated {len(result) - self.compact_limit} chars — /verbose for full]"
             )
 
-        color = theme.ROSE if is_error else None
+        color = theme.ERR if is_error else None
         text = f"    Result: {theme.c(color, display) if color else display}"
         if not self.verbose:
             # Compact mode: fit each physical line to the terminal width so a
@@ -432,16 +432,20 @@ class TerminalCallbacks(NullCallbacks):
     # -- errors / status ------------------------------------------------
 
     def on_notice(self, level: str, msg: str) -> None:
+        # Levels own presentation; callers pass PLAIN text (design system
+        # § 2.6 — pre-colored text through this channel double-styles).
         if level == "warn":
-            self._print(theme.c(theme.AMBER, f"  {msg}"))
+            self._print(theme.c(theme.WARN, f"  {msg}"))
+        elif level == "success":
+            self._print(theme.c(theme.GOOD, f"  {msg}"))
         else:
             self._note(msg)
 
     def on_error(self, msg: str) -> None:
-        self._print(theme.c(theme.ROSE, msg))
+        self._print(theme.c(theme.ERR, msg))
 
     def on_cancelled(self, where: str) -> None:
-        self._print(theme.c(theme.AMBER, f"\n[cancelled — {where}]"))
+        self._print(theme.c(theme.WARN, f"\n[cancelled — {where}]"))
 
     # -- /tools viewer --------------------------------------------------
 
@@ -456,9 +460,9 @@ class TerminalCallbacks(NullCallbacks):
             shown = min(limit, total)
             tail = list(self.tool_history)[-limit:]
             header = f"Last {shown} of {_nplural(total, 'tool call', 'tool calls')}:"
-        lines = [theme.c(theme.SKY, header)]
+        lines = [theme.c(theme.HEADING, header)]
         for i, (name, args, result, is_error) in enumerate(tail, 1):
-            marker = theme.c(theme.ROSE, "✗") if is_error else theme.c(theme.MINT, "✓")
+            marker = theme.c(theme.ERR, "✗") if is_error else theme.c(theme.GOOD, "●")
             head = result.split("\n", 1)[0][:120]
             lines.append(f"  {marker} {i}. {name}({self._compact_args(args, 40)})")
             lines.append(theme.dim(f"      → {head}"))

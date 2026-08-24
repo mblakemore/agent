@@ -20,7 +20,7 @@ Two checks guard the fix:
 2. A behavioral assertion that `TerminalCallbacks.on_tool_start` emits the
    tool header exactly once when `theme.CLEAR_LINE` is empty (i.e. the
    canonical emitter's own invariant holds). Guards against anyone
-   re-adding a redundant `print(f"  -> {name}")` into the callback itself.
+   re-adding a redundant `print(f"  → {name}")` into the callback itself.
 """
 
 import io
@@ -85,9 +85,9 @@ class TestSpinnerNonTtyDedup(unittest.TestCase):
         finally:
             theme.CLEAR_LINE = saved_clear
 
-        # The canonical header "-> exec_command(" must appear exactly once.
+        # The canonical header "→ exec_command(" must appear exactly once.
         self.assertEqual(
-            captured.count("-> exec_command("),
+            captured.count("→ exec_command("),
             1,
             f"on_tool_start must emit the tool header exactly once under "
             f"NO_COLOR — captured output:\n{captured!r}",

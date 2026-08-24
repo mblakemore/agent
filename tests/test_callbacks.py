@@ -570,10 +570,12 @@ class TestSessionStartBanner(unittest.TestCase):
         import inspect
         return inspect.getsource(callbacks.TerminalCallbacks.on_session_start)
 
-    def test_title_uses_sky_color(self):
-        """Title should use theme.SKY for contrast against the VIOLET chrome bars."""
-        self.assertIn("theme.SKY", self._src(),
-                      "on_session_start title must use theme.SKY (not theme.VIOLET)")
+    def test_title_uses_heading_token(self):
+        """Title uses the HEADING token (== SKY) for contrast against the
+        CHROME (== VIOLET) bars — semantic names since design-system step 3;
+        the alias mapping itself is locked by test_theme_coverage."""
+        self.assertIn("theme.HEADING", self._src(),
+                      "on_session_start title must use theme.HEADING (not theme.CHROME)")
 
     def test_bar_uses_box_drawing_char(self):
         """Horizontal bars should use U+2500 ─ rather than plain ASCII = characters."""
@@ -600,10 +602,10 @@ class TestRepeatRunStartBanner(unittest.TestCase):
         self.assertIn("─", self._src(),
                       "on_repeat_run_start bars must use ─ (U+2500), not = ")
 
-    def test_repeat_run_start_uses_sky_color(self):
-        """The run label should be rendered in SKY color for visual hierarchy."""
-        self.assertIn("theme.SKY", self._src(),
-                      "on_repeat_run_start must apply theme.SKY to the label")
+    def test_repeat_run_start_uses_heading_token(self):
+        """The run label renders in the HEADING token for visual hierarchy."""
+        self.assertIn("theme.HEADING", self._src(),
+                      "on_repeat_run_start must apply theme.HEADING to the label")
 
 
 if __name__ == "__main__":
