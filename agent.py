@@ -2729,6 +2729,66 @@ def _check_memory_watermark(log):
     return "ok"
 
 
+_SPILL_DIR = os.path.join(".agent", "spill")
+_SPILL_MARKER = "[tool output spilled to file: "
+_SPILL_THRESHOLD = int(os.environ.get("AGENT_CTX_SPILL_THRESHOLD", "4000"))
+_SPILL_MIN_THRESHOLD = 1000   # successive spill passes halve toward this floor
+_SPILL_PREVIEW = 200          # chars of head and tail kept inline for orientation
+
+
+def _spill_oversized_tool_results(conversation_history, log, threshold):
+    """Context-overflow recovery, stage 1 (before message trimming): move bulk tool-result
+    payloads out of the conversation and into files, leaving a reference + short preview.
+
+    WHY (job#208, 2026-08-24, ship-computer board#209): a research worker died on
+    'context overflow: still failing after 10 reductions' against a 196k-token window —
+    the window wasn't small, the MESSAGES were huge: raw price histories echoed into
+    role:'tool' contents. Trimming whole messages loses recent work; the payload the
+    model usually needs is 'that data exists at this path', not the bytes themselves.
+    Spilled files land under .agent/spill/ IN CWD, so the (cwd-jailed) file tool can
+    re-read any spilled payload on demand.
+
+    Only role:'tool' string contents above `threshold` chars are touched; already-spilled
+    messages (marker prefix) are skipped, so the pass is idempotent. Returns the number
+    of messages spilled; 0 means nothing left to spill at this threshold and the caller
+    should fall through to message trimming.
+    """
+    spilled = 0
+    for idx, m in enumerate(conversation_history):
+        if m.get("role") != "tool":
+            continue
+        content = m.get("content")
+        if not isinstance(content, str) or len(content) <= threshold:
+            continue
+        if content.startswith(_SPILL_MARKER):
+            continue
+        try:
+            os.makedirs(_SPILL_DIR, exist_ok=True)
+            fname = f"{idx:04d}-{m.get('name', 'tool')}-{int(time.time())}.txt"
+            fpath = os.path.join(_SPILL_DIR, fname)
+            with open(fpath, "w", encoding="utf-8", errors="replace") as f:
+                f.write(content)
+        except OSError as e:
+            # A failed spill must not eat the content — leave the message intact and
+            # let the trimming fallback handle pressure the old way.
+            log.warning("Context spill: could not write %s (%s) — leaving message inline",
+                        m.get("name", "tool"), e)
+            continue
+        head = content[:_SPILL_PREVIEW]
+        tail = content[-_SPILL_PREVIEW:]
+        m["content"] = (
+            f"{_SPILL_MARKER}{fpath}]\n"
+            f"[{len(content)} chars of '{m.get('name', 'tool')}' output moved out of context "
+            f"to keep the conversation inside the window. Read the file if you need the "
+            f"data again — do NOT re-run the tool just to re-see it.]\n"
+            f"[first {_SPILL_PREVIEW} chars]: {head}\n"
+            f"[last {_SPILL_PREVIEW} chars]: {tail}")
+        spilled += 1
+        log.warning("Context spill: %d chars of tool '%s' (msg %d) -> %s",
+                    len(content), m.get("name", "tool"), idx, fpath)
+    return spilled
+
+
 def _build_context(conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                     max_messages_override=None):
     """Build the context window dynamically based on token budget.
@@ -5086,6 +5146,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         # Build context window, with overflow reduction loop
         _ctx_max_messages = None  # None = use default _MAX_CONTEXT_MESSAGES
         _CTX_REDUCE_MAX = 10     # max number of message-reduction attempts
+        _ctx_spill_passes = 0    # board#209: spill-to-file passes taken this turn (stage 1)
         _gateway_timeout_recovered = False
 
         for _ctx_attempt in range(_CTX_REDUCE_MAX + 1):
@@ -5284,6 +5345,24 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     log.error("Context overflow: still failing after %d reductions", _CTX_REDUCE_MAX)
                     _emit("on_error", "Error: context overflow — could not fit in server context window")
                     return "error"
+                # STAGE 1 (board#209, job#208 root cause): before dropping any message,
+                # SPILL oversized tool-result payloads to files and retry — trimming whole
+                # messages loses recent work when the real bloat is raw data echoed into
+                # tool contents. Threshold halves on each successive spill pass (down to a
+                # floor) so repeated overflows bite progressively smaller payloads. Only
+                # when a pass finds NOTHING left to spill does stage 2 (trimming) run.
+                _spill_thr = max(_SPILL_MIN_THRESHOLD, _SPILL_THRESHOLD >> _ctx_spill_passes)
+                _n_spilled = _spill_oversized_tool_results(conversation_history, log, _spill_thr)
+                if _n_spilled:
+                    _ctx_spill_passes += 1
+                    log.warning(
+                        "Context overflow (attempt %d/%d): spilled %d bulk tool result(s) "
+                        "to %s at threshold %d chars — retrying WITHOUT dropping messages",
+                        _ctx_attempt + 1, _CTX_REDUCE_MAX, _n_spilled, _SPILL_DIR, _spill_thr)
+                    _emit("on_notice", "info",
+                          f"[Context overflow — moved {_n_spilled} bulk tool output(s) to "
+                          f"{_SPILL_DIR}/ and left references; retrying]")
+                    continue
                 current_count = len(messages_to_send)
                 if current_count <= 2:
                     # Already at minimum messages — aggressively truncate the summary
