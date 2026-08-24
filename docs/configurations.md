@@ -66,16 +66,21 @@ loop and calls `consult_advisor` when it is stuck.
   "advisor": {
     "base_url":           "http://127.0.0.1:8000",
     "model":              "GLM-5.2",
-    "max_calls_per_task": 3,
-    "timeout_s":          900
+    "max_calls_per_task": 3
   }
 }
 ```
 
 Two knobs matter most here: `max_calls_per_task` (default `3`) caps consultations so a stuck loop
-cannot spend the whole session waiting, and `timeout_s` (default `900`) bounds each one — on expiry
-the agent is told to proceed without the advice rather than stalling. The full key reference lives
-with the other config blocks in the [overview](../README.md#advisor).
+cannot spend the whole session waiting, and `timeout_s`, which bounds each consultation — on expiry
+the agent is told to proceed without the advice rather than stalling. Leave `timeout_s` unset and it
+is **derived** from the configured budgets (`prefill_token_budget`, default `1200`; `max_tokens`,
+default `512`) and the endpoint's measured speed, so a full answer actually fits inside it — a fixed
+timeout smaller than the time the budgets themselves imply just guarantees empty answers. Run
+**`/setup calibrate`** (or `/setup advisor`) to measure the advisor's real prefill/decode rates into
+`advisor.measured` and write the derived timeout explicitly; uncalibrated setups fall back to
+deliberately conservative rates. The full key reference lives with the other config blocks in the
+[overview](../README.md#advisor).
 
 The advisor **distills before it asks**: your context is compressed on the fast summary model down to
 `prefill_token_budget` before the slow model sees it, because prefill dominates at these speeds. And

@@ -110,10 +110,10 @@ def _cmd_model(ctx: SimpleNamespace, args: str) -> None:
         return
 
     ctx.set_model(role, new_model)
-    safe_cb(ctx.cb, "on_notice", "info",
-            theme.c(theme.MINT,
-                    f"{role} model set to {new_model} "
-                    f"(persisted to ./.agent/config.json)"))
+    # Plain text — the success level owns the (mint) presentation.
+    safe_cb(ctx.cb, "on_notice", "success",
+            f"{role} model set to {new_model} "
+            f"(persisted to ./.agent/config.json)")
     ctx.log.info("Model changed via /model %s: %s", role, new_model)
 
 
@@ -249,9 +249,13 @@ def _borrow_input(prompt: str = "") -> str:
 def _cmd_setup(ctx: SimpleNamespace, args: str) -> None:
     """Configure roles/endpoints and calibrate from live probes.
 
-    Forms: `/setup` (full wizard) · `/setup main|summary` (one role) ·
-    `/setup test` (probe only, change nothing) · `/setup calibrate`
-    (re-derive context knobs from a fresh probe of the main endpoint).
+    Forms: `/setup` (full wizard) · `/setup main|summary|advisor` (one role;
+    the advisor screen also measures the endpoint's speed and derives its
+    prefill budget + timeout) · `/setup test` (probe only, change nothing) ·
+    `/setup calibrate` (re-derive context knobs from a fresh probe of the
+    main endpoint, and — when an advisor is configured — measure its
+    prefill/decode rates and derive a consult timeout that a full answer
+    actually fits inside).
     Runs inside the terminal borrow like /model, so plain input() is safe.
     """
     import setup_wizard as W
@@ -279,9 +283,8 @@ def _cmd_setup(ctx: SimpleNamespace, args: str) -> None:
     apply_fn = getattr(ctx, "apply_setup", None)
     if apply_fn is not None:
         applied = apply_fn(updates)
-        safe_cb(ctx.cb, "on_notice", "info",
-                theme.c(theme.MINT,
-                        f"setup applied live ({applied}) and persisted to {cfg_path}"))
+        safe_cb(ctx.cb, "on_notice", "success",
+                f"setup applied live ({applied}) and persisted to {cfg_path}")
     else:
         safe_cb(ctx.cb, "on_notice", "info",
                 f"setup persisted to {cfg_path} — restart to apply")

@@ -29,10 +29,18 @@ Config (config.json, new third role alongside llm/summary — see the spike md):
       "enabled": true,
       "base_url": "http://127.0.0.1:8000",   # colibri `glm serve`
       "model": "glm-5.2",
-      "prefill_token_budget": 1500,           # brief handed to GLM, hard ceiling
+      "prefill_token_budget": 1200,           # brief handed to GLM, hard ceiling
       "max_tokens": 512,                      # GLM's answer, capped
       "max_calls_per_task": 3,                # latency-budget guard
-      "timeout_s": 900                        # ~15min: real worst case, see md
+      "timeout_s": null,                      # null/absent = DERIVED from the
+                                              # budgets + measured speeds (see
+                                              # derive_timeout_s); /setup
+                                              # calibrate writes "measured"
+      "measured": {                           # written by /setup calibrate
+        "prefill_pos_per_s": 3.1,
+        "decode_tok_per_s": 0.9,
+        "probed_at": "2026-08-24T00:00:00Z"
+      }
     }
 """
 
@@ -53,11 +61,54 @@ _DEFAULTS = {
     "enabled": False,          # off unless explicitly configured
     "base_url": "http://127.0.0.1:8000",
     "model": "glm-5.2",
-    "prefill_token_budget": 1500,
+    "prefill_token_budget": 1200,
     "max_tokens": 512,
     "max_calls_per_task": 3,
-    "timeout_s": 900,
+    # None = DERIVED from measured (or fallback) speeds via derive_timeout_s.
+    # The old fixed 900 was internally inconsistent: at the advisor's own
+    # documented physics (~3 pos/s prefill, ~0.9 tok/s decode) the default
+    # budgets need ~18 min — the timeout guaranteed empty answers (measured
+    # live 2026-08-24: a 600 s consult timed out; the full answer took 2533 s).
+    "timeout_s": None,
 }
+
+# Prompt overhead the budget doesn't cover: system prompt + the caller's
+# question ride alongside the distilled brief in the prefill.
+_PREFILL_OVERHEAD_TOKENS = 400
+# Fallback speeds when the advisor has never been calibrated — deliberately
+# CONSERVATIVE (slower than the docstring's nominal 3 pos/s / 0.9 tok/s),
+# because an over-generous timeout costs patience while an under-generous one
+# costs the entire consult. /setup calibrate (or /setup advisor) measures the
+# real rates into config["advisor"]["measured"] and tightens this.
+_FALLBACK_PREFILL_POS_PER_S = 2.5
+_FALLBACK_DECODE_TOK_PER_S = 0.25
+_TIMEOUT_MARGIN = 1.5          # measured rates vary with load; pad the derive
+_TIMEOUT_FLOOR_S = 300
+
+
+def derive_timeout_s(adv_cfg: dict) -> int:
+    """Timeout consistent with the configured budgets and measured speeds.
+
+    An explicit ``timeout_s`` in the config always wins. Otherwise:
+    ``margin * (prefill_tokens / prefill_rate + max_tokens / decode_rate) + 120``
+    using ``adv_cfg["measured"]`` rates when present (written by
+    ``/setup calibrate``), else the conservative fallbacks above.
+    Shared with setup_wizard so the wizard writes the same number this tool
+    would derive.
+    """
+    explicit = adv_cfg.get("timeout_s")
+    if explicit:
+        return int(explicit)
+    measured = adv_cfg.get("measured") or {}
+    pp = float(measured.get("prefill_pos_per_s") or _FALLBACK_PREFILL_POS_PER_S)
+    dec = float(measured.get("decode_tok_per_s") or _FALLBACK_DECODE_TOK_PER_S)
+    prefill = int(adv_cfg.get("prefill_token_budget",
+                              _DEFAULTS["prefill_token_budget"]))
+    out = int(adv_cfg.get("max_tokens", _DEFAULTS["max_tokens"]))
+    total = _TIMEOUT_MARGIN * (
+        (prefill + _PREFILL_OVERHEAD_TOKENS) / max(pp, 0.1)
+        + out / max(dec, 0.01)) + 120
+    return max(_TIMEOUT_FLOOR_S, int(total))
 
 _ADVISOR_SYSTEM = (
     "You are a slow but powerful advisor (a 744B model) consulted by a fast "
@@ -135,6 +186,22 @@ def _read_role(role: str) -> dict:
 def _chat(role_cfg: dict, messages: list, max_tokens: int, temperature: float,
           timeout_s: int) -> str:
     """One OpenAI-compatible /v1/chat/completions call. Raises on failure."""
+    content, _reasoning, _finish = _chat_full(role_cfg, messages, max_tokens,
+                                              temperature, timeout_s)
+    return content
+
+
+def _chat_full(role_cfg: dict, messages: list, max_tokens: int,
+               temperature: float, timeout_s: int) -> tuple:
+    """Like _chat but returns ``(content, reasoning_content, finish_reason)``.
+
+    Reasoning models (Qwen-class on llama-server) emit their thinking as
+    ``reasoning_content`` BEFORE any ``content`` — a hard question can spend
+    the whole ``max_tokens`` budget reasoning and finish with empty content,
+    which naive content-only reads misreport as "empty answer" (measured live
+    2026-08-24: two GPU-advisor consults, both empty). Callers that care
+    inspect the extra fields to retry or salvage.
+    """
     body = {
         "model": role_cfg.get("model", ""),
         "messages": messages,
@@ -142,6 +209,12 @@ def _chat(role_cfg: dict, messages: list, max_tokens: int, temperature: float,
         "temperature": temperature,
         "stream": False,
     }
+    # Endpoint-specific request extras, verbatim from config — e.g.
+    # {"chat_template_kwargs": {"enable_thinking": false}} to stop a
+    # Qwen-class reasoning model from spending the whole budget thinking.
+    extra = role_cfg.get("extra_body")
+    if isinstance(extra, dict):
+        body.update(extra)
     headers = {"Content-Type": "application/json"}
     key = role_cfg.get("api_key")
     if key:
@@ -152,7 +225,11 @@ def _chat(role_cfg: dict, messages: list, max_tokens: int, temperature: float,
     )
     r.raise_for_status()
     data = r.json()
-    return (data["choices"][0]["message"]["content"] or "").strip()
+    choice = data["choices"][0]
+    msg = choice.get("message") or {}
+    return ((msg.get("content") or "").strip(),
+            (msg.get("reasoning_content") or "").strip(),
+            choice.get("finish_reason") or "")
 
 
 def _distill(question: str, context: str, budget_tokens: int) -> str:
@@ -250,21 +327,48 @@ def consult_advisor(question: str, context: str = "", reason: str = "") -> str:
 
     user = question if not brief else f"BRIEF:\n{brief}\n\nQUESTION: {question}"
     _session_call_count += 1
+    msgs = [{"role": "system", "content": _ADVISOR_SYSTEM},
+            {"role": "user", "content": user}]
+    max_out = int(a.get("max_tokens", 512))
+    timeout_s = derive_timeout_s(a)
     t0 = time.time()
     try:
-        answer = _chat(
-            a,
-            [{"role": "system", "content": _ADVISOR_SYSTEM},
-             {"role": "user", "content": user}],
-            max_tokens=int(a.get("max_tokens", 512)),
-            temperature=0.3,
-            timeout_s=int(a.get("timeout_s", 900)),
-        )
+        answer, reasoning, finish = _chat_full(
+            a, msgs, max_tokens=max_out, temperature=0.3, timeout_s=timeout_s)
+        # Reasoning-model salvage: thinking ate the whole budget before any
+        # content was emitted. Retry ONCE with a doubled budget (and a timeout
+        # re-derived for it) — trivial on a GPU advisor, and the path never
+        # triggers on direct-answer models like GLM.
+        if not answer and reasoning and finish == "length":
+            # Reasoning models routinely need 3-6x their answer length to
+            # think first; a mere doubling was measured still reasoning-only
+            # (E5b, 2026-08-24). Jump straight to a budget that fits thought
+            # plus answer.
+            retry_out = min(max(max_out * 8, 4096), 8192)
+            retry_timeout = derive_timeout_s({**a, "timeout_s": None,
+                                              "max_tokens": retry_out})
+            _output(f"⏳ advisor spent all {max_out} tokens reasoning — "
+                    f"retrying once with max_tokens={retry_out}.")
+            answer, reasoning, finish = _chat_full(
+                a, msgs, max_tokens=retry_out, temperature=0.3,
+                timeout_s=retry_timeout)
+        if not answer and reasoning:
+            # Still no final answer — salvage the reasoning tail honestly
+            # rather than reporting "empty".
+            _emit_outcome("reasoning_only")
+            tail = reasoning[-1500:]
+            dt = time.time() - t0
+            return (f"[advisor hit its token cap mid-reasoning — no final "
+                    f"answer; its last reasoning follows. Treat as a partial "
+                    f"signal, not a verdict.]\n…{tail}\n\n---\n"
+                    f"[advisor: {dt:.0f}s, call {_session_call_count}/{cap}, "
+                    f"reason={reason or 'n/a'}, truncated-reasoning]")
     except requests.exceptions.Timeout:
         _emit_outcome("timeout")
-        return (f"[advisor timed out after {a.get('timeout_s')}s — proceed with "
+        return (f"[advisor timed out after {timeout_s}s — proceed with "
                 f"the fast model's best judgment. (Is `glm serve` up on "
-                f"{a['base_url']}?)]")
+                f"{a['base_url']}? If it is just slow, run /setup calibrate "
+                f"to measure its real speed and derive a fitting timeout.)]")
     except Exception as e:
         _emit_outcome("unreachable")
         return (f"[advisor unreachable ({type(e).__name__}) — proceed without "

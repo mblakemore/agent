@@ -967,6 +967,147 @@ def _role_screen(role, current, input_fn, print_fn, http, found=None):
     return section, report
 
 
+def probe_advisor_speed(section, http=None, print_fn=None):
+    """Measure the advisor endpoint's real prefill/decode rates.
+
+    The advisor tier is the SLOW tier (CPU-served heavyweight; think minutes,
+    not seconds), so the generic ``probe_throughput`` — 64 tokens, 300 s cap —
+    would itself time out. This probe is sized for it: two small timed
+    completions (short prompt, then a ~600-token prompt, 24 output tokens
+    each, generous timeout). Server ``timings`` are preferred when echoed;
+    otherwise the two walls are differenced to separate prefill from decode.
+
+    Returns ``(measured_dict_or_None, notes_list)``. ``measured`` carries
+    ``prefill_pos_per_s``, ``decode_tok_per_s``, ``probed_at``, ``detail``.
+    Never raises.
+    """
+    import time as _time
+    http = http or _default_http
+    print_fn = print_fn or (lambda *_: None)
+    base = (section.get("base_url") or "").rstrip("/")
+    hdrs = _auth_headers(section.get("api_key"))
+
+    def _one(prompt, max_tokens):
+        req = {"messages": [{"role": "user", "content": prompt}],
+               "max_tokens": max_tokens, "temperature": 0.0}
+        if section.get("model"):
+            req["model"] = section["model"]
+        extra = section.get("extra_body")
+        if isinstance(extra, dict):
+            req.update(extra)
+        t0 = _time.monotonic()
+        status, body = http(f"{base}/v1/chat/completions", data=req,
+                            headers=hdrs, timeout=1800)
+        wall = _time.monotonic() - t0
+        if status != 200 or not isinstance(body, dict):
+            return None
+        usage = body.get("usage") or {}
+        msg = ((body.get("choices") or [{}])[0].get("message") or {})
+        return {"wall": wall,
+                "prompt": int(usage.get("prompt_tokens") or 0),
+                "out": int(usage.get("completion_tokens") or max_tokens),
+                "timings": body.get("timings") or {},
+                "reasoning": bool(msg.get("reasoning_content"))}
+
+    ask = "Reply with the single word: ready."
+    filler = " The quick brown fox jumps over the lazy dog." * 60  # ~560 tok
+    print_fn("   measuring advisor speed — probe 1/2 (short; may take a "
+             "minute or two)…")
+    a = _one(ask, 24)
+    if a is None:
+        return None, ["advisor speed probe failed (endpoint error) — "
+                      "keeping conservative fallback rates"]
+    reasoning_notes = []
+    if a.get("reasoning") and not (section.get("extra_body") or {}) \
+            .get("chat_template_kwargs"):
+        reasoning_notes.append(
+            'advisor is a REASONING model (emits reasoning_content) — on hard '
+            'questions its thinking can consume the whole max_tokens budget '
+            'and return no answer (a one-shot larger retry is built in, but '
+            'the reliable fix is config): consider advisor.extra_body = '
+            '{"chat_template_kwargs": {"enable_thinking": false}} '
+            '(llama-server) for decisive, budget-respecting answers')
+    # Server-side timings settle it in one probe.
+    t = a["timings"]
+    if t.get("prompt_per_second") and t.get("predicted_per_second"):
+        measured = {"prefill_pos_per_s": round(float(t["prompt_per_second"]), 2),
+                    "decode_tok_per_s": round(float(t["predicted_per_second"]), 3),
+                    "probed_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                _time.gmtime()),
+                    "detail": "server timings"}
+        return measured, [f"advisor speed (server timings): "
+                          f"{measured['prefill_pos_per_s']} pos/s prefill · "
+                          f"{measured['decode_tok_per_s']} tok/s decode"] \
+            + reasoning_notes
+    print_fn(f"   probe 1 done ({a['wall']:.0f}s) — probe 2/2 (long prompt; "
+             "may take several minutes)…")
+    b = _one(ask + filler, 24)
+    if b is None or b["prompt"] <= a["prompt"] or b["wall"] <= a["wall"]:
+        # Can't difference — attribute probe 1 entirely to decode (conservative).
+        dec = round(a["out"] / max(a["wall"], 1e-3), 3)
+        measured = {"prefill_pos_per_s": None, "decode_tok_per_s": dec,
+                    "probed_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                _time.gmtime()),
+                    "detail": "single wall-clock probe (prefill unmeasured)"}
+        return measured, [f"advisor decode ≈ {dec} tok/s (wall clock; prefill "
+                          "UNMEASURED — fallback rate kept for it)"] \
+            + reasoning_notes
+    pp = round((b["prompt"] - a["prompt"]) / (b["wall"] - a["wall"]), 2)
+    # Attribute probe 1's wall minus its own prefill to decode + fixed overhead;
+    # folding overhead into decode is conservative in the safe direction.
+    dec_wall = max(a["wall"] - (a["prompt"] / max(pp, 0.1)), 1e-3)
+    dec = round(a["out"] / dec_wall, 3)
+    measured = {"prefill_pos_per_s": pp, "decode_tok_per_s": dec,
+                "probed_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                "detail": (f"two-probe wall clock "
+                           f"({a['wall']:.0f}s / {b['wall']:.0f}s)")}
+    return measured, [f"advisor speed (two-probe): {pp} pos/s prefill · "
+                      f"{dec} tok/s decode"] + reasoning_notes
+
+
+def calibrate_advisor(user_adv_cfg, measured):
+    """Derive the advisor's context/timeout knobs from measured speeds.
+
+    Mirrors ``calibrate()``'s contract: user-set values are never overridden
+    (only absent knobs are filled with defaults), and the derived
+    ``timeout_s`` comes from the same ``derive_timeout_s`` the tool itself
+    uses at call time — the wizard writes the number the tool would derive,
+    so config stays explicit and inspectable.
+
+    Returns ``(updates, notes)`` where ``updates`` is the advisor-section
+    delta (measured rates + derived timeout + any filled defaults).
+    """
+    try:
+        from tools.consult_advisor import derive_timeout_s, _DEFAULTS as _ADV_D
+    except Exception:  # tool not importable (moved/renamed) — no derivation
+        return {}, ["consult_advisor not importable — advisor calibration "
+                    "skipped"]
+    updates, notes = {}, []
+    if measured:
+        updates["measured"] = {k: v for k, v in measured.items()
+                               if v is not None}
+    merged = dict(user_adv_cfg or {})
+    for key in ("prefill_token_budget", "max_tokens"):
+        if key not in merged:
+            merged[key] = _ADV_D[key]
+            updates[key] = _ADV_D[key]
+            notes.append(f"advisor {key} = {_ADV_D[key]} (default, now "
+                         "explicit)")
+    merged.update(updates)
+    if not (user_adv_cfg or {}).get("timeout_s"):
+        merged.pop("timeout_s", None)
+        derived = derive_timeout_s(merged)
+        updates["timeout_s"] = derived
+        notes.append(f"advisor timeout_s = {derived} "
+                     f"({derived / 60:.0f} min — derived from budgets + "
+                     f"{'measured' if measured else 'fallback'} speeds; a full "
+                     "consult now fits inside it)")
+    else:
+        notes.append(f"advisor timeout_s = {user_adv_cfg['timeout_s']} "
+                     "(user-set — kept)")
+    return updates, notes
+
+
 def _advisor_screen(current, input_fn, print_fn, http, found=None):
     """Advisor endpoint (the escalation-tier tool agent.py probes at boot).
 
@@ -1006,6 +1147,23 @@ def _advisor_screen(current, input_fn, print_fn, http, found=None):
         section["api_key"] = api_key
     if report["p1_reach"]["status"] == OK:
         section["enabled"] = True
+        resolved = report.get("p3_model", {}).get("value")
+        if resolved:
+            section["model"] = resolved
+        cal = _ask("measure advisor speed and derive its context budget + "
+                   "timeout now? (y/n; two slow probes, minutes on a CPU "
+                   "advisor)", "y", input_fn)
+        if cal.lower().startswith("y"):
+            measured, notes = probe_advisor_speed(section, http=http,
+                                                  print_fn=print_fn)
+            merged_user = {**(current or {}), **section}
+            adv_updates, cal_notes = calibrate_advisor(merged_user, measured)
+            for n in notes + cal_notes:
+                print_fn(f"    {n}")
+            section.update(adv_updates)
+        else:
+            print_fn("   skipped — run /setup calibrate any time to measure "
+                     "and derive the advisor knobs")
     else:
         section["enabled"] = False
         section["disabled_reason"] = report["p1_reach"]["detail"]
@@ -1137,6 +1295,28 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
         print_fn(_section("CALIBRATION"))
         for n in notes:
             print_fn(f"    {n}")
+        # Advisor calibration (calibrate-only runs; the full run and
+        # `/setup advisor` calibrate inside the advisor screen). Same
+        # measure-then-derive as the main calibration, against the SLOW tier's
+        # own probe — the generic 64-token/300 s throughput probe would itself
+        # time out on a CPU advisor.
+        if jump_to == "calibrate":
+            adv_cfg = (updates.get("advisor")
+                       or current_cfg.get("advisor") or {})
+            adv_enabled = adv_cfg.get("enabled",
+                                      bool(adv_cfg.get("base_url")))
+            if adv_enabled and adv_cfg.get("base_url"):
+                measured, adv_notes = probe_advisor_speed(
+                    adv_cfg, http=http, print_fn=print_fn)
+                adv_updates, adv_cal_notes = calibrate_advisor(adv_cfg,
+                                                               measured)
+                for n in adv_notes + adv_cal_notes:
+                    print_fn(f"    {n}")
+                if adv_updates:
+                    cal_updates["advisor"] = {**adv_cfg, **adv_updates}
+            elif adv_cfg:
+                print_fn("    advisor: configured but disabled — speed "
+                         "calibration skipped")
         if cal_updates:
             accept = _ask("apply these derived values? (y/n)", "y", input_fn)
             if accept.lower().startswith("y"):
