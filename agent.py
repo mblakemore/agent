@@ -3680,13 +3680,23 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     # from the registry so the model never sees it in the schema — avoids
     # wasted escalation attempts against a server that isn't running.
     advisor_cfg = _config.get("advisor", {}) or {}
-    advisor_enabled = advisor_cfg.get("enabled", bool(advisor_cfg.get("base_url")))
+    # Default-ON with main fallback: advisor_active/_read_role own the rule
+    # (explicit enabled wins; else the advisor self-consults main's endpoint).
+    try:
+        from tools.consult_advisor import (advisor_active as _advisor_active,
+                                           _read_role as _advisor_read_role)
+        advisor_enabled = _advisor_active(_config)
+        _adv_eff = _advisor_read_role("advisor")
+    except Exception:
+        advisor_enabled = advisor_cfg.get("enabled",
+                                          bool(advisor_cfg.get("base_url")))
+        _adv_eff = advisor_cfg
     advisor_ok = False
     advisor_detail = "disabled"
     if advisor_enabled:
         _emit("on_boot_progress",
-              f"checking advisor backend — {advisor_cfg.get('base_url', '?')} "
-              f"{advisor_cfg.get('model') or '(served model)'}")
+              f"checking advisor backend — {_adv_eff.get('base_url', '?')} "
+              f"{_adv_eff.get('model') or '(served model)'}")
         try:
             from tools.consult_advisor import startup_check as _advisor_check
             advisor_ok, advisor_detail = _advisor_check(
@@ -4559,10 +4569,15 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         try:
             _adv_cfg = (_config.get("advisor", {})
                         if isinstance(_config, dict) else {})
-            # Enabled-by-default-if-configured: an advisor block with a base_url
-            # is ON unless "enabled": false is set explicitly. No advisor block
-            # (or no base_url) → off. Explicit "enabled" always wins.
-            _active = _adv_cfg.get("enabled", bool(_adv_cfg.get("base_url")))
+            # Default-ON with main fallback — advisor_active is the single
+            # source of truth (explicit "enabled" wins; otherwise the advisor
+            # self-consults main's endpoint, so it is on whenever main is).
+            try:
+                from tools.consult_advisor import advisor_active as _aa
+                _active = _aa(_config if isinstance(_config, dict) else {})
+            except Exception:
+                _active = _adv_cfg.get("enabled",
+                                       bool(_adv_cfg.get("base_url")))
             if not _active:
                 return ""
             # Per-CLASS once-per-cycle latch. The gate source is suggestion-only;

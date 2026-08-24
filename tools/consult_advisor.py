@@ -58,7 +58,9 @@ _output = print  # type: ignore[assignment]
 _session_call_count = 0
 
 _DEFAULTS = {
-    "enabled": False,          # off unless explicitly configured
+    # Base value only — effective enablement is advisor_active(): ON by
+    # default (self-consult on main's endpoint) unless explicitly disabled.
+    "enabled": False,
     "base_url": "http://127.0.0.1:8000",
     "model": "glm-5.2",
     "prefill_token_budget": 1200,
@@ -148,38 +150,79 @@ def _emit_outcome(kind: str) -> None:
         pass
 
 
-def _read_role(role: str) -> dict:
-    """Read a model-role block from config.json (cwd), merged over defaults.
+# The engine's own default main endpoint (agent.py zero-config behavior) —
+# the last link in the advisor/summary fall-back chain below.
+_MAIN_DEFAULT_URL = "http://127.0.0.1:8080"
 
-    ``advisor`` merges over _DEFAULTS; ``summary`` falls back to the llama.cpp
-    default endpoint. Reads .agent/config.json FIRST, then legacy ./config.json
-    — the SAME precedence as agent.py's _load_config, so the tool and the gate
-    hook agree on whether the tier is configured (a mismatch made auto-invoke
-    read "disabled" whenever config lived in .agent/, e.g. the replay + agentx).
+
+def advisor_active(cfg: dict) -> bool:
+    """Single source of truth for whether the advisor tier is ON.
+
+    An explicit ``advisor.enabled`` always wins. Otherwise the tier is ON BY
+    DEFAULT: it always has an endpoint to talk to — its own ``base_url``,
+    else MAIN's (self-consult fallback), else the engine's default main
+    endpoint. The boot probe still unloads the tool if that endpoint is
+    actually unreachable, so default-on is safe on hosts with no server.
+    Shared by the tool, agent.py's boot probe, and the gate hook so all
+    three always agree.
     """
-    cfg = {}
+    if not isinstance(cfg, dict):
+        cfg = {}
+    raw = cfg.get("advisor", {}) or {}
+    return bool(raw.get("enabled", True))
+
+
+def _load_cfg() -> dict:
+    """Read .agent/config.json FIRST, then legacy ./config.json — the SAME
+    precedence as agent.py's _load_config, so the tool and the gate hook
+    agree on configuration (a mismatch made auto-invoke read "disabled"
+    whenever config lived in .agent/, e.g. the replay + agentx)."""
     for _p in (os.path.join(os.getcwd(), ".agent", "config.json"),
                os.path.join(os.getcwd(), "config.json")):
         try:
             if os.path.exists(_p):
                 with open(_p, encoding="utf-8", errors="replace") as f:
-                    cfg = json.load(f)
-                break
+                    loaded = json.load(f)
+                return loaded if isinstance(loaded, dict) else {}
         except Exception:
-            cfg = {}
+            return {}
+    return {}
+
+
+def _read_role(role: str) -> dict:
+    """Read a model-role block from config.json (cwd), merged over defaults.
+
+    Fall-back chain (both roles): own block's endpoint → MAIN's endpoint →
+    the engine default. As long as main has an endpoint, summary distills on
+    it and the advisor consults it (self-consult) — no dead legacy defaults.
+    """
+    cfg = _load_cfg()
+    main = cfg.get("llm", {}) or {}
     if role == "advisor":
         raw = cfg.get("advisor", {}) or {}
         out = dict(_DEFAULTS)
         out.update(raw)
-        # Enabled-by-default-if-configured: a user advisor block with a base_url
-        # is ON unless "enabled": false is set explicitly (matches the gate hook
-        # in agent.py). No advisor block → stays disabled (_DEFAULTS).
-        out["enabled"] = raw.get("enabled", bool(raw.get("base_url")))
+        if not raw.get("base_url"):
+            # No advisor endpoint of its own — self-consult on main.
+            out["base_url"] = main.get("base_url") or _MAIN_DEFAULT_URL
+            if not raw.get("model"):
+                out["model"] = main.get("model", "")
+            if not raw.get("api_key") and main.get("api_key"):
+                out["api_key"] = main["api_key"]
+        out["enabled"] = advisor_active(cfg)
         return out
-    # summary role (for distillation) — reuse the fast model.
-    out = {"base_url": "http://127.0.0.1:8082", "model": "gemma-4-E4B",
-           "enabled": True, "timeout_s": 120}
-    out.update(cfg.get("summary", {}) or {})
+    # summary role (for distillation) — own block, else the main endpoint.
+    out = {"enabled": True, "timeout_s": 120}
+    s = cfg.get("summary", {}) or {}
+    if s.get("base_url") or s.get("api_url"):
+        out.update(s)
+    else:
+        out["base_url"] = main.get("base_url") or _MAIN_DEFAULT_URL
+        out["model"] = main.get("model", "")
+        if main.get("api_key"):
+            out["api_key"] = main["api_key"]
+        out.update({k: v for k, v in s.items() if k not in
+                    ("base_url", "api_url", "model", "api_key")})
     return out
 
 

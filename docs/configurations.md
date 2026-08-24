@@ -89,10 +89,15 @@ it **fails open** — any error, timeout or disabled config returns a notice and
 Serve GLM-5.2 on CPU with [colibri](https://github.com/JustVugg/colibri) (`glm serve`, port 8000 by
 convention) — see [Recommended models](models.md).
 
+**The advisor is ON by default.** With no `advisor` block it self-consults the **main** endpoint
+(a fresh context with the decisive-advisor system prompt — a different frame, not a different
+model); the same fallback applies to `summary`. Point `advisor.base_url` at a heavyweight server
+to get a genuinely different model, or set `advisor.enabled: false` to turn the tier off.
+
 **The endpoint is probed at startup.** If it is unreachable, `consult_advisor` is removed from the
 tool registry entirely, so the model never sees a tool it cannot use and never wastes turns
-escalating to a server that is not running. A missing advisor degrades the agent to setup 2; it does
-not break it.
+escalating to a server that is not running. An unreachable advisor degrades the agent to setup 2;
+it does not break it.
 
 ## Hosted backends
 

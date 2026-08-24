@@ -36,6 +36,10 @@ def _run(monkeypatch, success_check, llm_side_effects):
     monkeypatch.setitem(_agent._config, "cycle",
                         {**_agent._config["cycle"],
                          "success_check": success_check})
+    # The advisor tier is ON by default (self-consult on main) — a unit test
+    # must never reach a live endpoint, so pin it off here; the escalation
+    # wiring has its own test class with the tool properly mocked.
+    monkeypatch.setitem(_agent._config, "advisor", {"enabled": False})
     history = [{"role": "user", "content": "Do the work."}]
     with patch("agent._llm_request") as mock_llm, \
          patch("agent._check_api_health", return_value=(True, "ok")), \
@@ -164,15 +168,27 @@ class TestAdvisorEscalationWiring:
         # Suggested at most once — not on every subsequent block.
         assert hist.count("escalation available") == 1
 
-    def test_no_escalation_when_disabled_by_default(self, monkeypatch):
-        # No advisor key at all (default) → hook inert.
-        hist = self._run_adv(monkeypatch, None, [
+    def test_no_escalation_when_explicitly_disabled(self, monkeypatch):
+        # advisor.enabled: false → hook inert. (The tier is ON by default —
+        # no block means self-consult on main; see the test below.)
+        hist = self._run_adv(monkeypatch, {"enabled": False}, [
             _tool_resp("end_cycle", {"summary": "1"}, "a"),
             _tool_resp("end_cycle", {"summary": "2"}, "b"),
             _tool_resp("end_cycle", {"summary": "3"}, "c"),
             _text("ok"),
         ])
         assert "consult_advisor" not in hist
+
+    def test_gate_suggests_with_no_advisor_block(self, monkeypatch):
+        # Default-ON: with no advisor block the tier self-consults main, so
+        # the gate path suggests the tool instead of staying inert.
+        hist = self._run_adv(monkeypatch, None, [
+            _tool_resp("end_cycle", {"summary": "1"}, "a"),
+            _tool_resp("end_cycle", {"summary": "2"}, "b"),
+            _tool_resp("end_cycle", {"summary": "3"}, "c"),
+            _text("ok"),
+        ])
+        assert "consult_advisor" in hist
         # The base gate still worked — this isn't a silently-broken run.
         assert "still FAILS" in hist
 
@@ -218,8 +234,13 @@ class TestAdvisorEscalationWiring:
         assert self._ADVICE in hist                          # its advice injected
 
     def test_stall_no_invoke_when_advisor_disabled(self, monkeypatch, tmp_path):
-        hist = self._run_stall(monkeypatch, tmp_path, None)  # no advisor block
+        hist = self._run_stall(monkeypatch, tmp_path, {"enabled": False})
         assert self._ADVICE not in hist
+
+    def test_stall_invokes_with_no_advisor_block(self, monkeypatch, tmp_path):
+        # Default-ON: no advisor block → auto-invoke fires (self-consult).
+        hist = self._run_stall(monkeypatch, tmp_path, None)
+        assert self._ADVICE in hist
 
     # --- grind path (turn-budget spent, check still red — no other detector) --
     def _run_grind(self, monkeypatch, success_check, advisor_cfg):
@@ -258,8 +279,13 @@ class TestAdvisorEscalationWiring:
         assert self._ADVICE not in hist
 
     def test_grind_no_invoke_when_advisor_disabled(self, monkeypatch):
-        hist = self._run_grind(monkeypatch, "false", None)  # no advisor block
+        hist = self._run_grind(monkeypatch, "false", {"enabled": False})
         assert self._ADVICE not in hist
+
+    def test_grind_invokes_with_no_advisor_block(self, monkeypatch):
+        # Default-ON: no advisor block → grind auto-invoke fires (self-consult).
+        hist = self._run_grind(monkeypatch, "false", None)
+        assert self._ADVICE in hist
 
     def test_grind_fires_on_elapsed_time(self, monkeypatch):
         # Slow-model case: turn budget huge so the TURN trigger never hits, but
