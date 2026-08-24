@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">Configurations</p>
 <h1>Configurations</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/configurations.md"><code>docs/configurations.md</code></a> · last changed 2026-08-15 (1de4a5f)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/configurations.md"><code>docs/configurations.md</code></a> · last changed 2026-08-24 (e9dadf8)</p>
 <p><code>config.json</code> lives in the working directory you run the agent from. Every block is optional — with
 a single model on the default port you need no config file at all.</p>
 <p>Full key-by-key reference is in the <a href="index.html#configuration">overview</a>. This page is the shapes
@@ -81,24 +81,33 @@ loop and calls <code>consult_advisor</code> when it is stuck.</p>
   &quot;advisor&quot;: {
     &quot;base_url&quot;:           &quot;http://127.0.0.1:8000&quot;,
     &quot;model&quot;:              &quot;GLM-5.2&quot;,
-    &quot;max_calls_per_task&quot;: 3,
-    &quot;timeout_s&quot;:          900
+    &quot;max_calls_per_task&quot;: 3
   }
 }
 </code></pre>
 <p>Two knobs matter most here: <code>max_calls_per_task</code> (default <code>3</code>) caps consultations so a stuck loop
-cannot spend the whole session waiting, and <code>timeout_s</code> (default <code>900</code>) bounds each one — on expiry
-the agent is told to proceed without the advice rather than stalling. The full key reference lives
-with the other config blocks in the <a href="index.html#advisor">overview</a>.</p>
+cannot spend the whole session waiting, and <code>timeout_s</code>, which bounds each consultation — on expiry
+the agent is told to proceed without the advice rather than stalling. Leave <code>timeout_s</code> unset and it
+is <strong>derived</strong> from the configured budgets (<code>prefill_token_budget</code>, default <code>1200</code>; <code>max_tokens</code>,
+default <code>512</code>) and the endpoint's measured speed, so a full answer actually fits inside it — a fixed
+timeout smaller than the time the budgets themselves imply just guarantees empty answers. Run
+<strong><code>/setup calibrate</code></strong> (or <code>/setup advisor</code>) to measure the advisor's real prefill/decode rates into
+<code>advisor.measured</code> and write the derived timeout explicitly; uncalibrated setups fall back to
+deliberately conservative rates. The full key reference lives with the other config blocks in the
+<a href="index.html#advisor">overview</a>.</p>
 <p>The advisor <strong>distills before it asks</strong>: your context is compressed on the fast summary model down to
 <code>prefill_token_budget</code> before the slow model sees it, because prefill dominates at these speeds. And
 it <strong>fails open</strong> — any error, timeout or disabled config returns a notice and the loop continues.</p>
 <p>Serve GLM-5.2 on CPU with <a href="https://github.com/JustVugg/colibri">colibri</a> (<code>glm serve</code>, port 8000 by
 convention) — see <a href="models.html">Recommended models</a>.</p>
+<p><strong>The advisor is ON by default.</strong> With no <code>advisor</code> block it self-consults the <strong>main</strong> endpoint
+(a fresh context with the decisive-advisor system prompt — a different frame, not a different
+model); the same fallback applies to <code>summary</code>. Point <code>advisor.base_url</code> at a heavyweight server
+to get a genuinely different model, or set <code>advisor.enabled: false</code> to turn the tier off.</p>
 <p><strong>The endpoint is probed at startup.</strong> If it is unreachable, <code>consult_advisor</code> is removed from the
 tool registry entirely, so the model never sees a tool it cannot use and never wastes turns
-escalating to a server that is not running. A missing advisor degrades the agent to setup 2; it does
-not break it.</p>
+escalating to a server that is not running. An unreachable advisor degrades the agent to setup 2;
+it does not break it.</p>
 <h2 id="hosted-backends">Hosted backends</h2>
 <p><code>kind</code> also accepts <code>"bedrock"</code> and <code>"foundry"</code> instead of <code>"llamacpp"</code>, for a hosted endpoint
 rather than a local server. AWS Bedrock has its own guide: <a href="bedrock.html">Bedrock backend</a>.</p>

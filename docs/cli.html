@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">CLI and usage</p>
 <h1>CLI and usage</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-08-15 (1de4a5f)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-08-16 (734f1b4)</p>
 <p>Command-line arguments, the interactive TUI, slash commands and environment variables.</p>
 <pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
 </code></pre>
@@ -55,6 +55,10 @@
 <tr>
 <td><code>-r N</code>, <code>--repeat N</code></td>
 <td>Run the prompt <code>N</code> times with fresh state each run (<code>0</code> = indefinitely). Implies <code>-a</code>.</td>
+</tr>
+<tr>
+<td><code>--setup</code></td>
+<td>Run the setup wizard at startup even when a config exists (interactive TTY sessions only), then continue into the session.</td>
 </tr>
 <tr>
 <td><code>--nudge</code></td>
@@ -203,6 +207,14 @@ server-side fix is picked up automatically without a config change.</p>
 <tr>
 <td><code>/model [main\|summary] [name]</code></td>
 <td>Set the <strong>main</strong> or <strong>summary</strong> model and persist it to <code>.agent/config.json</code> (survives restart). Bare <code>/model</code> picks the main model interactively; <code>/model summary</code> targets the summary backend; append a model id (<code>/model main gpt-4o</code>) to set it directly without the picker.</td>
+</tr>
+<tr>
+<td><code>/setup [main\|summary\|advisor\|test\|calibrate]</code></td>
+<td>Configure and calibrate the model roles: intro + localhost server scan, per-role endpoint menus (llamacpp/bedrock/foundry), live probes (reach, auth, model, max-context, throughput, capabilities), probe-driven calibration with drift detection. <code>test</code> probes without changing or spending anything. Auto-launches on first run in an unconfigured folder (TTY sessions only).</td>
+</tr>
+<tr>
+<td><code>/agent</code></td>
+<td>Scaffold an autonomous-agent identity here: type (six-phase/worker/minimal) then name, an AGENT.md/CLAUDE.md generated from the live config (real model table, advisor guidance, measured context), git provisioning when the folder isn't a repo (init / GitHub via <code>gh</code> / clone-it-yourself), and a finalizing <code>C0</code> init commit.</td>
 </tr>
 <tr>
 <td><code>/alias</code></td>
