@@ -62,6 +62,7 @@ class LiveEndpointGuardError(ConnectionRefusedError, AssertionError):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "live: the test intentionally connects to a live model endpoint")
+    config.addinivalue_line("markers", "slow: spawns real agent.py subprocess runs (seconds each)")
 
 
 @pytest.fixture(autouse=True)

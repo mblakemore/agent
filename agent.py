@@ -4245,6 +4245,17 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         _adv_eff = advisor_cfg
     advisor_ok = False
     advisor_detail = "disabled"
+    if advisor_enabled and getattr(_main_backend, "kind", "") == "fake":
+        # F8b: the fake backend promises "never opens a socket" — the advisor probe is a
+        # socket. Under the fake, the advisor is unloaded without probing (review finding 2).
+        advisor_enabled = False
+        advisor_detail = "disabled (fake backend active — no probe)"
+        try:
+            from tools import remove_tool as _remove_tool_fake
+            _remove_tool_fake("consult_advisor")
+        except Exception:  # noqa: BLE001
+            pass
+        log.info("Advisor probe skipped: fake backend active")
     if advisor_enabled:
         _emit("on_boot_progress",
               f"checking advisor backend — {_adv_eff.get('base_url', '?')} "
@@ -4558,6 +4569,9 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             # F6: classify the terminal value for the supervisor; main() emits and exits with it.
             # Classified BEFORE the result file is written so the exit rides inside the JSON (F2).
             _code, _detail = _classify_auto_result(result, _LAST_ERROR_KIND, _LAST_EXIT)
+            if _code == EXIT_OK and not _last_assistant_text(conversation_history):
+                # review finding 3: a run that produced NO assistant output is not 'completed'
+                _code, _detail = EXIT_ERROR, "run produced no assistant output"
             _info = _set_exit(_code, _detail)
             if result_file:
                 _obj, _synth = _write_result_file(result_file, conversation_history, exit_info=_info)
@@ -5047,6 +5061,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
     # the turn-based grind trigger never fires. cycle.grind_elapsed_s (seconds,
     # 0=off) fires grind on elapsed wall-clock too — whichever comes first.
     _grind_t0 = time.monotonic()
+    _stream_errors = 0   # F6 (review finding 3): consecutive streaming exceptions; 3 = backend error exit
     try:
         _GRIND_ELAPSED_S = float((_config.get("cycle") or {}).get("grind_elapsed_s", 0) or 0)
     except Exception:
@@ -6403,6 +6418,13 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             log.error("Unexpected error during streaming: %s", e, exc_info=True)
             telemetry.record_error(kind=type(e).__name__)
             _emit("on_error", f"Streaming error: {e}")
+            # F6 (review finding 3): three consecutive streaming failures with nothing produced
+            # is a backend failure, not a completed run — exit 15, never 0 "completed".
+            _stream_errors += 1
+            if _stream_errors >= 3:
+                log.error("Streaming failed %d times in a row — ending the run as a backend error", _stream_errors)
+                _note_error_kind("backend")
+                return "error"
 
         renderer.flush()
         if content_parts and not receiving_tools:
@@ -6413,6 +6435,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         # override was active from a prior turn), clear the override so the
         # next turn returns to default sampling. A single stall in an
         # otherwise-healthy session shouldn't permanently degrade quality.
+        if _deltas_received > 0:
+            _stream_errors = 0   # a productive turn resets the consecutive streaming-failure count
         if _deltas_received > 0 and _stall_sampling_override is not None:
             log.info(
                 "Stall-retry succeeded: turn produced %d deltas — clearing "
@@ -8359,13 +8383,15 @@ def main():
     parser.add_argument("--seed", type=int, default=None,
                         help="Per-run sampling seed (overrides generation.seed) for reproducible "
                              "runs on backends that support it; others warn once and ignore it.")
-    parser.add_argument("--result-contract", dest="result_contract", nargs="?", const="default",
-                        default=None, metavar="SCHEMA.json",
+    parser.add_argument("--result-contract", dest="result_contract", action="store_true",
                         help="Require the final message to end with a fenced JSON result block "
                              "({\"contract\": 1, \"status\": ..., \"summary\": ...}); with --result-file "
-                             "the file receives the validated JSON only. Optional path to a JSON "
-                             "schema; default = built-in. Missing/invalid at exit → correction "
-                             "(bounded), then a synthesized failed record and exit 11.")
+                             "the file receives the validated JSON only. Missing/invalid at exit → "
+                             "correction (bounded), then a synthesized failed record and exit 11. "
+                             "Schema: built-in unless --result-schema is given.")
+    parser.add_argument("--result-schema", dest="result_schema", default=None, metavar="SCHEMA.json",
+                        help="JSON schema file for --result-contract (implies it). A separate flag on "
+                             "purpose: an optional value would swallow the positional prompt.")
     parser.add_argument("--goal", default=None,
                         help="The run's stated goal (overrides cycle.goal); injected at goal-anchor fractions (F4).")
     parser.add_argument("--deliverable", action="append", default=None, metavar="PATH_OR_GLOB",
@@ -8396,8 +8422,10 @@ def main():
         _config["cycle"]["deadline_s"] = float(args.deadline)
     # F2: --result-contract [schema] wins over cycle.result_contract. The schema is loaded HERE,
     # at launch: unreadable → refuse to start (exit 14), never run-then-surprise.
-    if getattr(args, "result_contract", None) is not None:
-        _config["cycle"]["result_contract"] = True if args.result_contract == "default" else args.result_contract
+    if getattr(args, "result_schema", None):
+        _config["cycle"]["result_contract"] = args.result_schema
+    elif getattr(args, "result_contract", False):
+        _config["cycle"]["result_contract"] = True
     # F4: --goal / --deliverable win over cycle.goal / cycle.deliverables.
     if getattr(args, "goal", None):
         _config["cycle"]["goal"] = str(args.goal)

@@ -140,7 +140,7 @@ class TestContractLoop:
 # ── launch ────────────────────────────────────────────────────────────────────
 def test_unreadable_schema_refuses_to_start_exit_14(tmp_path):
     p = subprocess.run([sys.executable, os.path.join(_REPO, "agent.py"), "-a", "--result-contract",
-                        str(tmp_path / "missing-schema.json"), "hello"],
+                        "--result-schema", str(tmp_path / "missing-schema.json"), "hello"],
                        cwd=tmp_path, capture_output=True, text=True, timeout=120)
     assert p.returncode == _agent.EXIT_CONFIG, p.stderr[-600:]
     assert "AGENT-EXIT: config" in p.stderr and "schema" in p.stderr

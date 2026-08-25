@@ -266,12 +266,16 @@ class Backend(Protocol):
 class _FakeResponse:
     """Just enough of requests.Response for the SSE loop: status_code, iter_lines, json."""
 
-    def __init__(self, lines, status_code=200):
+    def __init__(self, lines, status_code=200, exc=None):
         self.status_code = status_code
         self._lines = list(lines)
         self.text = ""
+        self._exc = exc          # raised when the stream is iterated: the mid-stream failure case
 
-    def iter_lines(self):
+    def iter_lines(self, *_a, **_k):
+        # the live SSE loop calls iter_lines(decode_unicode=False); accept and ignore kwargs
+        if self._exc is not None:
+            raise self._exc
         return iter(self._lines)
 
     def json(self):
@@ -333,6 +337,10 @@ class FakeBackend:
     def stream_chat(self, log, *, json=None, stream=True, timeout=(30, 300), **extra):
         self.calls.append(dict(json or {}))
         item = self.script.pop(0) if self.script else self.default
+        if isinstance(item, dict) and "stream_error" in item:
+            # the request succeeds, the STREAM fails — the mid-stream failure the loop's
+            # streaming handler exists for (review finding 3)
+            return _FakeResponse([], exc=RuntimeError(str(item["stream_error"])))
         return _FakeResponse(self._render(item))
 
     def complete(self, *, prompt, gen_params=None, cancel_check=None, timeout=120):
@@ -1669,7 +1677,10 @@ import foundry_retry_utils
 import os
 import logging
 import time
-from anthropic import AnthropicFoundry
+try:
+    from anthropic import AnthropicFoundry
+except ImportError:  # the foundry backend is optional; the package is only required when it is used
+    AnthropicFoundry = None
 
 class FoundryBackend:
     """Azure AI Foundry backend using AnthropicFoundry client."""
@@ -1705,6 +1716,9 @@ class FoundryBackend:
         if not self.model:
             raise ConfigError("Foundry backend requires a model deployment name.")
 
+        if AnthropicFoundry is None:
+            raise ValueError("backend kind 'foundry' needs the optional 'anthropic' package "
+                             "(pip install anthropic) — it is not installed in this environment")
         self.client = AnthropicFoundry(
             api_key=self.api_key,
             base_url=self.api_url,

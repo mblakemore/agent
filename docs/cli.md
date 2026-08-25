@@ -24,7 +24,8 @@ python agent.py [OPTIONS] [PROMPT...]
 | `--no-realpath-cwd` | Keep a symlinked working directory as given. By default the process canonicalizes its cwd and `$PWD` at start (see [Headless runs](#headless--unattended-runs)). |
 | `--deadline SECONDS` | Wall-clock budget for the run (overrides `cycle.deadline_s`). Warnings at 60/80/92%; at 100% tool calls are refused, the final result is forced, and the process exits `10`. |
 | `--goal TEXT`, `--deliverable PATH` | The run's stated goal and named deliverables (repeatable). Injected as goal anchors at fractions of the budget; a final `done` while a deliverable is absent draws a correction. Auto-derived from a `GOAL:` / `DELIVERABLE:` stanza when the result contract is armed. |
-| `--result-contract [SCHEMA.json]` | Require the final message to end with a fenced JSON result block (`{"contract": 1, "status": …, "summary": …}`); with `--result-file` the file receives the validated JSON only. Optional schema path; default = built-in. See [Headless runs](#headless--unattended-runs). |
+| `--result-contract` | Require the final message to end with a fenced JSON result block (`{"contract": 1, "status": …, "summary": …}`); with `--result-file` the file receives the validated JSON only. Built-in schema unless `--result-schema` is given. See [Headless runs](#headless--unattended-runs). |
+| `--result-schema SCHEMA.json` | JSON schema for the result contract (implies `--result-contract`). A separate flag so the positional prompt is never mistaken for the schema path. |
 | `PROMPT...` | Initial prompt. Optional in interactive mode. |
 
 Press **Escape twice** within 400ms to cancel a streaming response.
@@ -54,7 +55,7 @@ last. A grind escalation defaults to half the deadline when `cycle.grind_elapsed
 and an advisor consult that cannot finish in the time left is skipped with a notice rather
 than started. Unset (`0`) is today's behaviour exactly.
 
-**Result contract (`--result-contract [schema]` / `cycle.result_contract`).** Callers that
+**Result contract (`--result-contract`, `--result-schema FILE` / `cycle.result_contract`).** Callers that
 consume structured results used to prompt for a fenced JSON block and parse the raw
 `--result-file` themselves — discipline, not structure, with two observed failures: a
 *decoy* block (the model discusses an example and the extractor grabs it) and a `done` claim
