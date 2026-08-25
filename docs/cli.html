@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">CLI and usage</p>
 <h1>CLI and usage</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-08-25 (3cb6f29)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-08-25 (bf68c74)</p>
 <p>Command-line arguments, the interactive TUI, slash commands and environment variables.</p>
 <pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
 </code></pre>
@@ -152,7 +152,7 @@ with no block at all. When armed, the contract instruction is injected as a syst
 and the final message must end with a fenced <code>``json block that parses and validates against
 the schema (built-in default:</code>contract: 1<code>,</code>status: done|failed|blocked|cannot-tell<code>,</code>summary<code>, optional</code>artifacts<code>,</code>verify_output<code>,</code>scope<code>). The key</code>"contract": 1<code>is the
 discriminator — a block without it is prose. Missing or invalid at exit → a correction is
-injected and the run continues, bounded by</code>cycle.result_contract_max_blocks<code _failed_="&quot;failed&quot;," _status_:="&quot;status&quot;:" _summary_:="&quot;summary&quot;:" _wzxhzdk:3_="&quot;<no valid result block emitted: …>&quot;">(default 2);
+injected and the run continues, bounded by</code>cycle.result_contract_max_blocks<code _failed_="&quot;failed&quot;," _status_:="&quot;status&quot;:" _summary_:="&quot;summary&quot;:" _wzxhzdk:4_="&quot;<no valid result block emitted: …>&quot;">(default 2);
 still missing at the bound, or at the deadline's hard stop, the run exits and the result file
 receives a synthesized</code><code>record, so the caller **always** gets valid JSON; the process exits</code>11<code>unless a harder stop
 already owns the code. Two valid blocks → last wins. The exit classification is folded into
@@ -312,6 +312,27 @@ claude
 </tr>
 </tbody>
 </table></div>
+<h3 id="measuring-context-estimator-drift-scriptsmeasure_token_driftpy">Measuring context-estimator drift (<code>scripts/measure_token_drift.py</code>)</h3>
+<p>The context budget is sized by <code>token_utils</code>, which counts with a fixed tokenizer. The server
+may be serving a different model family, so that count is a guess about someone else's
+vocabulary. <code>_update_token_calibration</code> corrects for it at runtime from the <code>prompt_tokens</code>
+every streamed turn reports; this script tells you how large the error is, per content class.</p>
+<pre tabindex="0"><code>python3 scripts/measure_token_drift.py --n-ctx 196608     # human-readable
+python3 scripts/measure_token_drift.py --json             # machine-readable
+</code></pre>
+<p>It needs a <strong>live server</strong> — there is no mock answer to "what does the server actually count?"
+Read <code>ratio = actual / estimated</code>: above 1.0 the server counts more than we estimated and the
+budget is too large (the overflow direction); below 1.0 the guess is conservative and leaves
+window unused. <strong>Report the spread, not the mean.</strong> A uniform ratio is a constant the budget
+absorbs; a content-dependent one averages away on paper and bites on the worst input.</p>
+<p>A measured example, to calibrate expectations before assuming a tokenizer mismatch is the
+problem: against a 27B model served by a very different tokenizer, the mean ratio was 0.944
+with a 0.847-1.022 spread — conservative on four of five classes and under-estimating prose by
+only 2.2% (about +4.3k tokens on a 196k window). The chat template cost a fixed 45 tokens plus
+5 per message, which the text estimate does not count at all — under 1% of that window even in
+a long conversation. <strong>The wrong-tokenizer hazard is real but small and mostly safe-signed;
+bulk tool output pasted into context is the failure that actually overflows windows</strong>, which is
+why output spilling exists. Re-run this after any model swap rather than carrying the numbers.</p>
 <h3 id="backends-that-silently-drop-system-messages">Backends that silently drop <code>system</code> messages</h3>
 <p>Some OpenAI-compatible gateways accept a <code>role:"system"</code> message, return HTTP 200,
 and never show it to the model — no error, no warning. The symptom is an agent that
