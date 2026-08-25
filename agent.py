@@ -1895,30 +1895,34 @@ _HARMONY_TOKEN_RE = re.compile(
 )
 
 
-# DC-style agents reference a small set of well-known placeholder files in
-# their AGENT.md / CLAUDE.md. If the file is mentioned with read intent but
-# doesn't exist on disk, the agent's first PERCEIVE errors every cycle
-# (a field audit: one missing dotfile errored 23 times across a single run.)
-# Auto-create empty placeholders so the bootstrap path is clean.
-_KNOWN_PLACEHOLDER_FILES = (
-    "messages/from-creator.md",
-    "messages/to-creator.md",
-)
+# Some agents reference a small set of scratch files in their AGENT.md / CLAUDE.md
+# that are expected to exist but are not in the repo. If such a file is mentioned
+# with read intent and is missing, every startup logs a read error — measured at 23
+# errors from one missing file across a single run. Declaring it here creates an
+# empty placeholder instead.
+#
+# OPT-IN, and empty by default. This is a convention some setups use, not one this
+# tool assumes: shipping a particular project's filenames as the default would make
+# that project's layout the tool's expected shape, and every other user would be
+# reading around somebody else's workflow. Set them under `bootstrap` in config:
+#
+#   "bootstrap": {"placeholder_files": ["notes/inbox.md"], "placeholder_dirs": ["state"]}
+#
+# Nothing is created unless it is BOTH declared here and referenced by the agent's
+# own instructions file.
+_KNOWN_PLACEHOLDER_FILES = ()
 _KNOWN_PLACEHOLDER_DIRS = (
-    "messages",
-    "state",
-    "logs",
 )
 
 
 def _bootstrap_template_check(log):
     """Run on fresh session start (NOT continue_mode). Find AGENT.md / CLAUDE.md
-    in cwd, scan for references to well-known DC-style placeholder files, and
-    auto-create empty placeholders for any that are referenced but missing.
-    Also creates standard directories if referenced.
+    in cwd, scan it for references to the placeholder files declared under
+    `bootstrap` in config, and create empty placeholders for any that are
+    referenced but missing. Also creates declared directories if referenced.
 
-    Returns a list of (path, action) tuples for logging. Empty list when
-    nothing was done (either not a DC-style agent, or already complete).
+    Returns a list of (path, action) tuples for logging. Empty list when nothing
+    was done — including the default case, where nothing is declared.
 
     Conservative: ONLY touches files explicitly referenced in the agent's own
     cognitive instructions; never auto-creates anything the agent didn't
@@ -1937,7 +1941,7 @@ def _bootstrap_template_check(log):
             instructions_file = _cwd_files[candidate]
             break
     if not instructions_file:
-        return []  # not a DC-style agent
+        return []  # no instructions file to read declarations from
 
     try:
         with open(instructions_file, encoding='utf-8', errors='replace') as f:
@@ -1947,8 +1951,16 @@ def _bootstrap_template_check(log):
 
     actions = []
 
+    _bs = _config.get("bootstrap") or {} if isinstance(_config, dict) else {}
+    _files = _bs.get("placeholder_files")
+    _dirs = _bs.get("placeholder_dirs")
+    _files = tuple(str(f) for f in _files) if isinstance(_files, list) else _KNOWN_PLACEHOLDER_FILES
+    _dirs = tuple(str(d) for d in _dirs) if isinstance(_dirs, list) else _KNOWN_PLACEHOLDER_DIRS
+    if not _files and not _dirs:
+        return []
+
     # Auto-create empty placeholder files referenced for reading
-    for known in _KNOWN_PLACEHOLDER_FILES:
+    for known in _files:
         if known in instructions and not Path(known).exists():
             try:
                 Path(known).parent.mkdir(parents=True, exist_ok=True)
@@ -1962,7 +1974,7 @@ def _bootstrap_template_check(log):
                 log.warning("Bootstrap: failed to create %s: %s", known, e)
 
     # Auto-create well-known directories
-    for known_dir in _KNOWN_PLACEHOLDER_DIRS:
+    for known_dir in _dirs:
         if f"{known_dir}/" in instructions and not Path(known_dir).exists():
             try:
                 Path(known_dir).mkdir(parents=True, exist_ok=True)
@@ -4479,10 +4491,11 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             _pinned_instructions = pinned
             log.info("Pinned instructions extracted (%d chars)", len(pinned))
 
-        # Bootstrap-template check (T3.9): auto-create empty placeholders for
-        # well-known DC-style files the agent's AGENT.md/CLAUDE.md references
-        # but don't exist on disk. Eliminates one agent's "from-creator.md errors
-        # every cycle" loop. Only runs on fresh starts (not continue_mode).
+        # Bootstrap-template check (T3.9): create empty placeholders for files the
+        # agent's AGENT.md/CLAUDE.md references but which don't exist on disk, when
+        # they are declared under `bootstrap` in config. Eliminates a repeated
+        # "missing file" error loop at startup. Fresh starts only (not continue_mode);
+        # a no-op unless declared.
         _bootstrap_actions = _bootstrap_template_check(log)
         if _bootstrap_actions:
             log.info(
@@ -7638,9 +7651,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             t for t in _hist if (_call_idx_counter - t) <= _WRITE_LOOP_WINDOW
                         ]
                         _n_writes = len(_write_path_history[_write_target])
-                        # Single-object state files (per DC-style CLAUDE.md
-                        # convention: "Single-object state is overwritten each
-                        # cycle") are SUPPOSED to be rewritten — one agent's
+                        # Single-object state files — ones an agent rewrites
+                        # wholesale on a schedule rather than appending to — are
+                        # SUPPOSED to be written repeatedly. One agent's
                         # detector misfired with `current-state.json` written
                         # 3 times in one cycle (correct behavior!). Bump the
                         # threshold so the detector only complains when the
