@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">Configurations</p>
 <h1>Configurations</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/configurations.md"><code>docs/configurations.md</code></a> · last changed 2026-08-24 (e9dadf8)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/configurations.md"><code>docs/configurations.md</code></a> · last changed 2026-08-25 (292e104)</p>
 <p><code>config.json</code> lives in the working directory you run the agent from. Every block is optional — with
 a single model on the default port you need no config file at all.</p>
 <p>Full key-by-key reference is in the <a href="index.html#configuration">overview</a>. This page is the shapes
@@ -111,6 +111,75 @@ it does not break it.</p>
 <h2 id="hosted-backends">Hosted backends</h2>
 <p><code>kind</code> also accepts <code>"bedrock"</code> and <code>"foundry"</code> instead of <code>"llamacpp"</code>, for a hosted endpoint
 rather than a local server. AWS Bedrock has its own guide: <a href="bedrock.html">Bedrock backend</a>.</p>
+<p><code>kind: "fake"</code> — or the environment variable <code>AGENT_FAKE_BACKEND=1</code> — builds a scriptable
+in-process backend that never opens a socket (<code>llm_backend.FakeBackend</code>: a list of text /
+tool-call items served in order, every request body recorded). It exists for tests and for
+reproducing a run's control flow without a model; the test suite additionally fails any test
+that connects to a model port without the <code>@pytest.mark.live</code> marker.</p>
+<h2 id="generation-settings-and-per-run-overrides">Generation settings and per-run overrides</h2>
+<p>The <code>generation</code> block sets sampling for the main loop:</p>
+<pre tabindex="0"><code class="language-json">{
+  &quot;generation&quot;: {
+    &quot;temperature&quot;: 0.6,
+    &quot;top_p&quot;: 0.95,
+    &quot;top_k&quot;: 20,
+    &quot;min_p&quot;: 0.0,
+    &quot;presence_penalty&quot;: 0.0,
+    &quot;seed&quot;: null,
+    &quot;enable_thinking&quot;: false
+  }
+}
+</code></pre>
+<p><code>seed</code> is <code>null</code> by default (the server's own default). Set it for reproducible runs on backends
+that honor a sampling seed — llama.cpp does; hosted backends without one log a single warning
+and ignore it. The flags <code>--temperature</code>, <code>--top-p</code> and <code>--seed</code> override these per run
+(flag &gt; config &gt; default), which is what k-sample ensembles ("same prompt, k runs, reconcile")
+and failure reproduction want without editing the file. See <a href="cli.html#headless--unattended-runs">CLI: headless runs</a>
+for the exit-code contract that unattended callers rely on.</p>
+<h2 id="cycle-limits-for-unattended-runs">Cycle limits for unattended runs</h2>
+<pre tabindex="0"><code class="language-json">{
+  &quot;cycle&quot;: {
+    &quot;max_turns&quot;: 250,
+    &quot;wind_down_turns&quot;: 10,
+    &quot;deadline_s&quot;: 0,
+    &quot;deadline_warn_fracs&quot;: [0.6, 0.8, 0.92],
+    &quot;grind_elapsed_s&quot;: 0,
+    &quot;result_contract&quot;: false,
+    &quot;result_contract_max_blocks&quot;: 2,
+    &quot;goal&quot;: &quot;&quot;,
+    &quot;deliverables&quot;: [],
+    &quot;goal_anchor_fracs&quot;: [0.5, 0.8],
+    &quot;repeat_read_nudge&quot;: {&quot;n&quot;: 3, &quot;window&quot;: 6}
+  }
+}
+</code></pre>
+<p><code>goal</code> / <code>deliverables</code> (paths or globs) arm goal anchoring and the deliverable guard
+(<code>--goal</code> / <code>--deliverable</code> override; derived from a <code>GOAL:</code> / <code>DELIVERABLE:</code> prompt stanza
+when the result contract is armed). <code>goal_anchor_fracs</code> are the budget fractions at which the
+anchor is injected. <code>repeat_read_nudge</code> fires one nudge when the same read-class call recurs
+<code>n</code> times within <code>window</code> turns.</p>
+<p><code>deadline_s</code> is a wall-clock budget in seconds (<code>0</code> = off; <code>--deadline</code> overrides it). The
+agent is warned at each fraction in <code>deadline_warn_fracs</code> and forced to its final result at
+100% (exit code <code>10</code>). When a deadline is set and <code>grind_elapsed_s</code> is <code>0</code>, grind escalation
+defaults to half the deadline so a stuck run asks for help while there is still time to use it.</p>
+<p><code>result_contract</code> is <code>false</code> (raw <code>--result-file</code> text), <code>true</code> (built-in schema) or a path to
+a JSON schema file; <code>--result-contract [schema]</code> overrides it. <code>result_contract_max_blocks</code>
+bounds how many times a missing/invalid result block redirects the exit before a synthesized
+<code>failed</code> record is written (exit code <code>11</code>). See <a href="cli.html#headless--unattended-runs">CLI: headless runs</a>.</p>
+<h2 id="output-limits">Output limits</h2>
+<pre tabindex="0"><code class="language-json">{
+  &quot;limits&quot;: {
+    &quot;tool_result_max_chars&quot;: 20000
+  }
+}
+</code></pre>
+<p>A tool result — or an initial prompt — over <code>tool_result_max_chars</code> is spilled to
+<code>.agent/spill/</code> and replaced in the conversation by a reference with a head/tail excerpt
+(lossless; the old head/tail truncation threw the middle away). <code>0</code> keeps truncation only.
+Two related behaviours need no key: the context budget is calibrated from the server's
+reported <code>prompt_tokens</code> after the first measured turn, and an HTTP 500 counts as a context
+overflow only when its body names one (otherwise it is retried as a transient under the
+<code>retry</code> block's jittered backoff).</p>
     <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
   </main>
 </div>

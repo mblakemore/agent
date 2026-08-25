@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">CLI and usage</p>
 <h1>CLI and usage</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-08-16 (734f1b4)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-08-25 (3cb6f29)</p>
 <p>Command-line arguments, the interactive TUI, slash commands and environment variables.</p>
 <pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
 </code></pre>
@@ -85,12 +85,168 @@
 <td>Launch an Anthropic-compatible gateway for <strong>Claude Code</strong> (default <code>127.0.0.1:8788</code>) that forwards to the configured main backend, then exit. See <a href="#claude-code-gateway--cc">Claude Code gateway</a>.</td>
 </tr>
 <tr>
+<td><code>--result-file PATH</code></td>
+<td>Write the final assistant response to <code>PATH</code> (for callers that consume the run's output as a file).</td>
+</tr>
+<tr>
+<td><code>--role builder\|reviewer\|creature</code></td>
+<td>Explicit session role; overrides prompt string-matching for the CICD guards.</td>
+</tr>
+<tr>
+<td><code>--temperature F</code>, <code>--top-p F</code>, <code>--seed N</code></td>
+<td>Per-run sampling overrides (flag &gt; <code>generation.*</code> config &gt; default). <code>--seed</code> gives reproducible runs on backends that honor a seed (llama.cpp); others warn once and ignore it.</td>
+</tr>
+<tr>
+<td><code>--no-realpath-cwd</code></td>
+<td>Keep a symlinked working directory as given. By default the process canonicalizes its cwd and <code>$PWD</code> at start (see <a href="#headless--unattended-runs">Headless runs</a>).</td>
+</tr>
+<tr>
+<td><code>--deadline SECONDS</code></td>
+<td>Wall-clock budget for the run (overrides <code>cycle.deadline_s</code>). Warnings at 60/80/92%; at 100% tool calls are refused, the final result is forced, and the process exits <code>10</code>.</td>
+</tr>
+<tr>
+<td><code>--goal TEXT</code>, <code>--deliverable PATH</code></td>
+<td>The run's stated goal and named deliverables (repeatable). Injected as goal anchors at fractions of the budget; a final <code>done</code> while a deliverable is absent draws a correction. Auto-derived from a <code>GOAL:</code> / <code>DELIVERABLE:</code> stanza when the result contract is armed.</td>
+</tr>
+<tr>
+<td><code>--result-contract</code></td>
+<td>Require the final message to end with a fenced JSON result block (<code>{"contract": 1, "status": …, "summary": …}</code>); with <code>--result-file</code> the file receives the validated JSON only. Built-in schema unless <code>--result-schema</code> is given. See <a href="#headless--unattended-runs">Headless runs</a>.</td>
+</tr>
+<tr>
+<td><code>--result-schema SCHEMA.json</code></td>
+<td>JSON schema for the result contract (implies <code>--result-contract</code>). A separate flag so the positional prompt is never mistaken for the schema path.</td>
+</tr>
+<tr>
 <td><code>PROMPT...</code></td>
 <td>Initial prompt. Optional in interactive mode.</td>
 </tr>
 </tbody>
 </table></div>
 <p>Press <strong>Escape twice</strong> within 400ms to cancel a streaming response.</p>
+<h3 id="headless-unattended-runs">Headless / unattended runs</h3>
+<p><code>agent.py -a</code> is often spawned by a supervisor — a batch queue, CI job, cron entry or another
+agent — that imposes a wall-clock budget, consumes a result, and kills the process on overrun.
+These behaviours exist for that audience; interactive sessions are untouched.</p>
+<p><strong>Canonical working directory.</strong> At start the process resolves symlinks in its working
+directory and rewrites <code>$PWD</code> to the physical path, logging the change. A run launched through
+a symlinked path otherwise produces <code>os.path.relpath()</code> values that walk out of the repository,
+and <code>git log -- &lt;path&gt;</code> then returns nothing <em>with exit 0</em>. Pass <code>--no-realpath-cwd</code> to keep the
+symlinked view (overlay-style layouts).</p>
+<p><strong>Wall-clock deadline (<code>--deadline SECONDS</code> / <code>cycle.deadline_s</code>).</strong> The wind-down ladder
+is turn-based; a run that is slow rather than turn-hungry got no warning and was killed by
+its supervisor mid-write, with work done and no result emitted. With a deadline set, the
+clock starts at run start and the agent is told at 60% (heads-up), 80% (begin wrapping up)
+and 92% (stop working — emit your final result now), through the same message channel the
+turn wind-down uses; the fractions are <code>cycle.deadline_warn_fracs</code>. At 100% the stop is
+structural: tool calls are refused (each still receives a paired result saying why), the
+success-check and claim gates stand down, and the run takes the final-result path — the
+process exits <code>10</code> and, when <code>--result-file</code> is set, the file holds whatever the model said
+last. A grind escalation defaults to half the deadline when <code>cycle.grind_elapsed_s</code> is unset,
+and an advisor consult that cannot finish in the time left is skipped with a notice rather
+than started. Unset (<code>0</code>) is today's behaviour exactly.</p>
+<p><strong>Result contract (<code>--result-contract</code>, <code>--result-schema FILE</code> / <code>cycle.result_contract</code>).</strong> Callers that
+consume structured results used to prompt for a fenced JSON block and parse the raw
+<code>--result-file</code> themselves — discipline, not structure, with two observed failures: a
+<em>decoy</em> block (the model discusses an example and the extractor grabs it) and a <code>done</code> claim
+with no block at all. When armed, the contract instruction is injected as a system message,
+and the final message must end with a fenced <code>``json block that parses and validates against
+the schema (built-in default:</code>contract: 1<code>,</code>status: done|failed|blocked|cannot-tell<code>,</code>summary<code>, optional</code>artifacts<code>,</code>verify_output<code>,</code>scope<code>). The key</code>"contract": 1<code>is the
+discriminator — a block without it is prose. Missing or invalid at exit → a correction is
+injected and the run continues, bounded by</code>cycle.result_contract_max_blocks<code _failed_="&quot;failed&quot;," _status_:="&quot;status&quot;:" _summary_:="&quot;summary&quot;:" _wzxhzdk:3_="&quot;<no valid result block emitted: …>&quot;">(default 2);
+still missing at the bound, or at the deadline's hard stop, the run exits and the result file
+receives a synthesized</code><code>record, so the caller **always** gets valid JSON; the process exits</code>11<code>unless a harder stop
+already owns the code. Two valid blocks → last wins. The exit classification is folded into
+the JSON as</code>"exit": {code, name, detail}<code>. An unreadable schema refuses to start (exit</code>14<code>).
+Without the flag,</code>--result-file` is byte-identical to the raw behaviour.</p>
+<p><strong>Bulk belongs in files (<code>limits.tool_result_max_chars</code>, default 20 000).</strong> A tool result
+over the cap is written to <code>.agent/spill/&lt;turn&gt;-&lt;tool&gt;-&lt;ts&gt;.txt</code> and the model receives a
+reference — path, size, line count, a head/tail excerpt, and the instruction to read it in
+slices — instead of the payload. This replaces the old head/tail truncation at the same
+boundary and is lossless: the file holds everything. The same cap applies to an oversized
+initial prompt (a spec with a data blob pasted in), which is spilled with a reference the model
+is told to read first. A spill directory that cannot be written falls back to the legacy
+truncation with a warning. <code>0</code> disables the spill (truncation only). The context budget is
+also calibrated from the server's own token counts: every streamed turn reports
+<code>prompt_tokens</code>, the ratio observed-to-estimated is tracked, and the next window is sized by
+it — a tokenizer mismatch between the estimator and the served model stops mattering after
+the first measured turn (logged when the ratio moves by more than 10%). On the transport, an
+HTTP 500 is treated as a context overflow only when its body says so (llama.cpp names it:
+"exceeds the available context size", "context shift is disabled", "prompt is too long");
+any other 500 is a transient, retried with the existing jittered exponential backoff and
+never counted toward an overflow verdict.</p>
+<p><strong>Goal anchoring and the deliverable guard (<code>--goal</code>, <code>--deliverable</code>, <code>cycle.goal</code>,
+<code>cycle.deliverables</code>).</strong> Long-horizon drift, observed live: a 45-minute run produced a competent
+artifact answering the wrong question, self-assessed complete, and never noticed the named
+deliverable was absent. With a goal and/or deliverables set, the run receives a goal anchor at
+<code>cycle.goal_anchor_fracs</code> (default 50% and 80% of the deadline, or of the turn budget when no
+deadline) — the stated goal, the deliverables, and a mechanical "these do not exist yet" list
+from one glob sweep, no model call. A final <code>done</code> while a named deliverable is absent draws
+the standard correction (bounded like the result contract); <code>blocked</code>, <code>failed</code> and
+<code>cannot-tell</code> are always accepted — the guard polices claims, not outcomes. When the result
+contract is armed and the initial prompt carries a <code>GOAL:</code> / <code>DELIVERABLE:</code> stanza, both are
+derived automatically. The launch log names which deliverables are absent at start, so a
+misspelled path is visible before a long run rather than after it.</p>
+<p><strong>Repeat-read stall (<code>cycle.repeat_read_nudge</code>, default 3 in 6).</strong> The stall detector counts
+read-only turns; "re-reading the same file" is a sharper and earlier signature, and it is what
+pre-death loops look like. The same read-class call (tool + arguments) issued <code>n</code> times within
+<code>window</code> turns triggers one nudge naming the read — once per unique call, never a nag — and,
+when a success check is configured, the existing advisor escalation. A substantive batch
+(edit, write, exec) resets the window.</p>
+<p><strong>Classifiable exit status (<code>-a</code> / <code>-r</code> only).</strong> The process exits with a stable code and prints
+one line to stderr, <code>AGENT-EXIT: &lt;name&gt; &lt;detail&gt;</code>, so a supervisor can tell <em>completed</em> from
+<em>died-of-context</em> without parsing logs:</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Name</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code></td>
+<td><code>completed</code></td>
+<td>The run finished.</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td><code>error</code></td>
+<td>The run loop ended in an unclassified error.</td>
+</tr>
+<tr>
+<td><code>10</code></td>
+<td><code>deadline</code></td>
+<td>Wall-clock deadline stop (<code>--deadline</code>).</td>
+</tr>
+<tr>
+<td><code>11</code></td>
+<td><code>contract</code></td>
+<td>Result contract not satisfied; a synthesized <code>failed</code> result was written (<code>--result-contract</code>).</td>
+</tr>
+<tr>
+<td><code>12</code></td>
+<td><code>context</code></td>
+<td>Context exhaustion after every reduction (spill, trim, summary halving).</td>
+</tr>
+<tr>
+<td><code>13</code></td>
+<td><code>memory</code></td>
+<td>RSS crossed <code>mem.hard_mb</code>; the process exited before the OOM killer.</td>
+</tr>
+<tr>
+<td><code>14</code></td>
+<td><code>config</code></td>
+<td>Configuration error at start (unbuildable backend, unreadable schema).</td>
+</tr>
+<tr>
+<td><code>15</code></td>
+<td><code>backend</code></td>
+<td>Backend unreachable or failed after retries.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Interactive sessions keep exiting <code>0</code> (or <code>2</code> on a start-up configuration error, as before).</p>
 <h3 id="claude-code-gateway-cc">Claude Code gateway (<code>-cc</code>)</h3>
 <p><code>agent.py -cc</code> stands up an Anthropic-native <code>/v1/messages</code> endpoint and points it at whichever backend <code>agent.py</code> is configured for (<code>llamacpp</code>, <code>bedrock</code>, or <code>foundry</code>). This lets <a href="https://docs.claude.com/en/docs/claude-code">Claude Code</a> — or anything that speaks the Anthropic Messages API — drive your local/self-hosted model.</p>
 <pre tabindex="0"><code class="language-bash">python agent.py -cc                      # listen on 127.0.0.1:8788
@@ -270,6 +426,14 @@ server-side fix is picked up automatically without a config change.</p>
 <tr>
 <td><code>AGENT_BASH_EXE</code></td>
 <td>Windows only — full path to <code>bash.exe</code> for the <code>exec_command</code> shell, overriding Git-Bash auto-detection.</td>
+</tr>
+<tr>
+<td><code>AGENT_FAKE_BACKEND=1</code></td>
+<td>Build the scriptable in-process fake backend instead of any configured kind (tests, control-flow reproduction; never opens a socket). See <a href="configurations.html#hosted-backends">configurations</a>.</td>
+</tr>
+<tr>
+<td><code>AGENT_CTX_SPILL_THRESHOLD</code></td>
+<td>Chars above which a tool result is spilled to a file during context-overflow recovery (default <code>4000</code>, halving per pass to <code>1000</code>).</td>
 </tr>
 </tbody>
 </table></div>
