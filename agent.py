@@ -473,6 +473,16 @@ _DEFAULT_CONFIG = {
         # {"status": "failed"} block is written so the caller ALWAYS gets valid JSON (exit 11).
         "result_contract": False,
         "result_contract_max_blocks": 2,
+        # F4: goal anchoring + deliverable guard. Empty = off. Auto-derived from a GOAL: /
+        # DELIVERABLE: stanza in the initial prompt when the result contract is armed.
+        # Anchors are injected at these fractions of the deadline (turn fraction when no
+        # deadline); a final `done` while a named deliverable is absent draws a correction.
+        "goal": "",
+        "deliverables": [],
+        "goal_anchor_fracs": [0.5, 0.8],
+        # F7: the same read-class call repeated n times within `window` turns is a stall
+        # signature sharper than "no edits lately"; one nudge per unique call, not a nag.
+        "repeat_read_nudge": {"n": 3, "window": 6},
     },
     # F3: per-result spill cap. A tool result (or an inbound prompt/message, F3a) over this many
     # chars is written to .agent/spill/ and replaced by a reference + excerpt; 0 = legacy
@@ -796,6 +806,78 @@ def _deadline_step(elapsed_s, deadline_s, fired, fracs):
         msg = (f"[SYSTEM: heads-up — {remaining}s of wall-clock budget left ({int(f * 100)}% used). "
                f"Plan to finish inside it.]")
     return msg, False
+
+
+# ── F7: repeat-read stall signature ──────────────────────────────────────────
+def _repeat_read_check(seen, key, turn, n=3, window=6, latched=None):
+    """Pure: record a read-class call `key` at `turn`; return True exactly once per key when
+    the same key was seen >= n times within the last `window` turns. `seen` maps key -> list
+    of turns; `latched` is the set of keys already nudged (one nudge, not a nag)."""
+    turns = [t for t in seen.get(key, []) if turn - t < window] + [turn]
+    seen[key] = turns
+    if latched is None:
+        latched = set()
+    if len(turns) >= n and key not in latched:
+        latched.add(key)
+        return True
+    return False
+
+
+def _read_call_key(func_name, func_args):
+    """Normalized identity of a read-class call: tool + sorted args (paths as given)."""
+    try:
+        return (func_name, json.dumps(func_args, sort_keys=True, default=str)[:400])
+    except Exception:  # noqa: BLE001
+        return (func_name, str(func_args)[:400])
+
+
+# ── F4: goal anchoring + deliverable guard ───────────────────────────────────
+# The stanza may sit mid-line ("WORK ITEM 42. GOAL: ..."), so anchor on a word boundary, not
+# the line start; the value runs to the end of that line.
+_GOAL_STANZA_RE = re.compile(r"\b(?:GOAL|Goal)\s*:\s*(.+?)\s*$", re.M)
+_DELIVERABLE_STANZA_RE = re.compile(r"\b(?:DELIVERABLES?|Deliverables?)\s*:\s*(.+?)\s*$", re.M)
+
+
+def _derive_goal_and_deliverables(prompt_text):
+    """From a recognizable goal/deliverable stanza in the initial prompt: ('goal', [paths]).
+    Paths are the comma/space-separated tokens of the deliverable line that look like paths or
+    globs (contain a '/', '.', or '*'); prose words are dropped. Empty when nothing matches."""
+    goal, dels = "", []
+    if not prompt_text:
+        return goal, dels
+    m = _GOAL_STANZA_RE.search(prompt_text)
+    if m:
+        goal = m.group(1).strip()[:400]
+    m = _DELIVERABLE_STANZA_RE.search(prompt_text)
+    if m:
+        for tok in re.split(r"[,\s]+", m.group(1)):
+            tok = tok.strip("`'\"()[]")
+            if tok and any(c in tok for c in "/.*") and not tok.endswith(":"):
+                dels.append(tok)
+    return goal, dels
+
+
+def _missing_deliverables(globs, cwd=None):
+    """Mechanical: which named deliverables (paths or globs) match nothing on disk right now."""
+    import glob as _glob
+    base = cwd or os.getcwd()
+    missing = []
+    for g in globs or []:
+        pat = g if os.path.isabs(g) else os.path.join(base, g)
+        if not _glob.glob(pat):
+            missing.append(g)
+    return missing
+
+
+def _goal_anchor_message(goal, deliverables, missing, frac):
+    parts = [f"[SYSTEM GOAL ANCHOR ({int(frac * 100)}% of budget used)"]
+    if goal:
+        parts.append(f"The stated goal: {goal}")
+    if deliverables:
+        parts.append("Named deliverables: " + ", ".join(deliverables))
+        parts.append("Deliverables that do NOT exist yet: " + (", ".join(missing) if missing else "none — all present"))
+    parts.append("Check that what you are doing serves the goal above; produce the missing deliverables before anything else.]")
+    return " ".join(parts)
 
 
 # ── F2: result contract ───────────────────────────────────────────────────────
@@ -4402,6 +4484,26 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             conversation_history.append({"role": "system", "content": _result_contract_instruction(
                 _RESULT_CONTRACT_SCHEMA or RESULT_CONTRACT_DEFAULT_SCHEMA)})
             log.info("Result contract armed (%s)", "built-in schema" if _RESULT_CONTRACT_SCHEMA in (None, RESULT_CONTRACT_DEFAULT_SCHEMA) else "custom schema")
+            # F4 auto-arm: with the contract armed, a recognizable GOAL: / DELIVERABLE: stanza
+            # in the initial prompt fills cycle.goal / cycle.deliverables when they are unset.
+            # Only the guard's CORRECTION is ever armed this way, never a hard block.
+            _cyc = _config.setdefault("cycle", {})
+            if not _cyc.get("goal") or not _cyc.get("deliverables"):
+                _dg, _dd = _derive_goal_and_deliverables(expanded if isinstance(expanded, str) else "")
+                if _dg and not _cyc.get("goal"):
+                    _cyc["goal"] = _dg
+                if _dd and not _cyc.get("deliverables"):
+                    _cyc["deliverables"] = _dd
+                if _dg or _dd:
+                    log.info("F4 derived from the prompt: goal=%r deliverables=%s", _dg[:80], _dd)
+        # F4 launch check: a deliverable glob that already matches nothing is fine (it is to be
+        # produced) — but a pattern with a typo is caught by warning ONCE what is absent now,
+        # so a 45-minute run does not end on a misspelled path.
+        _dels_now = (_config.get("cycle") or {}).get("deliverables") or []
+        if isinstance(_dels_now, list) and _dels_now:
+            _absent = _missing_deliverables([d for d in _dels_now if isinstance(d, str)])
+            log.info("F4 deliverables at launch: %d named, %d not yet present: %s",
+                     len(_dels_now), len(_absent), _absent[:8])
 
         # WS2: goal-stack hydration — independent of preamble.json. If
         # state/goals.json has active goals, inject "goal → next actionable
@@ -5305,6 +5407,34 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             "what makes it the result; \"failed\" and \"blocked\" are acceptable statuses.")})
         return True
 
+    def _deliverable_guard_blocks_exit(path_name, text):
+        """F4: 'done' while a named deliverable is absent draws the standard correction
+        (bounded by result_contract_max_blocks). Polices CLAIMS, not outcomes: a result block
+        whose status is blocked/failed/cannot-tell passes untouched, and so does the exit past
+        the deadline. Nothing configured → never fires."""
+        nonlocal _deliverable_blocks
+        if not _deliverables or _deadline_hard:
+            return False
+        obj, _why = _extract_result_block(text)
+        if obj is not None and obj.get("status") in ("blocked", "failed", "cannot-tell"):
+            return False
+        missing = _missing_deliverables(_deliverables)
+        if not missing:
+            return False
+        if _deliverable_blocks >= _RESULT_CONTRACT_MAX_BLOCKS:
+            log.warning("deliverable guard: %s exit proceeds with %d deliverable(s) still missing (bound reached): %s",
+                        path_name, len(missing), missing[:5])
+            return False
+        _deliverable_blocks += 1
+        log.info("deliverable guard: %s exit redirected (%d/%d) — missing %s",
+                 path_name, _deliverable_blocks, _RESULT_CONTRACT_MAX_BLOCKS, missing[:5])
+        telemetry.record_patch_event("deliverable_guard_block", kind=path_name)
+        conversation_history.append({"role": "user", "content": (
+            "Error: you report done, but these named deliverables do not exist: "
+            + ", ".join(missing[:8]) + ". Produce them now, or change your status to "
+            "blocked/failed and say why.")})
+        return True
+
     def _claim_vs_trace_block(text, ran_verification, has_committed, blocks, max_blocks):
         """Reject a completion whose CLAIM the trace does not support — the
         fabricated-verification failure mode (d2 probe: the model fixes the code
@@ -5533,6 +5663,23 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
     # nudge to commit to the fix rather than reading more files.
     _read_only_turns = 0
     _READ_ONLY_NUDGE_THRESHOLD = 5
+    # F7 — repeat-read stall signature (one nudge per unique call key, latched)
+    try:
+        _rr_cfg = (_config.get("cycle") or {}).get("repeat_read_nudge") or {}
+        _REPEAT_READ_N = int(_rr_cfg.get("n", 3)) if isinstance(_rr_cfg, dict) else 3
+        _REPEAT_READ_WINDOW = int(_rr_cfg.get("window", 6)) if isinstance(_rr_cfg, dict) else 6
+    except Exception:
+        _REPEAT_READ_N, _REPEAT_READ_WINDOW = 3, 6
+    _repeat_seen, _repeat_latched, _repeat_msg = {}, set(), None
+    # F4 — goal anchoring + deliverable guard state (config or --goal/--deliverable; derived
+    # from the prompt stanza by run_agent_interactive when the contract is armed)
+    _goal = str((_config.get("cycle") or {}).get("goal") or "") if isinstance((_config.get("cycle") or {}).get("goal"), str) else ""
+    _deliverables = [str(d) for d in ((_config.get("cycle") or {}).get("deliverables") or []) if isinstance(d, str)] \
+        if isinstance((_config.get("cycle") or {}).get("deliverables"), list) else []
+    _anchor_fracs = [f for f in ((_config.get("cycle") or {}).get("goal_anchor_fracs") or []) if isinstance(f, (int, float))] \
+        if isinstance((_config.get("cycle") or {}).get("goal_anchor_fracs"), list) else []
+    _anchor_fired = set()
+    _deliverable_blocks = 0
     _turn_had_action = False  # set True when write/edit/exec called this turn
 
     # Consecutive edit_file failures per path — after 2 consecutive failures on
@@ -5658,6 +5805,22 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             if _dl_msg:
                 wind_down_msg = _dl_msg
                 log.warning("deadline: %s", _dl_msg[:90])
+        # F4 — goal anchor: at each fraction (of the deadline, else of the turn budget) inject
+        # the stated goal, the deliverables, and the mechanical "not there yet" list. Cheap:
+        # one glob sweep, no model call. Rides as a system message on this turn.
+        if (_goal or _deliverables) and _anchor_fracs:
+            _prog = ((time.monotonic() - _deadline_t0) / _DEADLINE_S) if _DEADLINE_S > 0 \
+                else (turn / float(_MAX_TURNS) if _MAX_TURNS > 0 else 0.0)
+            _due = [f for f in sorted(_anchor_fracs) if _prog >= f and f not in _anchor_fired]
+            if _due:
+                for f in _due:
+                    _anchor_fired.add(f)
+                _missing = _missing_deliverables(_deliverables)
+                conversation_history.append({"role": "system", "content": _goal_anchor_message(
+                    _goal, _deliverables, _missing, _due[-1])})
+                log.info("goal anchor at %.0f%%: %d deliverable(s), %d missing", _due[-1] * 100,
+                         len(_deliverables), len(_missing))
+                telemetry.record_patch_event("goal_anchor", kind="fired")
 
         # ── Mid-burst "btw" injection ──
         # Deliver any queued monitor / background input at this natural boundary
@@ -5780,6 +5943,13 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     f"If you have identified what needs to change, apply the fix now "
                     f"rather than reading more files.]"
                 )
+            # F7: the sharper, earlier signature — the SAME read repeated. Set by the tool
+            # dispatcher when a read-class key recurs; delivered once, then cleared.
+            if _repeat_msg:
+                _system_lines.append(_repeat_msg)
+                log.warning("repeat-read stall: %s", _repeat_msg[:100])
+                telemetry.record_patch_event("repeat_read_nudge", kind="fired")
+                _repeat_msg = None
 
             _outgoing_messages = [
                 {"role": "system",
@@ -6398,6 +6568,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     continue
                 if _result_contract_blocks_exit("textonly_stop", full_content):
                     continue
+                if _deliverable_guard_blocks_exit("textonly_stop", full_content):
+                    continue
                 _cvt_blk, _claim_trace_blocks = _claim_vs_trace_block(
                     full_content, _ran_verification, _has_committed,
                     _claim_trace_blocks, _CLAIM_TRACE_MAX_BLOCKS)
@@ -6464,6 +6636,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 if _success_gate_blocks_exit("completion_signal"):
                     continue
                 if _result_contract_blocks_exit("completion_signal", full_content):
+                    continue
+                if _deliverable_guard_blocks_exit("completion_signal", full_content):
                     continue
                 _cvt_blk, _claim_trace_blocks = _claim_vs_trace_block(
                     full_content, _ran_verification, _has_committed,
@@ -6544,6 +6718,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     if _success_gate_blocks_exit("first_textonly_completion"):
                         continue
                     if _result_contract_blocks_exit("first_textonly_completion", full_content):
+                        continue
+                    if _deliverable_guard_blocks_exit("first_textonly_completion", full_content):
                         continue
                     _cvt_blk, _claim_trace_blocks = _claim_vs_trace_block(
                         full_content, _ran_verification, _has_committed,
@@ -6696,6 +6872,24 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             or _is_read_only_file
             or _is_read_only_exec
         )
+        # F7: record read-class calls by (tool, args); the SAME read n times within the window
+        # is the pre-death loop signature (an overrun log showed the model cycling re-reads of
+        # its own files for its final minutes). A substantive batch (edit/write/exec) resets the
+        # window — the model acted on what it read. The latch survives: one nudge per key.
+        if not _substantive:
+            for _tc in tool_calls:
+                _k = _read_call_key(_get_tc_name(_tc), _get_tc_args(_tc))
+                if _repeat_read_check(_repeat_seen, _k, turn, _REPEAT_READ_N, _REPEAT_READ_WINDOW, _repeat_latched):
+                    _repeat_msg = (f"[SYSTEM NOTICE: you have issued the same read — {_k[0]} with the same "
+                                   f"arguments — {_REPEAT_READ_N} times in the last {_REPEAT_READ_WINDOW} turns "
+                                   f"without acting on it. Re-reading will not change it. Decide and act: "
+                                   f"edit, run, or report blocked with what you found.]")
+                    if _success_check_cmd:
+                        _adv = _maybe_advisor_nudge(source="stall", context=f"repeated read: {_k[0]} {_k[1][:200]}")
+                        if _adv:
+                            conversation_history.append({"role": "user", "content": _adv})
+        else:
+            _repeat_seen.clear()
         if _substantive:
             _consecutive_text_only = 0
 
@@ -8172,6 +8366,11 @@ def main():
                              "the file receives the validated JSON only. Optional path to a JSON "
                              "schema; default = built-in. Missing/invalid at exit → correction "
                              "(bounded), then a synthesized failed record and exit 11.")
+    parser.add_argument("--goal", default=None,
+                        help="The run's stated goal (overrides cycle.goal); injected at goal-anchor fractions (F4).")
+    parser.add_argument("--deliverable", action="append", default=None, metavar="PATH_OR_GLOB",
+                        help="A named deliverable (repeatable; overrides cycle.deliverables). A final "
+                             "'done' while one is absent draws a correction (F4).")
     parser.add_argument("--deadline", type=float, default=None, metavar="SECONDS",
                         help="Wall-clock budget for the run (overrides cycle.deadline_s). The agent "
                              "is warned at 60/80/92%% and forced to its final result at 100%%, "
@@ -8199,6 +8398,11 @@ def main():
     # at launch: unreadable → refuse to start (exit 14), never run-then-surprise.
     if getattr(args, "result_contract", None) is not None:
         _config["cycle"]["result_contract"] = True if args.result_contract == "default" else args.result_contract
+    # F4: --goal / --deliverable win over cycle.goal / cycle.deliverables.
+    if getattr(args, "goal", None):
+        _config["cycle"]["goal"] = str(args.goal)
+    if getattr(args, "deliverable", None):
+        _config["cycle"]["deliverables"] = list(args.deliverable)
     if _config["cycle"].get("result_contract"):
         global _RESULT_CONTRACT_SCHEMA
         try:

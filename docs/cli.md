@@ -23,6 +23,7 @@ python agent.py [OPTIONS] [PROMPT...]
 | `--temperature F`, `--top-p F`, `--seed N` | Per-run sampling overrides (flag > `generation.*` config > default). `--seed` gives reproducible runs on backends that honor a seed (llama.cpp); others warn once and ignore it. |
 | `--no-realpath-cwd` | Keep a symlinked working directory as given. By default the process canonicalizes its cwd and `$PWD` at start (see [Headless runs](#headless--unattended-runs)). |
 | `--deadline SECONDS` | Wall-clock budget for the run (overrides `cycle.deadline_s`). Warnings at 60/80/92%; at 100% tool calls are refused, the final result is forced, and the process exits `10`. |
+| `--goal TEXT`, `--deliverable PATH` | The run's stated goal and named deliverables (repeatable). Injected as goal anchors at fractions of the budget; a final `done` while a deliverable is absent draws a correction. Auto-derived from a `GOAL:` / `DELIVERABLE:` stanza when the result contract is armed. |
 | `--result-contract [SCHEMA.json]` | Require the final message to end with a fenced JSON result block (`{"contract": 1, "status": …, "summary": …}`); with `--result-file` the file receives the validated JSON only. Optional schema path; default = built-in. See [Headless runs](#headless--unattended-runs). |
 | `PROMPT...` | Initial prompt. Optional in interactive mode. |
 
@@ -86,6 +87,26 @@ HTTP 500 is treated as a context overflow only when its body says so (llama.cpp 
 "exceeds the available context size", "context shift is disabled", "prompt is too long");
 any other 500 is a transient, retried with the existing jittered exponential backoff and
 never counted toward an overflow verdict.
+
+**Goal anchoring and the deliverable guard (`--goal`, `--deliverable`, `cycle.goal`,
+`cycle.deliverables`).** Long-horizon drift, observed live: a 45-minute run produced a competent
+artifact answering the wrong question, self-assessed complete, and never noticed the named
+deliverable was absent. With a goal and/or deliverables set, the run receives a goal anchor at
+`cycle.goal_anchor_fracs` (default 50% and 80% of the deadline, or of the turn budget when no
+deadline) — the stated goal, the deliverables, and a mechanical "these do not exist yet" list
+from one glob sweep, no model call. A final `done` while a named deliverable is absent draws
+the standard correction (bounded like the result contract); `blocked`, `failed` and
+`cannot-tell` are always accepted — the guard polices claims, not outcomes. When the result
+contract is armed and the initial prompt carries a `GOAL:` / `DELIVERABLE:` stanza, both are
+derived automatically. The launch log names which deliverables are absent at start, so a
+misspelled path is visible before a long run rather than after it.
+
+**Repeat-read stall (`cycle.repeat_read_nudge`, default 3 in 6).** The stall detector counts
+read-only turns; "re-reading the same file" is a sharper and earlier signature, and it is what
+pre-death loops look like. The same read-class call (tool + arguments) issued `n` times within
+`window` turns triggers one nudge naming the read — once per unique call, never a nag — and,
+when a success check is configured, the existing advisor escalation. A substantive batch
+(edit, write, exec) resets the window.
 
 **Classifiable exit status (`-a` / `-r` only).** The process exits with a stable code and prints
 one line to stderr, `AGENT-EXIT: <name> <detail>`, so a supervisor can tell *completed* from

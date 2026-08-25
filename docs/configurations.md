@@ -140,10 +140,20 @@ for the exit-code contract that unattended callers rely on.
     "deadline_warn_fracs": [0.6, 0.8, 0.92],
     "grind_elapsed_s": 0,
     "result_contract": false,
-    "result_contract_max_blocks": 2
+    "result_contract_max_blocks": 2,
+    "goal": "",
+    "deliverables": [],
+    "goal_anchor_fracs": [0.5, 0.8],
+    "repeat_read_nudge": {"n": 3, "window": 6}
   }
 }
 ```
+
+`goal` / `deliverables` (paths or globs) arm goal anchoring and the deliverable guard
+(`--goal` / `--deliverable` override; derived from a `GOAL:` / `DELIVERABLE:` prompt stanza
+when the result contract is armed). `goal_anchor_fracs` are the budget fractions at which the
+anchor is injected. `repeat_read_nudge` fires one nudge when the same read-class call recurs
+`n` times within `window` turns.
 
 `deadline_s` is a wall-clock budget in seconds (`0` = off; `--deadline` overrides it). The
 agent is warned at each fraction in `deadline_warn_fracs` and forced to its final result at
