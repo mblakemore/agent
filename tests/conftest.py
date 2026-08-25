@@ -53,8 +53,11 @@ _AGENT_REPO = "/droid/repos/agent"
 _MODEL_PORTS = {8080, 8000, 8788}
 
 
-class LiveEndpointGuardError(AssertionError):
-    pass
+class LiveEndpointGuardError(ConnectionRefusedError, AssertionError):
+    """Raised INSTEAD of connecting. It is a ConnectionRefusedError too, so library paths that
+    handle 'server down' gracefully (the startup health probe, retry ladders) keep behaving as
+    they would against a dead port — the socket is simply never opened — while a code path
+    that lets it propagate fails the test loudly with the marker hint."""
 
 
 def pytest_configure(config):
