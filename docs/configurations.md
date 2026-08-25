@@ -128,3 +128,22 @@ and ignore it. The flags `--temperature`, `--top-p` and `--seed` override these 
 (flag > config > default), which is what k-sample ensembles ("same prompt, k runs, reconcile")
 and failure reproduction want without editing the file. See [CLI: headless runs](cli.md#headless--unattended-runs)
 for the exit-code contract that unattended callers rely on.
+
+## Cycle limits for unattended runs
+
+```json
+{
+  "cycle": {
+    "max_turns": 250,
+    "wind_down_turns": 10,
+    "deadline_s": 0,
+    "deadline_warn_fracs": [0.6, 0.8, 0.92],
+    "grind_elapsed_s": 0
+  }
+}
+```
+
+`deadline_s` is a wall-clock budget in seconds (`0` = off; `--deadline` overrides it). The
+agent is warned at each fraction in `deadline_warn_fracs` and forced to its final result at
+100% (exit code `10`). When a deadline is set and `grind_elapsed_s` is `0`, grind escalation
+defaults to half the deadline so a stuck run asks for help while there is still time to use it.

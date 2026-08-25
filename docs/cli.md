@@ -22,6 +22,7 @@ python agent.py [OPTIONS] [PROMPT...]
 | `--role builder\|reviewer\|creature` | Explicit session role; overrides prompt string-matching for the CICD guards. |
 | `--temperature F`, `--top-p F`, `--seed N` | Per-run sampling overrides (flag > `generation.*` config > default). `--seed` gives reproducible runs on backends that honor a seed (llama.cpp); others warn once and ignore it. |
 | `--no-realpath-cwd` | Keep a symlinked working directory as given. By default the process canonicalizes its cwd and `$PWD` at start (see [Headless runs](#headless--unattended-runs)). |
+| `--deadline SECONDS` | Wall-clock budget for the run (overrides `cycle.deadline_s`). Warnings at 60/80/92%; at 100% tool calls are refused, the final result is forced, and the process exits `10`. |
 | `PROMPT...` | Initial prompt. Optional in interactive mode. |
 
 Press **Escape twice** within 400ms to cancel a streaming response.
@@ -37,6 +38,19 @@ directory and rewrites `$PWD` to the physical path, logging the change. A run la
 a symlinked path otherwise produces `os.path.relpath()` values that walk out of the repository,
 and `git log -- <path>` then returns nothing *with exit 0*. Pass `--no-realpath-cwd` to keep the
 symlinked view (overlay-style layouts).
+
+**Wall-clock deadline (`--deadline SECONDS` / `cycle.deadline_s`).** The wind-down ladder
+is turn-based; a run that is slow rather than turn-hungry got no warning and was killed by
+its supervisor mid-write, with work done and no result emitted. With a deadline set, the
+clock starts at run start and the agent is told at 60% (heads-up), 80% (begin wrapping up)
+and 92% (stop working — emit your final result now), through the same message channel the
+turn wind-down uses; the fractions are `cycle.deadline_warn_fracs`. At 100% the stop is
+structural: tool calls are refused (each still receives a paired result saying why), the
+success-check and claim gates stand down, and the run takes the final-result path — the
+process exits `10` and, when `--result-file` is set, the file holds whatever the model said
+last. A grind escalation defaults to half the deadline when `cycle.grind_elapsed_s` is unset,
+and an advisor consult that cannot finish in the time left is skipped with a notice rather
+than started. Unset (`0`) is today's behaviour exactly.
 
 **Classifiable exit status (`-a` / `-r` only).** The process exits with a stable code and prints
 one line to stderr, `AGENT-EXIT: <name> <detail>`, so a supervisor can tell *completed* from

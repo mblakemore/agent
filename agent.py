@@ -460,6 +460,12 @@ _DEFAULT_CONFIG = {
         "wind_down_turns": 10,
         "max_text_only": 3,
         "max_total_nudges": 6,
+        # F1 (plan/headless-hardening.md): wall-clock deadline in seconds, 0 = off (today's
+        # behavior exactly). --deadline wins over this. Escalating injections at these
+        # fractions reuse the wind-down channel; at 1.0 tool dispatch is refused and the
+        # run takes the final-result path with exit code 10.
+        "deadline_s": 0,
+        "deadline_warn_fracs": [0.6, 0.8, 0.92],
     },
     "generation": {
         "temperature": 0.6,
@@ -742,6 +748,41 @@ def _classify_auto_result(result, error_kind=None, last_exit=None):
             return EXIT_BACKEND, "backend request failed after retries"
         return EXIT_ERROR, "run loop returned error"
     return EXIT_OK, str(result or "")
+
+
+def _deadline_step(elapsed_s, deadline_s, fired, fracs):
+    """F1, pure: given elapsed wall-clock, the deadline and the set of fractions already
+    fired, return (message_or_None, hard_stop_bool). Fires each fraction at most once, in
+    order, and the hard stop exactly once (fired gains the sentinel 1.0). Unit-tested."""
+    if not deadline_s or deadline_s <= 0:
+        return None, False
+    frac = elapsed_s / float(deadline_s)
+    remaining = max(0, int(deadline_s - elapsed_s))
+    if frac >= 1.0:
+        if 1.0 in fired:
+            return None, True
+        fired.add(1.0)
+        return (f"[SYSTEM: DEADLINE REACHED ({int(deadline_s)}s). Tool calls are now REFUSED. "
+                f"Reply with your FINAL RESULT immediately — state what was done, what was not, "
+                f"and where the artifacts are. Do not start anything.]"), True
+    due = [f for f in sorted(fracs) if frac >= f and f not in fired]
+    if not due:
+        return None, False
+    f = due[-1]                       # a late tick fires only the highest due fraction
+    for skipped in due:
+        fired.add(skipped)
+    if f >= 0.9:
+        msg = (f"[SYSTEM: {remaining}s of wall-clock budget left ({int(f * 100)}% used). "
+               f"STOP WORKING NOW — emit your final result on this turn: what was done, what was "
+               f"not, artifact paths. The next warning is the hard stop.]")
+    elif f >= 0.75:
+        msg = (f"[SYSTEM: {remaining}s of wall-clock budget left ({int(f * 100)}% used). "
+               f"Begin wrapping up — save progress, finish the current step, prepare your final "
+               f"result. Do not start new tasks.]")
+    else:
+        msg = (f"[SYSTEM: heads-up — {remaining}s of wall-clock budget left ({int(f * 100)}% used). "
+               f"Plan to finish inside it.]")
+    return msg, False
 
 
 def _exit_now(code, detail=""):
@@ -4654,6 +4695,21 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         _GRIND_ELAPSED_S = float((_config.get("cycle") or {}).get("grind_elapsed_s", 0) or 0)
     except Exception:
         _GRIND_ELAPSED_S = 0.0
+    # F1 — wall-clock deadline state. The clock starts here (run start, monotonic), independent
+    # of turns. `_deadline_hard` is read by the exit gates and the tool dispatcher below.
+    try:
+        _DEADLINE_S = float((_config.get("cycle") or {}).get("deadline_s", 0) or 0)
+    except Exception:
+        _DEADLINE_S = 0.0
+    _deadline_fracs = list((_config.get("cycle") or {}).get("deadline_warn_fracs") or [0.6, 0.8, 0.92])
+    _deadline_t0 = _grind_t0
+    _deadline_fired = set()
+    _deadline_hard = False
+    _deadline_hard_turns = 0
+    if _DEADLINE_S > 0 and _GRIND_ELAPSED_S <= 0:
+        # a stuck run should escalate while there is still time to act on advice
+        _GRIND_ELAPSED_S = 0.5 * _DEADLINE_S
+        log.info("deadline %.0fs set — grind escalation defaults to %.0fs (50%%)", _DEADLINE_S, _GRIND_ELAPSED_S)
     # No-progress gate (fixes the M2 A/B regression: grind fired on a slow-but-
     # CONVERGING run at the elapsed mark and derailed a run the model would have
     # finished on its own — OFF 1/3 vs ON 0/3). Only escalate if the model has
@@ -4871,6 +4927,24 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     _adv_context = _build_advisor_context(context)
                     _funnel_ev("auto_invoke_call", source=source,
                                ctx_chars=len(_adv_context))
+                    # F1: a consult must FIT before the deadline. Same arithmetic the tool
+                    # uses for its own timeout; if it cannot finish in the time left, inject
+                    # the pending-consult notice instead and let the run wrap without it.
+                    if _DEADLINE_S > 0:
+                        try:
+                            from tools.consult_advisor import derive_timeout_s as _dts
+                            _need = int(_dts(_config.get("advisor") or {}))
+                        except Exception:
+                            _need = 0
+                        _left = _DEADLINE_S - (time.monotonic() - _deadline_t0)
+                        if _need and _left < _need:
+                            _funnel_ev("auto_invoke_skipped_deadline", source=source,
+                                       need_s=_need, left_s=int(_left))
+                            log.warning("advisor auto-invoke skipped: needs ~%ds, %ds left before the deadline",
+                                        _need, int(_left))
+                            return ("[SYSTEM: escalation to the advisor was due (" + _situation +
+                                    f") but cannot finish before the deadline ({int(_left)}s left, "
+                                    f"consult needs ~{_need}s). Wrap up with what you have.]")
                     telemetry.record_tool_call("consult_advisor")
                     _advice = MAP_FN["consult_advisor"](
                         question=_q, context=_adv_context, reason=_reason)
@@ -4906,6 +4980,11 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         redirect already appended and continue)."""
         nonlocal _success_check_blocks, _ran_verification
         if not _success_check_cmd:
+            return False
+        if _deadline_hard:
+            # F1: past the deadline the gate must not hold the run for a fix it has no time
+            # for — the result says the check failed; the supervisor reads exit 10.
+            log.info("success_check gate stood down — deadline reached (%s exit)", path_name)
             return False
         if _success_check_blocks >= _SUCCESS_CHECK_MAX_BLOCKS:
             return False
@@ -4946,6 +5025,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         this catches 'claimed an action never taken' (invisible without the trace,
         and unfixable by any sampling knob — hence structural). State is passed in
         (not closed over) so the reads register in the caller's scope."""
+        if _deadline_hard:
+            return False, blocks   # F1: past the deadline, accept the final result as given
         if not text or max_blocks <= 0 or blocks >= max_blocks:
             return False, blocks
         _unsupported = _claim_vs_trace_unsupported(text, ran_verification, has_committed)
@@ -5263,6 +5344,28 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             if overtime >= _MAX_TURNS:
                 log.error("Hard overtime cap reached (%d turns) — force stopping", turn)
                 return "done"
+        # F1 — the wall-clock twin of the ladder above. Rides the same message channel; when
+        # both apply on one turn the deadline message wins (it is the one with a hard stop
+        # behind it). At 100% the run gets ONE more model turn for its final result; a tool
+        # call on that turn is refused (dispatcher below), a second such turn ends the run.
+        if _DEADLINE_S > 0:
+            _dl_msg, _dl_hard = _deadline_step(time.monotonic() - _deadline_t0, _DEADLINE_S,
+                                               _deadline_fired, _deadline_fracs)
+            if _dl_hard and not _deadline_hard:
+                _deadline_hard = True
+                _set_exit(EXIT_DEADLINE, f"wall-clock deadline {int(_DEADLINE_S)}s reached at turn {turn}")
+                log.error("DEADLINE reached (%.0fs) at turn %d — tool calls refused, forcing final result",
+                          _DEADLINE_S, turn)
+                _emit("on_notice", "warn", f"[Deadline {int(_DEADLINE_S)}s reached — forcing the final result]")
+            if _deadline_hard:
+                _deadline_hard_turns += 1
+                if _deadline_hard_turns > 2:
+                    log.error("DEADLINE: no final result after %d post-deadline turns — stopping",
+                              _deadline_hard_turns - 1)
+                    return "done"
+            if _dl_msg:
+                wind_down_msg = _dl_msg
+                log.warning("deadline: %s", _dl_msg[:90])
 
         # ── Mid-burst "btw" injection ──
         # Deliver any queued monitor / background input at this natural boundary
@@ -6360,6 +6463,21 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         _emit("on_tool_batch_start", len(tool_calls))
         _garbled_count = 0  # track garbled tool calls for retry
         _tool_exec_t0 = time.monotonic()
+        if _deadline_hard:
+            # F1 hard stop is STRUCTURAL: past the deadline no tool runs. Every call still gets
+            # a paired tool result (strict templates reject an unanswered tool_call) saying why,
+            # so the model's next turn is the final result the run is waiting for.
+            for tool_call in tool_calls:
+                _tc_id = tool_call.id if hasattr(tool_call, "id") else tool_call.get("id")
+                _tc_name = _get_tc_name(tool_call)
+                conversation_history.append({
+                    "role": "tool", "tool_call_id": _tc_id, "name": _tc_name,
+                    "content": (f"REFUSED: the wall-clock deadline ({int(_DEADLINE_S)}s) has passed — no tool "
+                                f"runs now. Reply with your FINAL RESULT: what was done, what was not, "
+                                f"artifact paths.")})
+            log.warning("deadline: refused %d tool call(s) on post-deadline turn %d", len(tool_calls), _deadline_hard_turns)
+            _emit("on_notice", "warn", f"[Deadline: {len(tool_calls)} tool call(s) refused — final result required]")
+            continue
         try:
             with cancellable():
                 for tool_call in tool_calls:
@@ -7733,6 +7851,10 @@ def main():
     parser.add_argument("--seed", type=int, default=None,
                         help="Per-run sampling seed (overrides generation.seed) for reproducible "
                              "runs on backends that support it; others warn once and ignore it.")
+    parser.add_argument("--deadline", type=float, default=None, metavar="SECONDS",
+                        help="Wall-clock budget for the run (overrides cycle.deadline_s). The agent "
+                             "is warned at 60/80/92%% and forced to its final result at 100%%, "
+                             "exiting 10 — it beats the supervisor's kill instead of racing it.")
     parser.add_argument("prompt", nargs="*", help="Initial prompt")
     args = parser.parse_args()
 
@@ -7746,6 +7868,12 @@ def main():
     # F8a: generation overrides (flag > config > default), applied after backend overrides so
     # the seed support warning names the backend that will actually run.
     _apply_generation_overrides(args)
+    # F1: --deadline wins over cycle.deadline_s.
+    if getattr(args, "deadline", None) is not None:
+        if args.deadline <= 0:
+            print("--deadline must be a positive number of seconds", file=sys.stderr)
+            _exit_now(EXIT_CONFIG, "--deadline must be positive")
+        _config["cycle"]["deadline_s"] = float(args.deadline)
 
     # --setup: force the wizard on session start (interactive path only;
     # the TTY/auto guards inside _maybe_first_run_wizard still apply).
