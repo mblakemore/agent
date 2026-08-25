@@ -70,6 +70,23 @@ already owns the code. Two valid blocks → last wins. The exit classification i
 the JSON as `"exit": {code, name, detail}`. An unreadable schema refuses to start (exit `14`).
 Without the flag, `--result-file` is byte-identical to the raw behaviour.
 
+**Bulk belongs in files (`limits.tool_result_max_chars`, default 20 000).** A tool result
+over the cap is written to `.agent/spill/<turn>-<tool>-<ts>.txt` and the model receives a
+reference — path, size, line count, a head/tail excerpt, and the instruction to read it in
+slices — instead of the payload. This replaces the old head/tail truncation at the same
+boundary and is lossless: the file holds everything. The same cap applies to an oversized
+initial prompt (a spec with a data blob pasted in), which is spilled with a reference the model
+is told to read first. A spill directory that cannot be written falls back to the legacy
+truncation with a warning. `0` disables the spill (truncation only). The context budget is
+also calibrated from the server's own token counts: every streamed turn reports
+`prompt_tokens`, the ratio observed-to-estimated is tracked, and the next window is sized by
+it — a tokenizer mismatch between the estimator and the served model stops mattering after
+the first measured turn (logged when the ratio moves by more than 10%). On the transport, an
+HTTP 500 is treated as a context overflow only when its body says so (llama.cpp names it:
+"exceeds the available context size", "context shift is disabled", "prompt is too long");
+any other 500 is a transient, retried with the existing jittered exponential backoff and
+never counted toward an overflow verdict.
+
 **Classifiable exit status (`-a` / `-r` only).** The process exits with a stable code and prints
 one line to stderr, `AGENT-EXIT: <name> <detail>`, so a supervisor can tell *completed* from
 *died-of-context* without parsing logs:

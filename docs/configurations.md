@@ -154,3 +154,21 @@ defaults to half the deadline so a stuck run asks for help while there is still 
 a JSON schema file; `--result-contract [schema]` overrides it. `result_contract_max_blocks`
 bounds how many times a missing/invalid result block redirects the exit before a synthesized
 `failed` record is written (exit code `11`). See [CLI: headless runs](cli.md#headless--unattended-runs).
+
+## Output limits
+
+```json
+{
+  "limits": {
+    "tool_result_max_chars": 20000
+  }
+}
+```
+
+A tool result — or an initial prompt — over `tool_result_max_chars` is spilled to
+`.agent/spill/` and replaced in the conversation by a reference with a head/tail excerpt
+(lossless; the old head/tail truncation threw the middle away). `0` keeps truncation only.
+Two related behaviours need no key: the context budget is calibrated from the server's
+reported `prompt_tokens` after the first measured turn, and an HTTP 500 counts as a context
+overflow only when its body names one (otherwise it is retried as a transient under the
+`retry` block's jittered backoff).

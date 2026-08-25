@@ -474,6 +474,12 @@ _DEFAULT_CONFIG = {
         "result_contract": False,
         "result_contract_max_blocks": 2,
     },
+    # F3: per-result spill cap. A tool result (or an inbound prompt/message, F3a) over this many
+    # chars is written to .agent/spill/ and replaced by a reference + excerpt; 0 = legacy
+    # head/tail truncation only. Sits at the boundary the old truncation used, now lossless.
+    "limits": {
+        "tool_result_max_chars": 20_000,
+    },
     "generation": {
         "temperature": 0.6,
         "top_p": 0.95,
@@ -810,7 +816,13 @@ _RESULT_CONTRACT_SCHEMA = None      # loaded at launch when armed
 
 
 def _result_contract_armed():
-    return bool(_config.get("cycle", {}).get("result_contract"))
+    """Armed only by an explicit True or a schema path — never by a truthy stand-in (tests
+    that mock the config object must not accidentally arm the contract)."""
+    try:
+        v = (_config.get("cycle") or {}).get("result_contract")
+    except Exception:  # noqa: BLE001
+        return False
+    return v is True or (isinstance(v, str) and v.strip() != "" and v.lower() not in ("false", "0", "off"))
 
 
 def _load_result_contract_schema(spec):
@@ -2318,6 +2330,48 @@ def _estimate_tokens(msg):
     return count_tokens_from_message(msg)
 
 
+# F3b — drift-free context accounting. The estimator (token_utils) is a fixed tokenizer /
+# chars-per-token guess; every streamed turn returns the server's REAL prompt_tokens for what
+# was actually sent. Keep an observed ratio (actual / estimated) and budget the next window
+# with it. The heuristic is the first guess, not a permanent assumption; a tokenizer mismatch
+# between the estimator and the served model shows up here as a ratio far from 1.0.
+_TOKEN_CAL = {"ratio": 1.0, "n": 0, "last_logged": 1.0}
+_TOKEN_CAL_ALPHA = 0.3        # EMA weight of the newest observation
+_TOKEN_CAL_MIN, _TOKEN_CAL_MAX = 0.25, 4.0   # a single absurd reading cannot wreck the budget
+
+
+def _update_token_calibration(estimated_tokens, actual_prompt_tokens, log=None, cal=None):
+    """Pure enough to test: feed (estimate we sent, tokens the server counted) and get the
+    updated ratio. Ignores readings that cannot be right (zero/negative, or outside the clamp
+    after smoothing). Logs when the ratio moves by more than 10% since the last log line."""
+    cal = _TOKEN_CAL if cal is None else cal
+    try:
+        est, act = float(estimated_tokens), float(actual_prompt_tokens)
+    except (TypeError, ValueError):
+        return cal["ratio"]
+    if est <= 0 or act <= 0:
+        return cal["ratio"]
+    obs = act / est
+    if not (_TOKEN_CAL_MIN <= obs <= _TOKEN_CAL_MAX):
+        if log:
+            log.debug("token calibration: ignored implausible ratio %.2f (est %d, actual %d)", obs, est, act)
+        return cal["ratio"]
+    new = obs if cal["n"] == 0 else (1 - _TOKEN_CAL_ALPHA) * cal["ratio"] + _TOKEN_CAL_ALPHA * obs
+    cal["ratio"] = min(_TOKEN_CAL_MAX, max(_TOKEN_CAL_MIN, new))
+    cal["n"] += 1
+    if log and abs(cal["ratio"] - cal["last_logged"]) / max(cal["last_logged"], 1e-9) > 0.10:
+        log.info("token calibration: observed/estimated ratio now %.2f (n=%d, this turn %.2f) — "
+                 "context budget scales by 1/ratio", cal["ratio"], cal["n"], obs)
+        cal["last_logged"] = cal["ratio"]
+    return cal["ratio"]
+
+
+def _calibrated_budget(budget, cal=None):
+    """Tokens the estimator may spend so that the SERVER sees at most `budget`."""
+    cal = _TOKEN_CAL if cal is None else cal
+    return int(budget / cal["ratio"]) if cal.get("n", 0) > 0 and cal["ratio"] > 0 else int(budget)
+
+
 _EXTENDED_KEYWORDS = frozenset({
     "plan", "design", "architect", "refactor", "implement", "rewrite",
     "explain in detail", "write tests", "analyse", "analyze", "migrate",
@@ -3052,6 +3106,43 @@ _SPILL_MIN_THRESHOLD = 1000   # successive spill passes halve toward this floor
 _SPILL_PREVIEW = 200          # chars of head and tail kept inline for orientation
 
 
+def _tool_result_spill_cap():
+    """limits.tool_result_max_chars as a validated int (0 = spill off). A value that is not a
+    real integer — a bool, a string, a test double (int(MagicMock()) == 1 and spilled every
+    10-char result in the suite) — falls back to the legacy boundary."""
+    try:
+        v = (_config.get("limits") or {}).get("tool_result_max_chars", _MAX_TOOL_RESULT_CHARS)
+    except Exception:  # noqa: BLE001
+        return _MAX_TOOL_RESULT_CHARS
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return _MAX_TOOL_RESULT_CHARS
+    return max(0, int(v))
+
+
+def _spill_tool_result(turn_idx, name, content, log, kind="tool"):
+    """F3 (stage 2 of the spill arc): a SINGLE oversized payload — a tool result at the
+    moment it is produced, or an inbound prompt/message (F3a) — is written to
+    .agent/spill/<turn>-<name>.txt and replaced by a reference the model can act on:
+    path, size, line count, head/tail excerpt, and the instruction to read it in slices.
+    Same file convention as the overflow-time spill so downstream tooling sees one shape.
+    Returns the replacement text; on a write failure returns None (caller falls back to
+    the legacy in-place truncation — never die for want of a scratch file)."""
+    try:
+        os.makedirs(_SPILL_DIR, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name))[:40] or kind
+        fpath = os.path.join(_SPILL_DIR, f"{int(turn_idx):04d}-{safe}-{int(time.time())}.txt")
+        with open(fpath, "w", encoding="utf-8", errors="replace") as f:
+            f.write(content)
+    except OSError as e:
+        log.warning("F3 spill: could not write %s (%s) — falling back to truncation", name, e)
+        return None
+    n_lines = content.count("\n") + 1
+    return (f"{_SPILL_MARKER}{fpath}] {len(content)} chars, {n_lines} lines — too large for the "
+            f"context window, saved to that file. Read it in slices (read_file with a line range) or "
+            f"search it; do NOT re-request the whole payload.\n"
+            f"--- head ---\n{content[:_SPILL_PREVIEW]}\n--- tail ---\n{content[-_SPILL_PREVIEW:]}")
+
+
 def _spill_oversized_tool_results(conversation_history, log, threshold):
     """Context-overflow recovery, stage 1 (before message trimming): move bulk tool-result
     payloads out of the conversation and into files, leaving a reference + short preview.
@@ -3127,6 +3218,9 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
     # chat-template overhead (~4 special tokens per message boundary, system
     # prompt formatting for tools) that our tokenizer doesn't count.
     budget = ctx_size - _TOOLS_TOKENS - reserved_output - max(512, ctx_size // 4)
+    # F3b: spend estimator-tokens so that the SERVER sees at most `budget` (ratio observed
+    # from real prompt_tokens; 1.0 until the first measured turn).
+    budget = _calibrated_budget(budget)
     effective_max = max_messages_override if max_messages_override else _MAX_CONTEXT_MESSAGES
 
     context_msg = None
@@ -4330,6 +4424,16 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         if _session_resume_summary:
             expanded = f"{_session_resume_summary}\n\n---\n\n{expanded}"
 
+        # F3a: inbound bulk spills too. A spec with a data blob pasted in, or a log dumped
+        # into the initial prompt, goes to a file with a reference — bulk belongs in files,
+        # references in context, in both directions. Same cap as tool results.
+        _in_cap = _tool_result_spill_cap()
+        if _in_cap > 0 and isinstance(expanded, str) and len(expanded) > _in_cap:
+            _ref = _spill_tool_result(0, "prompt", expanded, log, kind="prompt")
+            if _ref is not None:
+                log.info("F3a spill: initial prompt of %d chars -> file (cap %d)", len(expanded), _in_cap)
+                expanded = ("[Your initial instructions were too large for the context window and were "
+                            "saved to a file — read them from there before acting.]\n" + _ref)
         conversation_history.append({"role": "user", "content": expanded})
         log.debug("USER: %s", expanded)
         result = run_agent_single(conversation_history, summary_state, initial_files, log,
@@ -5999,6 +6103,12 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         if _u_in:
                             telemetry.record_tokens(_u_model, "prompt", int(_u_in), backend=_u_backend)
                             _turn_in_tokens += int(_u_in)
+                            # F3b: what we ESTIMATED for this exact request vs what the server counted
+                            try:
+                                _est_sent = (_TOOLS_TOKENS or 0) + sum(_estimate_tokens(_m) for _m in _outgoing_messages)
+                                _update_token_calibration(_est_sent, int(_u_in), log)
+                            except Exception as _cal_e:  # never let accounting break a turn
+                                log.debug("token calibration skipped: %s", _cal_e)
                         if _u_out:
                             telemetry.record_tokens(_u_model, "completion", int(_u_out), backend=_u_backend)
                             _turn_out_tokens += int(_u_out)
@@ -7115,7 +7225,17 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         if _cmd_str:
                             result_str = _cicd_verify_gh_mutation(_cmd_str, result_str, log)
 
-                    # Truncate oversized tool results to cap context pressure.
+                    # F3: an oversized tool result is SPILLED to a file and replaced by a
+                    # reference + excerpt (lossless — the old head/tail truncation threw the
+                    # middle away, and a data-heavy run died echoing bulk into a 196k window).
+                    # limits.tool_result_max_chars, 0 = legacy truncation only.
+                    _spill_cap = _tool_result_spill_cap()
+                    if _spill_cap > 0 and len(result_str) > _spill_cap and not result_str.startswith(_SPILL_MARKER):
+                        _ref = _spill_tool_result(turn, func_name, result_str, log)
+                        if _ref is not None:
+                            log.info("F3 spill: %s result of %d chars -> file (cap %d)", func_name, len(result_str), _spill_cap)
+                            telemetry.record_patch_event("tool_result_spill", kind=func_name)
+                            result_str = _ref
                     if len(result_str) > _MAX_TOOL_RESULT_CHARS:
                         half = _MAX_TOOL_RESULT_CHARS // 2
                         result_str = (

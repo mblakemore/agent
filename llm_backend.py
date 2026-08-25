@@ -100,6 +100,31 @@ def _calc_retry_delay(attempt: int, cfg: dict) -> float:
     return round(delay, 2)
 
 
+_OVERFLOW_MARKERS = (
+    "exceeds the available context size", "exceed the available context", "context shift is disabled",
+    "prompt is too long", "context size", "n_ctx", "too many tokens", "maximum context length",
+    "context_length_exceeded", "input is too long",
+)
+
+
+def _response_body_head(response) -> str:
+    """First 600 chars of a response body, lower-cased; '' when unreadable. Never raises."""
+    try:
+        text = getattr(response, "text", "")
+        if not isinstance(text, str):        # bytes, None, a test double — not a body we can read
+            return ""
+        return text[:600].lower()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _looks_like_context_overflow(body: str) -> bool:
+    """True when a server error body names a context/length overflow (llama.cpp and the
+    OpenAI-style phrasings). A body-less or unrelated 500 is NOT an overflow verdict."""
+    b = (body or "").lower()
+    return any(m in b for m in _OVERFLOW_MARKERS)
+
+
 def _is_conn_refused(e) -> bool:
     """True for 'server not listening' — a dead port, distinct from a slow
     5xx/timeout that might recover. Retrying a refused connection through the
@@ -399,11 +424,25 @@ class LlamacppBackend:
                     )
                     if response.status_code >= 500:
                         if response.status_code == 500:
+                            # F3 transport (plan/headless-hardening.md): a 500 is an OVERFLOW
+                            # verdict only when the server says so in the body (llama.cpp:
+                            # "exceeds the available context size", "context shift is
+                            # disabled", "prompt is too long") — read once, raise at once, no
+                            # three wasted round trips. Any other bodied 500 (busy, reloading)
+                            # is a transient: retried with the jittered backoff below and never
+                            # counted toward the overflow verdict, so a transient burst cannot
+                            # trigger a needless compaction ladder. The 3-strikes heuristic
+                            # survives only for servers that return an EMPTY body.
+                            _body = _response_body_head(response)
+                            if _looks_like_context_overflow(_body):
+                                raise ContextOverflowError(
+                                    f"HTTP 500 names a context overflow: {_body[:160]!r}"
+                                )
                             consecutive_500s += 1
                             consecutive_504s = 0
-                            if consecutive_500s >= 3:
+                            if consecutive_500s >= 3 and not _body:
                                 raise ContextOverflowError(
-                                    "3 consecutive HTTP 500 errors — likely context overflow"
+                                    "3 consecutive HTTP 500 errors with empty bodies — likely context overflow"
                                 )
                         elif response.status_code == 504:
                             consecutive_504s += 1
@@ -504,11 +543,25 @@ class LlamacppBackend:
                     )
                     if response.status_code >= 500:
                         if response.status_code == 500:
+                            # F3 transport (plan/headless-hardening.md): a 500 is an OVERFLOW
+                            # verdict only when the server says so in the body (llama.cpp:
+                            # "exceeds the available context size", "context shift is
+                            # disabled", "prompt is too long") — read once, raise at once, no
+                            # three wasted round trips. Any other bodied 500 (busy, reloading)
+                            # is a transient: retried with the jittered backoff below and never
+                            # counted toward the overflow verdict, so a transient burst cannot
+                            # trigger a needless compaction ladder. The 3-strikes heuristic
+                            # survives only for servers that return an EMPTY body.
+                            _body = _response_body_head(response)
+                            if _looks_like_context_overflow(_body):
+                                raise ContextOverflowError(
+                                    f"HTTP 500 names a context overflow: {_body[:160]!r}"
+                                )
                             consecutive_500s += 1
                             consecutive_504s = 0
-                            if consecutive_500s >= 3:
+                            if consecutive_500s >= 3 and not _body:
                                 raise ContextOverflowError(
-                                    "3 consecutive HTTP 500 errors — likely context overflow"
+                                    "3 consecutive HTTP 500 errors with empty bodies — likely context overflow"
                                 )
                         elif response.status_code == 504:
                             consecutive_504s += 1
