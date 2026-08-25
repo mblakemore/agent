@@ -104,6 +104,12 @@ it does not break it.
 `kind` also accepts `"bedrock"` and `"foundry"` instead of `"llamacpp"`, for a hosted endpoint
 rather than a local server. AWS Bedrock has its own guide: [Bedrock backend](bedrock.md).
 
+`kind: "fake"` — or the environment variable `AGENT_FAKE_BACKEND=1` — builds a scriptable
+in-process backend that never opens a socket (`llm_backend.FakeBackend`: a list of text /
+tool-call items served in order, every request body recorded). It exists for tests and for
+reproducing a run's control flow without a model; the test suite additionally fails any test
+that connects to a model port without the `@pytest.mark.live` marker.
+
 ## Generation settings and per-run overrides
 
 The `generation` block sets sampling for the main loop:

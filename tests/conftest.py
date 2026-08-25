@@ -45,6 +45,59 @@ import pytest
 
 _AGENT_REPO = "/droid/repos/agent"
 
+# ── F8b: no test reaches a live model endpoint unless it says so ─────────────────────────
+# The suite blocked live escapes by convention (patch a wrapper symbol); a refactor moved a
+# path off the patched symbol and tests silently hit a live server. This is the structural
+# guard: any socket connect to a MODEL port fails loudly unless the test is marked @live.
+# Model ports: 8080 (main llama.cpp), 8000 (advisor), 8788 (Claude Code gateway default).
+_MODEL_PORTS = {8080, 8000, 8788}
+
+
+class LiveEndpointGuardError(AssertionError):
+    pass
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "live: the test intentionally connects to a live model endpoint")
+
+
+@pytest.fixture(autouse=True)
+def _no_live_model_connect(request):
+    """Fail any unmarked test that opens a socket to a model port. Marked @live → untouched."""
+    if request.node.get_closest_marker("live"):
+        yield
+        return
+    import socket
+    _orig_connect = socket.socket.connect
+    _orig_connect_ex = socket.socket.connect_ex
+
+    def _port_of(address):
+        try:
+            return int(address[1]) if isinstance(address, (tuple, list)) and len(address) >= 2 else None
+        except (TypeError, ValueError):
+            return None
+
+    def _guarded(self, address):
+        if _port_of(address) in _MODEL_PORTS:
+            raise LiveEndpointGuardError(
+                f"test tried to connect to a live model port {address!r} without @pytest.mark.live — "
+                f"use AGENT_FAKE_BACKEND=1 / kind 'fake', patch the transport, or mark the test @live")
+        return _orig_connect(self, address)
+
+    def _guarded_ex(self, address):
+        if _port_of(address) in _MODEL_PORTS:
+            raise LiveEndpointGuardError(
+                f"test tried connect_ex to a live model port {address!r} without @pytest.mark.live")
+        return _orig_connect_ex(self, address)
+
+    socket.socket.connect = _guarded
+    socket.socket.connect_ex = _guarded_ex
+    try:
+        yield
+    finally:
+        socket.socket.connect = _orig_connect
+        socket.socket.connect_ex = _orig_connect_ex
+
 
 def _resolve_repo_root() -> str:
     """Return the absolute path of the main repo root.

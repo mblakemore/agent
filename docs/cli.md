@@ -224,4 +224,6 @@ Falls back to plain `input()` automatically if `prompt_toolkit` isn't installed.
 | `BEDROCK_DAILY_CAP_USD` | Combined daily spend cap across roles (default `$10` main, `$1` summary). |
 | `AGENT_HEALTH_TIMEOUT` | Seconds to wait for the startup backend health probe (default `10`). Raise it for cold-start endpoints (e.g. AWS API Gateway/Lambda) that are slow on the first request. |
 | `AGENT_BASH_EXE` | Windows only — full path to `bash.exe` for the `exec_command` shell, overriding Git-Bash auto-detection. |
+| `AGENT_FAKE_BACKEND=1` | Build the scriptable in-process fake backend instead of any configured kind (tests, control-flow reproduction; never opens a socket). See [configurations](configurations.md#hosted-backends). |
+| `AGENT_CTX_SPILL_THRESHOLD` | Chars above which a tool result is spilled to a file during context-overflow recovery (default `4000`, halving per pass to `1000`). |
 

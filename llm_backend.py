@@ -254,6 +254,95 @@ class Backend(Protocol):
     ) -> str: ...
 
 
+# ── FakeBackend (F8b test seam) ─────────────────────────────────────────
+#
+# The test suite blocked live-endpoint escapes by CONVENTION (patching a wrapper symbol); a
+# refactor moved a path off the patched symbol and tests silently hit a live server. The
+# structural seam: build_backend is the sole constructor, and under AGENT_FAKE_BACKEND=1 (or
+# kind: "fake") it returns this scriptable backend. No socket is ever opened. Responses are
+# OpenAI-style streaming chunks, the same shape agent.py parses from llama.cpp.
+
+
+class _FakeResponse:
+    """Just enough of requests.Response for the SSE loop: status_code, iter_lines, json."""
+
+    def __init__(self, lines, status_code=200):
+        self.status_code = status_code
+        self._lines = list(lines)
+        self.text = ""
+
+    def iter_lines(self):
+        return iter(self._lines)
+
+    def json(self):
+        return {}
+
+    def raise_for_status(self):
+        return None
+
+
+class FakeBackend:
+    """Scriptable backend. ``script`` is a list of items, consumed in order per stream_chat call:
+    a str → one text delta; a dict with ``tool_calls`` → tool-call deltas; a dict with
+    ``lines`` → raw SSE lines verbatim; an Exception instance → raised. When the script runs
+    out, ``default`` is served (a short text) so a run always terminates. ``calls`` records
+    every request body, so a test can assert on what was sent (seed, messages, budget)."""
+
+    kind = "fake"
+
+    def __init__(self, cfg=None, script=None, default="ok"):
+        cfg = cfg or {}
+        self.model = cfg.get("model") or "fake-model"
+        self.base_url = cfg.get("base_url") or "fake://"
+        self.script = list(script if script is not None else cfg.get("script") or [])
+        self.default = default
+        self.calls = []
+        self.ctx_size = int(cfg.get("ctx_size") or 32768)
+        self.stream_enabled = True
+
+    # ── protocol ──
+    def health(self, timeout: int = 3):
+        return True, "fake backend"
+
+    def detect_ctx_size(self):
+        return self.ctx_size
+
+    def list_models(self, timeout: int = 3):
+        return [self.model]
+
+    @staticmethod
+    def _sse(payload):
+        import json as _json
+        return f"data: {_json.dumps(payload)}".encode()
+
+    def _render(self, item):
+        if isinstance(item, Exception):
+            raise item
+        if isinstance(item, dict) and "lines" in item:
+            return list(item["lines"])
+        if isinstance(item, dict) and "tool_calls" in item:
+            lines = [self._sse({"choices": [{"delta": {"tool_calls": [tc]}}]}) for tc in item["tool_calls"]]
+        else:
+            lines = [self._sse({"choices": [{"delta": {"content": str(item)}}]})]
+        usage = item.get("usage") if isinstance(item, dict) else None
+        if usage:
+            lines.append(self._sse({"choices": [], "usage": usage}))
+        lines.append(b"data: [DONE]")
+        return lines
+
+    def stream_chat(self, log, *, json=None, stream=True, timeout=(30, 300), **extra):
+        self.calls.append(dict(json or {}))
+        item = self.script.pop(0) if self.script else self.default
+        return _FakeResponse(self._render(item))
+
+    def complete(self, *, prompt, gen_params=None, cancel_check=None, timeout=120):
+        self.calls.append({"prompt": prompt, "gen_params": gen_params})
+        item = self.script.pop(0) if self.script else self.default
+        if isinstance(item, Exception):
+            raise item
+        return str(item) if not isinstance(item, dict) else str(item.get("text", ""))
+
+
 # ── LlamacppBackend ────────────────────────────────────────────────────
 
 
@@ -1849,6 +1938,11 @@ def build_backend(cfg: dict) -> Backend:
     the valid choices — never a bare "Unknown backend kind".
     """
     raw = cfg.get("kind", "llamacpp")
+    # F8b test seam: the ONE constructor honors the fake backend, so a test pins behavior at
+    # the transport layer instead of at whichever wrapper symbol survives the next refactor.
+    # AGENT_FAKE_BACKEND=1 is meant for pytest / explicit opt-in; kind: "fake" is the same.
+    if raw == "fake" or os.environ.get("AGENT_FAKE_BACKEND") == "1":
+        return FakeBackend(cfg)
     kind = normalize_kind(raw)
     if kind == "llamacpp":
         return LlamacppBackend(cfg)
