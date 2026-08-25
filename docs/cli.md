@@ -23,6 +23,7 @@ python agent.py [OPTIONS] [PROMPT...]
 | `--temperature F`, `--top-p F`, `--seed N` | Per-run sampling overrides (flag > `generation.*` config > default). `--seed` gives reproducible runs on backends that honor a seed (llama.cpp); others warn once and ignore it. |
 | `--no-realpath-cwd` | Keep a symlinked working directory as given. By default the process canonicalizes its cwd and `$PWD` at start (see [Headless runs](#headless--unattended-runs)). |
 | `--deadline SECONDS` | Wall-clock budget for the run (overrides `cycle.deadline_s`). Warnings at 60/80/92%; at 100% tool calls are refused, the final result is forced, and the process exits `10`. |
+| `--result-contract [SCHEMA.json]` | Require the final message to end with a fenced JSON result block (`{"contract": 1, "status": …, "summary": …}`); with `--result-file` the file receives the validated JSON only. Optional schema path; default = built-in. See [Headless runs](#headless--unattended-runs). |
 | `PROMPT...` | Initial prompt. Optional in interactive mode. |
 
 Press **Escape twice** within 400ms to cancel a streaming response.
@@ -51,6 +52,23 @@ process exits `10` and, when `--result-file` is set, the file holds whatever the
 last. A grind escalation defaults to half the deadline when `cycle.grind_elapsed_s` is unset,
 and an advisor consult that cannot finish in the time left is skipped with a notice rather
 than started. Unset (`0`) is today's behaviour exactly.
+
+**Result contract (`--result-contract [schema]` / `cycle.result_contract`).** Callers that
+consume structured results used to prompt for a fenced JSON block and parse the raw
+`--result-file` themselves — discipline, not structure, with two observed failures: a
+*decoy* block (the model discusses an example and the extractor grabs it) and a `done` claim
+with no block at all. When armed, the contract instruction is injected as a system message,
+and the final message must end with a fenced ```json block that parses and validates against
+the schema (built-in default: `contract: 1`, `status: done|failed|blocked|cannot-tell`,
+`summary`, optional `artifacts`, `verify_output`, `scope`). The key `"contract": 1` is the
+discriminator — a block without it is prose. Missing or invalid at exit → a correction is
+injected and the run continues, bounded by `cycle.result_contract_max_blocks` (default 2);
+still missing at the bound, or at the deadline's hard stop, the run exits and the result file
+receives a synthesized `{"status": "failed", "summary": "<no valid result block emitted: …>"}`
+record, so the caller **always** gets valid JSON; the process exits `11` unless a harder stop
+already owns the code. Two valid blocks → last wins. The exit classification is folded into
+the JSON as `"exit": {code, name, detail}`. An unreadable schema refuses to start (exit `14`).
+Without the flag, `--result-file` is byte-identical to the raw behaviour.
 
 **Classifiable exit status (`-a` / `-r` only).** The process exits with a stable code and prints
 one line to stderr, `AGENT-EXIT: <name> <detail>`, so a supervisor can tell *completed* from

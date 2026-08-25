@@ -138,7 +138,9 @@ for the exit-code contract that unattended callers rely on.
     "wind_down_turns": 10,
     "deadline_s": 0,
     "deadline_warn_fracs": [0.6, 0.8, 0.92],
-    "grind_elapsed_s": 0
+    "grind_elapsed_s": 0,
+    "result_contract": false,
+    "result_contract_max_blocks": 2
   }
 }
 ```
@@ -147,3 +149,8 @@ for the exit-code contract that unattended callers rely on.
 agent is warned at each fraction in `deadline_warn_fracs` and forced to its final result at
 100% (exit code `10`). When a deadline is set and `grind_elapsed_s` is `0`, grind escalation
 defaults to half the deadline so a stuck run asks for help while there is still time to use it.
+
+`result_contract` is `false` (raw `--result-file` text), `true` (built-in schema) or a path to
+a JSON schema file; `--result-contract [schema]` overrides it. `result_contract_max_blocks`
+bounds how many times a missing/invalid result block redirects the exit before a synthesized
+`failed` record is written (exit code `11`). See [CLI: headless runs](cli.md#headless--unattended-runs).

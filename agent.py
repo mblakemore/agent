@@ -466,6 +466,13 @@ _DEFAULT_CONFIG = {
         # run takes the final-result path with exit code 10.
         "deadline_s": 0,
         "deadline_warn_fracs": [0.6, 0.8, 0.92],
+        # F2: result contract. false = off (raw --result-file text, today's behavior);
+        # true = built-in schema; a path = JSON schema file. When armed the final message must
+        # end with a fenced JSON block carrying "contract": 1 that validates; missing/invalid
+        # exits are redirected up to result_contract_max_blocks times, then a synthesized
+        # {"status": "failed"} block is written so the caller ALWAYS gets valid JSON (exit 11).
+        "result_contract": False,
+        "result_contract_max_blocks": 2,
     },
     "generation": {
         "temperature": 0.6,
@@ -783,6 +790,141 @@ def _deadline_step(elapsed_s, deadline_s, fired, fracs):
         msg = (f"[SYSTEM: heads-up — {remaining}s of wall-clock budget left ({int(f * 100)}% used). "
                f"Plan to finish inside it.]")
     return msg, False
+
+
+# ── F2: result contract ───────────────────────────────────────────────────────
+RESULT_CONTRACT_STATUSES = ("done", "failed", "blocked", "cannot-tell")
+RESULT_CONTRACT_DEFAULT_SCHEMA = {
+    "type": "object",
+    "required": ["contract", "status", "summary"],
+    "properties": {
+        "contract": {"const": 1},
+        "status": {"enum": list(RESULT_CONTRACT_STATUSES)},
+        "summary": {"type": "string"},
+        "artifacts": {"type": "array"},
+        "verify_output": {"type": "string"},
+        "scope": {"type": "object"},
+    },
+}
+_RESULT_CONTRACT_SCHEMA = None      # loaded at launch when armed
+
+
+def _result_contract_armed():
+    return bool(_config.get("cycle", {}).get("result_contract"))
+
+
+def _load_result_contract_schema(spec):
+    """True → built-in; a path → JSON schema file. Unreadable → raises (launch refuses)."""
+    if spec is True or spec in ("default", "", None):
+        return json.loads(json.dumps(RESULT_CONTRACT_DEFAULT_SCHEMA))
+    with open(str(spec), "r", encoding="utf-8") as f:
+        schema = json.load(f)
+    if not isinstance(schema, dict):
+        raise ValueError("result contract schema must be a JSON object")
+    return schema
+
+
+def _result_contract_instruction(schema):
+    req = ", ".join(schema.get("required") or ["contract", "status", "summary"])
+    statuses = "|".join((schema.get("properties", {}).get("status", {}) or {}).get("enum") or RESULT_CONTRACT_STATUSES)
+    return ("RESULT CONTRACT: end your FINAL message with one fenced ```json block that is the "
+            "result record, shaped {\"contract\": 1, \"status\": \"" + statuses + "\", \"summary\": str, "
+            "\"artifacts\": [paths], \"verify_output\": str, \"scope\": {\"examined\": [], \"skipped\": [], "
+            "\"not_covered\": []}}. Required keys: " + req + ". The key \"contract\": 1 marks it as the "
+            "result — example or discussed JSON without that key is prose. \"blocked\" and \"failed\" "
+            "are legal statuses; say what stopped you.")
+
+
+def _validate_result(obj, schema):
+    """Minimal structural validation (no dependency): required keys, const, enum, JSON types.
+    Uses jsonschema when importable. Returns (ok, reason)."""
+    try:
+        import jsonschema  # type: ignore
+        jsonschema.validate(obj, schema)
+        return True, ""
+    except ImportError:
+        pass
+    except Exception as e:  # noqa: BLE001 — jsonschema.ValidationError and friends
+        # name the failing key: the library's message ("7 is not of type 'string'") does not
+        path = "/".join(str(p) for p in getattr(e, "absolute_path", []) or [])
+        head = str(getattr(e, "message", e)).splitlines()[0][:200]
+        return False, f"{path}: {head}" if path else head
+    if not isinstance(obj, dict):
+        return False, "result is not an object"
+    for k in schema.get("required") or []:
+        if k not in obj:
+            return False, f"missing required key {k!r}"
+    _types = {"string": str, "array": list, "object": dict, "number": (int, float), "integer": int, "boolean": bool}
+    for k, rule in (schema.get("properties") or {}).items():
+        if k not in obj or not isinstance(rule, dict):
+            continue
+        if "const" in rule and obj[k] != rule["const"]:
+            return False, f"{k!r} must be {rule['const']!r}"
+        if "enum" in rule and obj[k] not in rule["enum"]:
+            return False, f"{k!r} must be one of {rule['enum']}"
+        t = rule.get("type")
+        if t in _types and not isinstance(obj[k], _types[t]) or (t == "number" and isinstance(obj[k], bool)):
+            return False, f"{k!r} must be {t}"
+    return True, ""
+
+
+def _extract_result_block(text):
+    """The LAST fenced JSON block carrying "contract": 1, parsed. A block without the
+    discriminator is prose (the decoy case). Returns (obj|None, reason)."""
+    if not text:
+        return None, "empty message"
+    blocks = re.findall(r"```(?:json)?\s*\n(.*?)```", text, re.S)
+    if not blocks:
+        return None, "no fenced JSON block"
+    reason = "no fenced JSON block carries \"contract\": 1"
+    for blk in reversed(blocks):
+        try:
+            obj = json.loads(blk)
+        except ValueError:
+            reason = "last fenced block is not valid JSON"
+            continue
+        if isinstance(obj, dict) and obj.get("contract") == 1:
+            return obj, ""
+    return None, reason
+
+
+def _synthesize_result(reason, exit_info=None):
+    return {"contract": 1, "status": "failed", "summary": f"<no valid result block emitted: {reason}>",
+            "artifacts": [], "verify_output": "", "scope": {"examined": [], "skipped": [], "not_covered": []},
+            "synthesized": True, "exit": exit_info or {}}
+
+
+def _last_assistant_text(conversation_history):
+    for msg in reversed(conversation_history):
+        if msg.get("role") == "assistant" and msg.get("content"):
+            return msg["content"]
+    return ""
+
+
+def _write_result_file(result_file, conversation_history, exit_info=None, schema=None):
+    """Raw text when the contract is off (byte-identical to the historical behavior).
+    When armed: the validated block as JSON, with the exit classification folded in; no
+    valid block → a synthesized failed record, and the caller learns via (obj, synthesized)."""
+    text = _last_assistant_text(conversation_history)
+    if not _result_contract_armed():
+        with open(result_file, "w", encoding="utf-8") as f:
+            f.write(text)
+        return None, False
+    schema = schema or _RESULT_CONTRACT_SCHEMA or RESULT_CONTRACT_DEFAULT_SCHEMA
+    obj, why = _extract_result_block(text)
+    if obj is not None:
+        ok, vwhy = _validate_result(obj, schema)
+        if not ok:
+            obj, why = None, f"result block invalid: {vwhy}"
+    synthesized = obj is None
+    if synthesized:
+        obj = _synthesize_result(why, exit_info)
+    elif exit_info:
+        obj.setdefault("exit", dict(exit_info))
+    with open(result_file, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=1, ensure_ascii=False)
+        f.write("\n")
+    return obj, synthesized
 
 
 def _exit_now(code, detail=""):
@@ -4159,6 +4301,14 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         if _preamble:
             conversation_history.append({"role": "system", "content": _preamble})
 
+        # F2: the contract instruction exists only when armed — creative/interactive sessions
+        # never see it. Injected as a system message on fresh starts (continue_mode resumes a
+        # history that already carries it).
+        if _result_contract_armed():
+            conversation_history.append({"role": "system", "content": _result_contract_instruction(
+                _RESULT_CONTRACT_SCHEMA or RESULT_CONTRACT_DEFAULT_SCHEMA)})
+            log.info("Result contract armed (%s)", "built-in schema" if _RESULT_CONTRACT_SCHEMA in (None, RESULT_CONTRACT_DEFAULT_SCHEMA) else "custom schema")
+
         # WS2: goal-stack hydration — independent of preamble.json. If
         # state/goals.json has active goals, inject "goal → next actionable
         # step" so multi-cycle work resumes without re-derivation from git
@@ -4199,17 +4349,22 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 telemetry.record_cycle(status="auto_completed", duration_s=time.time() - t0)
                 telemetry.shutdown()
             _log_bedrock_session_spend(log)
-            if result_file:
-                last_assistant_msg = ""
-                for msg in reversed(conversation_history):
-                    if msg.get("role") == "assistant" and msg.get("content"):
-                        last_assistant_msg = msg["content"]
-                        break
-                with open(result_file, "w", encoding="utf-8") as f:
-                    f.write(last_assistant_msg)
             # F6: classify the terminal value for the supervisor; main() emits and exits with it.
+            # Classified BEFORE the result file is written so the exit rides inside the JSON (F2).
             _code, _detail = _classify_auto_result(result, _LAST_ERROR_KIND, _LAST_EXIT)
-            _set_exit(_code, _detail)
+            _info = _set_exit(_code, _detail)
+            if result_file:
+                _obj, _synth = _write_result_file(result_file, conversation_history, exit_info=_info)
+                if _synth:
+                    # F2: no valid result block — the caller still gets valid JSON; the exit code
+                    # says the contract was not met unless a harder stop already owns the code.
+                    log.warning("result contract: synthesized failed record written to %s", result_file)
+                    if _info["code"] == EXIT_OK:
+                        _info = _set_exit(EXIT_CONTRACT, "no valid result block emitted; failed record synthesized")
+                        _obj["exit"] = dict(_info)
+                        with open(result_file, "w", encoding="utf-8") as f:
+                            json.dump(_obj, f, indent=1, ensure_ascii=False)
+                            f.write("\n")
             return
     # ── Concurrent always-live input (opt-in: config.interactive.live_input) ──
     # A background thread runs the prompt continuously so the operator can type
@@ -4485,13 +4640,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     _log_bedrock_session_spend(log)
 
     if result_file:
-        last_assistant_msg = ""
-        for msg in reversed(conversation_history):
-            if msg.get("role") == "assistant" and msg.get("content"):
-                last_assistant_msg = msg["content"]
-                break
-        with open(result_file, "w", encoding="utf-8") as f:
-            f.write(last_assistant_msg)
+        # raw text unless the contract is armed (F2) — interactive sessions leave it off
+        _write_result_file(result_file, conversation_history)
 
     if _telemetry_on:
         telemetry.shutdown()
@@ -5011,6 +5161,44 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         _adv_msg = _maybe_advisor_nudge()
         if _adv_msg:
             conversation_history.append({"role": "user", "content": _adv_msg})
+        return True
+
+    _result_contract_blocks = 0
+    try:
+        _RESULT_CONTRACT_MAX_BLOCKS = int((_config.get("cycle") or {}).get("result_contract_max_blocks", 2))
+    except Exception:
+        _RESULT_CONTRACT_MAX_BLOCKS = 2
+
+    def _result_contract_blocks_exit(path_name, text):
+        """F2 exit interception, claim-guard style, on the SAME three exits the success gate
+        guards. The final message must end with a fenced JSON block that carries
+        "contract": 1 and validates. Missing/invalid → inject a correction and continue,
+        bounded by cycle.result_contract_max_blocks; past the bound, or past the deadline, the
+        exit proceeds and the result-file writer synthesizes a failed record (exit 11)."""
+        nonlocal _result_contract_blocks
+        if not _result_contract_armed():
+            return False
+        obj, why = _extract_result_block(text)
+        if obj is not None:
+            ok, vwhy = _validate_result(obj, _RESULT_CONTRACT_SCHEMA or RESULT_CONTRACT_DEFAULT_SCHEMA)
+            if ok:
+                log.info("result contract satisfied — %s exit permitted", path_name)
+                return False
+            why = f"the result block is invalid: {vwhy}"
+        if _deadline_hard or _result_contract_blocks >= _RESULT_CONTRACT_MAX_BLOCKS:
+            log.warning("result contract UNSATISFIED at %s (%s) — %s; a failed record will be synthesized",
+                        path_name, why, "deadline reached" if _deadline_hard else "correction bound reached")
+            return False
+        _result_contract_blocks += 1
+        log.info("result contract unsatisfied (%s) — %s exit redirected (%d/%d)",
+                 why, path_name, _result_contract_blocks, _RESULT_CONTRACT_MAX_BLOCKS)
+        telemetry.record_patch_event("result_contract_block", kind=path_name)
+        conversation_history.append({"role": "user", "content": (
+            "Error: you are ending the run but your message does not end with a valid result "
+            "block (" + why + "). Reply again and END with one fenced ```json block: "
+            "{\"contract\": 1, \"status\": \"done|failed|blocked|cannot-tell\", \"summary\": ..., "
+            "\"artifacts\": [...], \"verify_output\": ..., \"scope\": {...}}. The \"contract\": 1 key is "
+            "what makes it the result; \"failed\" and \"blocked\" are acceptable statuses.")})
         return True
 
     def _claim_vs_trace_block(text, ran_verification, has_committed, blocks, max_blocks):
@@ -6098,6 +6286,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         continue
                 if _success_gate_blocks_exit("textonly_stop"):
                     continue
+                if _result_contract_blocks_exit("textonly_stop", full_content):
+                    continue
                 _cvt_blk, _claim_trace_blocks = _claim_vs_trace_block(
                     full_content, _ran_verification, _has_committed,
                     _claim_trace_blocks, _CLAIM_TRACE_MAX_BLOCKS)
@@ -6162,6 +6352,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # exit path, missing on the sibling — same defect class the
                 # guards in _validate_tool_call had (WS8.1).
                 if _success_gate_blocks_exit("completion_signal"):
+                    continue
+                if _result_contract_blocks_exit("completion_signal", full_content):
                     continue
                 _cvt_blk, _claim_trace_blocks = _claim_vs_trace_block(
                     full_content, _ran_verification, _has_committed,
@@ -6240,6 +6432,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             telemetry.record_patch_event("open_task_nudge", kind="fired")
                             continue
                     if _success_gate_blocks_exit("first_textonly_completion"):
+                        continue
+                    if _result_contract_blocks_exit("first_textonly_completion", full_content):
                         continue
                     _cvt_blk, _claim_trace_blocks = _claim_vs_trace_block(
                         full_content, _ran_verification, _has_committed,
@@ -7851,6 +8045,13 @@ def main():
     parser.add_argument("--seed", type=int, default=None,
                         help="Per-run sampling seed (overrides generation.seed) for reproducible "
                              "runs on backends that support it; others warn once and ignore it.")
+    parser.add_argument("--result-contract", dest="result_contract", nargs="?", const="default",
+                        default=None, metavar="SCHEMA.json",
+                        help="Require the final message to end with a fenced JSON result block "
+                             "({\"contract\": 1, \"status\": ..., \"summary\": ...}); with --result-file "
+                             "the file receives the validated JSON only. Optional path to a JSON "
+                             "schema; default = built-in. Missing/invalid at exit → correction "
+                             "(bounded), then a synthesized failed record and exit 11.")
     parser.add_argument("--deadline", type=float, default=None, metavar="SECONDS",
                         help="Wall-clock budget for the run (overrides cycle.deadline_s). The agent "
                              "is warned at 60/80/92%% and forced to its final result at 100%%, "
@@ -7874,6 +8075,17 @@ def main():
             print("--deadline must be a positive number of seconds", file=sys.stderr)
             _exit_now(EXIT_CONFIG, "--deadline must be positive")
         _config["cycle"]["deadline_s"] = float(args.deadline)
+    # F2: --result-contract [schema] wins over cycle.result_contract. The schema is loaded HERE,
+    # at launch: unreadable → refuse to start (exit 14), never run-then-surprise.
+    if getattr(args, "result_contract", None) is not None:
+        _config["cycle"]["result_contract"] = True if args.result_contract == "default" else args.result_contract
+    if _config["cycle"].get("result_contract"):
+        global _RESULT_CONTRACT_SCHEMA
+        try:
+            _RESULT_CONTRACT_SCHEMA = _load_result_contract_schema(_config["cycle"]["result_contract"])
+        except Exception as _rce:  # noqa: BLE001
+            print(f"⚠ result contract schema unreadable: {_rce}", file=sys.stderr)
+            _exit_now(EXIT_CONFIG, f"result contract schema unreadable: {_rce}")
 
     # --setup: force the wizard on session start (interactive path only;
     # the TTY/auto guards inside _maybe_first_run_wizard still apply).
