@@ -163,6 +163,33 @@ How it works:
 | `AGENT_FOLD_SYSTEM` | `auto` | Workaround for backends that silently drop `role:"system"`. `auto` probes the backend once (~20 tokens, ~1.5s) and caches the result per `(base_url, model)` for 7 days; `always` folds without probing; `never` disables. Applies to both `-cc` and the main agent loop. |
 | `AGENT_CACHE_DIR` | `~/.cache/agent` | Where the probe result is cached (`backend_caps.json`). |
 
+### Measuring context-estimator drift (`scripts/measure_token_drift.py`)
+
+The context budget is sized by `token_utils`, which counts with a fixed tokenizer. The server
+may be serving a different model family, so that count is a guess about someone else's
+vocabulary. `_update_token_calibration` corrects for it at runtime from the `prompt_tokens`
+every streamed turn reports; this script tells you how large the error is, per content class.
+
+```
+python3 scripts/measure_token_drift.py --n-ctx 196608     # human-readable
+python3 scripts/measure_token_drift.py --json             # machine-readable
+```
+
+It needs a **live server** — there is no mock answer to "what does the server actually count?"
+Read `ratio = actual / estimated`: above 1.0 the server counts more than we estimated and the
+budget is too large (the overflow direction); below 1.0 the guess is conservative and leaves
+window unused. **Report the spread, not the mean.** A uniform ratio is a constant the budget
+absorbs; a content-dependent one averages away on paper and bites on the worst input.
+
+A measured example, to calibrate expectations before assuming a tokenizer mismatch is the
+problem: against a 27B model served by a very different tokenizer, the mean ratio was 0.944
+with a 0.847-1.022 spread — conservative on four of five classes and under-estimating prose by
+only 2.2% (about +4.3k tokens on a 196k window). The chat template cost a fixed 45 tokens plus
+5 per message, which the text estimate does not count at all — under 1% of that window even in
+a long conversation. **The wrong-tokenizer hazard is real but small and mostly safe-signed;
+bulk tool output pasted into context is the failure that actually overflows windows**, which is
+why output spilling exists. Re-run this after any model swap rather than carrying the numbers.
+
 ### Backends that silently drop `system` messages
 
 Some OpenAI-compatible gateways accept a `role:"system"` message, return HTTP 200,
