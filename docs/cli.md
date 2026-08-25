@@ -18,9 +18,42 @@ python agent.py [OPTIONS] [PROMPT...]
 | `--backend-main` | Override the main backend kind (`llamacpp` or `bedrock`). |
 | `--backend-summary` | Override the summary backend kind (`llamacpp` or `bedrock`). |
 | `-cc [HOST:PORT]` | Launch an Anthropic-compatible gateway for **Claude Code** (default `127.0.0.1:8788`) that forwards to the configured main backend, then exit. See [Claude Code gateway](#claude-code-gateway--cc). |
+| `--result-file PATH` | Write the final assistant response to `PATH` (for callers that consume the run's output as a file). |
+| `--role builder\|reviewer\|creature` | Explicit session role; overrides prompt string-matching for the CICD guards. |
+| `--temperature F`, `--top-p F`, `--seed N` | Per-run sampling overrides (flag > `generation.*` config > default). `--seed` gives reproducible runs on backends that honor a seed (llama.cpp); others warn once and ignore it. |
+| `--no-realpath-cwd` | Keep a symlinked working directory as given. By default the process canonicalizes its cwd and `$PWD` at start (see [Headless runs](#headless--unattended-runs)). |
 | `PROMPT...` | Initial prompt. Optional in interactive mode. |
 
 Press **Escape twice** within 400ms to cancel a streaming response.
+
+### Headless / unattended runs
+
+`agent.py -a` is often spawned by a supervisor — a batch queue, CI job, cron entry or another
+agent — that imposes a wall-clock budget, consumes a result, and kills the process on overrun.
+These behaviours exist for that audience; interactive sessions are untouched.
+
+**Canonical working directory.** At start the process resolves symlinks in its working
+directory and rewrites `$PWD` to the physical path, logging the change. A run launched through
+a symlinked path otherwise produces `os.path.relpath()` values that walk out of the repository,
+and `git log -- <path>` then returns nothing *with exit 0*. Pass `--no-realpath-cwd` to keep the
+symlinked view (overlay-style layouts).
+
+**Classifiable exit status (`-a` / `-r` only).** The process exits with a stable code and prints
+one line to stderr, `AGENT-EXIT: <name> <detail>`, so a supervisor can tell *completed* from
+*died-of-context* without parsing logs:
+
+| Code | Name | Meaning |
+| --- | --- | --- |
+| `0` | `completed` | The run finished. |
+| `1` | `error` | The run loop ended in an unclassified error. |
+| `10` | `deadline` | Wall-clock deadline stop (`--deadline`). |
+| `11` | `contract` | Result contract not satisfied; a synthesized `failed` result was written (`--result-contract`). |
+| `12` | `context` | Context exhaustion after every reduction (spill, trim, summary halving). |
+| `13` | `memory` | RSS crossed `mem.hard_mb`; the process exited before the OOM killer. |
+| `14` | `config` | Configuration error at start (unbuildable backend, unreadable schema). |
+| `15` | `backend` | Backend unreachable or failed after retries. |
+
+Interactive sessions keep exiting `0` (or `2` on a start-up configuration error, as before).
 
 ### Claude Code gateway (`-cc`)
 

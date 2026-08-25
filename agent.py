@@ -467,6 +467,9 @@ _DEFAULT_CONFIG = {
         "top_k": 20,
         "min_p": 0.0,
         "presence_penalty": 0.0,
+        # F8a: sampling seed for reproducible runs (None = server default). Overridable per run
+        # with --seed; honored by llama.cpp, warned-once-and-ignored by backends without one.
+        "seed": None,
         # Whether the MAIN loop generation may emit thinking. Default False: the
         # design is no-thinking-in-main + the opt-in `think` tool, so the model
         # chooses when to reason hard. Set True to let the main model think on
@@ -688,6 +691,102 @@ def _load_config():
     return config
 
 
+# ── Headless hardening (plan/headless-hardening.md) ───────────────────────────
+# F6 — classifiable exit status, `-a` mode only. Interactive sessions keep exiting 0.
+# Codes are documented and stable (docs/cli.md); a terminal `AGENT-EXIT: <name> <detail>`
+# line goes to stderr so a supervisor can classify a failure without parsing logs.
+EXIT_OK = 0
+EXIT_ERROR = 1          # generic run error (additive; nothing consumed exit codes before)
+EXIT_DEADLINE = 10      # F1 wall-clock stop
+EXIT_CONTRACT = 11      # F2 result contract unsatisfied (synthesized `failed` written)
+EXIT_CONTEXT = 12       # context exhaustion after every reduction
+EXIT_MEMORY = 13        # memory watermark
+EXIT_CONFIG = 14        # config error (backend unbuildable, schema unreadable, ...)
+EXIT_BACKEND = 15       # backend unreachable / failed after retries
+_EXIT_NAMES = {EXIT_OK: "completed", EXIT_ERROR: "error", EXIT_DEADLINE: "deadline",
+               EXIT_CONTRACT: "contract", EXIT_CONTEXT: "context", EXIT_MEMORY: "memory",
+               EXIT_CONFIG: "config", EXIT_BACKEND: "backend"}
+# Decided from argv at import so import-time failures (backend build) can already classify.
+_AUTO_MODE = any(a in ("-a", "--auto", "-r", "--repeat") for a in sys.argv[1:])
+_LAST_EXIT = None           # {"code", "name", "detail"} — set by the terminal path that knows why
+_LAST_ERROR_KIND = None     # "context" | "backend" — set beside the run loop's `return "error"`
+
+
+def _set_exit(code, detail=""):
+    """Record the classified exit for `-a` mode. Last writer wins; main() emits it."""
+    global _LAST_EXIT
+    _LAST_EXIT = {"code": int(code), "name": _EXIT_NAMES.get(int(code), "error"),
+                  "detail": str(detail or "")[:300]}
+    return _LAST_EXIT
+
+
+def _exit_line(exit_info):
+    return f"AGENT-EXIT: {exit_info['name']} {exit_info['detail']}".rstrip()
+
+
+def _note_error_kind(kind):
+    """Set beside a `return "error"` in the run loop so the auto path can classify it."""
+    global _LAST_ERROR_KIND
+    _LAST_ERROR_KIND = kind
+
+
+def _classify_auto_result(result, error_kind=None, last_exit=None):
+    """Map the run loop's terminal value to (code, detail). Pure — unit-tested.
+    A code already set by a hard stop (deadline/contract/memory) wins over the generic map."""
+    if last_exit and last_exit.get("code") not in (None, EXIT_OK):
+        return last_exit["code"], last_exit.get("detail", "")
+    if result == "error":
+        if error_kind == "context":
+            return EXIT_CONTEXT, "context overflow after every reduction"
+        if error_kind == "backend":
+            return EXIT_BACKEND, "backend request failed after retries"
+        return EXIT_ERROR, "run loop returned error"
+    return EXIT_OK, str(result or "")
+
+
+def _exit_now(code, detail=""):
+    """Terminal exit from an import-time or mid-run hard stop. In `-a` mode the classified
+    code and the AGENT-EXIT line are used; interactive sessions keep their historical `2`."""
+    info = _set_exit(code, detail)
+    if _AUTO_MODE:
+        print(_exit_line(info), file=sys.stderr)
+        sys.exit(info["code"])
+    sys.exit(2)
+
+
+# F5 — canonical working directory. A run launched through a symlinked path made
+# `os.path.relpath()` walk out of the repo and `git log -- <path>` return empty WITH exit 0,
+# so a validator passed with every field silently defaulted. The kernel already reports a
+# physical cwd on Linux; what leaks the logical (symlinked) form is `$PWD`, which child shells
+# and `Path.cwd()`-style callers trust. Canonicalize both, log when anything changed, and keep
+# `--no-realpath-cwd` for overlay-style setups that want the symlinked view.
+_NO_REALPATH_CWD = "--no-realpath-cwd" in sys.argv[1:]
+
+
+def _canonicalize_cwd(env=None, chdir=os.chdir, getcwd=os.getcwd):
+    """Returns (logical, real) when something was rewritten, else None. Pure enough to test:
+    env/chdir/getcwd are injectable."""
+    if _NO_REALPATH_CWD:
+        return None
+    env = os.environ if env is None else env
+    try:
+        cur = getcwd()
+        real = os.path.realpath(cur)
+    except OSError:
+        return None
+    logical = env.get("PWD") or cur
+    changed = None
+    if real != cur:
+        chdir(real)
+        changed = (cur, real)
+    if env.get("PWD") != real:
+        changed = changed or (logical, real)
+        env["PWD"] = real
+    return changed
+
+
+_CWD_CANONICALIZED = _canonicalize_cwd()
+
 _config = _load_config()
 
 # Fleet identity enforcement (coordination#1355): if the config declares an explicit
@@ -741,7 +840,41 @@ except ValueError as _be:
     _emit("on_notice", "error", f"Backend config error: {_be}")
     logging.getLogger("agent").error("backend build failed: %s", _be)
     print(f"⚠ Backend config error: {_be}", file=sys.stderr)
-    sys.exit(2)
+    _exit_now(EXIT_CONFIG, f"backend config error: {_be}")   # F6: 14 in -a mode, 2 interactive
+
+
+_SEED_WARNED = False
+
+
+def _apply_generation_overrides(args) -> dict:
+    """F8a: ``--temperature`` / ``--top-p`` / ``--seed`` onto ``_config["generation"]``
+    (flag > config > default). Returns the applied overrides (unit-tested). A seed on a backend
+    kind that does not honor one warns ONCE and is kept in config so the request builder can
+    still decide per kind."""
+    global _SEED_WARNED
+    gen = _config["generation"]
+    applied = {}
+    for flag, key in (("temperature", "temperature"), ("top_p", "top_p"), ("seed", "seed")):
+        val = getattr(args, flag, None)
+        if val is not None:
+            gen[key] = val
+            applied[key] = val
+    seed = gen.get("seed")
+    if seed is not None:
+        kind = (_config.get("backends", {}).get("main", {}) or {}).get("kind", "llamacpp")
+        if kind != "llamacpp" and not _SEED_WARNED:
+            _SEED_WARNED = True
+            logging.getLogger("agent").warning(
+                "generation.seed=%s set but the %s backend does not honor a sampling seed — "
+                "runs will not be reproducible on this backend", seed, kind)
+    return applied
+
+
+def _generation_request_extras() -> dict:
+    """Extra request-body keys derived from generation config: currently the seed, only when
+    set (llama.cpp honors `seed` on /v1/chat/completions; absent = server default)."""
+    seed = _config["generation"].get("seed")
+    return {"seed": int(seed)} if seed is not None else {}
 
 
 def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) -> None:
@@ -2718,7 +2851,7 @@ def _check_memory_watermark(log):
             # Defined later in the module at import time this MAY be missing
             # under a reorder; fail soft rather than block the exit.
             pass
-        sys.exit(2)
+        _exit_now(EXIT_MEMORY, f"vmrss_mb={rss_mb} over hard limit {_MEM_HARD_MB}")   # F6: 13 in -a mode
     if rss_mb > _MEM_WARN_MB:
         log.warning(
             "mem.watermark vmrss_mb=%d (warn %d) — memory pressure",
@@ -3803,6 +3936,12 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
 
     log.info("Session started | ctx_size=%d max_turns=%d temperature=%.1f max_tokens=%d",
              ctx_size, _MAX_TURNS, gen["temperature"], max_tokens)
+    if _CWD_CANONICALIZED:
+        # F5: say what was rewritten at import (logging was not configured yet then).
+        log.info("Working directory canonicalized: %s -> %s (pass --no-realpath-cwd to keep "
+                 "the symlinked view)", _CWD_CANONICALIZED[0], _CWD_CANONICALIZED[1])
+    if gen.get("seed") is not None:
+        log.info("Generation seed=%s (F8a)", gen["seed"])
     log.info("Tools registered: %s", [t["function"]["name"] for t in tools])
 
     # Instantiate the async summarizer from the already-probed state above.
@@ -4027,6 +4166,9 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                         break
                 with open(result_file, "w", encoding="utf-8") as f:
                     f.write(last_assistant_msg)
+            # F6: classify the terminal value for the supervisor; main() emits and exits with it.
+            _code, _detail = _classify_auto_result(result, _LAST_ERROR_KIND, _LAST_EXIT)
+            _set_exit(_code, _detail)
             return
     # ── Concurrent always-live input (opt-in: config.interactive.live_input) ──
     # A background thread runs the prompt continuously so the operator can type
@@ -5286,6 +5428,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 "max_tokens": _effective_max_tokens,
                 "chat_template_kwargs": {
                     "enable_thinking": _config["generation"].get("enable_thinking", False)},
+                **_generation_request_extras(),   # F8a: seed when configured
                 "cache_prompt": True,
                 "tools": _session_tools,
                 "tool_choice": "auto",
@@ -5344,6 +5487,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 if _ctx_attempt >= _CTX_REDUCE_MAX:
                     log.error("Context overflow: still failing after %d reductions", _CTX_REDUCE_MAX)
                     _emit("on_error", "Error: context overflow — could not fit in server context window")
+                    _note_error_kind("context")
                     return "error"
                 # STAGE 1 (board#209, job#208 root cause): before dropping any message,
                 # SPILL oversized tool-result payloads to files and retry — trimming whole
@@ -5377,6 +5521,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     else:
                         log.error("Context overflow with no summary and minimal messages — cannot reduce further")
                         _emit("on_error", "Error: context overflow — cannot reduce further")
+                        _note_error_kind("context")
                         return "error"
                 else:
                     # Reduce: cap messages to current count minus 2 (drop oldest pair)
@@ -5416,6 +5561,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 log.error("Request failed after retries: %s", e)
                 telemetry.record_error(kind=type(e).__name__)
                 _emit("on_error", f"Error calling server: {e}")
+                _note_error_kind("backend")
                 return "error"
 
         if _gateway_timeout_recovered:
@@ -7574,6 +7720,19 @@ def main():
                              "legacy prompt string-matching: builder/reviewer "
                              "enable CICD guards (reviewer may merge, builder "
                              "may not); creature disables CICD-specific guards.")
+    # Headless hardening (plan/headless-hardening.md), tranche 1: F5 / F8a flags. F6's exit
+    # codes need no flag — they are additive in -a mode. Interactive behavior is untouched.
+    parser.add_argument("--no-realpath-cwd", dest="no_realpath_cwd", action="store_true",
+                        help="Keep a symlinked working directory as given instead of canonicalizing "
+                             "it at start (F5). Read from argv at import; listed here so argparse "
+                             "accepts it.")
+    parser.add_argument("--temperature", type=float, default=None,
+                        help="Per-run sampling temperature (overrides generation.temperature).")
+    parser.add_argument("--top-p", dest="top_p", type=float, default=None,
+                        help="Per-run nucleus sampling (overrides generation.top_p).")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Per-run sampling seed (overrides generation.seed) for reproducible "
+                             "runs on backends that support it; others warn once and ignore it.")
     parser.add_argument("prompt", nargs="*", help="Initial prompt")
     args = parser.parse_args()
 
@@ -7584,6 +7743,9 @@ def main():
 
     # Apply backend-kind overrides before any backend-dependent startup logic.
     _apply_backend_overrides(args.backend_main, args.backend_summary)
+    # F8a: generation overrides (flag > config > default), applied after backend overrides so
+    # the seed support warning names the backend that will actually run.
+    _apply_generation_overrides(args)
 
     # --setup: force the wizard on session start (interactive path only;
     # the TTY/auto guards inside _maybe_first_run_wizard still apply).
@@ -7643,8 +7805,15 @@ def main():
             verbose=args.verbose,
             result_file=args.result_file,
         )
-    
-    
+    # F6: in -a / -r mode, say how the run ended in a form a supervisor can classify and exit
+    # with the matching code. Interactive sessions never reach here with _AUTO_MODE set.
+    if _AUTO_MODE:
+        info = _LAST_EXIT or _set_exit(EXIT_OK, "")
+        print(_exit_line(info), file=sys.stderr, flush=True)
+        if info["code"] != EXIT_OK:
+            sys.exit(info["code"])
+
+
 if __name__ == "__main__":
     # Force UTF-8 on stdout AND stderr. Under Git-Bash / a non-console handle on
     # Windows, Python picks the locale encoding (cp1252), which raises

@@ -103,3 +103,28 @@ it does not break it.
 
 `kind` also accepts `"bedrock"` and `"foundry"` instead of `"llamacpp"`, for a hosted endpoint
 rather than a local server. AWS Bedrock has its own guide: [Bedrock backend](bedrock.md).
+
+## Generation settings and per-run overrides
+
+The `generation` block sets sampling for the main loop:
+
+```json
+{
+  "generation": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "seed": null,
+    "enable_thinking": false
+  }
+}
+```
+
+`seed` is `null` by default (the server's own default). Set it for reproducible runs on backends
+that honor a sampling seed — llama.cpp does; hosted backends without one log a single warning
+and ignore it. The flags `--temperature`, `--top-p` and `--seed` override these per run
+(flag > config > default), which is what k-sample ensembles ("same prompt, k runs, reconcile")
+and failure reproduction want without editing the file. See [CLI: headless runs](cli.md#headless--unattended-runs)
+for the exit-code contract that unattended callers rely on.
