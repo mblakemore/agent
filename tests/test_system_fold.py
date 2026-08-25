@@ -1,7 +1,7 @@
 """Tests for the system-message fold workaround (llm_backend).
 
 Covers backends that silently drop role:"system" — see
-/droid/repos/test/aws-proxy-bugs.md §1.
+/path/to/notes/aws-proxy-bugs.md §1.
 """
 import json
 import sys

@@ -196,7 +196,7 @@ def _extract_write_target(command):
         if target.startswith('/dev/'):
             return None
         # Skip shell metacharacters that got captured as "target" — happens
-        # on malformed redirect chains like `cat > > foo.json`. C0rtana
+        # on malformed redirect chains like `cat > > foo.json`. that agent
         # write-loop detector cried wolf on '>' as a filename (audit FP).
         if target in _SHELL_META_TOKENS:
             return None
@@ -906,7 +906,7 @@ definition = {
               "Worktrees must be created under WORKTREE_ROOT. "
               "When running `python3 -c` or a Python script that imports project-local modules, "
               "prepend `PYTHONPATH=<repo_root>` to the command, "
-              "e.g. `PYTHONPATH=/droid/repos/agent python3 -c 'import tools; ...'`. "
+              "e.g. `PYTHONPATH=<repo> python3 -c 'import tools; ...'`. "
               "Without this, imports of project modules will fail with ModuleNotFoundError. "
               "Note: PYTHONPATH is auto-injected when a .git directory is found in an ancestor "
               "of the working directory and PYTHONPATH is not already set. "

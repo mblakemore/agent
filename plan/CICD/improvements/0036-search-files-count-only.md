@@ -15,7 +15,7 @@ Probe log: `/tmp/agent-cicd/probes/before-p-count.log`
 
 ## Success metric
 
-- Baseline: `grep -c 'count_only' /mnt/droid/repos/agent/tools/search_files.py` = 0
+- Baseline: `grep -c 'count_only' <repo>/tools/search_files.py` = 0
 - Target: 1 (the parameter exists in the function signature and definition)
 - Measurement method: `grep -c 'count_only' <worktree>/tools/search_files.py`
 

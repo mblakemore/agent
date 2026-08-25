@@ -16,12 +16,12 @@ class TestFileEdgeCases(unittest.TestCase):
         # The logic depends on Path.cwd().
         # We mock Path.cwd() to control the environment.
         with patch('tools.file.Path.cwd') as mock_cwd:
-            mock_cwd.return_value = Path("/mnt/droid/repos/project/e2")
+            mock_cwd.return_value = Path("/path/to/project/e2")
             # Path is not absolute, starts with prefix (without leading slash)
-            path = "mnt/droid/repos/project/e2/file.txt"
+            path = "mnt/path/to/project/e2/file.txt"
             resolved = file_tool._resolve_path(path)
-            # Expected: Path("/mnt/droid/repos/project/e2/file.txt")
-            self.assertEqual(str(resolved), "/mnt/droid/repos/project/e2/file.txt")
+            # Expected: Path("/path/to/project/e2/file.txt")
+            self.assertEqual(str(resolved), "/path/to/project/e2/file.txt")
 
     def test_write_unread_file_error(self):
         with tempfile.TemporaryDirectory() as d:

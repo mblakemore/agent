@@ -7,8 +7,8 @@
 #
 # Prerequisites:
 #   - BEDROCK_API_URL and BEDROCK_API_KEY in the environment (see § 12).
-#   - The agent repo cloned at /droid/repos/agent (this script lives in
-#     /droid/repos/agent/scripts).
+#   - The agent repo cloned at <repo> (this script lives in
+#     <repo>/scripts).
 #
 # Usage:
 #   scripts/bedrock_smoke.sh
@@ -57,7 +57,7 @@ log "-- scenario 1: summary live --"
 
 $PY - <<'PY' 2>&1 | tee -a "$LOG" || fail "scenario 1: summary live"
 import os, sys
-sys.path.insert(0, "/droid/repos/agent")
+sys.path.insert(0, "<repo>")
 from llm_backend import BedrockBackend
 b = BedrockBackend({
     "kind": "bedrock",
@@ -79,7 +79,7 @@ log "-- scenario 2: main live, one tool call --"
 
 $PY - <<'PY' 2>&1 | tee -a "$LOG" || fail "scenario 2: main live, one tool call"
 import os, sys, logging
-sys.path.insert(0, "/droid/repos/agent")
+sys.path.insert(0, "<repo>")
 logging.basicConfig(level=logging.INFO)
 from llm_backend import BedrockBackend
 b = BedrockBackend({
@@ -116,7 +116,7 @@ log "-- scenario 3: main live, two tools --"
 
 $PY - <<'PY' 2>&1 | tee -a "$LOG" || fail "scenario 3: main live, two tools"
 import os, sys, logging
-sys.path.insert(0, "/droid/repos/agent")
+sys.path.insert(0, "<repo>")
 logging.basicConfig(level=logging.INFO)
 from llm_backend import BedrockBackend
 b = BedrockBackend({"kind": "bedrock", "model": "claude-v4.5-sonnet", "role": "main"})
@@ -152,7 +152,7 @@ log "-- scenario 4: cancel behavior --"
 # reachable. A full double-escape test requires a TTY; not scriptable here.
 $PY - <<'PY' 2>&1 | tee -a "$LOG" || fail "scenario 4: cancel path reachable"
 import sys, threading, time
-sys.path.insert(0, "/droid/repos/agent")
+sys.path.insert(0, "<repo>")
 from llm_backend import BedrockBackend
 import logging
 b = BedrockBackend({"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "summary"})
@@ -186,7 +186,7 @@ log "-- scenario 5: truncation recovery --"
 
 $PY - <<'PY' 2>&1 | tee -a "$LOG" || fail "scenario 5: truncation recovery"
 import sys, logging
-sys.path.insert(0, "/droid/repos/agent")
+sys.path.insert(0, "<repo>")
 logging.basicConfig(level=logging.INFO)
 
 from unittest.mock import patch

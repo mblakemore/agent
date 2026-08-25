@@ -275,7 +275,7 @@ def build_openai_body(req: MessagesRequest, backend) -> dict:
     """
     messages = anthropic_to_openai_messages(req)
     # Some gateways silently drop role:"system" (see llm_backend.maybe_fold_system
-    # and /droid/repos/test/aws-proxy-bugs.md §1). Without this, Claude Code's
+    # and /path/to/notes/aws-proxy-bugs.md §1). Without this, Claude Code's
     # entire system prompt is discarded and the model appears to ignore its
     # instructions. No-op on backends that honour system.
     try:

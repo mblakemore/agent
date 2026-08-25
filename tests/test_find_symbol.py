@@ -906,7 +906,7 @@ class TestFindSymbolNonPyFile(unittest.TestCase):
 class TestFindSymbolPathConfinement(unittest.TestCase):
     """find_symbol must refuse to scan paths outside the working directory (#856).
 
-    The find_symbol_cwd fixture in conftest.py sets cwd to /droid/repos/agent for
+    The find_symbol_cwd fixture in conftest.py sets cwd to <repo> for
     all tests in this class, so relative paths like '.' and 'tools/find_symbol.py'
     resolve correctly while absolute outside paths (/etc, /tmp) are rejected.
     """
@@ -920,7 +920,7 @@ class TestFindSymbolPathConfinement(unittest.TestCase):
         self.assertIn("outside the working directory", result[0]["error"])
 
     def test_absolute_tmp_returns_confinement_error(self):
-        """path='/tmp' must return a confinement error (cwd is /droid/repos/agent, not /tmp)."""
+        """path='/tmp' must return a confinement error (cwd is <repo>, not /tmp)."""
         result = find_symbol("foo", path="/tmp")
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 1)
@@ -969,7 +969,7 @@ class TestFindSymbolPathConfinement(unittest.TestCase):
         result = find_symbol("foo", path="/etc")
         error = result[0]["error"]
         # The error should name the working directory
-        self.assertIn("/droid/repos/agent", error)
+        self.assertIn("<repo>", error)
 
     def test_confinement_not_confused_with_not_found(self):
         """Confinement error dict must be distinguishable from 'symbol not found' []."""
@@ -981,12 +981,12 @@ class TestFindSymbolNonStringGuards(unittest.TestCase):
     """Non-string inputs must return an error dict, not raise AttributeError."""
 
     def test_name_int_returns_error(self):
-        result = find_symbol(name=42, path="/droid/repos/agent/tools")
+        result = find_symbol(name=42, path="<repo>/tools")
         self.assertIsInstance(result, list)
         self.assertIn("error", result[0])
 
     def test_name_none_returns_error(self):
-        result = find_symbol(name=None, path="/droid/repos/agent/tools")
+        result = find_symbol(name=None, path="<repo>/tools")
         self.assertIsInstance(result, list)
         self.assertIn("error", result[0])
 
@@ -1151,7 +1151,7 @@ class TestFindSymbolNullByteInPath(unittest.TestCase):
 
     def test_null_byte_in_path_error_mentions_null_byte(self):
         """The error message must explicitly call out the null byte. (#766)"""
-        result = find_symbol(name='fn', path='/droid/repos/agent/tools/file\x00.py',
+        result = find_symbol(name='fn', path='<repo>/tools/file\x00.py',
                              mode='definition')
         self.assertIn("null byte", result[0]["error"])
 

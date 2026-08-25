@@ -1,12 +1,12 @@
 """Dev-mode prompt stuffing: serializer + regex tool-call parser.
 
-Ported from /droid/repos/llmbox-cli/llmbox_lib.py @ SHA 1653b71
+Ported from an internal CLI (llmbox_lib.py) @ SHA 1653b71
   (`_TOOL_CALL_RE`, `_THINK_TAG_RE`, `_UNICODE_MAP` at lines 25-32;
    `_build_tool_system_prompt` at lines 718-757;
    `_parse_tool_calls`, `_strip_tool_calls`, `_sanitize` at lines 881-904).
 Last verified: 2026-04-23
 
-See /droid/repos/agent/plan/bedrock-integration.md § 8 for the design
+See <repo>/plan/bedrock-integration.md § 8 for the design
 rationale and § 19 for the drift protocol.
 
 This module provides the wire-format translation for the Bedrock backend:

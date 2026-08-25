@@ -178,8 +178,8 @@ from agent import _handle_cicd_file_edit, _check_worktree_guard
 
 def test_check_worktree_guard():
     """Test that _check_worktree_guard correctly identifies violations."""
-    cwd = "/mnt/droid/repos/agent/temp/20260420_192045/repo"
-    wt = "/mnt/droid/repos/agent/temp/20260420_192045/worktrees/245-cicd-guards"
+    cwd = "<repo>/temp/20260420_192045/repo"
+    wt = "<repo>/temp/20260420_192045/worktrees/245-cicd-guards"
     
     with patch('os.getcwd', return_value=cwd):
         path_ok = os.path.join(wt, "tests/test_cicd_guards.py")
@@ -201,7 +201,7 @@ def test_handle_cicd_file_edit_logic():
     """Test all branches of _handle_cicd_file_edit."""
     mock_log = MagicMock()
     history = []
-    wt_path = "/mnt/droid/repos/agent/temp/20260420_192045/worktrees/245-cicd-guards"
+    wt_path = "<repo>/temp/20260420_192045/worktrees/245-cicd-guards"
     phase_state = {"plan": False}
     edited_files = set()
     
@@ -300,7 +300,7 @@ def test_reviewer_file_edit_blocked(monkeypatch):
             return resp
 
         mock_llm.side_effect = [
-            mock_file_response({"action": "write", "path": "/mnt/droid/repos/agent/temp/worktrees/pr-123/agent.py"}),
+            mock_file_response({"action": "write", "path": "<repo>/temp/worktrees/pr-123/agent.py"}),
             mock_text_response("Done")
         ]
         

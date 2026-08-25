@@ -57,13 +57,13 @@ def test_exec_command_cd_guard_unsafe():
 
 def test_exec_command_worktree_guard_safe():
     # We need WORKTREE_ROOT set to test this
-    os.environ["WORKTREE_ROOT"] = "/mnt/droid/repos/agent/temp/20260417_202516/worktrees"
-    result = fn(command="git worktree add /mnt/droid/repos/agent/temp/20260417_202516/worktrees/test-wt-safe -b test-branch-safe")
+    os.environ["WORKTREE_ROOT"] = "<repo>/temp/20260417_202516/worktrees"
+    result = fn(command="git worktree add <repo>/temp/20260417_202516/worktrees/test-wt-safe -b test-branch-safe")
     if "ERROR: Worktree must be created under" in result:
         pytest.fail("Guard blocked a valid worktree path")
 
 def test_exec_command_worktree_guard_unsafe():
-    os.environ["WORKTREE_ROOT"] = "/mnt/droid/repos/agent/temp/20260417_202516/worktrees"
+    os.environ["WORKTREE_ROOT"] = "<repo>/temp/20260417_202516/worktrees"
     result = fn(command="git worktree add /tmp/bad-wt -b test-branch")
     assert "ERROR: Worktree must be created under" in result
 

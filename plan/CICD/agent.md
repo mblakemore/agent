@@ -1,6 +1,6 @@
 # Agent Improvement Loop — CICD
 
-**Target repo**: `/mnt/droid/repos/agent` (GitHub: `mblakemore/agent`)
+**Target repo**: `<repo>` (GitHub: `mblakemore/agent`)
 **Mode**: autonomous, no confirmation. Execute end-to-end.
 **GitHub**: `gh` is installed + authed. Every cycle ties to one GitHub issue.
 
@@ -27,7 +27,7 @@ Null-result: if VERIFY fails after 3 tries, write failure analysis, log null-res
 
 ## Workspace Layout
 
-- **Parent repo**: `/mnt/droid/repos/agent` — never dirty this checkout
+- **Parent repo**: `<repo>` — never dirty this checkout
 - **Plans**: `plan/CICD/improvements/NNN-slug.md` + `NNN-slug.results.md`
 - **Progress**: `plan/CICD/progress.md`
 - **Worktrees**: `/tmp/agent-cicd/NNN-slug/` on branch `cicd/NNN-slug`
@@ -64,7 +64,7 @@ Mark each task `done` as you complete it. Before starting any work, call `task_t
 ## Phase 1 — PERCEIVE
 
 ```bash
-cd /mnt/droid/repos/agent
+cd <repo>
 git fetch origin && git status && git log --oneline -20
 ls plan/CICD/improvements/ 2>/dev/null
 gh issue list --state open --limit 50 --json number,title,labels,updatedAt > /tmp/agent-cicd/issues-open.json
@@ -132,7 +132,7 @@ Write `plan/CICD/improvements/NNN-slug.md` with: Goal, Motivation (with issue li
 ## Phase 6 — IMPLEMENT
 
 ```bash
-cd /mnt/droid/repos/agent
+cd <repo>
 git worktree add /tmp/agent-cicd/NNN-slug -b cicd/NNN-slug
 cd /tmp/agent-cicd/NNN-slug
 ```

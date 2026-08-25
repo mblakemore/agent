@@ -10,7 +10,7 @@
 
 - **Tool-call count on P-enum probe from empty tempdir**
   - Baseline: **2** (`/tmp/agent-cicd/probes/0009-enum-before.log`, turn 1 wasted on `search_files(pattern='safe_cb')` with no `path=`, turn 2 retried with the absolute path)
-  - After:    **1** (`/tmp/agent-cicd/probes/0009-enum-after.log`, turn 1 is `search_files(path='/mnt/droid/repos/agent', pattern='safe_cb')` — the new description nudged the model into passing `path` on the first call)
+  - After:    **1** (`/tmp/agent-cicd/probes/0009-enum-after.log`, turn 1 is `search_files(path='<repo>', pattern='safe_cb')` — the new description nudged the model into passing `path` on the first call)
   - Delta:    **−1 (−50%)**
 
 Secondary signals (not the gating metric, but consistent with the win):

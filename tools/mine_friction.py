@@ -2,7 +2,7 @@
 """
 mine_friction.py — Phase 1 friction dataset miner.
 
-Parses agent.py session logs (lyla, c0rtana, CICD builder/reviewer) and
+Parses agent.py session logs (long-running, git-native, CICD builder/reviewer) and
 generates training examples in Unsloth ShareGPT format for the Gemma 4 31B
 tool-grammar LoRA.
 
@@ -15,10 +15,10 @@ Friction categories mined:
 
 Usage:
   python3 tools/mine_friction.py \
-      --logs /droid/repos/lyla/.agent/history \
-               /droid/repos/c0rtana/.agent/history \
-               /droid/repos/agent/logs \
-      --out /droid/repos/beewatcher/agent-friction-v1/phase1_examples.jsonl \
+      --logs /path/to/other agent/.agent/history \
+               /path/to/other agent/.agent/history \
+               <repo>/logs \
+      --out /path/to/beewatcher/agent-friction-v1/phase1_examples.jsonl \
       --limit 200
 """
 
@@ -61,7 +61,7 @@ class FrictionEvent:
 # Log parsers
 # ---------------------------------------------------------------------------
 
-# Baseline / lyla / c0rtana format:
+# Baseline / that agent / that agent format:
 #   HH:MM:SS DEBUG TOOL CALL: file({"action": "write", ...}) [id=...]
 #   HH:MM:SS DEBUG TOOL RESULT [file]: ...
 
@@ -89,7 +89,7 @@ def _try_parse_json(s: str) -> Optional[dict]:
 
 
 def parse_baseline_log(path: Path) -> list[Turn]:
-    """Parse lyla/.agent/history or agent/baseline logs."""
+    """Parse that agent/.agent/history or agent/baseline logs."""
     turns = []
     lines = path.read_text(errors="replace").splitlines()
     i = 0
@@ -356,7 +356,7 @@ def detect_d01(turns: list[Turn], source: str) -> list[FrictionEvent]:
 
 # Matches both heredoc forms:
 #   cat > file <<EOF  (output-redirect-first)
-#   cat <<EOF > file  (stdin-first — what lyla/cortana commonly use)
+#   cat <<EOF > file  (stdin-first — what that agent/cortana commonly use)
 HEREDOC_RE = re.compile(
     r"cat\s+(?:>>|>)\s+\S+\s+<<\s*['\"]?EOF"   # cat >|>> file <<EOF
     r"|cat\s+<<\s*['\"]?EOF['\"]?\s+(?:>>|>)"   # cat <<EOF >|>> file

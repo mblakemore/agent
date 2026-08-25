@@ -160,7 +160,7 @@ git reset --hard <first commit hash on this branch>^
 or, if the worktree needs to be wiped:
 
 ```bash
-cd /mnt/droid/repos/agent
+cd <repo>
 git worktree remove /tmp/agent-cicd/0005-tools-docstring-cleanup --force
 git branch -D cicd/0005-tools-docstring-cleanup
 ```

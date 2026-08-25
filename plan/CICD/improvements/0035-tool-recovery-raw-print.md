@@ -15,7 +15,7 @@ Discovered in CICD cycle 0035 code inspection.
 
 ## Success metric
 
-- Baseline: `grep -c 'print(' /mnt/droid/repos/agent/tool_recovery.py` = 1
+- Baseline: `grep -c 'print(' <repo>/tool_recovery.py` = 1
 - Target: 0
 - Measurement method: `grep -c 'print(' <worktree>/tool_recovery.py`
 

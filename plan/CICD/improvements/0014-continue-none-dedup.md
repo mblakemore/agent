@@ -56,7 +56,7 @@ The first line is the callback render fired by `_emit("on_continue_none")` at `a
    rm -rf /tmp/probe-0014-after && mkdir -p /tmp/probe-0014-after && \
    cd /tmp/probe-0014-after && \
    timeout 180 python3 -u /tmp/agent-cicd/0014-continue-none-dedup/agent.py --continue -a \
-     "count def test_ methods in /mnt/droid/repos/agent/tests/ by reading the files" \
+     "count def test_ methods in <repo>/tests/ by reading the files" \
      > /tmp/agent-cicd/probes/0014-pcontinue-after.log 2>&1
    ```
 6. Compute the metric delta:

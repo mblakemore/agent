@@ -14,7 +14,7 @@ echo "==> Cloning repo to ${WORKDIR}"
 git clone "${REPO_URL}" "${WORKDIR}"
 cd "${WORKDIR}"
 
-OVERRIDE="NOTE: The target repo for this session is ${WORKDIR} — use it in place of /mnt/droid/repos/agent everywhere (worktree parents, gh commands, test runs, etc.)."
+OVERRIDE="NOTE: The target repo for this session is ${WORKDIR} — use it in place of <repo> everywhere (worktree parents, gh commands, test runs, etc.)."
 
 echo "==> Running CICD agent"
 claude --dangerously-skip-permissions -p --verbose --output-format text \

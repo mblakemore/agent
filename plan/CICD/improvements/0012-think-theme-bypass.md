@@ -129,12 +129,12 @@ Same idiom, same deterministic metric shape, same model-independent verification
 Single-branch cycle. If verification fails after three debug iterations, abort cleanly:
 
 ```bash
-cd /mnt/droid/repos/agent
+cd <repo>
 git worktree remove /tmp/agent-cicd/0012-think-theme-bypass --force
 git branch -D cicd/0012-think-theme-bypass
 ```
 
-The parent checkout at `/mnt/droid/repos/agent` was never touched. No rollback needed on `main`.
+The parent checkout at `<repo>` was never touched. No rollback needed on `main`.
 
 If the branch is merged and a revert is needed later, the revert is a single `git revert` of the merge commit — the three edits (tool, test, docs) are all on one branch.
 

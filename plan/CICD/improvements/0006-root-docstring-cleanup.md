@@ -124,7 +124,7 @@ There is no runtime impact — module docstrings are strings — so the fix is b
 If verification cannot reach green after three debug iterations:
 
 ```bash
-cd /mnt/droid/repos/agent
+cd <repo>
 git worktree remove /tmp/agent-cicd/0006-root-docstring-cleanup --force
 git branch -D cicd/0006-root-docstring-cleanup
 ```

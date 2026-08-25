@@ -32,8 +32,8 @@ check_endpoint() {
     echo "  $name OK ($url)"
 }
 echo "Checking endpoints..."
-check_endpoint "main"    "http://127.0.0.1:8080/health" "/mnt/droid/repos/llama.cpp/run_server_hf.sh"
-check_endpoint "summary" "http://127.0.0.1:8082/health" "/mnt/droid/repos/llama.cpp/run_server_hf_e4b_cpu.sh"
+check_endpoint "main"    "http://127.0.0.1:8080/health" "/path/to/llama.cpp/run_server_hf.sh"
+check_endpoint "summary" "http://127.0.0.1:8082/health" "/path/to/llama.cpp/run_server_hf_e4b_cpu.sh"
 
 # ── 1. Install deterministic config ─────────────────────────────────────
 CONFIG_BAK=""

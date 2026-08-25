@@ -16,7 +16,7 @@ Probe log: /tmp/agent-cicd/probes/0033-pcount-before.log
 
 ## Success metric
 
-- **Baseline**: `grep -c '(s)' /mnt/droid/repos/agent/callbacks.py` outputs **4**
+- **Baseline**: `grep -c '(s)' <repo>/callbacks.py` outputs **4**
 - **Target**: outputs **0**
 - **Measurement method**:
   ```bash

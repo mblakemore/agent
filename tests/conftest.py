@@ -16,7 +16,7 @@ those temp paths (or equal to the temp dir itself).
 find_symbol path confinement (#856): find_symbol now refuses to search paths outside
 cwd.  Most test_find_symbol.py tests use tempfile.mkdtemp() which lives under /tmp,
 so we set cwd=/tmp for those tests.  TestFindSymbolPathConfinement tests the
-confinement boundary itself and needs cwd=/droid/repos/agent so relative happy-path
+confinement boundary itself and needs cwd=<repo root> so relative happy-path
 lookups (path='.', path='tools/find_symbol.py') work correctly.  Classes that search
 real repo files (AC1–AC4, etc.) chdir to the resolved repo root so their absolute
 _REPO_ROOT / _AGENT_PY lookups satisfy path confinement when pytest is invoked from
@@ -26,7 +26,7 @@ WORKTREE_ROOT/NNN-slug, a sibling of _REPO_ROOT rather than an ancestor).
 search_files path confinement (#863): search_files now refuses to search paths outside
 cwd.  Most test_search_files.py tests use tempfile.TemporaryDirectory() which lives
 under /tmp, so we set cwd=/tmp for those tests.  TestSearchFilesPathConfinement tests
-the confinement boundary itself and needs cwd=/droid/repos/agent so that relative
+the confinement boundary itself and needs cwd=<repo root> so that relative
 happy-path lookups (path='.', path='tools/') resolve inside cwd, while absolute
 outside paths (/etc, /home, ../other) are correctly rejected.
 
@@ -43,7 +43,11 @@ from pathlib import Path
 from unittest.mock import patch
 import pytest
 
-_AGENT_REPO = "/droid/repos/agent"
+# Derived, not hardcoded: this was an absolute path to one machine's checkout, and the two
+# os.chdir(_AGENT_REPO) calls below would raise FileNotFoundError anywhere else — so the
+# suite only passed for a clone that happened to live at that path. Nothing announced it,
+# because on the machine it was written on the two were the same directory.
+_AGENT_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ── F8b: no test reaches a live model endpoint unless it says so ─────────────────────────
 # The suite blocked live escapes by convention (patch a wrapper symbol); a refactor moved a
@@ -174,12 +178,12 @@ def find_symbol_cwd(request):
     find_symbol now enforces path confinement (#856), so each test needs a cwd
     that contains all paths it passes to find_symbol.
 
-    - TestFindSymbolPathConfinement: cwd = /droid/repos/agent, so that relative
+    - TestFindSymbolPathConfinement: cwd = <repo root>, so that relative
       happy-path lookups (path='.', path='tools/find_symbol.py') resolve inside
       cwd, while absolute outside paths (/etc, /tmp) are correctly rejected.
 
     - Classes that search real repo files (_REPO_ROOT / _AGENT_PY): no cwd change —
-      the default pytest cwd (/mnt/droid/repos/agent) already contains those paths.
+      the default pytest cwd (the repo root) already contains those paths.
 
     - All other classes (which use tempfile.mkdtemp() -> /tmp/...): cwd = /tmp so
       that absolute temp-dir paths are inside cwd and the confinement check passes.
@@ -237,7 +241,7 @@ def search_files_cwd(request):
     search_files now enforces path confinement (#863), so each test needs a cwd
     that contains all paths it passes to search_files.
 
-    - TestSearchFilesPathConfinement: cwd = /droid/repos/agent, so that relative
+    - TestSearchFilesPathConfinement: cwd = <repo root>, so that relative
       happy-path lookups (path='.', path='tools/') resolve inside cwd, while
       absolute outside paths (/etc, /home, ../other) are correctly rejected.
 

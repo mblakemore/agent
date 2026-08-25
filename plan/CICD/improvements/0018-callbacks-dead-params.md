@@ -96,7 +96,7 @@ Static scan of `TerminalCallbacks` (`/tmp/agent-cicd/probes/0018-callbacks-dead-
 
 - If verification fails irrecoverably within 3 debug iterations:
   ```bash
-  cd /mnt/droid/repos/agent
+  cd <repo>
   git worktree remove /tmp/agent-cicd/0018-callbacks-dead-params --force
   git branch -D cicd/0018-callbacks-dead-params
   ```

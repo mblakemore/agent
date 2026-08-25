@@ -63,8 +63,8 @@ def _shorten_cwd(path: str) -> str:
     """Shorten `path` for display in the toolbar.
 
     1. If a top-level symlink (e.g. `/droid` → `/mnt/droid`) covers the
-       path, prefer the symlinked form — `/droid/repos/x` reads cleaner
-       than `/mnt/droid/repos/x`.
+       path, prefer the symlinked form — `/path/to/x` reads cleaner
+       than `/path/to/x`.
     2. Collapse `$HOME` to `~`.
     """
     try:

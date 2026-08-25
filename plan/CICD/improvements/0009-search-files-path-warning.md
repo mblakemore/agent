@@ -9,13 +9,13 @@ Stop the agent from burning turn 1 on a `search_files` call with no `path=` agai
 
 ## Motivation
 
-Baseline P-enum probe (`/tmp/agent-cicd/probes/0009-enum-before.log`, 55 lines) — prompt was "List every call site of safe_cb in /mnt/droid/repos/agent as file:line, excluding the definition itself." The agent's first tool call was:
+Baseline P-enum probe (`/tmp/agent-cicd/probes/0009-enum-before.log`, 55 lines) — prompt was "List every call site of safe_cb in <repo> as file:line, excluding the definition itself." The agent's first tool call was:
 
 ```
 -> search_files(pattern='safe_cb')
 ```
 
-No `path=`. The cwd was `/tmp/probe-0009-enum` (empty). Result: `[Searched '/tmp/probe-0009-enum' (0 files, 0 matched, 0 results)]` plus the cycle-0007 recovery hint. Turn 2 retried with `path='/mnt/droid/repos/agent'` and got the answer. Turn 3 printed the final list. **2 tool calls, 3 turns, correct answer.** One of those tool calls is pure waste that an upfront description warning can eliminate.
+No `path=`. The cwd was `/tmp/probe-0009-enum` (empty). Result: `[Searched '/tmp/probe-0009-enum' (0 files, 0 matched, 0 results)]` plus the cycle-0007 recovery hint. Turn 2 retried with `path='<repo>'` and got the answer. Turn 3 printed the final list. **2 tool calls, 3 turns, correct answer.** One of those tool calls is pure waste that an upfront description warning can eliminate.
 
 The tool's current description is passive:
 
@@ -27,13 +27,13 @@ Neither sentence tells the model that in automation mode the cwd is usually a th
 ## Success metric
 
 - **Baseline**: 2 tool calls on the P-enum probe from empty tempdir (`/tmp/agent-cicd/probes/0009-enum-before.log`, line 21 and line 29 — two `-> search_files(...)` events).
-- **Target**: 1 tool call on the re-run. The first call must carry `path='/mnt/droid/repos/agent'` (or equivalent absolute path pointing at the repo).
+- **Target**: 1 tool call on the re-run. The first call must carry `path='<repo>'` (or equivalent absolute path pointing at the repo).
 - **Done-when**: tool-call count = 1, probe verdict still PASS (12 unique `safe_cb` call sites listed, matching ground truth), log shows a single `-> search_files(path=…` line.
 - **Measurement method**:
   ```bash
   grep -c '^  -> search_files' /tmp/agent-cicd/probes/0009-enum-after.log
   ```
-  Plus a manual check that the listed call sites match ground truth: `grep -rn 'safe_cb(' --include='*.py' /mnt/droid/repos/agent | grep -v 'callbacks.py:393'`.
+  Plus a manual check that the listed call sites match ground truth: `grep -rn 'safe_cb(' --include='*.py' <repo> | grep -v 'callbacks.py:393'`.
 
 ## Scope
 

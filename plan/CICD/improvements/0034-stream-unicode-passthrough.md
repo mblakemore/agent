@@ -30,7 +30,7 @@ Probe log: /tmp/agent-cicd/probes/0034-P-count-before.log
 
 ## Success metric
 
-- **Baseline**: `grep -c '_sanitize_display' /mnt/droid/repos/agent/agent.py` outputs **3** (1 def + 2 call sites)
+- **Baseline**: `grep -c '_sanitize_display' <repo>/agent.py` outputs **3** (1 def + 2 call sites)
 - **Target**: outputs **0**
 - **Measurement method**:
   ```bash

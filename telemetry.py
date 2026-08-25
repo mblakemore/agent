@@ -73,7 +73,7 @@ def _truthy(val: Optional[str]) -> bool:
 
 def _default_instance() -> str:
     # Stable per-agent label (host + the agent's working-dir name) so metrics ACCUMULATE across
-    # cycles instead of churning a fresh instance per PID. A persistent agent (e.g. uhura) then
+    # cycles instead of churning a fresh instance per PID. A long-lived agent process then
     # shows as one series over time rather than N short-lived ones.
     # Override with AGENTPY_TELEMETRY_INSTANCE when multiple agents run from the SAME dir
     # concurrently (e.g. replay experiments) so they don't collide on one series.

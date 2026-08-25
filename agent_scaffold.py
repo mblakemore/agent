@@ -1,6 +1,6 @@
 """/agent wizard — scaffold an autonomous-agent repo (the DC pattern).
 
-Upgraded to the agentx reference standard (/droid/repos/agentx): the
+Upgraded to the agentx reference standard (an internal reference implementation): the
 generated instructions carry a first-person identity, the repo-verification
 guard, one-cycle-per-invocation discipline, the verification gate, a real
 file-layout tree, and — the dynamic part — a **tiers section generated from

@@ -10,7 +10,7 @@ contains ``cycle.profile`` (or an explicit ``cycle.phases`` list). Absent
 config → no engine → behavior identical to before this module existed.
 
 v1 enforcement policy (deliberately conservative — see brief; structure must
-not break the consumers' real workflows, e.g. lyla runs `git log` in
+not break the consumers' real workflows, e.g. that agent runs `git log` in
 PERCEIVE and memory-op node commands in CONSOLIDATE):
   - File-WRITE tool calls are blocked during PERCEIVE / REFLECT / DECIDE
     (write-before-read class; the fix-forward for friction T5.18/T4.11).
@@ -181,7 +181,7 @@ class PhaseEngine:
         return True, None
 
     def gate_decide_entry(self):
-        """Verification gate (Elder C2174): entering DECIDE without any
+        """Verification gate: entering DECIDE without any
         think/verify this cycle gets ONE soft-block redirect, then passes.
         Returns (allowed, message)."""
         if self.verify_calls > 0 or self.decide_gate_warned or self.observe_only:

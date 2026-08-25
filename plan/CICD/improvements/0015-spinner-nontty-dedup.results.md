@@ -31,11 +31,11 @@
 - Verdict: **PASS**
 - Header line before:
   ```
-    -> exec_command   -> exec_command(command='grep -r "^    def test_" /mnt/droid/repos/agent/t…)
+    -> exec_command   -> exec_command(command='grep -r "^    def test_" <repo>/t…)
   ```
 - Header line after:
   ```
-    -> exec_command(command='grep -r "^    def test_" /mnt/droid/repos/agent/t…)
+    -> exec_command(command='grep -r "^    def test_" <repo>/t…)
   ```
 
 ## What I actually changed

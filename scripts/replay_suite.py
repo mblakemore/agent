@@ -181,7 +181,7 @@ def write_run_config(wt_path, turn_cap, backend_config=None, success_check=None,
 
     backend_config: path to an existing agent config.json whose `backends`
     (and `retry`/`context`) blocks are merged in — e.g.
-    /droid/repos/test/config.json to run the baseline through the UCSB AWS
+    /path/to/notes/config.json to run the baseline through the UCSB AWS
     gateway (Claude Sonnet) instead of the local llama server.
     """
     cfg_dir = os.path.join(wt_path, ".agent")
@@ -288,7 +288,7 @@ def main():
     ap.add_argument("--backend-config", default=None,
                     help="path to an agent config.json whose backends/retry/"
                          "context blocks are merged into each per-run config "
-                         "(e.g. /droid/repos/test/config.json for UCSB Claude)")
+                         "(e.g. /path/to/notes/config.json for UCSB Claude)")
     ap.add_argument("--tag", default="",
                     help="run tag appended to clone dirs + results filename "
                          "so concurrent runs (e.g. gemma vs sonnet) don't "

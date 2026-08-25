@@ -3,9 +3,9 @@
 Replaces the local llama-server OpenAI-compatible API with the
 AWS Bedrock Chat gateway (aws-samples/bedrock-chat).
 
-Ported from /droid/repos/llmbox-cli/bedrock_api.py @ SHA 1653b71
+Ported from an internal CLI (bedrock_api.py) @ SHA 1653b71
 Last verified: 2026-04-23
-See /droid/repos/agent/plan/bedrock-integration.md § 19 for drift protocol.
+See <repo>/plan/bedrock-integration.md § 19 for drift protocol.
 
 D11 patch (see plan § 4 / § 24): the upstream module reads
 ``BEDROCK_API_URL`` / ``BEDROCK_API_KEY`` from ``os.environ`` at import

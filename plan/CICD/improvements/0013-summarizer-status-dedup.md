@@ -56,7 +56,7 @@ Every one of the committed `baseline/*.stdout.log` files shows this duplication 
    ```bash
    mkdir -p /tmp/probe-0013-after && cd /tmp/probe-0013-after && \
    timeout 200 python3 -u /tmp/agent-cicd/0013-summarizer-status-dedup/agent.py -a \
-     "Count the number of test methods (functions starting with 'def test_') across all Python files in the /mnt/droid/repos/agent/tests/ directory. Report the total count and a breakdown by file." \
+     "Count the number of test methods (functions starting with 'def test_') across all Python files in the <repo>/tests/ directory. Report the total count and a breakdown by file." \
      > /tmp/agent-cicd/probes/0013-pcount-after.log 2>&1
    ```
 6. Compute the metric delta:

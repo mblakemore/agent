@@ -2,9 +2,9 @@
 
 > **Status:** **Phases 1 + 2 shipped (2026-04-23/24).** G0 (default llamacpp) and G1 (summary-on-bedrock) are in production use. G2 (main-on-bedrock) is functional but cost-gated and used selectively. See [§ 0.5 — Current integration status](#05--current-integration-status-as-of-2026-04-25) for the rolling status snapshot.
 > **Owner:** mikeblakemore
-> **Target:** `/droid/repos/agent/agent.py`
-> **Source backend:** `/droid/repos/llmbox-cli/bedrock_api.py` (BedrockChatAPI — a REST client for the aws-samples `bedrock-chat` published API).
-> **Prior art for dual-backend pattern:** `/droid/repos/llmbox-cli/llmbox_lib.py` (single backend there — Bedrock). The dual-backend requirement in this plan is *new*; llmbox-cli shows how the Bedrock client is shaped, not how to switch between two backends.
+> **Target:** `<repo>/agent.py`
+> **Source backend:** `an internal CLI (bedrock_api.py)` (BedrockChatAPI — a REST client for the aws-samples `bedrock-chat` published API).
+> **Prior art for dual-backend pattern:** `an internal CLI (llmbox_lib.py)` (single backend there — Bedrock). The dual-backend requirement in this plan is *new*; llmbox-cli shows how the Bedrock client is shaped, not how to switch between two backends.
 
 ---
 
@@ -141,33 +141,33 @@ If any of S1–S5 fails its target at the end of the canary + opt-in window, the
 
 ## 3. Required reading (verified 2026-04-22)
 
-- `/droid/repos/llmbox-cli/bedrock_api.py` (184 lines) — the whole module.
-- `/droid/repos/llmbox-cli/llmbox_lib.py:25` — `_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)` — the exact regex we'll port.
-- `/droid/repos/llmbox-cli/llmbox_lib.py:181-237` (`Agent.__init__`, health, list_models).
-- `/droid/repos/llmbox-cli/llmbox_lib.py:333-482` — **critical**: dev-mode turn (`_run_turn_dev` at 334), long-mode turn, and `_process_response` / `_process_response_from_text`. Shows the full flow `send_and_wait → extract_text → _parse_tool_calls → _strip_tool_calls → _sanitize`.
-- `/droid/repos/llmbox-cli/llmbox_lib.py:461-466` — where response text is fed through `_parse_tool_calls(full_content)` and then `_strip_tool_calls`.
-- `/droid/repos/llmbox-cli/llmbox_lib.py:637-674` — `_handle_truncation`: the recovery path when `<tool_call>` appears without closing `</tool_call>`. The sanity check at **line 641** — `"<tool_call>" not in full_content or "</tool_call>" in full_content` — is the short-circuit, followed by up to 3 continuation requests that re-poll the server.
-- `/droid/repos/llmbox-cli/llmbox_lib.py:716-760` — `_build_tool_system_prompt`: serializes the `tools` list into a plain-text tool manual with a one-shot `<tool_call>{...}</tool_call>` example. The wire shape used in the example is at **line 746** (`<tool_call>\n{...}\n</tool_call>`).
-- `/droid/repos/llmbox-cli/llmbox_lib.py:762-813` — `_build_prompt`: composes `[System]…[End System]`, optional initial files, optional progress summary, then a budget-capped reverse walk of `conversation_history` emitting `User:` / `Assistant:` / `[Tool call: name(args)]` / `[Tool result (name): …]` segments, terminated with `"\n\nAssistant:"`.
-- `/droid/repos/llmbox-cli/llmbox_lib.py:881-899` — `_parse_tool_calls` / `_strip_tool_calls` / `_sanitize` (the last strips `<think>` tags and normalizes Unicode).
-- `/droid/repos/llmbox-cli/llmbox.py:44-86` (`_DEFAULT_CONFIG`, `_load_config`) — the Bedrock-specific config block shape.
-- `/droid/repos/llmbox-cli/llmbox.py:380-472` — how the CLI picks mode and falls back between dev and long (the fallback is orthogonal to our use — we always use dev semantics for Bedrock main).
-- `/droid/repos/llmbox-cli/llmbox.py:604,735` — user-visible mode labels: `"dev    Prompt stuffing with rolling summary (default)"` and `--mode` CLI help `"dev (prompt stuffing) or long (server-side caching)"`.
-- `/droid/repos/agent/agent.py:187-254` (`_DEFAULT_CONFIG`, `_load_config`, `BASE_URL`).
-- `/droid/repos/agent/agent.py:379-417` (`_llm_request`) — the only call site for `requests.post` on the streaming path.
-- `/droid/repos/agent/agent.py:749-776` (`_summary_request`) — the summary path.
-- `/droid/repos/agent/agent.py:867-905` (`_generate_summary`), `910-993` (`AsyncSummarizer`) — how the summary endpoint is selected and how the thread runs.
-- `/droid/repos/agent/agent.py:1358-1414` (`_check_api_health`, `_detect_ctx_size`, `_list_available_models`) — startup probes used by the banner and context budgeter.
-- `/droid/repos/agent/agent.py:1443-1524` (session start, summarizer wiring, health check).
-- `/droid/repos/agent/agent.py:1891-2052` (request body construction + SSE streaming tool-call assembly).
-- `/droid/repos/agent/token_utils.py` — Gemma-3 tokenizer fallback logic.
-- `/droid/repos/agent/cancel.py:39-53` (`check_cancelled`, `request_cancel`).
-- `/droid/repos/agent/tests/test_agent_loop.py:12-38` (`create_mock_response` helper — the mock pattern every loop test uses).
-- `/droid/repos/agent/tests/test_agent_llm_retries.py:1-107` (existing `_llm_request` retry tests).
-- `/droid/repos/agent/tests/test_context_overflow.py` (500-overflow tests).
-- `/droid/repos/agent/tests/test_summary_request_signature.py` (AST-level guard — will constrain the new `_summary_request` signature).
-- `/droid/repos/agent/CICD/cicd.sh:191-204` — how the CICD loop invokes the agent.
-- `/droid/repos/agent/plan/ui-upgrade-from-llmbox-cli.md` and `ui-upgrade-followup.md` — for tone/format.
+- `an internal CLI (bedrock_api.py)` (184 lines) — the whole module.
+- `an internal CLI (llmbox_lib.py):25` — `_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)` — the exact regex we'll port.
+- `an internal CLI (llmbox_lib.py):181-237` (`Agent.__init__`, health, list_models).
+- `an internal CLI (llmbox_lib.py):333-482` — **critical**: dev-mode turn (`_run_turn_dev` at 334), long-mode turn, and `_process_response` / `_process_response_from_text`. Shows the full flow `send_and_wait → extract_text → _parse_tool_calls → _strip_tool_calls → _sanitize`.
+- `an internal CLI (llmbox_lib.py):461-466` — where response text is fed through `_parse_tool_calls(full_content)` and then `_strip_tool_calls`.
+- `an internal CLI (llmbox_lib.py):637-674` — `_handle_truncation`: the recovery path when `<tool_call>` appears without closing `</tool_call>`. The sanity check at **line 641** — `"<tool_call>" not in full_content or "</tool_call>" in full_content` — is the short-circuit, followed by up to 3 continuation requests that re-poll the server.
+- `an internal CLI (llmbox_lib.py):716-760` — `_build_tool_system_prompt`: serializes the `tools` list into a plain-text tool manual with a one-shot `<tool_call>{...}</tool_call>` example. The wire shape used in the example is at **line 746** (`<tool_call>\n{...}\n</tool_call>`).
+- `an internal CLI (llmbox_lib.py):762-813` — `_build_prompt`: composes `[System]…[End System]`, optional initial files, optional progress summary, then a budget-capped reverse walk of `conversation_history` emitting `User:` / `Assistant:` / `[Tool call: name(args)]` / `[Tool result (name): …]` segments, terminated with `"\n\nAssistant:"`.
+- `an internal CLI (llmbox_lib.py):881-899` — `_parse_tool_calls` / `_strip_tool_calls` / `_sanitize` (the last strips `<think>` tags and normalizes Unicode).
+- `an internal CLI (llmbox.py):44-86` (`_DEFAULT_CONFIG`, `_load_config`) — the Bedrock-specific config block shape.
+- `an internal CLI (llmbox.py):380-472` — how the CLI picks mode and falls back between dev and long (the fallback is orthogonal to our use — we always use dev semantics for Bedrock main).
+- `an internal CLI (llmbox.py):604,735` — user-visible mode labels: `"dev    Prompt stuffing with rolling summary (default)"` and `--mode` CLI help `"dev (prompt stuffing) or long (server-side caching)"`.
+- `<repo>/agent.py:187-254` (`_DEFAULT_CONFIG`, `_load_config`, `BASE_URL`).
+- `<repo>/agent.py:379-417` (`_llm_request`) — the only call site for `requests.post` on the streaming path.
+- `<repo>/agent.py:749-776` (`_summary_request`) — the summary path.
+- `<repo>/agent.py:867-905` (`_generate_summary`), `910-993` (`AsyncSummarizer`) — how the summary endpoint is selected and how the thread runs.
+- `<repo>/agent.py:1358-1414` (`_check_api_health`, `_detect_ctx_size`, `_list_available_models`) — startup probes used by the banner and context budgeter.
+- `<repo>/agent.py:1443-1524` (session start, summarizer wiring, health check).
+- `<repo>/agent.py:1891-2052` (request body construction + SSE streaming tool-call assembly).
+- `<repo>/token_utils.py` — Gemma-3 tokenizer fallback logic.
+- `<repo>/cancel.py:39-53` (`check_cancelled`, `request_cancel`).
+- `<repo>/tests/test_agent_loop.py:12-38` (`create_mock_response` helper — the mock pattern every loop test uses).
+- `<repo>/tests/test_agent_llm_retries.py:1-107` (existing `_llm_request` retry tests).
+- `<repo>/tests/test_context_overflow.py` (500-overflow tests).
+- `<repo>/tests/test_summary_request_signature.py` (AST-level guard — will constrain the new `_summary_request` signature).
+- `<repo>/CICD/cicd.sh:191-204` — how the CICD loop invokes the agent.
+- `<repo>/plan/ui-upgrade-from-llmbox-cli.md` and `ui-upgrade-followup.md` — for tone/format.
 
 ## 4. Design decisions / open questions
 
@@ -201,7 +201,7 @@ Tracked here and in [§ 25 open-questions log](#25--open-questions-log).
 - [ ] Clean `main` (no in-flight PRs touching `agent.py:379-417`, `:749-776`, `:867-993`, or `:1443-1524`).
 - [ ] **Coordination with the self-CICD loop:** the repo is actively iterated via CICD (see `CICD/agent.md`, recent cycles ~73). Phase 1 PR author declares a soft freeze on `agent.py` (`379-417`, `749-993`, `1443-1524`, `1891-2052`) for the PR's review window — other cycles may still land but must not touch those ranges. If they do, rebase-on-land is the Phase 1 PR author's responsibility. See also [§ 20 task 1.0](#20--work-breakdown).
 - [ ] Both llama-server endpoints running for the baseline capture (see UI plan § 11.1 and this plan's [§ 5.5](#55--baseline-measurements)).
-- [ ] `bedrock_api.py` from `/droid/repos/llmbox-cli` pinned to a known SHA (current: `1653b71`); the agent's copy carries that SHA as a docstring reference for drift detection. See [§ 19](#19--cross-repo-contract).
+- [ ] `bedrock_api.py` from `an internal CLI` pinned to a known SHA (current: `1653b71`); the agent's copy carries that SHA as a docstring reference for drift detection. See [§ 19](#19--cross-repo-contract).
 - [ ] `llmbox_lib.py`'s dev-mode functions (`_TOOL_CALL_RE`, `_build_tool_system_prompt`, `_build_prompt`, `_parse_tool_calls`, `_strip_tool_calls`, `_sanitize`, `_handle_truncation`) pinned to the same llmbox-cli SHA — the agent's ported copy (in `agent/dev_mode_prompt.py`) carries that SHA as a docstring reference.
 - [ ] A Bedrock gateway reachable from the dev box, with `BEDROCK_API_URL` + `BEDROCK_API_KEY` set in the shell. (If unavailable, Phase 1 still ships — only the live-integration smoke in Phase 2 is gated.)
 
@@ -223,13 +223,13 @@ Before any code change, measure and commit current behavior so Phase 1's "no reg
 Commands to run:
 ```bash
 # Baseline capture (requires both llama-servers up)
-/droid/repos/agent/scripts/capture_baseline.sh
+<repo>/scripts/capture_baseline.sh
 
 # Latency extraction (new script — spec only; implement in task 1.1)
-/droid/repos/agent/scripts/measure_latency.py baseline/simple.stdout.log
+<repo>/scripts/measure_latency.py baseline/simple.stdout.log
 ```
 
-Results committed to `/droid/repos/agent/baseline/METRICS.md` (file to be created by task 1.1; no need to create any file during planning).
+Results committed to `<repo>/baseline/METRICS.md` (file to be created by task 1.1; no need to create any file during planning).
 
 ## 6. Config surface
 
@@ -345,7 +345,7 @@ From [§ 5.5](#55--baseline-measurements) B8: typical operator runs `<TBD>` requ
 
 A daily in-process counter, incremented on every `BedrockBackend.stream_chat` / `.complete` call with an estimated cost based on request + response size.
 
-- Counter persists across agent runs via `/droid/repos/agent/CICD/bedrock_spend.json` (written at end of each turn; key is `YYYY-MM-DD`).
+- Counter persists across agent runs via `<repo>/CICD/bedrock_spend.json` (written at end of each turn; key is `YYYY-MM-DD`).
 - New config keys: `backends.main.daily_cost_cap_usd` (default: `10.00`), `backends.summary.daily_cost_cap_usd` (default: `1.00`).
 - On cap breach: log `ERROR` "Bedrock daily spend cap exceeded ($X.XX of $Y.YY); aborting Bedrock call" and raise a new `BedrockBudgetExceeded` exception. The agent's existing error path surfaces this as a tool-call or summary failure; the loop continues with llamacpp fallback on the summary path, or exits on the main path (same as today when main-LLM is unreachable).
 - Override: env var `BEDROCK_DAILY_CAP_USD` (numeric) overrides both config keys when set, for CI runs that want a tighter cap.
@@ -671,7 +671,7 @@ Add a third capture with `backends.main.kind=bedrock backends.summary.kind=bedro
 
 ### 13.4 Live smoke test (Phase 2 DoD)
 
-A reusable script `/droid/repos/agent/scripts/bedrock_smoke.sh` (spec only; implement in task 2.8). Pass/fail criteria, all of which must hold for Phase 2 DoD:
+A reusable script `<repo>/scripts/bedrock_smoke.sh` (spec only; implement in task 2.8). Pass/fail criteria, all of which must hold for Phase 2 DoD:
 
 1. **Summary live:** `backends.summary.kind=bedrock`, run one CICD-style turn, verify summary arrives within `poll_timeout` and is non-empty.
 2. **Main live, tool call:** `backends.main.kind=bedrock`, prompt "List files in `/tmp` using the `exec_command` tool," verify one `<tool_call>` parse, one shell exec, one subsequent assistant reply.
@@ -687,7 +687,7 @@ Script exits 0 on all-pass, 1 on any failure with a human-readable diagnostic li
 The CICD loop (`CICD/cicd.sh:191-204`) invokes:
 
 ```bash
-python3 /droid/repos/agent/agent.py -a --verbose --nudge "${AGENT_MD}..."
+python3 <repo>/agent.py -a --verbose --nudge "${AGENT_MD}..."
 ```
 
 It does **not** parse agent stdout programmatically — `grep -n "stdout|exit code|return code|check.*output|\$\?" CICD/cicd.sh` returns nothing. The loop only relies on the agent's exit code and on side-effects committed to `CICD/` (progress rows, results files). Adding a one-line tokenizer-approximation banner at startup is safe.
@@ -857,7 +857,7 @@ Numbered playbooks for common failure modes. Each is a sequence to follow, not a
 
 Triggered by: daily spend in `CICD/bedrock_spend.json` exceeds 2× the 7-day trailing average.
 
-1. `cat /droid/repos/agent/CICD/bedrock_spend.json | jq` — identify which days are spiking.
+1. `cat <repo>/CICD/bedrock_spend.json | jq` — identify which days are spiking.
 2. Grep log for `bedrock.cost.tick` on those days; find the highest per-call costs.
 3. Identify the caller: CICD loop? Interactive session? Check `role=main` vs `role=summary`.
 4. If CICD: check `progress.md` — is the loop retrying a failure? Kill the loop.
@@ -887,7 +887,7 @@ Every item must be verified by the PR reviewer before Phase 1 or Phase 2 merges,
 
 ## 19. — Cross-repo contract
 
-`bedrock_api.py` lives in `/droid/repos/llmbox-cli`. Our Phase 2 copies it into `/droid/repos/agent/`. The copy will drift. This section defines the contract and the drift-detection mechanism.
+`bedrock_api.py` lives in `an internal CLI`. Our Phase 2 copies it into `<repo>/`. The copy will drift. This section defines the contract and the drift-detection mechanism.
 
 ### What llmbox-cli guarantees (implicitly, since there's no formal contract today)
 
@@ -902,9 +902,9 @@ Phase 2's copy of `bedrock_api.py` carries a top-of-file docstring:
 
 ```python
 """
-Ported from /droid/repos/llmbox-cli/bedrock_api.py @ SHA 1653b71
+Ported from an internal CLI (bedrock_api.py) @ SHA 1653b71
 Last verified: 2026-04-22
-See /droid/repos/agent/plan/bedrock-integration.md § 19 for drift protocol.
+See <repo>/plan/bedrock-integration.md § 19 for drift protocol.
 """
 ```
 
@@ -912,7 +912,7 @@ See /droid/repos/agent/plan/bedrock-integration.md § 19 for drift protocol.
 
 ### Drift-detection script
 
-Phase 2 ships `/droid/repos/agent/scripts/check_llmbox_drift.sh` (spec):
+Phase 2 ships `<repo>/scripts/check_llmbox_drift.sh` (spec):
 
 ```bash
 #!/usr/bin/env bash
@@ -923,7 +923,7 @@ Phase 2 ships `/droid/repos/agent/scripts/check_llmbox_drift.sh` (spec):
 # Usage: check_llmbox_drift.sh
 ```
 
-Implementation: strip the top docstring (lines matching `r'^".*?"""'s`), then `diff` agent/bedrock_api.py against `/droid/repos/llmbox-cli/bedrock_api.py`.
+Implementation: strip the top docstring (lines matching `r'^".*?"""'s`), then `diff` agent/bedrock_api.py against `an internal CLI (bedrock_api.py)`.
 
 ### Notification plan
 

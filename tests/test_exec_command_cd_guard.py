@@ -4,7 +4,7 @@ import pytest
 from tools.exec_command import fn as exec_command
 
 def test_cd_guard_symlinks(tmp_path, monkeypatch):
-    # Setup: /mnt/droid/repos/agent
+    # Setup: <repo>
     # Create a symlink /droid -> /mnt/droid
     # We use tmp_path to simulate the environment
     
@@ -29,7 +29,7 @@ def test_cd_guard_symlinks(tmp_path, monkeypatch):
     monkeypatch.chdir(str(repo_dir))
     
     # Case 1: CD to in-tree path via symlink form (SHOULD BE ALLOWED)
-    # The symlink form is /tmp/.../droid/repos/agent/test_dir
+    # The symlink form is /tmp/...<repo>/test_dir
     symlink_path = str(symlink_root / "repos" / "agent" / "test_dir")
     cmd_ok = f"cd {symlink_path} && pwd"
     result_ok = exec_command(cmd_ok)

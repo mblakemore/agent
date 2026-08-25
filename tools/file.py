@@ -42,7 +42,7 @@ def _resolve_path(path):
     p = Path(path)
     if not p.is_absolute():
         cwd = Path.cwd()
-        # Detect when the agent passes something like "droid/repos/project/e2/file"
+        # Detect when the agent passes something like "path/to/project/e2/file"
         # which duplicates the cwd structure. Try to resolve it.
         try:
             cwd_str = str(cwd)
@@ -189,7 +189,7 @@ def _check_write_confinement(path, p):
     directory. Rationale: `exec_command` — the tool the agent fell back to whenever confinement
     blocked it — has NO such restriction, so this check was pure friction (it just forced a clunky
     `cat`/`>>` workaround for legitimate cross-repo access like reading
-    /droid/repos/dc_shared/NETWORK_FOCUS.md), not a real security boundary. File I/O now has the
+    /path/to/shared/NOTES.md), not a real security boundary. File I/O now has the
     same filesystem reach as exec_command.
 
     Kept as a no-op so all six call sites (_read/_write/_insert/_delete/_edit/_append) stay intact,
@@ -341,7 +341,7 @@ def _write(path, content, start_line, end_line):
             if end_line < total_lines:
                 new_lines[-1] += "\n"
 
-        # Indent guard for Python slice-writes. Lyla C40 burned 4 turns on a
+        # Indent guard for Python slice-writes. a field-observed run burned 4 turns on a
         # slice-write that put 5 leading spaces where the surrounding block
         # had 4, producing IndentationError after the write succeeded. Catch
         # it upfront — compare the leading whitespace of the FIRST non-blank
@@ -423,7 +423,7 @@ def _write(path, content, start_line, end_line):
     if len(dirs_to_create) > _MAX_NEW_DIRS:
         return (f"Error: writing '{path}' would create {len(dirs_to_create)} nested directories. "
                f"This usually means the path is wrong. Use a relative path from your working directory "
-               f"(e.g. '.agent/state/file.json' not '/droid/repos/.../state/file.json').")
+               f"(e.g. '.agent/state/file.json' not '/path/to/.../state/file.json').")
 
     old_content = ""
     if p.exists():
@@ -453,11 +453,14 @@ def _write(path, content, start_line, end_line):
         return f"Error: write failed: {e}"
     _accessed_files.add(str(p.resolve()))
 
-    # Schema-preservation warning for JSON object overwrites. Lyla C24→C26
-    # regression: she ported Elder's `theme_tracking` block into focus.json
-    # at C24, then at C26 rewrote focus.json from scratch (focusing on a
-    # different subset of keys), silently dropping theme_tracking. Never
-    # restored across 13+ cycles — pure schema-loss-via-overwrite.
+    # Schema-preservation warning for JSON object overwrites. Observed regression:
+    # an agent added a block of keys to a JSON state file, then later rewrote that
+    # same file from scratch around a different subset of keys, silently dropping
+    # the earlier block. Nothing errored, the write succeeded, the file stayed
+    # valid JSON — and the dropped keys were never restored, because no later run
+    # had any reason to look for them. Pure schema-loss-via-overwrite: invisible at
+    # the moment it happens, and afterwards indistinguishable from keys that never
+    # existed.
     # Surface dropped top-level keys so the agent sees the loss in the
     # tool-result and can choose to restore.
     _schema_warning = ""
@@ -479,7 +482,7 @@ def _write(path, content, start_line, end_line):
                         f"that were present in the previous version: {dropped}. "
                         f"If intentional, ignore. Otherwise these are likely "
                         f"accidental losses from rewriting a structured-state "
-                        f"file without merging — lyla C26 lost theme_tracking "
+                        f"file without merging — a field-observed run lost theme_tracking "
                         f"this way and regressed for 13+ cycles. Restore by "
                         f"re-issuing the write with the dropped keys included, "
                         f"or use file(action='edit') for surgical changes."
@@ -496,8 +499,8 @@ def _write(path, content, start_line, end_line):
 def _edit(path, old_string, new_string, replace_all):
     """Claude-Edit-style exact-string replacement with uniqueness guarantee.
 
-    Avoids the "full-rewrite for tiny diff" pattern that lyla hit (C2/C3/C7/C19
-    rewrote 1500-2000 chars of `visualization/lyla.html` per cycle for line-
+    Avoids the "full-rewrite for tiny diff" pattern that that agent hit (C2/C3/C7/C19
+    rewrote 1500-2000 chars of `visualization/that agent.html` per cycle for line-
     level edits) by letting the agent specify the surgical change directly.
     Atomic via tmp+rename so a partial write can't corrupt the target.
 

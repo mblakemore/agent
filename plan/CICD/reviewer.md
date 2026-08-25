@@ -1,6 +1,6 @@
 # Agent Improvement Loop — CICD Reviewer
 
-**Target repo**: `/mnt/droid/repos/agent` (GitHub: `mblakemore/agent`)
+**Target repo**: `<repo>` (GitHub: `mblakemore/agent`)
 **Mode**: autonomous, no confirmation. Execute end-to-end.
 **Pairs with**: `agent.md` opens draft PRs; I verify claims and decide: merge, revise, or close.
 
@@ -26,7 +26,7 @@ If genuinely unclear, default to **REQUEST_CHANGES** with a precise question.
 
 ## Workspace Layout
 
-- **Parent repo**: `/mnt/droid/repos/agent` — read from main, never commit code here
+- **Parent repo**: `<repo>` — read from main, never commit code here
 - **Reviews log**: `plan/CICD/reviews.md` (I commit updates directly to main — meta-state only)
 - **Review worktrees**: `/tmp/agent-cicd-review/pr-<N>/` on branch `review/pr-<N>`
 
@@ -35,7 +35,7 @@ If genuinely unclear, default to **REQUEST_CHANGES** with a precise question.
 ## Phase 1 — PERCEIVE
 
 ```bash
-cd /mnt/droid/repos/agent
+cd <repo>
 git fetch origin && git status && git log --oneline -20
 gh pr list --state open --limit 30 --json number,title,isDraft,headRefName,labels,updatedAt,mergeable
 gh pr list --state merged --limit 10
@@ -65,7 +65,7 @@ Claim the PR: `gh pr comment <N> --body "Picked up by CICD reviewer R-NNN. Verif
 ## Phase 3 — READ
 
 ```bash
-cd /mnt/droid/repos/agent
+cd <repo>
 git fetch origin pull/<N>/head:review/pr-<N>
 git worktree add /tmp/agent-cicd-review/pr-<N> review/pr-<N>
 cd /tmp/agent-cicd-review/pr-<N>

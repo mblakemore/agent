@@ -11,20 +11,20 @@ Fix `search_files(count_only=True)` so it returns the true total match count ins
 
 Cycle 0036 (PR #77) added a `count_only` parameter to `tools/search_files.py` with the intent of returning an accurate match count. However, the early-termination guard that prevents the tool from returning more than 100 result *lines* was not disabled for the `count_only` path. When there are more than 100 matches, `count_only=True` still reports `100 results (truncated)` — an undercount.
 
-Probe P-count (cycle 0038): `search_files(count_only=True, pattern='def test_', path='/mnt/droid/repos/agent/tests/')` returned `100 results (truncated)`. Real count: 182. The agent reported "100 test functions" to the user — a 45% undercount.
+Probe P-count (cycle 0038): `search_files(count_only=True, pattern='def test_', path='<repo>/tests/')` returned `100 results (truncated)`. Real count: 182. The agent reported "100 test functions" to the user — a 45% undercount.
 
 Probe log: `/tmp/agent-cicd/probes/0038-P-count-before.log`
 
 ## Success metric
 
-- Baseline: `search_files(count_only=True, pattern='def test_', path='/mnt/droid/repos/agent/tests/')` returns `100 results (truncated)` — wrong
+- Baseline: `search_files(count_only=True, pattern='def test_', path='<repo>/tests/')` returns `100 results (truncated)` — wrong
 - Target: same call returns `182 results` (no truncation marker)
 - Measurement method:
   ```python
   python3 -c "
   import sys; sys.path.insert(0, '/tmp/agent-cicd/0038-count-only-truncation')
   from tools.search_files import fn
-  result = fn('def test_', path='/mnt/droid/repos/agent/tests/', count_only=True)
+  result = fn('def test_', path='<repo>/tests/', count_only=True)
   print(result)
   assert '182' in result, f'Expected 182 but got: {result}'
   assert 'truncated' not in result, f'Should not be truncated: {result}'

@@ -17,7 +17,7 @@ Codebase scan during cycle 0021. `token_utils.py:18` defines `_QWEN_TOKENIZER_AV
 - Target: **0** hits of `_QWEN_TOKENIZER_AVAILABLE`; **6** hits of `_EXACT_TOKENIZER_AVAILABLE`
 - Measurement method:
   ```bash
-  cd /mnt/droid/repos/agent
+  cd <repo>
   old=$(grep -rc '_QWEN_TOKENIZER_AVAILABLE' token_utils.py tui.py tests/test_tui.py | awk -F: '{s+=$2}END{print s}')
   new=$(grep -rc '_EXACT_TOKENIZER_AVAILABLE' token_utils.py tui.py tests/test_tui.py | awk -F: '{s+=$2}END{print s}')
   echo "old=$old new=$new"

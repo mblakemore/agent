@@ -36,7 +36,7 @@ instead of dead parameters or dead methods.
 - **Target**: 0.
 - **Measurement method** — re-runnable grep script:
   ```bash
-  cd /mnt/droid/repos/agent
+  cd <repo>
   a=$(grep -cE 'elif level == "error":' callbacks.py)
   b=$(grep -cF '[hallucination stripped: {kind}]' callbacks.py)
   c=$(grep -cF '[overtime: {reason}]' callbacks.py)

@@ -131,7 +131,7 @@ consistency; the char widths are identical.
 ## Rollback
 
 ```bash
-cd /mnt/droid/repos/agent
+cd <repo>
 git diff HEAD~2 -- callbacks.py tui.py | git apply --reverse
 ```
 Or simply: the worktree branch is not merged; discard it.

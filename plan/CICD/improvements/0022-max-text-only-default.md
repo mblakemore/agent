@@ -17,7 +17,7 @@ Add `"max_text_only": 3` to `_DEFAULT_CONFIG["cycle"]` and align the read site t
   Simpler concrete command:
   ```bash
   python3 -c "
-  import sys; sys.path.insert(0, '/mnt/droid/repos/agent')
+  import sys; sys.path.insert(0, '<repo>')
   import agent
   keys = set(agent._DEFAULT_CONFIG['cycle'].keys())
   missing = {'max_turns','wind_down_turns','max_text_only'} - keys

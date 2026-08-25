@@ -1,4 +1,4 @@
-"""Context-overflow stage-1 spill (board#209, job#208 root cause).
+"""Context-overflow stage-1 spill (bulk tool output as the overflow root cause).
 
 The overflow recovery used to go straight to message trimming — which loses whole
 recent messages while the actual bloat is usually raw data echoed into role:'tool'

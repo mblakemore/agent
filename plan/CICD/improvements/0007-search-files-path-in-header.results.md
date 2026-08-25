@@ -53,7 +53,7 @@ Run 2 is the honest demonstration. The first `search_files` call returned:
 No files were searched under '/tmp/probe-0007-enum'. If you meant a different directory, pass path= with an absolute path.
 ```
 
-…and the model's **second** call was the same regex pattern with `"path": "/mnt/droid/repos/agent"` added, yielding 12 results in one shot. The wasted second `search_files` and the `exec_command find` fallback from the baseline run are both gone.
+…and the model's **second** call was the same regex pattern with `"path": "<repo>"` added, yielding 12 results in one shot. The wasted second `search_files` and the `exec_command find` fallback from the baseline run are both gone.
 
 Net delta: **4 → 2 tool calls (−50%)** on the run that actually exercised the fix; **4 → 1 (−75%)** on the run where the model got lucky and didn't need the hint. Both comfortably under the ≤ 3 target.
 

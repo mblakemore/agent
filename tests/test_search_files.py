@@ -1305,7 +1305,7 @@ class TestSearchFilesMultiGlob(unittest.TestCase):
 class TestSearchFilesPathConfinement(unittest.TestCase):
     """search_files must refuse to search paths outside the working directory (#863).
 
-    The conftest search_files_cwd fixture sets cwd=/droid/repos/agent for this class
+    The conftest search_files_cwd fixture sets cwd=<repo> for this class
     so relative paths like '.' and 'tools/' resolve inside cwd, while absolute paths
     to /etc, /home, and parent-traversal paths are correctly rejected.
     """

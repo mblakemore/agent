@@ -534,7 +534,7 @@ _DEFAULT_CONFIG = {
         # text-only stop: if there are uncommitted changes and no commit
         # happened this session, it injects one nudge to run PERSIST.
         # Budget: 2 retries (shared with _consecutive_text_only).
-        # Intended for git-native agents (lyla, c0rtana) that must commit
+        # Intended for long-running, git-native agents that must commit
         # every cycle. Off by default.
         "persist_nudge": False,
         # List of task descriptions to pre-seed into task_tracker at session
@@ -546,7 +546,7 @@ _DEFAULT_CONFIG = {
         "initial_tasks": [],
         # Per-turn text-only response cap (characters). Only enforced when nudge
         # is enabled — has no effect when nudge is off.  Prevents context-filling
-        # spirals (c0rtana C206: 50K-char monologue → 10 ctx-overflow errors).
+        # spirals (field observation: 50K-char monologue → 10 ctx-overflow errors).
         # ~24000 chars ≈ 6000 tokens — allows long reasoning/analysis turns while
         # still cutting runaway loops well before they exhaust the context window.
         "max_text_response_chars": 24000,
@@ -554,7 +554,7 @@ _DEFAULT_CONFIG = {
         # Also settable via --nudge CLI flag (either enables it).
         "nudge": False,
         # Cap on text content generated AFTER tool calls in the same turn.
-        # Prevents post-tool prose spirals (c0rtana C207: garbled task_tracker
+        # Prevents post-tool prose spirals (field observation: garbled task_tracker
         # adds set receiving_tools=True, bypassing the pre-tool cap, then 50K
         # chars of post-tool prose filled the context).
         # 2000 chars is generous for any legitimate wrap-up text.
@@ -1066,19 +1066,31 @@ _CWD_CANONICALIZED = _canonicalize_cwd()
 
 _config = _load_config()
 
-# Fleet identity enforcement (coordination#1355): if the config declares an explicit
-# `identity`, export it as HAIL_IDENTITY so every `hail post` this agent makes is FORCED to
-# that sender (the ship's-computer CLI refuses any other --sender). This makes cross-identity
-# posting structurally impossible for ANY agent.py-driven DC — a bad generation can only ever
-# post AS itself, which is attributable and recoverable. Deliberately conservative:
-#   • STRICT NO-OP without an explicit `identity` field — never guessed from cwd/basename
-#     (a wrong guess would force a wrong sender, worse than no enforcement).
-#   • Never overrides an existing HAIL_IDENTITY (a launch script's export wins).
-# The mechanism lives here (tracked); each agent declares its own value in its (gitignored)
-# .agent/config.json, e.g. {"identity": "uhura"} — same locality as its llm/base_url.
-_declared_identity = _config.get("identity")
-if _declared_identity and not os.environ.get("HAIL_IDENTITY"):
-    os.environ["HAIL_IDENTITY"] = str(_declared_identity)
+# Config-declared environment, exported verbatim. A deployment often needs to pin a value that
+# an external CLI reads from the environment — a caller identity, a workspace tag, a tenant —
+# so that a bad generation cannot talk its way past it: the value is fixed before the model
+# runs and the tool downstream refuses anything else.
+#
+# agent.py deliberately knows NOTHING about what any of these keys mean. It copies
+# `config["env"]` into the process environment and stops. Keeping the semantics out of here is
+# the point: the moment this file names a specific tool's variable, that tool becomes a
+# documented assumption of the agent rather than one thing somebody happens to run.
+#
+# Deliberately conservative, and both rules matter:
+#   • STRICT NO-OP without an explicit `env` block — nothing is ever inferred from cwd,
+#     basename or hostname. A guessed value is worse than no value, because it is wrong
+#     confidently and the caller cannot see it happen.
+#   • NEVER overrides a variable already in the environment — a launch script, systemd unit
+#     or CI job that set it wins, because it is closer to the operator than a config file is.
+#
+# Declare it in .agent/config.json (gitignored, same locality as llm/base_url):
+#     {"env": {"SOME_TOOL_IDENTITY": "worker-3"}}
+_declared_env = _config.get("env")
+if isinstance(_declared_env, dict):
+    for _k, _v in _declared_env.items():
+        if _v is None or os.environ.get(str(_k)):
+            continue
+        os.environ[str(_k)] = str(_v)
 
 # Apply configuration
 BASE_URL = _config["llm"]["base_url"]
@@ -1870,9 +1882,9 @@ _FILE_ACTIONS = {"read", "write", "insert", "append", "delete", "list", "edit"}
 
 # Harmony/ChatML/Llama-style control tokens that leak from model output into
 # tool args when sampling goes wrong (typically under context pressure with a
-# fragile chat template). Observed in c0rtana C22 — both full `<|tool_call|>`
+# fragile chat template). Observed in a field-observed run — both full `<|tool_call|>`
 # form and partial variants like `<tool_call|>`, `<|channel>`, `<|tool_call>`.
-# Letting these dispatch is dangerous: c0rtana's `file({path: "...<|tool_call|>..."})`
+# Letting these dispatch is dangerous: one agent's `file({path: "...<|tool_call|>..."})`
 # wrote a file with the tokens in its NAME, git committed it, and every cycle
 # since re-injects the tokens into context via `ls` (self-amplifying poison).
 _HARMONY_TOKEN_RE = re.compile(
@@ -1885,7 +1897,7 @@ _HARMONY_TOKEN_RE = re.compile(
 # DC-style agents reference a small set of well-known placeholder files in
 # their AGENT.md / CLAUDE.md. If the file is mentioned with read intent but
 # doesn't exist on disk, the agent's first PERCEIVE errors every cycle
-# (lyla audit: messages/from-creator.md errored 23 times across her C1-C23).
+# (a field audit: one missing dotfile errored 23 times across a single run.)
 # Auto-create empty placeholders so the bootstrap path is clean.
 _KNOWN_PLACEHOLDER_FILES = (
     "messages/from-creator.md",
@@ -1983,7 +1995,7 @@ def _load_preamble_bundle(log):
     message and prepends to conversation_history at session start.
 
     Eliminates the 8-tool-call PERCEIVE boilerplate that both audit reports
-    (c0rtana #4, lyla #1) flagged as the highest-impact friction.
+    (two independent field audits) flagged as the highest-impact friction.
     """
     preamble_path = Path(".agent/preamble.json")
     if not preamble_path.exists():
@@ -2071,7 +2083,7 @@ def _load_preamble_bundle(log):
 
 
 # Minimum substring length to count as "context laundering" — empirically the
-# lyla failures used full paragraphs (300+ chars), so 50 is comfortably
+# that agent failures used full paragraphs (300+ chars), so 50 is comfortably
 # conservative without false-positiving on short overlapping phrases.
 _THINK_LAUNDER_MIN_LEN = 50
 
@@ -2081,7 +2093,7 @@ def _detect_context_laundering(text, history, lookback=3):
     a substring of theirs verbatim at >= _THINK_LAUNDER_MIN_LEN chars.
 
     Used to reject `think` calls whose prompt or context paraphrases the
-    conversation context (lyla's "I am Lyla, current state: cycle 10..."
+    conversation context (one agent's "I am <agent>, current state: cycle 10..."
     pattern — pays the LLM cost to reason about content already in context).
 
     Returns (offending_substring, source_msg_index) on hit, None if clean.
@@ -2544,7 +2556,7 @@ def _expand_file_refs(text):
     # We use Path.cwd().resolve() (not os.getcwd()) to follow any symlinks in
     # the cwd itself, giving a canonical base for confinement checks.
     cwd_resolved = Path.cwd().resolve()
-    cwd_prefix = str(cwd_resolved) + os.sep  # e.g. /droid/repos/agent/
+    cwd_prefix = str(cwd_resolved) + os.sep  # e.g. <repo>/
 
     seen = set()
     attachments = []
@@ -3229,7 +3241,7 @@ def _spill_oversized_tool_results(conversation_history, log, threshold):
     """Context-overflow recovery, stage 1 (before message trimming): move bulk tool-result
     payloads out of the conversation and into files, leaving a reference + short preview.
 
-    WHY (job#208, 2026-08-24, ship-computer board#209): a research worker died on
+    WHY (observed in a live deployment, 2026-08-24): a research worker died on
     'context overflow: still failing after 10 reductions' against a 196k-token window —
     the window wasn't small, the MESSAGES were huge: raw price histories echoed into
     role:'tool' contents. Trimming whole messages loses recent work; the payload the
@@ -4468,7 +4480,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
 
         # Bootstrap-template check (T3.9): auto-create empty placeholders for
         # well-known DC-style files the agent's AGENT.md/CLAUDE.md references
-        # but don't exist on disk. Eliminates lyla's "from-creator.md errors
+        # but don't exist on disk. Eliminates one agent's "from-creator.md errors
         # every cycle" loop. Only runs on fresh starts (not continue_mode).
         _bootstrap_actions = _bootstrap_template_check(log)
         if _bootstrap_actions:
@@ -5590,8 +5602,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
     #   "call_idx": int, "summary": str (first 80 chars), "tokens": int
     # }. On exact-duplicate call within _DEDUP_WINDOW calls, return a synthetic
     # tool result and skip dispatch — saves 30-40% of token budget per long
-    # cycle (c0rtana audit #2: `cat focus.json` x3, `git log -5` x5 in one
-    # session, lyla C11 Orphan Paradox audit-rewrite-audit loop). Only applied
+    # cycle (a field audit: `cat focus.json` x3, `git log -5` x5 in one
+    # session, a field-observed run Orphan Paradox audit-rewrite-audit loop). Only applied
     # to tools that are SAFE to dedup (pure reads, no network/wallclock); see
     # _is_dedupable_call() for the policy.
     _call_dedup_cache = {}
@@ -5609,7 +5621,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
     # Per-path write tracker for the write-loop detector. Each entry maps
     # `target_path` → list of call_idx values where it was written. On 3rd+
     # write within _WRITE_LOOP_WINDOW, append a system reminder to that
-    # turn's tool result. Lyla C11's canonical loop: 3 write-audit-rewrite
+    # turn's tool result. The canonical observed loop: 3 write-audit-rewrite
     # passes on state/memories/context.json in one cycle.
     _write_path_history = {}
     _WRITE_LOOP_WINDOW = 8
@@ -5861,7 +5873,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         # Build context window, with overflow reduction loop
         _ctx_max_messages = None  # None = use default _MAX_CONTEXT_MESSAGES
         _CTX_REDUCE_MAX = 10     # max number of message-reduction attempts
-        _ctx_spill_passes = 0    # board#209: spill-to-file passes taken this turn (stage 1)
+        _ctx_spill_passes = 0    # spill-to-file passes taken this turn (stage 1)
         _gateway_timeout_recovered = False
 
         for _ctx_attempt in range(_CTX_REDUCE_MAX + 1):
@@ -5872,7 +5884,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
 
             # Summarize dropped messages: async (background) or sync (blocking).
             # T5.13 — gate the message-count trigger on actual context utilization
-            # so summaries don't fire on half-empty windows (c0rtana audit: 17%
+            # so summaries don't fire on half-empty windows (a field audit: 17%
             # of all tool calls were summary fires, many at ~25% context usage).
             # Both thresholds must be met: enough new messages AND enough
             # context pressure. Env-tunable for backend-specific calibration.
@@ -5919,7 +5931,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # Per-turn time-of-now injection. Prepended as a system message to
             # the OUTGOING REQUEST only (not the persistent messages_to_send
             # buffer, so overflow-recovery's message-count logic sees the same
-            # count as before this patch). Fixes lyla's hallucinated
+            # count as before this patch). Fixes one agent's hallucinated
             # "2025-05-22T10:00:00Z" anchors — the framework owns the clock,
             # the model owns the work.
             _now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -6069,7 +6081,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     _emit("on_error", "Error: context overflow — could not fit in server context window")
                     _note_error_kind("context")
                     return "error"
-                # STAGE 1 (board#209, job#208 root cause): before dropping any message,
+                # STAGE 1 (root cause of the overflow described above): before dropping any message,
                 # SPILL oversized tool-result payloads to files and retry — trimming whole
                 # messages loses recent work when the real bloat is raw data echoed into
                 # tool contents. Threshold halves on each successive spill pass (down to a
@@ -6156,7 +6168,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         _stream_deadline = _stream_t0 + 600  # 10 minute wall-clock cap
         # Per-turn text cap: if a text-only response (no tool calls) exceeds this
         # many characters, truncate and inject a correction.  Prevents a single
-        # runaway turn from filling or overflowing the context window (c0rtana C206:
+        # runaway turn from filling or overflowing the context window (field observation:
         # ~50K chars of stream-of-consciousness exhausted the 65K ctx and caused
         # 10 consecutive context-overflow 500 errors).
         # Configurable via preferences.max_text_response_chars; default 6000 (~1500 tokens).
@@ -6170,7 +6182,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         )
         _text_cap_exceeded = False
         _text_cap_limit_fired = _MAX_TEXT_RESPONSE_CHARS  # updated when post-tool cap fires
-        # Stall detection: per c0rtana audit #3, long latencies with zero
+        # Stall detection: per a field audit, long latencies with zero
         # deltas (e.g. session_20260513_010952.log Turn 14: latency_ms=78377
         # deltas=0) are strongly correlated with corrupted/garbled output.
         # If the model stays silent past _STALL_TIMEOUT_S, abort the request
@@ -6214,7 +6226,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         break
                     # Stall guard: abort fast if no deltas arrive within the
                     # configured timeout. Cuts the 78-second-to-corrupted-
-                    # output failure mode (c0rtana audit #3) by ~10x.
+                    # output failure mode (a field audit) by ~10x.
                     if (
                         _STALL_TIMEOUT_S > 0
                         and _deltas_received == 0
@@ -6343,7 +6355,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             _safe_close(response)
                             break
                         # Post-tool text cap: when nudge is enabled, prose generated
-                        # AFTER tool calls is also capped — prevents c0rtana C207
+                        # AFTER tool calls is also capped — prevents a field-observed run
                         # pattern where garbled tool calls set receiving_tools=True
                         # then 50K chars of spiral prose followed with no cap applied.
                         if (_NUDGE_ENABLED
@@ -7045,7 +7057,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # control tokens (<|tool_call|>, <|channel|>, etc. — including
                     # the partial-pipe variants like <tool_call|> and <|channel>).
                     # These leak from model output under context pressure and have
-                    # caused self-amplifying state corruption (c0rtana C22: tokens
+                    # caused self-amplifying state corruption (field observation: tokens
                     # leaked into file path → file written with tokens in NAME →
                     # git-committed → every cycle's `ls` re-injects them). Surface
                     # as a tool-error so the model self-corrects; do NOT dispatch.
@@ -7076,8 +7088,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         continue
 
                     # Hard-reject `think` calls that paraphrase recent context.
-                    # Lyla's audit (C7/C11/C17/C22/C23) showed think prompts
-                    # full of "I am Lyla. Current State: - Cycle: 10, Mode:
+                    # a field audit showed think prompts
+                    # full of "I am <agent>. Current State: - Cycle: 10, Mode:
                     # Memory Curation..." — paraphrased context the model
                     # already has, pays the LLM cost to reason about it again.
                     # Framework owns the conversation history; check on the way
@@ -7206,7 +7218,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # within the last _DEDUP_WINDOW calls AND the tool is safe to
                     # dedup (pure reads — see _is_dedupable_call), short-circuit
                     # with a synthetic result. Massive token-budget savings on the
-                    # PERCEIVE-boilerplate pattern both c0rtana and lyla audits
+                    # PERCEIVE-boilerplate pattern two independent field audits
                     # flagged as the #1 friction source.
                     _call_idx_counter += 1
                     _dedup_sig = None
@@ -7484,7 +7496,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # Write-loop detector: if this tool wrote to a path that
                     # we've already written 2+ times in the recent window,
                     # append a system reminder to the tool result so the model
-                    # sees the pattern. Lyla C11 ("The Orphan Paradox") canonical
+                    # sees the pattern. a field-observed run ("The Orphan Paradox") canonical
                     # signature: 3 write-audit-rewrite passes on context.json
                     # in one cycle because the model's mental model of the
                     # audit tool was wrong. Framework-side detection makes the
@@ -7495,7 +7507,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         # When the model writes a tracked state file via
                         # exec_command 'cat > f <<EOF', append a one-line
                         # suggestion that file(action='edit', ...) is safer
-                        # for surgical changes. C0rtana C112 noted exactly
+                        # for surgical changes. a field-observed run noted exactly
                         # this failure mode ("accidentally purged multiple
                         # edges due to incorrect range replacement") on a
                         # heredoc-style state-file rewrite. Only fires once
@@ -7527,7 +7539,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         # T5.18 — file(action='write') high-similarity rewrite
                         # nudge. The model has been bypassing the heredoc
                         # nudge by routing through file(action='write')
-                        # instead of exec_command. C0rtana C131 + Lyla C57
+                        # instead of exec_command. two independent field audits
                         # both showed full-file rewrites where most lines
                         # were identical to the previous version — surgical
                         # changes wearing a full-write costume. Detection:
@@ -7555,7 +7567,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 # new-came-from-old" (some additions, rest
                                 # carried over → overlap_ratio high) trigger
                                 # the nudge. Symmetric Jaccard penalizes both
-                                # directions and would miss the c0rtana C131
+                                # directions and would miss the a field-observed run
                                 # "added 30 lines to a 200-line HTML" case.
                                 _preserved = _inter / len(_old_lines)
                                 _overlap = _inter / len(_new_lines)
@@ -7575,7 +7587,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                             f"path=..., old_string=..., new_string=...) "
                                             f"is the right tool: atomic, validates the "
                                             f"target text exists exactly once, and won't "
-                                            f"silently drop unrelated keys (lyla C26 lost "
+                                            f"silently drop unrelated keys (a field-observed run lost "
                                             f"theme_tracking this way and regressed for "
                                             f"13 cycles). Use write_file only when creating "
                                             f"a new file or rewriting one in full."
@@ -7585,9 +7597,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                         _patch_telemetry["edit_nudge"] += 1
 
                         # T5.18-log — file(action='write') on a .log file destroys
-                        # all prior entries.  Lyla/c0rtana treat logs as episodic
+                        # all prior entries.  Field-audited agents treat logs as episodic
                         # memory; wiping them with write is high-damage (observed 9%
-                        # of Phase 7 sessions, including the lyla C132 spiral that
+                        # of Phase 7 sessions, including the a field-observed run spiral that
                         # wiped consciousness.log).  Logs are append-only by design;
                         # action='append' is always correct here.  Fires once per
                         # file per session to avoid noise.
@@ -7627,7 +7639,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         _n_writes = len(_write_path_history[_write_target])
                         # Single-object state files (per DC-style CLAUDE.md
                         # convention: "Single-object state is overwritten each
-                        # cycle") are SUPPOSED to be rewritten — c0rtana's
+                        # cycle") are SUPPOSED to be rewritten — one agent's
                         # detector misfired with `current-state.json` written
                         # 3 times in one cycle (correct behavior!). Bump the
                         # threshold so the detector only complains when the

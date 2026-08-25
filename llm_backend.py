@@ -826,7 +826,7 @@ _BEDROCK_PRICING = {
 
 # Persistence file for the daily spend counter (plan § 6.5). File mode
 # is enforced at write time to ``0o600`` per § 18.75 security checklist.
-_SPEND_FILE = "/droid/repos/agent/CICD/bedrock_spend.json"
+_SPEND_FILE = "<repo>/CICD/bedrock_spend.json"
 
 # Default daily caps (USD). See plan § 24 S5 decision.
 _DEFAULT_DAILY_CAPS = {"main": 60.00, "summary": 3.00}
@@ -1980,7 +1980,7 @@ def build_backend(cfg: dict) -> Backend:
 # instructions.
 #
 # Measured 2026-07-16 against the Bedrock proxy behind API Gateway (see
-# /droid/repos/test/aws-proxy-bugs.md §1): a 9-word system prompt is dropped
+# /path/to/notes/aws-proxy-bugs.md §1): a 9-word system prompt is dropped
 # exactly like a 6000-token one, and "developer" is dropped too. Likely cause:
 # Bedrock's Converse API takes `system` as a TOP-LEVEL parameter rather than a
 # message role, so a system-role message has nowhere to land in `messages`

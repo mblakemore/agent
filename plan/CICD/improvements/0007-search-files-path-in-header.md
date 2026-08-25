@@ -16,7 +16,7 @@ Cycle 0007 P-enum baseline (log: `/tmp/agent-cicd/probes/0007-enum-before.log`) 
 No matches found.
 ```
 
-Nothing in that output told the model *which* directory it walked, so it couldn't tell "my pattern is wrong" from "my cwd is wrong". It tried the same search again with a tiny variation, fell back to `exec_command find …`, then finally passed `path=/mnt/droid/repos/agent` on call 4 and got real results.
+Nothing in that output told the model *which* directory it walked, so it couldn't tell "my pattern is wrong" from "my cwd is wrong". It tried the same search again with a tiny variation, fell back to `exec_command find …`, then finally passed `path=<repo>` on call 4 and got real results.
 
 The ambiguity is the bug. Naming the searched directory in the header — especially in the 0-file case — turns "???" into "oh, I searched /tmp/probe-0007-enum instead of the repo" on turn 1.
 
