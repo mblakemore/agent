@@ -732,6 +732,7 @@ EXIT_CONTEXT = 12       # context exhaustion after every reduction
 EXIT_MEMORY = 13        # memory watermark
 EXIT_CONFIG = 14        # config error (backend unbuildable, schema unreadable, ...)
 EXIT_BACKEND = 15       # backend unreachable / failed after retries
+EXIT_ACCEPTANCE = 16    # --job: the RUNNER re-ran the acceptance command and it failed
 _EXIT_NAMES = {EXIT_OK: "completed", EXIT_ERROR: "error", EXIT_DEADLINE: "deadline",
                EXIT_CONTRACT: "contract", EXIT_CONTEXT: "context", EXIT_MEMORY: "memory",
                EXIT_CONFIG: "config", EXIT_BACKEND: "backend"}
@@ -8327,6 +8328,129 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
 run_agent_single.__wrapped__ = _run_agent_single_impl
 
 
+# ── --job: a declarative job file with a runner-verified acceptance gate ───────────────
+# Sugar over existing flags PLUS the one thing flags cannot express: a check the RUNNER
+# executes after the agent exits, whose status is the verdict.
+#
+# The point is that the agent is the last thing that should be asked whether the agent
+# succeeded. A run can exit 0, report success fluently, and have produced nothing; the
+# acceptance command is re-run here, outside the model's influence, and its exit status
+# decides. Whatever the run claimed in its result block is advisory.
+#
+# See docs/job-contract.md. Fields map onto flags one-to-one except `acceptance` and
+# `env_allow`, which are new, so --job changes no execution model.
+
+_JOB_ACCEPTANCE = None      # command string, re-run after the agent exits
+_JOB_PATH = None            # for messages
+
+
+def _load_job_spec(path):
+    """Read a job file. JSON always; YAML only if PyYAML happens to be installed.
+
+    PyYAML is NOT a declared dependency of this tool and is not made one for an optional
+    feature — a public utility should not grow an install requirement for a flag most
+    callers never use. A .json job works everywhere; a .yaml job says plainly what to
+    install rather than failing on an opaque parse error.
+    """
+    with open(path, "r", encoding="utf-8") as fh:
+        raw = fh.read()
+    looks_json = raw.lstrip().startswith(("{", "["))
+    if looks_json or str(path).lower().endswith(".json"):
+        return json.loads(raw)
+    try:
+        import yaml  # noqa: PLC0415 — optional, imported only for YAML job files
+    except ImportError:
+        raise ValueError(
+            f"{path} is not JSON and PyYAML is not installed. Either `pip install pyyaml` "
+            f"or write the job file as JSON — the schema is identical."
+        )
+    return yaml.safe_load(raw)
+
+
+def _job_prompt(spec):
+    """Fold goal/context/constraints/deliverable into the run's opening prompt.
+
+    The acceptance command is shown to the run too. Not as a gate it can satisfy by talking
+    — the runner re-runs it regardless — but because a run that knows how it will be judged
+    can check itself before finishing, and one that does not is guessing at the target.
+    """
+    out = []
+    if spec.get("goal"):
+        out.append(f"GOAL: {str(spec['goal']).strip()}")
+    ctx = spec.get("context") or []
+    if ctx:
+        out.append("CONTEXT (read these first; this run starts with no memory):")
+        out.extend(f"  - {c}" for c in ctx)
+    con = spec.get("constraints") or []
+    if con:
+        out.append("CONSTRAINTS:")
+        out.extend(f"  - {c}" for c in con)
+    deliv = spec.get("deliverable") or []
+    if deliv:
+        out.append("DELIVERABLE — this run must actually produce:")
+        out.extend(f"  - {d}" for d in deliv)
+    if spec.get("acceptance"):
+        out.append(
+            "ACCEPTANCE (the runner RE-RUNS this after you exit; its exit status is the "
+            "verdict, and your own report does not override it):")
+        out.append(f"  {spec['acceptance']}")
+    out.append(
+        "`blocked` is a legal and respected outcome: if the task cannot be done, say so with "
+        "your reasoning rather than producing something in order to have produced something.")
+    return "\n".join(out)
+
+
+def _apply_env_allow(allow):
+    """Scrub the environment down to an explicit allowlist, plus what a process needs to run.
+
+    Absent or unset -> NO-OP. An empty list is meaningful and different: it means this job
+    declared that it needs nothing, and the scrub happens. Conflating "not specified" with
+    "specified as empty" would silently strip a caller who never opted in.
+    """
+    if allow is None:
+        return None
+    keep = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR", "TERM",
+            "PWD", "PYTHONPATH", "PYTHONIOENCODING", "SystemRoot", "COMSPEC"}
+    keep.update(str(k) for k in allow)
+    removed = [k for k in list(os.environ) if k not in keep]
+    for k in removed:
+        os.environ.pop(k, None)
+    return removed
+
+
+def _run_acceptance(cmd, cwd=None, timeout=300):
+    """Re-run the acceptance command OUTSIDE the agent. Returns (ok, code, output)."""
+    try:
+        proc = subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True,
+                              text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, None, f"acceptance command exceeded {timeout}s"
+    except OSError as e:
+        return False, None, f"acceptance command could not be run: {e}"
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    return proc.returncode == 0, proc.returncode, out
+
+
+def _acceptance_verdict():
+    """Run the gate and set the process exit accordingly. Called once, after the run ends.
+
+    A gate that cannot be executed is NOT a pass. A missing binary, an unparseable command
+    or a timeout all fail closed, because "the check did not run" and "the check passed"
+    must never render the same to whoever reads the exit status.
+    """
+    if not _JOB_ACCEPTANCE:
+        return
+    ok, code, out = _run_acceptance(_JOB_ACCEPTANCE)
+    head = out.splitlines()[0][:200] if out else "(no output)"
+    if ok:
+        print(f"AGENT-ACCEPTANCE: pass — {head}", file=sys.stderr, flush=True)
+        return
+    _set_exit(EXIT_ACCEPTANCE,
+              f"runner re-ran the acceptance command and it failed "
+              f"(exit {code}): {head}")
+    print(f"AGENT-ACCEPTANCE: FAIL (exit {code}) — {head}", file=sys.stderr, flush=True)
+
+
 def main():
     """Main entry point."""
     # Issue #405 — bedrock credential store CLI. Handled before argparse
@@ -8413,8 +8537,60 @@ def main():
                         help="Wall-clock budget for the run (overrides cycle.deadline_s). The agent "
                              "is warned at 60/80/92%% and forced to its final result at 100%%, "
                              "exiting 10 — it beats the supervisor's kill instead of racing it.")
+    parser.add_argument("--job", default=None, metavar="JOB.yaml|JOB.json",
+                        help="Declarative job file: goal/context/constraints/deliverable/"
+                             "acceptance/timebox_sec/env_allow. Sugar over the flags above PLUS "
+                             "a runner-verified gate — after the run exits, the RUNNER re-runs "
+                             "`acceptance` and its status is the verdict (exit 16 on failure), "
+                             "whatever the run reported. See docs/job-contract.md.")
     parser.add_argument("prompt", nargs="*", help="Initial prompt")
     args = parser.parse_args()
+
+    # --job: fold the file into the flags it is sugar for, then keep the two things flags
+    # cannot express (the gate, the env allowlist). Explicit flags WIN over the file, so a
+    # caller can override one field of a shared job without editing it.
+    if args.job:
+        global _JOB_ACCEPTANCE, _JOB_PATH
+        try:
+            _spec = _load_job_spec(args.job)
+        except (OSError, ValueError, json.JSONDecodeError) as _je:
+            _exit_now(EXIT_CONFIG, f"--job unreadable: {_je}")
+        if not isinstance(_spec, dict):
+            _exit_now(EXIT_CONFIG, f"--job must contain a mapping, got {type(_spec).__name__}")
+        _JOB_PATH = args.job
+        if not args.goal and _spec.get("goal"):
+            args.goal = str(_spec["goal"]).strip()
+        if not args.deliverable and _spec.get("deliverable"):
+            args.deliverable = [str(d) for d in _spec["deliverable"]]
+        if args.deadline is None and _spec.get("timebox_sec"):
+            args.deadline = float(_spec["timebox_sec"])
+        _JOB_ACCEPTANCE = _spec.get("acceptance") or None
+        # An acceptance command that cannot even be PARSED is a dead gate for the whole run,
+        # and a dead gate looks exactly like a passing one. Refuse at launch instead.
+        if _JOB_ACCEPTANCE:
+            _chk = subprocess.run(["bash", "-n"], input=str(_JOB_ACCEPTANCE),
+                                  capture_output=True, text=True)
+            if _chk.returncode != 0:
+                _exit_now(EXIT_CONFIG,
+                          f"--job acceptance is not a parseable command: "
+                          f"{(_chk.stderr or '').strip()[:160]}")
+        # Write the RESOLVED values back before rendering the prompt. The precedence above
+        # only reached the flags; the prompt was still rendered from the raw file, so
+        # `--job j.yaml --goal X` told the run X through the anchor and the file's goal
+        # through the opening prompt — two live objectives, no way for the run to know
+        # which one it will be judged against. An override must reach every surface it
+        # shows on, or it is not an override.
+        if args.goal:
+            _spec["goal"] = args.goal
+        if args.deliverable:
+            _spec["deliverable"] = list(args.deliverable)
+        _removed = _apply_env_allow(_spec.get("env_allow"))
+        if _removed is not None:
+            print(f"[job] env_allow: kept {len(_spec.get('env_allow') or [])} declared "
+                  f"variable(s), removed {len(_removed)}", file=sys.stderr, flush=True)
+        _jp = _job_prompt(_spec)
+        if _jp:
+            args.prompt = [_jp] + list(args.prompt or [])
 
     # WS1: explicit role beats prompt string-matching in run_agent_single.
     if getattr(args, "role", None):
@@ -8511,6 +8687,11 @@ def main():
         )
     # F6: in -a / -r mode, say how the run ended in a form a supervisor can classify and exit
     # with the matching code. Interactive sessions never reach here with _AUTO_MODE set.
+    # The gate runs BEFORE the exit line is composed, so its verdict is what a supervisor
+    # reads. Deliberately after the run has finished writing: a check run mid-flight would
+    # be judging an incomplete workspace.
+    _acceptance_verdict()
+
     if _AUTO_MODE:
         info = _LAST_EXIT or _set_exit(EXIT_OK, "")
         print(_exit_line(info), file=sys.stderr, flush=True)

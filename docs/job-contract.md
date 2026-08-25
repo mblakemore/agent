@@ -2,9 +2,8 @@
 
 # The job contract — running `agent.py` as a verifiable worker
 
-**Status: DRAFT.** The spec below describes `--job`, which is not implemented yet. Everything in
-the "already works" column *is* implemented and usable today; the draft part is the single
-declarative file and the runner-verified gate.
+**Status: implemented.** `--job` and the runner-verified gate ship today; see
+[the CLI reference](cli.md#declarative-jobs-and-the-acceptance-gate---job) for the flag.
 
 ---
 
@@ -34,7 +33,7 @@ These are shipped flags, not proposals. A caller can get most of the contract no
 | need | flag | behaviour |
 |---|---|---|
 | state the objective | `--goal "..."` | injected as a standing anchor; the run is reminded of it |
-| require artifacts | `--deliverable path` (repeatable) | exit is blocked if a named deliverable is missing |
+| require artifacts | `--deliverable path` (repeatable) | the run is *pushed back* to produce it — a bounded nudge, not a gate (see below) |
 | bound the run | `--deadline SECONDS` | wall-clock; the run stands down and reports rather than being killed mid-write |
 | machine-readable result | `--result-contract` + `--result-schema file` | forces a final JSON block, validated; refusal to exit without it |
 | determinism | `--temperature` / `--top-p` / `--seed` | pinned generation for reproducible runs |
@@ -52,18 +51,25 @@ Bulk tool output is spilled to files with a marker and a preview rather than pas
 window — measured at 99.1–99.5% reduction per payload, on four ordinary tool results that
 together exceed a 196k context by themselves.
 
-## What is missing
+### Why the deliverable guard is not the gate
 
-1. **A runner-verified acceptance gate.** Nothing today re-runs a check *outside* the agent and
-   makes the verdict independent of what the agent said.
-2. **One declarative file** instead of eight flags, so a job is a reviewable artifact that can be
-   diffed, versioned and handed to someone else.
-3. **`blocked` as a first-class outcome** — distinct from success and from failure.
-4. **An environment allowlist**, so a job declares exactly which variables it needs.
+`--deliverable` reads as enforcement, and it is worth being exact about what it does, because
+the difference is the reason the acceptance gate exists.
+
+The guard polices *claims*, not outcomes: when a run tries to finish with a named deliverable
+missing, it is turned back and told to produce it — but only up to a bounded number of times,
+after which the exit proceeds with the deliverable still missing. A run that reports `blocked`
+or `failed` passes untouched by design, as it should.
+
+This was measured rather than assumed. In a run where the declared artifact was never written,
+the run exited `0` reporting `done`, and the guard did not stop it. The same job with an
+`acceptance` line exited `16`. **A nudge inside the run and a check outside it are different
+instruments**; only the second produces a verdict that does not depend on the run's own account
+of itself.
 
 ---
 
-## The proposed file
+## The file
 
 ```yaml
 # job.yaml — passed as: agent.py --job job.yaml
@@ -97,6 +103,15 @@ env_allow: []            # exact variable names this job needs; default is none
 
 Every field maps to something that already exists except `acceptance`, `env_allow`, and the
 `blocked` outcome. `--job` is sugar plus a gate, not a new execution model.
+
+Explicit flags beat the file, on every surface the value reaches — the goal anchor *and* the
+opening prompt. An override applied to one and not the other hands the run two live objectives
+and no way to tell which one it will be judged against.
+
+A failed gate exits `16` (`acceptance`), alongside the existing typed exit codes. Failure is
+closed: a missing binary, a timeout, or an unparseable command is a failure, never a pass. An
+`acceptance` line that will not parse is refused at launch, because a gate discovered to be dead
+after the run is a run spent for nothing.
 
 ---
 

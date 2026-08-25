@@ -26,6 +26,7 @@ python agent.py [OPTIONS] [PROMPT...]
 | `--goal TEXT`, `--deliverable PATH` | The run's stated goal and named deliverables (repeatable). Injected as goal anchors at fractions of the budget; a final `done` while a deliverable is absent draws a correction. Auto-derived from a `GOAL:` / `DELIVERABLE:` stanza when the result contract is armed. |
 | `--result-contract` | Require the final message to end with a fenced JSON result block (`{"contract": 1, "status": …, "summary": …}`); with `--result-file` the file receives the validated JSON only. Built-in schema unless `--result-schema` is given. See [Headless runs](#headless--unattended-runs). |
 | `--result-schema SCHEMA.json` | JSON schema for the result contract (implies `--result-contract`). A separate flag so the positional prompt is never mistaken for the schema path. |
+| `--job FILE.yaml\|FILE.json` | Declarative job file. Sugar over `--goal` / `--deliverable` / `--deadline`, plus an `acceptance` command the **runner** re-runs after the agent exits (exit `16` if it fails) and an `env_allow` allowlist. See [The job contract](job-contract.md). |
 | `PROMPT...` | Initial prompt. Optional in interactive mode. |
 
 Press **Escape twice** within 400ms to cancel a streaming response.
@@ -123,8 +124,42 @@ one line to stderr, `AGENT-EXIT: <name> <detail>`, so a supervisor can tell *com
 | `13` | `memory` | RSS crossed `mem.hard_mb`; the process exited before the OOM killer. |
 | `14` | `config` | Configuration error at start (unbuildable backend, unreadable schema). |
 | `15` | `backend` | Backend unreachable or failed after retries. |
+| `16` | `acceptance` | `--job`: the runner re-ran the job's `acceptance` command after the agent exited and it failed, timed out, or could not be executed. |
 
 Interactive sessions keep exiting `0` (or `2` on a start-up configuration error, as before).
+
+### Declarative jobs and the acceptance gate (`--job`)
+
+A job file collects the flags a headless run needs into one reviewable artifact, and adds the
+one thing a flag cannot express: a check that runs **outside** the agent.
+
+```yaml
+goal: One sentence. What exists after this run that does not now.
+context:    [paths to read first; the run starts with no memory]
+constraints: [what must not change; what is out of scope]
+deliverable: [path/to/thing_the_run_must_produce]
+acceptance: pytest -q tests/test_thing.py     # ONE bare command
+timebox_sec: 3600
+env_allow: [API_TOKEN]
+```
+
+`goal`, `deliverable` and `timebox_sec` are folded into `--goal`, `--deliverable` and
+`--deadline`; an explicit flag on the command line overrides the file, so a shared job can be
+reused with one field changed. JSON is accepted everywhere YAML is (content decides, not the
+extension) — PyYAML is optional and only needed for YAML files.
+
+**The gate.** After the agent exits, the runner re-runs `acceptance` and *its* status is the
+verdict: a failure exits `16` no matter what the run reported. The command is also shown to the
+run, so it can check itself before finishing — but satisfying it in prose changes nothing.
+
+It fails closed. A missing binary, a timeout, and a non-zero status are all failures, because
+"the check did not run" and "the check passed" must never render the same to a supervisor. A
+command that will not parse is refused at launch rather than discovered as a dead gate an hour
+later.
+
+**`env_allow`** scrubs the environment to the listed names plus what a process needs to run.
+Omitting the key does nothing; `[]` is a real instruction meaning *this job needs no
+inherited variables*, and the two are deliberately distinguishable.
 
 ### Claude Code gateway (`-cc`)
 
