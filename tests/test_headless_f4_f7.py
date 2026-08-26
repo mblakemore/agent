@@ -187,5 +187,14 @@ class TestDeliverableGuardLoop:
         with patch("agent._NUDGE_ENABLED", False), patch("agent._MAX_TURNS", 4), \
              patch.dict("agent.MAP_FN", {"read_file": lambda **kw: "c"}):
             run_agent_single(history, {"text": "", "up_to": 0}, [], MagicMock())
-        anchors = [m for m in history if m.get("role") == "system" and "GOAL ANCHOR" in str(m.get("content"))]
+        # USER role, not system: this message lands MID-HISTORY, and chat templates that
+        # accept system only in the leading position reject a later one outright (Qwen3
+        # returns HTTP 500, "System message must be at the beginning"). Asserting the role
+        # here is not style — it is the thing that kept four headless runs alive.
+        anchors = [m for m in history if m.get("role") == "user" and "GOAL ANCHOR" in str(m.get("content"))]
+        # THE REAL INVARIANT, stronger than the role of the anchor itself: nothing may append
+        # a system message after the conversation has begun. A future injection that reached
+        # for "system" would pass the assertion above and still break every strict template.
+        assert not [m for m in history[1:] if m.get("role") == "system"], \
+            "no system message may appear mid-history — strict templates reject it"
         assert len(anchors) == 1 and "widget.py" in anchors[0]["content"] and "build the widget" in anchors[0]["content"]

@@ -5914,8 +5914,19 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 for f in _due:
                     _anchor_fired.add(f)
                 _missing = _missing_deliverables(_deliverables)
-                conversation_history.append({"role": "system", "content": _goal_anchor_message(
-                    _goal, _deliverables, _missing, _due[-1])})
+                # USER ROLE, NOT SYSTEM — this message is appended MID-HISTORY, and many chat
+                # templates accept system messages only in the LEADING position. Qwen3's
+                # rejects a later one outright: "Jinja Exception: System message must be at the
+                # beginning" (template line 110), returned as HTTP 500. Because the anchor fires
+                # at a FRACTION OF THE DEADLINE, the failure lands mid-run, repeats on every
+                # retry (the history stays malformed), and then vanishes — the server is
+                # perfectly healthy before and after, so it reads as an intermittent backend
+                # fault. Four runs were lost to it, and no probe that kept system messages
+                # leading could reproduce it, which is most probes anyone would think to write.
+                # The anchor is a reminder injected into the conversation, not a system-level
+                # instruction, so `user` is both portable and the honest description of it.
+                conversation_history.append({"role": "user", "content": "[GOAL ANCHOR] " +
+                    _goal_anchor_message(_goal, _deliverables, _missing, _due[-1])})
                 log.info("goal anchor at %.0f%%: %d deliverable(s), %d missing", _due[-1] * 100,
                          len(_deliverables), len(_missing))
                 telemetry.record_patch_event("goal_anchor", kind="fired")
