@@ -5927,8 +5927,16 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # instruction, so `user` is both portable and the honest description of it.
                 conversation_history.append({"role": "user", "content": "[GOAL ANCHOR] " +
                     _goal_anchor_message(_goal, _deliverables, _missing, _due[-1])})
-                log.info("goal anchor at %.0f%%: %d deliverable(s), %d missing", _due[-1] * 100,
-                         len(_deliverables), len(_missing))
+                # WARNING, not info: this fires rarely and matters when diagnosing a run, and
+                # at info it is invisible in every captured log I have (harnesses commonly
+                # capture warning and above). Establishing whether the anchor had fired in four
+                # failed runs took an hour of log archaeology that ended in inference from the
+                # config rather than observation, because the one line that would have said so
+                # was below the capture threshold. The deadline ladder already reports at this
+                # level for the same reason; an injection into the conversation should be as
+                # visible as a notice about the clock.
+                log.warning("goal anchor FIRED at %.0f%% (user role): %d deliverable(s), %d missing",
+                            _due[-1] * 100, len(_deliverables), len(_missing))
                 telemetry.record_patch_event("goal_anchor", kind="fired")
 
         # ── Mid-burst "btw" injection ──
