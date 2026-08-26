@@ -983,6 +983,63 @@ def _extract_result_block(text):
     return None, reason
 
 
+def _dump_failed_request(conversation_history, exc, path=None):
+    """On a terminal backend failure, record the SHAPE of the request that failed.
+
+    A backend that rejects a request leaves the caller holding one line — "Server error
+    500" — and nothing about what was sent. If the server's own stderr is not captured
+    either (a common setup), the failure has no artifact on either side and cannot be
+    diagnosed after the fact, only guessed at.
+
+    This writes a shape summary, not the payload: per-message role, content length, tool
+    presence, and a short head of each. That is enough to spot the usual culprits — an
+    orphaned tool result, an oversized message, an unexpected role order — without
+    dumping conversation content to disk, which may be large and is not ours to spill.
+
+    Best-effort by construction: a diagnostic that can itself raise during failure
+    handling would replace a useful error with a confusing one.
+    """
+    try:
+        path = path or os.path.join(".agent", "last-failed-request.json")
+        rows = []
+        for m in (conversation_history or []):
+            content = m.get("content")
+            # Everything is coerced to a plain string. An unusual history is exactly when a
+            # backend rejects a request, so a dumper that serialises only well-formed input
+            # goes silent in the one case it exists for.
+            rows.append({
+                "role": str(m.get("role")),
+                "content_chars": len(content) if isinstance(content, str) else None,
+                "content_head": (content[:160] if isinstance(content, str)
+                                 else (None if content is None else f"<{type(content).__name__}>")),
+                "has_tool_calls": bool(m.get("tool_calls")),
+                "tool_call_id": (None if m.get("tool_call_id") is None
+                                 else str(m.get("tool_call_id"))),
+            })
+        payload = {
+            "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+            "note": "shape only — no message payloads; heads are truncated to 160 chars",
+            "message_count": len(rows),
+            "total_content_chars": sum(r["content_chars"] or 0 for r in rows),
+            "roles_in_order": [r["role"] for r in rows],
+            "messages": rows[-40:],          # the tail is where a bad shape almost always is
+        }
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            try:
+                json.dump(payload, fh, indent=1, ensure_ascii=False)
+            except (TypeError, ValueError):
+                # a history item that will not serialise is itself a finding; say so rather
+                # than leaving an empty file that reads as "nothing to report".
+                fh.write(json.dumps({"error": payload["error"],
+                                     "note": "history was not JSON-serialisable — shape below is repr",
+                                     "roles_in_order": [str(r.get("role")) for r in rows],
+                                     "repr_tail": repr(rows[-8:])[:4000]}, indent=1))
+        return path
+    except Exception:                                        # noqa: BLE001 — never mask the real error
+        return None
+
+
 def _synthesize_result(reason, exit_info=None):
     return {"contract": 1, "status": "failed", "summary": f"<no valid result block emitted: {reason}>",
             "artifacts": [], "verify_output": "", "scope": {"examined": [], "skipped": [], "not_covered": []},
@@ -6166,6 +6223,12 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     break
                 log.error("Request failed after retries: %s", e)
                 telemetry.record_error(kind=type(e).__name__)
+                _dumped = _dump_failed_request(conversation_history, e)
+                if _dumped:
+                    log.error("request shape that failed -> %s", _dumped)
+                    _emit("on_notice", "warn",
+                          f"[Backend failed after retries; wrote the failing request's shape to "
+                          f"{_dumped} — role order, sizes and heads, no payload]")
                 _emit("on_error", f"Error calling server: {e}")
                 _note_error_kind("backend")
                 return "error"
