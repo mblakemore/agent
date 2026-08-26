@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The job contract — running agent.py as a verifiable worker — agent</title>
+<meta name="description" content="Driving an agent headlessly is easy. Knowing whether the run worked is not.">
+<link rel="canonical" href="https://mblakemore.github.io/agent/job-contract.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="The job contract — running agent.py as a verifiable worker">
+<meta property="og:description" content="Driving an agent headlessly is easy. Knowing whether the run worked is not.">
+<meta property="og:url" content="https://mblakemore.github.io/agent/job-contract.html">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/agent-docs.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"The job contract — running agent.py as a verifiable worker","url":"https://mblakemore.github.io/agent/job-contract.html","description":"Driving an agent headlessly is easy. Knowing whether the run worked is not."}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><div class="in">
+  <span class="brand"><a href="index.html">agent</a></span>
+  <span class="tag">documentation</span>
+  <nav aria-label="primary">
+    <a href="index.html">Overview</a>
+    <a href="https://github.com/mblakemore/agent">Source</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="cli.html">CLI and usage</a></li><li><a href="job-contract.html" aria-current="page">The job contract — running agent.py as a verifiable worker</a></li><li><a href="models.html">Recommended models</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
+  <main id="main">
+    <p class="eyebrow">The job contract — running agent.py as a verifiable worker</p>
+    <p class="status">implemented</p>
+<h1>The job contract — running <code>agent.py</code> as a verifiable worker</h1>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/job-contract.md"><code>docs/job-contract.md</code></a> · last changed 2026-08-25 (e4a7707)</p>
+
+<p><strong>Status: implemented.</strong> <code>--job</code> and the runner-verified gate ship today; see
+<a href="cli.html#declarative-jobs-and-the-acceptance-gate---job">the CLI reference</a> for the flag.</p>
+<hr />
+<h2 id="what-problem-this-solves">What problem this solves</h2>
+<p>Driving an agent headlessly is easy. Knowing whether the run <em>worked</em> is not.</p>
+<p>The failure that makes autonomous runs untrustworthy is not a crash — a crash is loud and you
+handle it. It is a run that exits <code>0</code>, reports success in fluent prose, and produced nothing, or
+produced something subtly wrong. The agent is the last thing that should be asked whether the
+agent succeeded.</p>
+<p>So the contract has one central idea, and the rest is packaging:</p>
+<blockquote>
+<p><strong>The acceptance check is a command the RUNNER executes. The agent's own report is advisory.</strong></p>
+</blockquote>
+<p>Everything else here exists to make that gate meaningful: a goal the run can be measured
+against, a deliverable it must actually produce, a bound on how long it may take, and a
+machine-readable result the caller can branch on.</p>
+<hr />
+<h2 id="already-works-today">Already works today</h2>
+<p>These are shipped flags, not proposals. A caller can get most of the contract now:</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>need</th>
+<th>flag</th>
+<th>behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>state the objective</td>
+<td><code>--goal "..."</code></td>
+<td>injected as a standing anchor; the run is reminded of it</td>
+</tr>
+<tr>
+<td>require artifacts</td>
+<td><code>--deliverable path</code> (repeatable)</td>
+<td>the run is <em>pushed back</em> to produce it — a bounded nudge, not a gate (see below)</td>
+</tr>
+<tr>
+<td>bound the run</td>
+<td><code>--deadline SECONDS</code></td>
+<td>wall-clock; the run stands down and reports rather than being killed mid-write</td>
+</tr>
+<tr>
+<td>machine-readable result</td>
+<td><code>--result-contract</code> + <code>--result-schema file</code></td>
+<td>forces a final JSON block, validated; refusal to exit without it</td>
+</tr>
+<tr>
+<td>determinism</td>
+<td><code>--temperature</code> / <code>--top-p</code> / <code>--seed</code></td>
+<td>pinned generation for reproducible runs</td>
+</tr>
+<tr>
+<td>stable cwd</td>
+<td><code>--no-realpath-cwd</code></td>
+<td>opt out of path canonicalisation</td>
+</tr>
+</tbody>
+</table></div>
+<p>And a typed exit vocabulary, so a supervisor can branch without parsing prose:</p>
+<pre tabindex="0"><code>0   OK            10  DEADLINE      13  MEMORY
+1   ERROR         11  CONTRACT      14  CONFIG
+                  12  CONTEXT       15  BACKEND
+</code></pre>
+<p>Bulk tool output is spilled to files with a marker and a preview rather than pasted into the
+window — measured at 99.1–99.5% reduction per payload, on four ordinary tool results that
+together exceed a 196k context by themselves.</p>
+<h3 id="why-the-deliverable-guard-is-not-the-gate">Why the deliverable guard is not the gate</h3>
+<p><code>--deliverable</code> reads as enforcement, and it is worth being exact about what it does, because
+the difference is the reason the acceptance gate exists.</p>
+<p>The guard polices <em>claims</em>, not outcomes: when a run tries to finish with a named deliverable
+missing, it is turned back and told to produce it — but only up to a bounded number of times,
+after which the exit proceeds with the deliverable still missing. A run that reports <code>blocked</code>
+or <code>failed</code> passes untouched by design, as it should.</p>
+<p>This was measured rather than assumed. In a run where the declared artifact was never written,
+the run exited <code>0</code> reporting <code>done</code>, and the guard did not stop it. The same job with an
+<code>acceptance</code> line exited <code>16</code>. <strong>A nudge inside the run and a check outside it are different
+instruments</strong>; only the second produces a verdict that does not depend on the run's own account
+of itself.</p>
+<hr />
+<h2 id="the-file">The file</h2>
+<pre tabindex="0"><code class="language-yaml"># job.yaml — passed as: agent.py --job job.yaml
+goal: &gt;
+  One sentence. What exists after this run that does not exist now.
+
+context:
+  - paths and documents to read first; the run starts with no memory of anything
+  # If a path lies outside the working directory, SAY whether it is readable, navigable, or
+  # both. Sandboxes commonly allow reading a path while refusing to `cd` into it, and that
+  # boundary is invisible from inside the job file. A run that meets an unexplained refusal
+  # tends to spend its whole budget re-orienting instead of working.
+
+constraints:
+  - what must not change; what is out of scope
+  - &quot;blocked-with-reasoning is a legal exit&quot;        # see `blocked`, below
+  - &quot;bulk output goes to files, never into the reply&quot;
+
+deliverable:
+  - path/to/thing_the_run_must_produce
+
+acceptance: &lt;a single executable line&gt;
+  # Re-run by the RUNNER after the agent exits. Its exit status is the verdict.
+  # Must be ONE bare command — no prose, no parenthetical, no explanation. Fold an
+  # explanation into `constraints` instead; a comment merged into the command line by a
+  # YAML fold is a syntax error that silently disables the gate for the whole run.
+
+timebox_sec: 3600        # wall clock, enforced by --deadline
+env_allow: []            # exact variable names this job needs; default is none
+</code></pre>
+<p>Every field maps to something that already exists except <code>acceptance</code>, <code>env_allow</code>, and the
+<code>blocked</code> outcome. <code>--job</code> is sugar plus a gate, not a new execution model.</p>
+<p>Explicit flags beat the file, on every surface the value reaches — the goal anchor <em>and</em> the
+opening prompt. An override applied to one and not the other hands the run two live objectives
+and no way to tell which one it will be judged against.</p>
+<p>A failed gate exits <code>16</code> (<code>acceptance</code>), alongside the existing typed exit codes. Failure is
+closed: a missing binary, a timeout, or an unparseable command is a failure, never a pass. An
+<code>acceptance</code> line that will not parse is refused at launch, because a gate discovered to be dead
+after the run is a run spent for nothing.</p>
+<hr />
+<h2 id="rules-that-carry-their-reasons">Rules that carry their reasons</h2>
+<p>Each of these is here because a run failed for exactly this reason. They are stated as rules so
+that the next author does not have to rediscover them.</p>
+<h3 id="dry-run-the-acceptance-against-a-known-good-artifact-before-launch">Dry-run the acceptance against a KNOWN-GOOD artifact before launch</h3>
+<p>Not against something you wrote for this job. Against an artifact that already exists and is
+already correct — a prior deliverable, an upstream file, the tool as it stands today.</p>
+<p>A gate written alongside a reference implementation inherits that implementation's assumptions.
+One such gate invoked its target with an interface <em>neither</em> real input supported: it could never
+pass, and the job's instructions told the run to self-check with it. The gate was tested only
+against the thing that taught its author the mistake, which proves nothing.</p>
+<p><strong>Testing a check against the artifact that taught you the error is not a test.</strong></p>
+<h3 id="size-the-timebox-against-measured-throughput">Size the timebox against measured throughput</h3>
+<p>Count the network round-trips the job needs, multiply by the observed latency, and add
+generation time at the rate the model <em>actually</em> produces tokens — not the rate you hope for.</p>
+<p>One run was measured at <strong>2.3 tokens/second</strong>. A four-site research task with ~25-second fetch
+waits cannot complete in an hour at that rate, and no amount of agent capability repairs
+arithmetic. A timebox smaller than the work is a failure the job author chose.</p>
+<h3 id="blocked-is-a-success-of-a-different-kind"><code>blocked</code> is a success of a different kind</h3>
+<p>A run that determines the task cannot be done, and says why, has produced a genuine result. It
+is not a failure and should not be scored as one — otherwise the incentive is to produce
+<em>something</em>, and something is worse than a clear refusal.</p>
+<pre tabindex="0"><code class="language-json">{&quot;status&quot;: &quot;blocked&quot;, &quot;summary&quot;: &quot;...&quot;, &quot;reason&quot;: &quot;...&quot;, &quot;scope&quot;: {&quot;examined&quot;: [], &quot;not_covered&quot;: []}}
+</code></pre>
+<h3 id="a-missing-verification-artifact-must-refuse-not-pass">A missing verification artifact must REFUSE, not pass</h3>
+<p>If the runner produces a report — a filesystem delta, a sandbox audit, a coverage summary — then
+its <strong>absence is not a pass</strong>. A missing report usually means the supervising process died, which
+is precisely when a run was least observed and most likely to have done something unexpected.</p>
+<p>An unsupervised run once wrote outside its workspace, and the verdict was recorded as clean
+because the check that would have caught it had never executed. <strong>Absence of a report and a clean
+report must not render the same.</strong></p>
+<h3 id="never-run-the-launcher-in-the-foreground-under-a-timeout">Never run the launcher in the foreground under a timeout</h3>
+<p>Kill the launcher and the child usually survives, reparented — but with no parent there is no
+deadline enforcement, no artifact collection, and no post-run verification, because all three
+live in the parent's exit path. The run keeps going, unobserved, past its bound.</p>
+<hr />
+<h2 id="result-contract">Result contract</h2>
+<p>The last fenced JSON block of the final message:</p>
+<pre tabindex="0"><code class="language-json">{
+  &quot;status&quot;: &quot;done | failed | blocked | cannot-tell&quot;,
+  &quot;summary&quot;: &quot;one paragraph a human can act on&quot;,
+  &quot;artifacts&quot;: [&quot;paths this run actually wrote&quot;],
+  &quot;verify_output&quot;: &quot;what the acceptance command printed when the run tried it&quot;,
+  &quot;scope&quot;: {&quot;examined&quot;: [], &quot;skipped&quot;: [], &quot;not_covered&quot;: []}
+}
+</code></pre>
+<p><code>scope.not_covered</code> is the field that earns its keep. A run that examined three of five inputs
+and says so is far more useful than one that reports success and leaves you to discover the
+other two later. <strong>A report with no stated scope reads as total coverage, and almost never is.</strong></p>
+<hr />
+<h2 id="deliberately-not-in-scope">Deliberately not in scope</h2>
+<p>This contract stops at a single run and its verdict. It says nothing about who reviews the
+result, how findings are categorised, where work items live, or how several runs are coordinated
+— those belong to whatever system is driving <code>agent.py</code>, and they differ for every such system.</p>
+<p>The line is drawn here on purpose. A contract that encoded one organisation's review workflow
+would make that workflow the tool's assumed use, and every other user would be reading around
+somebody else's process to find the part that applies to them.</p>
+    <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
+  </main>
+</div>
+</body>
+</html>

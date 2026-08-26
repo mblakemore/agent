@@ -28,11 +28,11 @@
   </nav>
 </div></header>
 <div class="wrap">
-  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="cli.html" aria-current="page">CLI and usage</a></li><li><a href="models.html">Recommended models</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="cli.html" aria-current="page">CLI and usage</a></li><li><a href="job-contract.html">The job contract — running agent.py as a verifiable worker</a></li><li><a href="models.html">Recommended models</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
   <main id="main">
     <p class="eyebrow">CLI and usage</p>
 <h1>CLI and usage</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-08-25 (bf68c74)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-08-25 (e4a7707)</p>
 <p>Command-line arguments, the interactive TUI, slash commands and environment variables.</p>
 <pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
 </code></pre>
@@ -117,6 +117,10 @@
 <td>JSON schema for the result contract (implies <code>--result-contract</code>). A separate flag so the positional prompt is never mistaken for the schema path.</td>
 </tr>
 <tr>
+<td><code>--job FILE.yaml\|FILE.json</code></td>
+<td>Declarative job file. Sugar over <code>--goal</code> / <code>--deliverable</code> / <code>--deadline</code>, plus an <code>acceptance</code> command the <strong>runner</strong> re-runs after the agent exits (exit <code>16</code> if it fails) and an <code>env_allow</code> allowlist. See <a href="job-contract.html">The job contract</a>.</td>
+</tr>
+<tr>
 <td><code>PROMPT...</code></td>
 <td>Initial prompt. Optional in interactive mode.</td>
 </tr>
@@ -152,7 +156,7 @@ with no block at all. When armed, the contract instruction is injected as a syst
 and the final message must end with a fenced <code>``json block that parses and validates against
 the schema (built-in default:</code>contract: 1<code>,</code>status: done|failed|blocked|cannot-tell<code>,</code>summary<code>, optional</code>artifacts<code>,</code>verify_output<code>,</code>scope<code>). The key</code>"contract": 1<code>is the
 discriminator — a block without it is prose. Missing or invalid at exit → a correction is
-injected and the run continues, bounded by</code>cycle.result_contract_max_blocks<code _failed_="&quot;failed&quot;," _status_:="&quot;status&quot;:" _summary_:="&quot;summary&quot;:" _wzxhzdk:4_="&quot;<no valid result block emitted: …>&quot;">(default 2);
+injected and the run continues, bounded by</code>cycle.result_contract_max_blocks<code _failed_="&quot;failed&quot;," _status_:="&quot;status&quot;:" _summary_:="&quot;summary&quot;:" _wzxhzdk:5_="&quot;<no valid result block emitted: …>&quot;">(default 2);
 still missing at the bound, or at the deadline's hard stop, the run exits and the result file
 receives a synthesized</code><code>record, so the caller **always** gets valid JSON; the process exits</code>11<code>unless a harder stop
 already owns the code. Two valid blocks → last wins. The exit classification is folded into
@@ -244,9 +248,39 @@ one line to stderr, <code>AGENT-EXIT: &lt;name&gt; &lt;detail&gt;</code>, so a s
 <td><code>backend</code></td>
 <td>Backend unreachable or failed after retries.</td>
 </tr>
+<tr>
+<td><code>16</code></td>
+<td><code>acceptance</code></td>
+<td><code>--job</code>: the runner re-ran the job's <code>acceptance</code> command after the agent exited and it failed, timed out, or could not be executed.</td>
+</tr>
 </tbody>
 </table></div>
 <p>Interactive sessions keep exiting <code>0</code> (or <code>2</code> on a start-up configuration error, as before).</p>
+<h3 id="declarative-jobs-and-the-acceptance-gate-job">Declarative jobs and the acceptance gate (<code>--job</code>)</h3>
+<p>A job file collects the flags a headless run needs into one reviewable artifact, and adds the
+one thing a flag cannot express: a check that runs <strong>outside</strong> the agent.</p>
+<pre tabindex="0"><code class="language-yaml">goal: One sentence. What exists after this run that does not now.
+context:    [paths to read first; the run starts with no memory]
+constraints: [what must not change; what is out of scope]
+deliverable: [path/to/thing_the_run_must_produce]
+acceptance: pytest -q tests/test_thing.py     # ONE bare command
+timebox_sec: 3600
+env_allow: [API_TOKEN]
+</code></pre>
+<p><code>goal</code>, <code>deliverable</code> and <code>timebox_sec</code> are folded into <code>--goal</code>, <code>--deliverable</code> and
+<code>--deadline</code>; an explicit flag on the command line overrides the file, so a shared job can be
+reused with one field changed. JSON is accepted everywhere YAML is (content decides, not the
+extension) — PyYAML is optional and only needed for YAML files.</p>
+<p><strong>The gate.</strong> After the agent exits, the runner re-runs <code>acceptance</code> and <em>its</em> status is the
+verdict: a failure exits <code>16</code> no matter what the run reported. The command is also shown to the
+run, so it can check itself before finishing — but satisfying it in prose changes nothing.</p>
+<p>It fails closed. A missing binary, a timeout, and a non-zero status are all failures, because
+"the check did not run" and "the check passed" must never render the same to a supervisor. A
+command that will not parse is refused at launch rather than discovered as a dead gate an hour
+later.</p>
+<p><strong><code>env_allow</code></strong> scrubs the environment to the listed names plus what a process needs to run.
+Omitting the key does nothing; <code>[]</code> is a real instruction meaning <em>this job needs no
+inherited variables</em>, and the two are deliberately distinguishable.</p>
 <h3 id="claude-code-gateway-cc">Claude Code gateway (<code>-cc</code>)</h3>
 <p><code>agent.py -cc</code> stands up an Anthropic-native <code>/v1/messages</code> endpoint and points it at whichever backend <code>agent.py</code> is configured for (<code>llamacpp</code>, <code>bedrock</code>, or <code>foundry</code>). This lets <a href="https://docs.claude.com/en/docs/claude-code">Claude Code</a> — or anything that speaks the Anthropic Messages API — drive your local/self-hosted model.</p>
 <pre tabindex="0"><code class="language-bash">python agent.py -cc                      # listen on 127.0.0.1:8788
