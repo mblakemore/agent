@@ -149,6 +149,8 @@ class NullCallbacks:
 # ── Terminal implementation ────────────────────────────────────────────
 
 _COMPACT_LIMIT_DEFAULT = 400  # chars shown per tool result when compact
+_TTY_ARG_BUDGET = 50          # chars per argument value on a terminal — keeps the line scannable
+_PIPED_ARG_BUDGET = 4000      # ...and when piped, where the reader is a log and wants the call
 
 
 def _nplural(n: int, singular: str, plural: str) -> str:
@@ -344,7 +346,15 @@ class TerminalCallbacks(NullCallbacks):
         self._print(theme.dim(f"\nExecuting {_nplural(count, 'tool call', 'tool calls')}..."))
 
     def on_tool_start(self, name: str, args: dict) -> None:
-        line = f"  → {name}({self._compact_args(args)})"
+        # A terminal wants a scannable line; a capture file wants the whole call. `_fit_line`
+        # already draws that distinction for line WIDTH — this draws it for argument VALUES,
+        # which is where the information actually is. At the 50-char terminal budget every
+        # non-trivial shell command truncates mid-argument: measured on one 38-call session,
+        # 38 of 38 `exec_command` lines ended in an ellipsis, so a saved transcript could not
+        # answer "what did this run actually do?" afterwards. Truncation here is not gated on
+        # --verbose either, so there was no way to ask for the full call.
+        budget = _PIPED_ARG_BUDGET if theme._no_color() else _TTY_ARG_BUDGET
+        line = f"  → {name}({self._compact_args(args, budget)})"
         self._print(f"{theme.CLEAR_LINE}{self._fit_line(line)}")
 
     def on_tool_result(self, name: str, args: dict, result: str, is_error: bool) -> None:

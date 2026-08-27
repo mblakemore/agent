@@ -2,6 +2,7 @@
 
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -65,6 +66,27 @@ class TestTerminalCallbacks(unittest.TestCase):
         out = cb._compact_args({"path": "x" * 80}, max_val=20)
         self.assertLess(len(out), 60)
         self.assertIn("…", out)
+
+    def test_tool_start_keeps_full_command_when_piped(self):
+        """A captured (non-TTY) session records the WHOLE command, not 50 chars of it.
+
+        The pair matters more than either half: the piped case is the fix, and the TTY case
+        is the control that proves this test can tell the two apart. Without the control a
+        test asserting "not truncated" also passes a build that never truncates anything.
+        """
+        cmd = "python3 -c " + "'" + "a" * 300 + "'"
+        cb = callbacks.TerminalCallbacks()
+        seen = []
+        cb._print = lambda text, **kw: seen.append(text)
+
+        with mock.patch.object(callbacks.theme, "_no_color", return_value=True):
+            cb.on_tool_start("exec_command", {"command": cmd})
+        self.assertIn(cmd, seen[-1])
+        self.assertNotIn("…", seen[-1])
+
+        with mock.patch.object(callbacks.theme, "_no_color", return_value=False):
+            cb.on_tool_start("exec_command", {"command": cmd})
+        self.assertIn("…", seen[-1])
 
     def test_render_tools_empty(self):
         cb = callbacks.TerminalCallbacks()
