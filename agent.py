@@ -4788,6 +4788,15 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
               "[live-input] Type anytime — your line is delivered at the next "
               "boundary. esc·esc cancels a running turn; 'exit' quits.")
         try:
+            # Items on this bus are (kind, str). Anything else is a defect in whatever
+            # produced it, and the consumer below cannot safely act on one: the exit-marker
+            # comparison silently returns False for a non-str while .startswith() may return
+            # a truthy object, so a malformed item falls through into the dispatcher and the
+            # loop spins on it forever. Validate here rather than trust the producer -- an
+            # unbounded spin is a far worse failure than a dropped item, and it is the shape
+            # that takes the whole machine down rather than just this loop.
+            _bad_items = 0
+            _MAX_BAD_ITEMS = 10
             while True:
                 try:
                     _item = monitor_bus.get_blocking()
@@ -4795,6 +4804,20 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                     break
                 if _item is None:
                     continue
+                if (not isinstance(_item, tuple) or len(_item) != 2
+                        or not isinstance(_item[1], str)):
+                    _bad_items += 1
+                    log.error("live-input: dropping malformed bus item (%r); "
+                              "expected a (kind, str) pair", type(_item).__name__)
+                    if _bad_items >= _MAX_BAD_ITEMS:
+                        # Bounded rather than infinite: a producer emitting nothing but
+                        # malformed items is broken, and continuing to drain it accomplishes
+                        # nothing while costing memory on every pass.
+                        log.error("live-input: %d consecutive malformed items — ending live "
+                                  "input instead of spinning", _bad_items)
+                        break
+                    continue
+                _bad_items = 0
                 _kind, _text = _item
                 if _kind == "user" and _text == _EXIT_MARK:
                     break
