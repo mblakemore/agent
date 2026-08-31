@@ -57,8 +57,16 @@ def test_run_agent_interactive_tui_boot():
             
             mock_tui_session = MagicMock()
             mock_tui_session_cls.return_value = mock_tui_session
-            # Simulate the user exiting the TUI prompt immediately
+            # Simulate the user exiting the TUI prompt immediately.
+            # BOTH entry points must be configured. The live-input thread calls
+            # prompt_line(); only the outer loop calls prompt(). Stubbing prompt()
+            # alone leaves prompt_line() an unconfigured MagicMock, so the thread
+            # feeds ("user", <MagicMock>) onto the bus forever -- MagicMock.startswith
+            # is truthy, so every item routes into the slash dispatcher and each call
+            # is retained in mock_calls until the process dies with MemoryError
+            # (~52 GB, enough to take the whole machine down with it).
             mock_tui_session.prompt.side_effect = EOFError
+            mock_tui_session.prompt_line.side_effect = EOFError
             
             # Configure mock backends
             mock_main.health.return_value = (True, "OK")
