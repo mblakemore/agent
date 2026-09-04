@@ -26,7 +26,7 @@ python agent.py [OPTIONS] [PROMPT...]
 | `--goal TEXT`, `--deliverable PATH` | The run's stated goal and named deliverables (repeatable). Injected as goal anchors at fractions of the budget; a final `done` while a deliverable is absent draws a correction. Auto-derived from a `GOAL:` / `DELIVERABLE:` stanza when the result contract is armed. |
 | `--result-contract` | Require the final message to end with a fenced JSON result block (`{"contract": 1, "status": …, "summary": …}`); with `--result-file` the file receives the validated JSON only. Built-in schema unless `--result-schema` is given. See [Headless runs](#headless--unattended-runs). |
 | `--result-schema SCHEMA.json` | JSON schema for the result contract (implies `--result-contract`). A separate flag so the positional prompt is never mistaken for the schema path. |
-| `--job FILE.yaml\|FILE.json` | Declarative job file. Sugar over `--goal` / `--deliverable` / `--deadline`, plus an `acceptance` command the **runner** re-runs after the agent exits (exit `16` if it fails) and an `env_allow` allowlist. See [The job contract](job-contract.md). |
+| `--job FILE.yaml\|FILE.json` | Declarative job file; implies `-a` (a job is a run that ends). Sugar over `--goal` / `--deliverable` / `--deadline`, plus an `acceptance` command the **runner** re-runs after the agent exits (exit `16` if it fails) and an `env_allow` allowlist. See [The job contract](job-contract.md). |
 | `PROMPT...` | Initial prompt. Optional in interactive mode. |
 
 Press **Escape twice** within 400ms to cancel a streaming response.

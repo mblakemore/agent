@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">CLI and usage</p>
 <h1>CLI and usage</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-09-04 (022ac8b)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-09-04 (c280a82)</p>
 <p>Command-line arguments, the interactive TUI, slash commands and environment variables.</p>
 <pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
 </code></pre>
@@ -118,7 +118,7 @@
 </tr>
 <tr>
 <td><code>--job FILE.yaml\|FILE.json</code></td>
-<td>Declarative job file. Sugar over <code>--goal</code> / <code>--deliverable</code> / <code>--deadline</code>, plus an <code>acceptance</code> command the <strong>runner</strong> re-runs after the agent exits (exit <code>16</code> if it fails) and an <code>env_allow</code> allowlist. See <a href="job-contract.html">The job contract</a>.</td>
+<td>Declarative job file; implies <code>-a</code> (a job is a run that ends). Sugar over <code>--goal</code> / <code>--deliverable</code> / <code>--deadline</code>, plus an <code>acceptance</code> command the <strong>runner</strong> re-runs after the agent exits (exit <code>16</code> if it fails) and an <code>env_allow</code> allowlist. See <a href="job-contract.html">The job contract</a>.</td>
 </tr>
 <tr>
 <td><code>PROMPT...</code></td>

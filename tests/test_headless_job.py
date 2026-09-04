@@ -251,3 +251,66 @@ class TestEnvAllowKeepsTheInterpreterKnobs:
                             "env_allow": ["AGENT_FAKE_BACKEND"]},
                  env={"PYTHONUNBUFFERED": "1"})
         assert r.returncode == 0
+
+
+# ── a job is a run that ENDS ───────────────────────────────────────────────────────────────
+class TestJobImpliesAuto:
+    def test_job_without_auto_flag_still_ends_and_is_gated(self, tmp_path):
+        """Every other test here passes -a. Without it, --job used to fold the prompt in and then
+        drop to the interactive prompt: the run waited on stdin, the runner never re-ran the
+        acceptance, the timebox never mattered. A job must end on its own."""
+        p = tmp_path / "job.json"
+        (tmp_path / "out.txt").write_text("x", encoding="utf-8")
+        p.write_text(json.dumps({"goal": "G", "acceptance": "test -f ./out.txt"}), encoding="utf-8")
+        e = dict(os.environ, AGENT_FAKE_BACKEND="1")
+        # stdin is a pipe that is NEVER closed — the shape of a launcher that forgot -a. With a
+        # closed stdin the old code exited at end-of-file and hid the defect; with an open one
+        # it sat at the prompt until an outer timeout killed it.
+        proc = subprocess.Popen([sys.executable, _AGENT, "--job", str(p), "go"], cwd=str(tmp_path),
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, env=e)
+        try:
+            out, err = proc.communicate(input=None, timeout=60) if False else _communicate_keep_open(proc, 60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            pytest.fail("--job without -a did not end on its own within 60 s (waiting at the prompt)")
+        assert proc.returncode == 0, (out + err)[-800:]
+        assert "--job implies -a" in err
+
+
+def _communicate_keep_open(proc, timeout):
+    """Wait for exit WITHOUT closing stdin (communicate() would close it, which is the hidden
+    end-of-file the defect hid behind). Returns (stdout, stderr); raises TimeoutExpired."""
+    import threading
+    bufs = {}
+
+    def _drain(name, stream):
+        bufs[name] = stream.read()
+    ts = [threading.Thread(target=_drain, args=(n, st), daemon=True) for n, st in (("out", proc.stdout), ("err", proc.stderr))]
+    for t in ts:
+        t.start()
+    proc.wait(timeout=timeout)
+    for t in ts:
+        t.join(timeout=5)
+    return bufs.get("out", ""), bufs.get("err", "")
+
+
+class TestBareStringListFields:
+    def test_a_string_deliverable_is_one_item_not_its_characters(self, tmp_path):
+        """Measured: a prose deliverable reached the prompt as one bullet per character and the
+        model created a file per character. A str is one item everywhere the spec is read."""
+        p = tmp_path / "job.json"
+        p.write_text(json.dumps({"goal": "G", "deliverable": "hello.txt and done.txt in the working directory",
+                                 "context": "one line of context", "constraints": "one constraint"}),
+                     encoding="utf-8")
+        spec = _load_job_spec(str(p))
+        assert spec["deliverable"] == ["hello.txt and done.txt in the working directory"]
+        assert spec["context"] == ["one line of context"] and spec["constraints"] == ["one constraint"]
+        text = _job_prompt(spec)
+        assert "  - hello.txt and done.txt in the working directory" in text
+        assert "  - h\n" not in text and "  - e\n" not in text
+
+    def test_lists_pass_through_unchanged(self, tmp_path):
+        p = tmp_path / "job.json"
+        p.write_text(json.dumps({"goal": "G", "deliverable": ["a.txt", "b.txt"]}), encoding="utf-8")
+        assert _load_job_spec(str(p))["deliverable"] == ["a.txt", "b.txt"]

@@ -8733,7 +8733,7 @@ def _load_job_spec(path):
         raw = fh.read()
     looks_json = raw.lstrip().startswith(("{", "["))
     if looks_json or str(path).lower().endswith(".json"):
-        return json.loads(raw)
+        return _normalize_job_lists(json.loads(raw))
     try:
         import yaml  # noqa: PLC0415 — optional, imported only for YAML job files
     except ImportError:
@@ -8741,7 +8741,26 @@ def _load_job_spec(path):
             f"{path} is not JSON and PyYAML is not installed. Either `pip install pyyaml` "
             f"or write the job file as JSON — the schema is identical."
         )
-    return yaml.safe_load(raw)
+    return _normalize_job_lists(yaml.safe_load(raw))
+
+
+_JOB_LIST_KEYS = ("context", "constraints", "deliverable")
+
+
+def _normalize_job_lists(spec):
+    """A bare string in a list-valued field is ONE item, not a sequence of characters.
+
+    `deliverable: hello.txt and done.txt in the working directory` reached the prompt as
+    forty-eight single-character bullets and the deliverable guard as seventeen missing
+    one-letter files — and the model, shown that, created a file per character. Python
+    iterates a str; the contract does not.
+    """
+    if isinstance(spec, dict):
+        for k in _JOB_LIST_KEYS:
+            v = spec.get(k)
+            if isinstance(v, str):
+                spec[k] = [v]
+    return spec
 
 
 def _job_prompt(spec):
@@ -8982,6 +9001,14 @@ def main():
         if not isinstance(_spec, dict):
             _exit_now(EXIT_CONFIG, f"--job must contain a mapping, got {type(_spec).__name__}")
         _JOB_PATH = args.job
+        # A JOB IS A RUN THAT ENDS. Without -a the folded-in prompt runs and the process then
+        # drops to the interactive prompt and waits on stdin: the runner never re-runs the
+        # acceptance and the timebox never matters (measured: a two-file job sat at "You:"
+        # until an outer timeout killed it, exit 124, acceptance never checked). --job implies
+        # --auto; a caller who wants the prompt afterwards is not running a job.
+        if not args.auto:
+            args.auto = True
+            print("[job] --job implies -a/--auto: a job ends when the run ends", file=sys.stderr, flush=True)
         _unknown = sorted(str(k) for k in _spec if str(k) not in _JOB_KNOWN_KEYS)
         if _unknown:
             _exit_now(EXIT_CONFIG,

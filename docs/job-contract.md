@@ -73,7 +73,7 @@ of itself.
 ## The file
 
 ```yaml
-# job.yaml — passed as: agent.py --job job.yaml
+# job.yaml — passed as: agent.py --job job.yaml   (implies -a: the run ends, then the runner re-runs acceptance)
 goal: >
   One sentence. What exists after this run that does not exist now.
 
@@ -91,6 +91,7 @@ constraints:
 
 deliverable:
   - path/to/thing_the_run_must_produce
+  # a list; a bare string is accepted as ONE item, never as a sequence of characters
 
 acceptance: <a single executable line>
   # Re-run by the RUNNER after the agent exits. Its exit status is the verdict.

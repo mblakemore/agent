@@ -122,7 +122,7 @@ instruments</strong>; only the second produces a verdict that does not depend on
 of itself.</p>
 <hr />
 <h2 id="the-file">The file</h2>
-<pre tabindex="0"><code class="language-yaml"># job.yaml — passed as: agent.py --job job.yaml
+<pre tabindex="0"><code class="language-yaml"># job.yaml — passed as: agent.py --job job.yaml   (implies -a: the run ends, then the runner re-runs acceptance)
 goal: &gt;
   One sentence. What exists after this run that does not exist now.
 
@@ -140,6 +140,7 @@ constraints:
 
 deliverable:
   - path/to/thing_the_run_must_produce
+  # a list; a bare string is accepted as ONE item, never as a sequence of characters
 
 acceptance: &lt;a single executable line&gt;
   # Re-run by the RUNNER after the agent exits. Its exit status is the verdict.
