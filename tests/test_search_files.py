@@ -9,6 +9,29 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools import search_files
 
 
+class _private_cwd:
+    """Run a path=None search from a private empty directory.
+
+    path=None coerces to '.', which is whatever cwd the suite runs in. The
+    conftest routes most classes here to cwd=/tmp, so a no-match search used to
+    read EVERY file under /tmp on the host (a quarter of a million files on one
+    machine, 220 s per test) — and the timing depended on what other programs
+    had left there. The assertions are about coercion, not about the tree.
+    """
+
+    def __enter__(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old = os.getcwd()
+        Path(self._tmp.name, "probe.txt").write_text("nothing to see\n")
+        os.chdir(self._tmp.name)
+        return self
+
+    def __exit__(self, *exc):
+        os.chdir(self._old)
+        self._tmp.cleanup()
+        return False
+
+
 def _body(result: str) -> str:
     """Strip the [Searched …] header; return just the match body."""
     _, _, body = result.partition("]\n")
@@ -649,7 +672,8 @@ class TestSearchFilesNonStringGuards(unittest.TestCase):
 
     def test_path_none_treated_as_dot(self):
         """path=None must be coerced to '.' (the default), not return a type error (#946)."""
-        result = search_files.fn(pattern="x", path=None)
+        with _private_cwd():
+            result = search_files.fn(pattern="x", path=None)
         self.assertIsInstance(result, str)
         self.assertFalse(result.startswith("Error:"), f"Expected success, got: {result[:100]!r}")
 
@@ -1600,7 +1624,8 @@ class TestSearchFilesTypeNameQuoting(unittest.TestCase):
 
     def test_path_none_no_longer_errors(self):
         """path=None now coerces to '.' (the default) rather than returning a type error (#946)."""
-        result = search_files.fn("ZZZNOMATCH_946", path=None)
+        with _private_cwd():
+            result = search_files.fn("ZZZNOMATCH_946", path=None)
         self.assertIsInstance(result, str)
         self.assertFalse(result.startswith("Error:"), f"path=None should succeed: {result[:100]!r}")
 
@@ -1641,7 +1666,8 @@ class TestSearchFilesNoneParamCoercion(unittest.TestCase):
 
     def test_path_none_coerces_without_type_error(self):
         """path=None must not return a type error (#946) — coerces to '.'."""
-        result = search_files.fn(pattern="ZZZNOMATCH_PROBE_946", path=None)
+        with _private_cwd():
+            result = search_files.fn(pattern="ZZZNOMATCH_PROBE_946", path=None)
         self.assertIsInstance(result, str)
         self.assertFalse(result.startswith("Error:"), f"Expected success: {result[:100]!r}")
 

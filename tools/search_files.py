@@ -1,5 +1,6 @@
 """Search files tool — grep through files for patterns."""
 
+import fnmatch as _fnmatch
 import math
 import os
 import re
@@ -26,9 +27,27 @@ DEFAULT_EXCLUDES = [
     "*.log",
 ]
 
-# Directory-name stems extracted from DEFAULT_EXCLUDES (entries ending
-# with "/" are treated as directory names for fast os.walk pruning).
+# Directory patterns extracted from DEFAULT_EXCLUDES (entries ending with "/").
+# Two shapes live here and each needs its own matcher: a bare NAME pattern
+# (".venv*", "temp") is matched with fnmatch against the directory's name, and
+# a PATH pattern ("state/debug") against the directory's path relative to the
+# search root. A plain set-membership test silently matched neither: os.walk
+# yields bare names, so ".venv*" never equalled ".venv" and "state/debug" never
+# equalled "debug", and both exclusions were dead while looking configured.
 _DEFAULT_EXCLUDE_DIRS = {e.rstrip("/") for e in DEFAULT_EXCLUDES if e.endswith("/")}
+_DEFAULT_EXCLUDE_DIR_NAMES = [e for e in _DEFAULT_EXCLUDE_DIRS if "/" not in e]
+_DEFAULT_EXCLUDE_DIR_PATHS = [e for e in _DEFAULT_EXCLUDE_DIRS if "/" in e]
+
+
+def _dir_excluded(name: str, rel_parent: str) -> bool:
+    """True when a directory named ``name`` under ``rel_parent`` (path relative
+    to the search root, "" at the root, forward slashes) matches a directory
+    exclusion. Name patterns are globs against the name; path patterns are
+    globs against the relative path."""
+    if any(_fnmatch.fnmatch(name, pat) for pat in _DEFAULT_EXCLUDE_DIR_NAMES):
+        return True
+    rel = f"{rel_parent}/{name}" if rel_parent else name
+    return any(_fnmatch.fnmatch(rel, pat) for pat in _DEFAULT_EXCLUDE_DIR_PATHS)
 # File-level glob patterns from DEFAULT_EXCLUDES.
 _DEFAULT_EXCLUDE_FILE_GLOBS = [e for e in DEFAULT_EXCLUDES if not e.endswith("/")]
 
@@ -376,8 +395,11 @@ def fn(
             dirs[:] = [d for d in dirs if not d.startswith(".")]
 
         if not include_temp:
-            # Prune directories that are in DEFAULT_EXCLUDES.
-            dirs[:] = [d for d in dirs if d not in _DEFAULT_EXCLUDE_DIRS]
+            # Prune directories matching DEFAULT_EXCLUDES (glob names and relative paths).
+            rel_parent = os.path.relpath(root, resolved).replace(os.sep, "/")
+            if rel_parent == ".":
+                rel_parent = ""
+            dirs[:] = [d for d in dirs if not _dir_excluded(d, rel_parent)]
 
         for file_name in files:
             if not any(_fnmatch.fnmatch(file_name, g) for g in glob_patterns):

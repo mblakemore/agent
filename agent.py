@@ -3628,8 +3628,12 @@ class _VerboseConsoleFilter(logging.Filter):
 def _setup_logger():
     """Create a structured logger with levels, rotation, and console output."""
     log_dir_override = _config.get("log_dir")
-    if log_dir_override:
-        history_dir = os.path.join(os.getcwd(), log_dir_override)
+    # Only a non-empty STRING is a directory. Any other truthy value (a mock
+    # object under test, a mis-typed config) used to be joined into a path and
+    # created on disk: one test double grew an 11,503-file directory named
+    # after itself over four months, and every search-tool test then read it.
+    if isinstance(log_dir_override, str) and log_dir_override.strip():
+        history_dir = os.path.join(os.getcwd(), log_dir_override.strip())
     else:
         history_dir = _HISTORY_DIR
     os.makedirs(history_dir, exist_ok=True)
