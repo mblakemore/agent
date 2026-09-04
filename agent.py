@@ -2589,6 +2589,28 @@ def _estimate_tokens(msg):
 # with it. The heuristic is the first guess, not a permanent assumption; a tokenizer mismatch
 # between the estimator and the served model shows up here as a ratio far from 1.0.
 _TOKEN_CAL = {"ratio": 1.0, "n": 0, "last_logged": 1.0}
+_PREFILL_TPS_FLOOR = float(os.environ.get("AGENT_PREFILL_TPS_FLOOR", "500") or 500)
+
+
+def _stall_budget_s(base_s, est_prompt_tokens, prefill_tps_floor):
+    """Pure: the zero-delta window a request may stay silent before it is called a stall.
+    A backend emits no deltas during prefill, so the window must cover prefill for a prompt
+    of this size at a floor rate the backend beats. base_s <= 0 disables (returns 0); an
+    unknown estimate or floor keeps the base."""
+    try:
+        base_s = float(base_s)
+    except (TypeError, ValueError):
+        return 0.0
+    if base_s <= 0:
+        return 0.0
+    try:
+        est = float(est_prompt_tokens or 0)
+        floor = float(prefill_tps_floor or 0)
+    except (TypeError, ValueError):
+        return base_s
+    if est <= 0 or floor <= 0:
+        return base_s
+    return max(base_s, est / floor)
 _TOKEN_CAL_ALPHA = 0.3        # EMA weight of the newest observation
 _TOKEN_CAL_MIN, _TOKEN_CAL_MAX = 0.25, 4.0   # a single absurd reading cannot wreck the budget
 
@@ -2997,12 +3019,44 @@ def _summarize_for_compression(content: str, func_name: str, log) -> str:
         return f"[compressed: {head}\n... ({len(lines)} lines) ...\n{tail}]"
 
 
-def _compress_repeated_tool_results(conversation_history: list, func_name: str, log) -> None:
+# History rewrites are PROMPT-CACHE KILLERS. A server that caches the key-value state of the
+# previous request reuses it only for the longest common PREFIX of the next one; an in-place
+# rewrite at position p invalidates everything after p. Measured on a live run: this pass
+# rewrote one earlier tool result per turn (five consecutive calls to the same tool), the
+# server reported a 17% common prefix with its cache on every request, re-processed ~32k of a
+# 39k-token prompt each turn (~60 s of prefill), and the run's stall guard cancelled the request
+# at the moment prefill finished. So the pass runs only when the history is actually PRESSING
+# on the context window, and then does everything it can in one batch — steady-state turns
+# never touch the prefix. Compression under pressure also shrinks the history, which lowers the
+# pressure, which is the hysteresis that keeps it from firing every turn.
+_TOOL_RESULT_COMPRESS_PRESSURE = float(os.environ.get("AGENT_COMPRESS_PRESSURE_FRAC", "0.70") or 0.70)
+
+
+def _history_pressure(conversation_history):
+    """Estimated prompt tokens / context size, using the calibrated estimator (F3b). 0 when the
+    context size is unknown, which reads as 'not under pressure' — the rewrite is the risky side."""
+    try:
+        ctx = float((_config.get("context") or {}).get("ctx_size") or 0)
+    except Exception:  # noqa: BLE001
+        ctx = 0.0
+    if ctx <= 0:
+        return 0.0
+    est = sum(_estimate_tokens(m) for m in conversation_history) * float(_TOKEN_CAL.get("ratio", 1.0) or 1.0)
+    return est / ctx
+
+
+def _compress_repeated_tool_results(conversation_history: list, func_name: str, log, pressure=None) -> None:
     """When the same tool appears _TOOL_RESULT_COMPRESS_AFTER+ times in history,
     compress all but the most recent occurrence.  Targets polling patterns
     (e.g. exec_command(cat log) × N turns) that would otherwise fill the context
     window with near-identical large results.
+
+    `pressure` (estimated prompt tokens / ctx_size) gates the pass: below
+    _TOOL_RESULT_COMPRESS_PRESSURE nothing is rewritten, because a rewrite costs a full
+    prefill on a prompt-caching server (see the note above). None = ungated (legacy callers).
     """
+    if pressure is not None and pressure < _TOOL_RESULT_COMPRESS_PRESSURE:
+        return
     indices = [
         i for i, m in enumerate(conversation_history)
         if m.get("role") == "tool" and m.get("name") == func_name
@@ -6449,7 +6503,18 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         # rather than waiting for the inevitable malformed completion.
         # Env-tunable; default 60s gives slow CPU backends headroom while
         # cutting failure tails by ~10x. Set 0 to disable.
-        _STALL_TIMEOUT_S = float(os.environ.get("AGENT_STALL_TIMEOUT_S", "60"))
+        # PREFILL-AWARE (measured on a live run): a server streams NOTHING until it has processed
+        # the whole prompt, and a 39k-token prompt took ~60 s of prefill on a fast GPU — so a
+        # flat 60 s zero-delta guard cancelled every request at the instant the model was about
+        # to speak, and "continue" re-sent the same prompt to the same fate. The budget must at
+        # least cover the prefill a prompt of THIS size needs at a floor rate the backend is
+        # known to beat (AGENT_PREFILL_TPS_FLOOR, default 500 t/s). Base still 0 = disabled.
+        _STALL_BASE_S = float(os.environ.get("AGENT_STALL_TIMEOUT_S", "60"))
+        _est_prompt_tokens = sum(_estimate_tokens(m) for m in conversation_history) * float(_TOKEN_CAL.get("ratio", 1.0) or 1.0)
+        _STALL_TIMEOUT_S = _stall_budget_s(_STALL_BASE_S, _est_prompt_tokens, _PREFILL_TPS_FLOOR)
+        if _STALL_TIMEOUT_S > _STALL_BASE_S:
+            log.info("stall budget widened %.0fs -> %.0fs for ~%d prompt tokens (prefill floor %.0f t/s)",
+                     _STALL_BASE_S, _STALL_TIMEOUT_S, _est_prompt_tokens, _PREFILL_TPS_FLOOR)
         _deltas_received = 0
         _stall_detected = False
         status = StreamStatus(emit=_emit)
@@ -7963,7 +8028,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         "name": func_name,
                         "content": result_str,
                     })
-                    _compress_repeated_tool_results(conversation_history, func_name, log)
+                    _compress_repeated_tool_results(conversation_history, func_name, log,
+                                                    pressure=_history_pressure(conversation_history))
 
                     # Consecutive edit_file failure guard: after 2 consecutive
                     # old_string-not-found failures on the same file, inject a

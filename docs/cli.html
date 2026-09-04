@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">CLI and usage</p>
 <h1>CLI and usage</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-09-04 (c7029e4)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-09-04 (022ac8b)</p>
 <p>Command-line arguments, the interactive TUI, slash commands and environment variables.</p>
 <pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
 </code></pre>
@@ -505,6 +505,18 @@ server-side fix is picked up automatically without a config change.</p>
 <tr>
 <td><code>AGENT_CTX_SPILL_THRESHOLD</code></td>
 <td>Chars above which a tool result is spilled to a file during context-overflow recovery (default <code>4000</code>, halving per pass to <code>1000</code>).</td>
+</tr>
+<tr>
+<td><code>AGENT_STALL_TIMEOUT_S</code></td>
+<td>Base seconds a request may stream zero deltas before it is aborted as a stall (default <code>60</code>; <code>0</code> disables). The effective budget is widened to cover prefill — see the next row — because a backend emits nothing until it has processed the whole prompt, and a flat guard cancels a large prompt at the instant it was about to speak.</td>
+</tr>
+<tr>
+<td><code>AGENT_PREFILL_TPS_FLOOR</code></td>
+<td>Prompt-processing rate, in tokens per second, the backend is known to beat (default <code>500</code>). The stall budget becomes <code>max(base, estimated_prompt_tokens / floor)</code>; a 39k-token prompt at 500 t/s gets 78 s. Lower it for a slow CPU backend.</td>
+</tr>
+<tr>
+<td><code>AGENT_COMPRESS_PRESSURE_FRAC</code></td>
+<td>Fraction of the context window (estimated prompt tokens / <code>ctx_size</code>) above which older repeated tool results are compressed in place (default <code>0.70</code>). Below it nothing in the history is rewritten: an in-place rewrite invalidates a prompt-caching server's key-value cache from that point on, and costs a full prefill on the next turn.</td>
 </tr>
 </tbody>
 </table></div>
