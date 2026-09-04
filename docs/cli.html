@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">CLI and usage</p>
 <h1>CLI and usage</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-08-25 (e4a7707)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-09-04 (c7029e4)</p>
 <p>Command-line arguments, the interactive TUI, slash commands and environment variables.</p>
 <pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
 </code></pre>
@@ -267,6 +267,7 @@ acceptance: pytest -q tests/test_thing.py     # ONE bare command
 timebox_sec: 3600
 env_allow: [API_TOKEN]
 acceptance_timeout_sec: 300                  # optional; overrun is a failure
+refusal_max_turns: 5                         # optional; 0 disables the capability-refusal stop
 result_contract: true                        # optional; true, false, or a schema path
 </code></pre>
 <p><code>goal</code>, <code>deliverable</code> and <code>timebox_sec</code> are folded into <code>--goal</code>, <code>--deliverable</code> and
@@ -284,6 +285,13 @@ run already ended with a typed hard stop (deadline, contract, context, memory, b
 code is kept and the gate's failure is appended to the exit detail; <code>16</code> is reserved for a run
 that finished and whose artifact is wrong. The gate's full output goes to
 <code>.agent/acceptance-out.txt</code>; the exit line carries its last line.</p>
+<p><strong>Capability refusals end the run, bounded.</strong> A tool that exits non-zero saying the run was not
+granted something (a missing key, blocked egress, a permission, a quota) gets a one-time notice
+appended to its own result: do not build a substitute, <code>blocked</code> is the required exit. If the run
+is still calling tools <code>cycle.refusal_max_turns</code> turns later (default 5, <code>refusal_max_turns</code> in
+the job file, 0 = off), tool calls are refused and the final result is forced; a missing result
+block becomes a synthesized <code>blocked</code> record naming the tool and its exit code. Headless runs
+only; files the run merely read are never classified as refusals.</p>
 <p><strong><code>env_allow</code></strong> scrubs the environment to the listed names plus what a process needs to run
 (the interpreter's own <code>PYTHON*</code> variables among them, so a scrub never re-buffers the log a
 supervisor is reading the run through).

@@ -466,6 +466,14 @@ _DEFAULT_CONFIG = {
         # run takes the final-result path with exit code 10.
         "deadline_s": 0,
         "deadline_warn_fracs": [0.6, 0.8, 0.92],
+        # F9: capability-refusal stop (headless only). When a tool result says the run was never
+        # GRANTED something it needs — a missing key, blocked egress, a permission — the run is
+        # told once, in that result, that blocked-with-reasoning is the required exit and that
+        # building a substitute is prohibited. If it is still issuing tool calls this many turns
+        # later, tool calls are refused and the final result is forced, exactly as the deadline
+        # does. Measured before this existed: a refusal at turn 2, two hand-written fetchers,
+        # 43 more turns, no result. 0 = off.
+        "refusal_max_turns": 5,
         # F2: result contract. false = off (raw --result-file text, today's behavior);
         # true = built-in schema; a path = JSON schema file. When armed the final message must
         # end with a fenced JSON block carrying "contract": 1 that validates; missing/invalid
@@ -774,6 +782,67 @@ def _classify_auto_result(result, error_kind=None, last_exit=None):
     return EXIT_OK, str(result or "")
 
 
+# F9 — capability refusal. A tool that says "you were not granted X" is not an error to fix and
+# not a wall to route around; it is a fact about the run's grant that nothing the run writes can
+# change. The patterns are the shapes such refusals take in practice: missing/invalid secrets,
+# authorization, permissions, quotas, and blocked egress. Kept generic on purpose.
+_REFUSAL_PATTERNS = re.compile(
+    r"\bREFUSED\b|\bnot granted\b|\bcapabilit(?:y|ies) (?:not )?granted\b"
+    r"|(?:api[_ -]?key|secret|token|credentials?)\s+(?:is\s+|was\s+|are\s+)?"
+    r"(?:not\s+(?:set|configured|provided|found|in (?:the )?environment)|missing|required|invalid|expired|rejected|unset|empty)"
+    r"|\bno (?:valid )?(?:api[_ -]?key|credentials?|token)s?\b"
+    r"|\b[A-Z][A-Z0-9_]{2,}\b[^\n]{0,60}\bnot in (?:the )?environment\b"
+    r"|environment variable[^.\n]{0,40}\b(?:not set|is empty|undefined|required|missing)\b"
+    r"|\bpermission denied\b|\baccess denied\b|\boperation not permitted\b|\bEACCES\b|\bEPERM\b"
+    r"|\bunauthori[sz]ed\b|\bforbidden\b|\bauthentication (?:failed|required|denied)\b"
+    r"|\bHTTP (?:401|403|429)\b|\b(?:401|403|429) (?:unauthorized|forbidden|too many requests)\b"
+    r"|\brate limit(?:ed)?\b|\btoo many requests\b|\bquota (?:exhausted|exceeded|reached)\b"
+    r"|\bconnection refused\b|\bECONNREFUSED\b|\bproxy (?:blocked|denied|refused|required)\b"
+    r"|\bno route to host\b|\bnetwork is (?:not reachable|unreachable)\b|\begress (?:is )?(?:blocked|denied)\b",
+    re.I)
+# Tools whose result text alone can carry a refusal (no exit status to consult). A file the run
+# READ containing the words "permission denied" is a document, not a refusal, so read/search
+# tools are never classified.
+_REFUSAL_TEXT_TOOLS = frozenset({"web_fetch"})
+_LAST_REFUSAL = None     # {"tool", "cmd", "exit", "head", "turn"} — read by _synthesize_result
+
+
+def _classify_tool_refusal(func_name, result_str):
+    """F9, pure: (exit_code_or_None, head_line) if this tool result is a CAPABILITY refusal,
+    else None. exec_command results carry `exit=N` in their header and must be non-zero;
+    network tools are classified on text; everything else is never a refusal."""
+    if not result_str:
+        return None
+    text = str(result_str)[:4000]
+    if func_name == "exec_command":
+        m = re.search(r"\bexit=(-?\d+)", text[:300])
+        code = int(m.group(1)) if m else None
+        if code is None or code == 0:
+            return None
+    elif func_name in _REFUSAL_TEXT_TOOLS:
+        code = None
+    else:
+        return None
+    if not _REFUSAL_PATTERNS.search(text):
+        return None
+    lines = [ln.strip() for ln in text.splitlines()
+             if ln.strip() and not ln.strip().startswith("[session:")]
+    head = next((ln for ln in lines if _REFUSAL_PATTERNS.search(ln)), lines[0] if lines else "")
+    return code, head[:200]
+
+
+def _refusal_notice(tool, cmd, code, head, max_turns):
+    """F9: appended ONCE to the refusing tool's own result, so the model reads it in the place
+    it is already looking. Names the tool, the command, the exit and the line."""
+    what = f"{tool}" + (f" `{cmd}`" if cmd else "")
+    return (f"[CAPABILITY REFUSAL] {what} exited {code if code is not None else '(n/a)'}: {head}\n"
+            f"This run was NOT GRANTED that capability, and nothing you can write will grant it. Do NOT "
+            f"build a replacement — no fetcher, client, downloader, retry through another route, or "
+            f"workaround script. If the task cannot be completed without it, reply with your FINAL RESULT "
+            f"now: a result block with \"status\": \"blocked\" and a reason naming the tool and its exit "
+            f"code. You have at most {max_turns} turn(s) before tool calls are refused.")
+
+
 def _deadline_step(elapsed_s, deadline_s, fired, fracs):
     """F1, pure: given elapsed wall-clock, the deadline and the set of fractions already
     fired, return (message_or_None, hard_stop_bool). Fires each fraction at most once, in
@@ -1041,7 +1110,18 @@ def _dump_failed_request(conversation_history, exc, path=None):
 
 
 def _synthesize_result(reason, exit_info=None):
-    return {"contract": 1, "status": "failed", "summary": f"<no valid result block emitted: {reason}>",
+    # F9: a run that met a capability refusal and then emitted nothing is BLOCKED, not merely
+    # failed, and the record says by what. `synthesized` stays true — the caller can still tell
+    # the run did not say this itself.
+    status, summary = "failed", f"<no valid result block emitted: {reason}>"
+    if _LAST_REFUSAL:
+        status = "blocked"
+        summary = (f"<synthesized: {_LAST_REFUSAL.get('tool')} "
+                   f"{('`' + str(_LAST_REFUSAL.get('cmd')) + '` ') if _LAST_REFUSAL.get('cmd') else ''}"
+                   f"refused for an ungranted capability at turn {_LAST_REFUSAL.get('turn')} "
+                   f"(exit {_LAST_REFUSAL.get('exit')}): {_LAST_REFUSAL.get('head')}; "
+                   f"no valid result block was emitted: {reason}>")
+    return {"contract": 1, "status": status, "summary": summary,
             "artifacts": [], "verify_output": "", "scope": {"examined": [], "skipped": [], "not_covered": []},
             "synthesized": True, "exit": exit_info or {}}
 
@@ -5183,6 +5263,19 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
     _deadline_fired = set()
     _deadline_hard = False
     _deadline_hard_turns = 0
+    # F9 — capability-refusal stop state. Headless only: an interactive user answers a refusal
+    # themselves. `_refusal_hard` is read by the same exit gates and dispatcher as `_deadline_hard`.
+    global _LAST_REFUSAL
+    _LAST_REFUSAL = None
+    try:
+        _REFUSAL_MAX_TURNS = int((_config.get("cycle") or {}).get("refusal_max_turns", 5) or 0) \
+            if _AUTO_MODE else 0
+    except Exception:
+        _REFUSAL_MAX_TURNS = 0
+    _refusal_first_turn = None
+    _refusal_tool = None
+    _refusal_hard = False
+    _refusal_hard_turns = 0
     if _DEADLINE_S > 0 and _GRIND_ELAPSED_S <= 0:
         # a stuck run should escalate while there is still time to act on advice
         _GRIND_ELAPSED_S = 0.5 * _DEADLINE_S
@@ -5458,12 +5551,26 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         nonlocal _success_check_blocks, _ran_verification
         if not _success_check_cmd:
             return False
-        if _deadline_hard:
-            # F1: past the deadline the gate must not hold the run for a fix it has no time
-            # for — the result says the check failed; the supervisor reads exit 10.
-            log.info("success_check gate stood down — deadline reached (%s exit)", path_name)
+        if _deadline_hard or _refusal_hard:
+            # F1/F9: past the deadline (or a refusal stop) the gate must not hold the run for a
+            # fix it has no time for — the result says the check failed; the supervisor reads
+            # the exit code and the result block.
+            log.info("success_check gate stood down — %s (%s exit)",
+                     "deadline reached" if _deadline_hard else "capability refusal stop", path_name)
             return False
         if _success_check_blocks >= _SUCCESS_CHECK_MAX_BLOCKS:
+            return False
+        # F9: this gate polices "done while RED". A final message whose result block says
+        # blocked / failed / cannot-tell is not claiming done, and turning it back asks the run
+        # to manufacture a pass for a check it has already said it cannot honestly satisfy.
+        # Measured: a run that met a capability refusal at turn 2 and reported blocked
+        # correctly at turn 5 was turned back HERE with "the check still FAILS, fix it", and
+        # spent five more turns writing labelled placeholder files so that a file-existence
+        # check would pass. The harness, not the model, produced that outcome.
+        _final_obj, _ = _extract_result_block(_last_assistant_text(conversation_history))
+        if _final_obj is not None and _final_obj.get("status") in ("blocked", "failed", "cannot-tell"):
+            log.info("success_check gate stood down — the run reports %s (%s exit)",
+                     _final_obj.get("status"), path_name)
             return False
         _sc_rc, _sc_out = _run_success_check(_success_check_cmd, log)
         if _sc_rc == 0:
@@ -5512,9 +5619,10 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 log.info("result contract satisfied — %s exit permitted", path_name)
                 return False
             why = f"the result block is invalid: {vwhy}"
-        if _deadline_hard or _result_contract_blocks >= _RESULT_CONTRACT_MAX_BLOCKS:
-            log.warning("result contract UNSATISFIED at %s (%s) — %s; a failed record will be synthesized",
-                        path_name, why, "deadline reached" if _deadline_hard else "correction bound reached")
+        if _deadline_hard or _refusal_hard or _result_contract_blocks >= _RESULT_CONTRACT_MAX_BLOCKS:
+            log.warning("result contract UNSATISFIED at %s (%s) — %s; a record will be synthesized",
+                        path_name, why, "deadline reached" if _deadline_hard
+                        else ("capability refusal stop" if _refusal_hard else "correction bound reached"))
             return False
         _result_contract_blocks += 1
         log.info("result contract unsatisfied (%s) — %s exit redirected (%d/%d)",
@@ -5534,7 +5642,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         whose status is blocked/failed/cannot-tell passes untouched, and so does the exit past
         the deadline. Nothing configured → never fires."""
         nonlocal _deliverable_blocks
-        if not _deliverables or _deadline_hard:
+        if not _deliverables or _deadline_hard or _refusal_hard:
             return False
         obj, _why = _extract_result_block(text)
         if obj is not None and obj.get("status") in ("blocked", "failed", "cannot-tell"):
@@ -5568,8 +5676,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         this catches 'claimed an action never taken' (invisible without the trace,
         and unfixable by any sampling knob — hence structural). State is passed in
         (not closed over) so the reads register in the caller's scope."""
-        if _deadline_hard:
-            return False, blocks   # F1: past the deadline, accept the final result as given
+        if _deadline_hard or _refusal_hard:
+            return False, blocks   # F1/F9: past a hard stop, accept the final result as given
         if not text or max_blocks <= 0 or blocks >= max_blocks:
             return False, blocks
         _unsupported = _claim_vs_trace_unsupported(text, ran_verification, has_committed)
@@ -5903,6 +6011,30 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # Hard cap: never exceed 2x the turn limit regardless of state
             if overtime >= _MAX_TURNS:
                 log.error("Hard overtime cap reached (%d turns) — force stopping", turn)
+                return "done"
+        # F9 — capability-refusal stop. N turns after a tool refused for an ungranted capability,
+        # a run still issuing tool calls is not working: it is building a substitute for the
+        # thing it was refused. Same mechanism as the deadline below — tool calls refused, ONE
+        # more turn for the final result, a second such turn ends the run. Placed before the
+        # deadline block so that when both apply the deadline message wins.
+        if (_refusal_first_turn is not None and _REFUSAL_MAX_TURNS > 0 and not _refusal_hard
+                and turn - _refusal_first_turn >= _REFUSAL_MAX_TURNS):
+            _refusal_hard = True
+            log.error("CAPABILITY REFUSAL STOP at turn %d: %s refused at turn %d and the run is still "
+                      "issuing tool calls %d turn(s) later — tool calls refused, forcing the final result",
+                      turn, _refusal_tool, _refusal_first_turn, turn - _refusal_first_turn)
+            _emit("on_notice", "warn", f"[Capability refusal stop: {_refusal_tool} — final result required]")
+            wind_down_msg = (
+                f"[SYSTEM: CAPABILITY REFUSAL STOP. {_refusal_tool} refused for an ungranted capability at "
+                f"turn {_refusal_first_turn} ({(_LAST_REFUSAL or {}).get('head', '')}) and {_REFUSAL_MAX_TURNS} "
+                f"turn(s) have passed. Tool calls are now REFUSED. Reply with your FINAL RESULT now: a result "
+                f"block with \"status\": \"blocked\" naming the tool and its exit code, what was examined, "
+                f"and what was not covered.]")
+        if _refusal_hard:
+            _refusal_hard_turns += 1
+            if _refusal_hard_turns > 2:
+                log.error("REFUSAL STOP: no final result after %d post-stop turns — stopping",
+                          _refusal_hard_turns - 1)
                 return "done"
         # F1 — the wall-clock twin of the ladder above. Rides the same message channel; when
         # both apply on one turn the deadline message wins (it is the one with a hard stop
@@ -7116,20 +7248,24 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         _emit("on_tool_batch_start", len(tool_calls))
         _garbled_count = 0  # track garbled tool calls for retry
         _tool_exec_t0 = time.monotonic()
-        if _deadline_hard:
-            # F1 hard stop is STRUCTURAL: past the deadline no tool runs. Every call still gets
-            # a paired tool result (strict templates reject an unanswered tool_call) saying why,
+        if _deadline_hard or _refusal_hard:
+            # F1/F9 hard stops are STRUCTURAL: past them no tool runs. Every call still gets a
+            # paired tool result (strict templates reject an unanswered tool_call) saying why,
             # so the model's next turn is the final result the run is waiting for.
+            _why = (f"the wall-clock deadline ({int(_DEADLINE_S)}s) has passed" if _deadline_hard
+                    else f"{_refusal_tool} refused for an ungranted capability {_REFUSAL_MAX_TURNS}+ turn(s) ago")
+            _ask = ("what was done, what was not, artifact paths" if _deadline_hard
+                    else "a result block with \"status\": \"blocked\" naming the tool and its exit code")
             for tool_call in tool_calls:
                 _tc_id = tool_call.id if hasattr(tool_call, "id") else tool_call.get("id")
                 _tc_name = _get_tc_name(tool_call)
                 conversation_history.append({
                     "role": "tool", "tool_call_id": _tc_id, "name": _tc_name,
-                    "content": (f"REFUSED: the wall-clock deadline ({int(_DEADLINE_S)}s) has passed — no tool "
-                                f"runs now. Reply with your FINAL RESULT: what was done, what was not, "
-                                f"artifact paths.")})
-            log.warning("deadline: refused %d tool call(s) on post-deadline turn %d", len(tool_calls), _deadline_hard_turns)
-            _emit("on_notice", "warn", f"[Deadline: {len(tool_calls)} tool call(s) refused — final result required]")
+                    "content": f"REFUSED: {_why} — no tool runs now. Reply with your FINAL RESULT: {_ask}."})
+            log.warning("%s: refused %d tool call(s) on post-stop turn %d",
+                        "deadline" if _deadline_hard else "refusal stop", len(tool_calls),
+                        _deadline_hard_turns if _deadline_hard else _refusal_hard_turns)
+            _emit("on_notice", "warn", f"[{'Deadline' if _deadline_hard else 'Refusal stop'}: {len(tool_calls)} tool call(s) refused — final result required]")
             continue
         try:
             with cancellable():
@@ -7593,6 +7729,31 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             + result_str[-half:]
                         )
 
+                    # F9 — capability refusal: the tool said the run was never granted something
+                    # it needs. Say so ONCE, inside the result the model is about to read, and
+                    # start the clock; the turn-top stop is what makes the window bounded.
+                    if _REFUSAL_MAX_TURNS > 0:
+                        _rf = _classify_tool_refusal(func_name, result_str)
+                        if _rf is not None:
+                            _rf_code, _rf_head = _rf
+                            _rf_cmd = (str(func_args.get("command") or "")[:120]
+                                       if isinstance(func_args, dict) else "")
+                            if _refusal_first_turn is None:
+                                _refusal_first_turn, _refusal_tool = turn, func_name
+                                _LAST_REFUSAL = {"tool": func_name, "cmd": _rf_cmd, "exit": _rf_code,
+                                                 "head": _rf_head, "turn": turn}
+                                log.warning("capability refusal at turn %d: %s %s exit=%s — %s (blocked "
+                                            "result due within %d turn(s))", turn, func_name, _rf_cmd,
+                                            _rf_code, _rf_head, _REFUSAL_MAX_TURNS)
+                                _emit("on_notice", "warn",
+                                      f"[Capability refusal: {func_name} exit={_rf_code} — blocked result "
+                                      f"due within {_REFUSAL_MAX_TURNS} turn(s)]")
+                                telemetry.record_patch_event("capability_refusal", kind=func_name)
+                                result_str += "\n\n" + _refusal_notice(func_name, _rf_cmd, _rf_code,
+                                                                          _rf_head, _REFUSAL_MAX_TURNS)
+                            else:
+                                log.warning("capability refusal AGAIN at turn %d: %s %s exit=%s",
+                                            turn, func_name, _rf_cmd, _rf_code)
                     # Store in dedup cache if this call was eligible (see
                     # _is_dedupable_call). The synthetic result returned by a
                     # later duplicate references this entry's `call_idx` and
@@ -8466,7 +8627,7 @@ _JOB_ACCEPTANCE_TIMEOUT = 300   # seconds; `acceptance_timeout_sec` in the job f
 # from one that passed. Same class as the unparseable-command refusal in main().
 _JOB_KNOWN_KEYS = frozenset({"goal", "context", "constraints", "deliverable", "acceptance",
                              "timebox_sec", "env_allow", "acceptance_timeout_sec",
-                             "result_contract"})
+                             "result_contract", "refusal_max_turns"})
 
 
 def _load_job_spec(path):
@@ -8767,6 +8928,12 @@ def main():
             elif _rc is not False:
                 _exit_now(EXIT_CONFIG, f"--job result_contract must be true, false or a schema "
                                        f"path, got {_rc!r}")
+        if _spec.get("refusal_max_turns") is not None:
+            try:
+                _config["cycle"]["refusal_max_turns"] = int(_spec["refusal_max_turns"])
+            except (TypeError, ValueError):
+                _exit_now(EXIT_CONFIG, f"--job refusal_max_turns must be an integer, got "
+                                       f"{_spec['refusal_max_turns']!r}")
         _JOB_ACCEPTANCE = _spec.get("acceptance") or None
         # An acceptance command that cannot even be PARSED is a dead gate for the whole run,
         # and a dead gate looks exactly like a passing one. Refuse at launch instead.

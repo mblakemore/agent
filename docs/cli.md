@@ -142,6 +142,7 @@ acceptance: pytest -q tests/test_thing.py     # ONE bare command
 timebox_sec: 3600
 env_allow: [API_TOKEN]
 acceptance_timeout_sec: 300                  # optional; overrun is a failure
+refusal_max_turns: 5                         # optional; 0 disables the capability-refusal stop
 result_contract: true                        # optional; true, false, or a schema path
 ```
 
@@ -162,6 +163,14 @@ run already ended with a typed hard stop (deadline, contract, context, memory, b
 code is kept and the gate's failure is appended to the exit detail; `16` is reserved for a run
 that finished and whose artifact is wrong. The gate's full output goes to
 `.agent/acceptance-out.txt`; the exit line carries its last line.
+
+**Capability refusals end the run, bounded.** A tool that exits non-zero saying the run was not
+granted something (a missing key, blocked egress, a permission, a quota) gets a one-time notice
+appended to its own result: do not build a substitute, `blocked` is the required exit. If the run
+is still calling tools `cycle.refusal_max_turns` turns later (default 5, `refusal_max_turns` in
+the job file, 0 = off), tool calls are refused and the final result is forced; a missing result
+block becomes a synthesized `blocked` record naming the tool and its exit code. Headless runs
+only; files the run merely read are never classified as refusals.
 
 **`env_allow`** scrubs the environment to the listed names plus what a process needs to run
 (the interpreter's own `PYTHON*` variables among them, so a scrub never re-buffers the log a

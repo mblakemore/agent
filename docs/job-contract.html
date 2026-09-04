@@ -33,7 +33,7 @@
     <p class="eyebrow">The job contract — running agent.py as a verifiable worker</p>
     <p class="status">implemented</p>
 <h1>The job contract — running <code>agent.py</code> as a verifiable worker</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/job-contract.md"><code>docs/job-contract.md</code></a> · last changed 2026-08-25 (e4a7707)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/job-contract.md"><code>docs/job-contract.md</code></a> · last changed 2026-09-04 (c7029e4)</p>
 
 <p><strong>Status: implemented.</strong> <code>--job</code> and the runner-verified gate ship today; see
 <a href="cli.html#declarative-jobs-and-the-acceptance-gate---job">the CLI reference</a> for the flag.</p>
@@ -93,6 +93,11 @@ machine-readable result the caller can branch on.</p>
 <td><code>--no-realpath-cwd</code></td>
 <td>opt out of path canonicalisation</td>
 </tr>
+<tr>
+<td>stop at a refusal</td>
+<td><code>cycle.refusal_max_turns</code> (default 5; <code>refusal_max_turns</code> in the job file)</td>
+<td>a tool that refuses for an ungranted capability starts a bounded window; past it, tool calls are refused and a <code>blocked</code> result is forced</td>
+</tr>
 </tbody>
 </table></div>
 <p>And a typed exit vocabulary, so a supervisor can branch without parsing prose:</p>
@@ -145,6 +150,7 @@ acceptance: &lt;a single executable line&gt;
 timebox_sec: 3600        # wall clock, enforced by --deadline
 env_allow: []            # exact variable names this job needs; default is none
 acceptance_timeout_sec: 300   # how long the runner gives `acceptance`; overrun is a FAILURE
+refusal_max_turns: 5     # turns allowed after a capability refusal before the final result is forced; 0 = off
 result_contract: true    # true = built-in result schema, &quot;schema.json&quot; = that file, false = off
 </code></pre>
 <p>Every field maps to something that already exists except <code>acceptance</code>, <code>env_allow</code>, and the
@@ -185,6 +191,20 @@ generation time at the rate the model <em>actually</em> produces tokens — not 
 <p>One run was measured at <strong>2.3 tokens/second</strong>. A four-site research task with ~25-second fetch
 waits cannot complete in an hour at that rate, and no amount of agent capability repairs
 arithmetic. A timebox smaller than the work is a failure the job author chose.</p>
+<h3 id="a-capability-refusal-is-a-stop-not-a-prompt-to-route-around">A capability refusal is a stop, not a prompt to route around</h3>
+<p>When a tool says the run was never <em>granted</em> something — a missing key, blocked egress, a
+permission, a quota — nothing the run writes can change that. The measured failure was a run
+that met such a refusal at turn 2, wrote two HTTP fetchers of its own, found the same wall from
+another direction, and burned the rest of its timebox with no result.</p>
+<p>So the runner treats the refusal as a fact about the run. The refusing tool's own result carries
+a one-time notice: the capability was not granted, a substitute must not be built, and
+<code>blocked</code> is the required exit if the task cannot proceed. If the run is still issuing tool
+calls <code>refusal_max_turns</code> turns later, tool calls are refused and the final result is forced,
+exactly as the deadline does. A run that then emits no result block gets a synthesized
+<code>blocked</code> record naming the tool, its exit code and the refusing line, so the caller learns
+<em>why</em> rather than merely <em>that</em>.</p>
+<p>Only a tool's own non-zero exit or a network tool's response counts. A file the run <em>read</em>
+that happens to contain the words "permission denied" is a document, not a refusal.</p>
 <h3 id="blocked-is-a-success-of-a-different-kind"><code>blocked</code> is a success of a different kind</h3>
 <p>A run that determines the task cannot be done, and says why, has produced a genuine result. It
 is not a failure and should not be scored as one — otherwise the incentive is to produce

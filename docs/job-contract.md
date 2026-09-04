@@ -38,6 +38,7 @@ These are shipped flags, not proposals. A caller can get most of the contract no
 | machine-readable result | `--result-contract` + `--result-schema file` | forces a final JSON block, validated; refusal to exit without it |
 | determinism | `--temperature` / `--top-p` / `--seed` | pinned generation for reproducible runs |
 | stable cwd | `--no-realpath-cwd` | opt out of path canonicalisation |
+| stop at a refusal | `cycle.refusal_max_turns` (default 5; `refusal_max_turns` in the job file) | a tool that refuses for an ungranted capability starts a bounded window; past it, tool calls are refused and a `blocked` result is forced |
 
 And a typed exit vocabulary, so a supervisor can branch without parsing prose:
 
@@ -100,6 +101,7 @@ acceptance: <a single executable line>
 timebox_sec: 3600        # wall clock, enforced by --deadline
 env_allow: []            # exact variable names this job needs; default is none
 acceptance_timeout_sec: 300   # how long the runner gives `acceptance`; overrun is a FAILURE
+refusal_max_turns: 5     # turns allowed after a capability refusal before the final result is forced; 0 = off
 result_contract: true    # true = built-in result schema, "schema.json" = that file, false = off
 ```
 
@@ -156,6 +158,24 @@ generation time at the rate the model *actually* produces tokens — not the rat
 One run was measured at **2.3 tokens/second**. A four-site research task with ~25-second fetch
 waits cannot complete in an hour at that rate, and no amount of agent capability repairs
 arithmetic. A timebox smaller than the work is a failure the job author chose.
+
+### A capability refusal is a stop, not a prompt to route around
+
+When a tool says the run was never *granted* something — a missing key, blocked egress, a
+permission, a quota — nothing the run writes can change that. The measured failure was a run
+that met such a refusal at turn 2, wrote two HTTP fetchers of its own, found the same wall from
+another direction, and burned the rest of its timebox with no result.
+
+So the runner treats the refusal as a fact about the run. The refusing tool's own result carries
+a one-time notice: the capability was not granted, a substitute must not be built, and
+`blocked` is the required exit if the task cannot proceed. If the run is still issuing tool
+calls `refusal_max_turns` turns later, tool calls are refused and the final result is forced,
+exactly as the deadline does. A run that then emits no result block gets a synthesized
+`blocked` record naming the tool, its exit code and the refusing line, so the caller learns
+*why* rather than merely *that*.
+
+Only a tool's own non-zero exit or a network tool's response counts. A file the run *read*
+that happens to contain the words "permission denied" is a document, not a refusal.
 
 ### `blocked` is a success of a different kind
 
