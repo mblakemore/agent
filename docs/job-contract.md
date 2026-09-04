@@ -99,6 +99,8 @@ acceptance: <a single executable line>
 
 timebox_sec: 3600        # wall clock, enforced by --deadline
 env_allow: []            # exact variable names this job needs; default is none
+acceptance_timeout_sec: 300   # how long the runner gives `acceptance`; overrun is a FAILURE
+result_contract: true    # true = built-in result schema, "schema.json" = that file, false = off
 ```
 
 Every field maps to something that already exists except `acceptance`, `env_allow`, and the
@@ -112,6 +114,20 @@ A failed gate exits `16` (`acceptance`), alongside the existing typed exit codes
 closed: a missing binary, a timeout, or an unparseable command is a failure, never a pass. An
 `acceptance` line that will not parse is refused at launch, because a gate discovered to be dead
 after the run is a run spent for nothing.
+
+**Unknown keys are refused at launch, for the same reason.** A misspelled `acceptence:` is a
+gate that never arms, and a gate that never arms looks exactly like one that passed. The keys
+in the file above are the whole vocabulary; anything else stops the launch and names itself.
+
+**When the run also stopped hard, the cause keeps the exit code.** The gate still runs after a
+deadline (`10`), contract (`11`), context (`12`), memory (`13`) or backend (`15`) stop, but a
+failure then rides in the exit *detail* and on the `AGENT-ACCEPTANCE:` line rather than
+replacing the code. `16` means *the run finished and the artifact is wrong*; a supervisor
+branching on it would retry a run that actually needs a larger timebox or a live backend.
+
+The gate's full output is written to `.agent/acceptance-out.txt` beside the run. The exit line
+carries only its last line, which is where most tools print their verdict — a pointer, not the
+evidence.
 
 ---
 

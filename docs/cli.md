@@ -141,6 +141,8 @@ deliverable: [path/to/thing_the_run_must_produce]
 acceptance: pytest -q tests/test_thing.py     # ONE bare command
 timebox_sec: 3600
 env_allow: [API_TOKEN]
+acceptance_timeout_sec: 300                  # optional; overrun is a failure
+result_contract: true                        # optional; true, false, or a schema path
 ```
 
 `goal`, `deliverable` and `timebox_sec` are folded into `--goal`, `--deliverable` and
@@ -155,9 +157,15 @@ run, so it can check itself before finishing — but satisfying it in prose chan
 It fails closed. A missing binary, a timeout, and a non-zero status are all failures, because
 "the check did not run" and "the check passed" must never render the same to a supervisor. A
 command that will not parse is refused at launch rather than discovered as a dead gate an hour
-later.
+later, and so is an unknown key — a misspelled `acceptance` is a gate that never arms. If the
+run already ended with a typed hard stop (deadline, contract, context, memory, backend), that
+code is kept and the gate's failure is appended to the exit detail; `16` is reserved for a run
+that finished and whose artifact is wrong. The gate's full output goes to
+`.agent/acceptance-out.txt`; the exit line carries its last line.
 
-**`env_allow`** scrubs the environment to the listed names plus what a process needs to run.
+**`env_allow`** scrubs the environment to the listed names plus what a process needs to run
+(the interpreter's own `PYTHON*` variables among them, so a scrub never re-buffers the log a
+supervisor is reading the run through).
 Omitting the key does nothing; `[]` is a real instruction meaning *this job needs no
 inherited variables*, and the two are deliberately distinguishable.
 

@@ -8460,6 +8460,13 @@ run_agent_single.__wrapped__ = _run_agent_single_impl
 
 _JOB_ACCEPTANCE = None      # command string, re-run after the agent exits
 _JOB_PATH = None            # for messages
+_JOB_ACCEPTANCE_TIMEOUT = 300   # seconds; `acceptance_timeout_sec` in the job file overrides it
+# Every top-level key a job file may carry. Anything else is refused at launch: a misspelled
+# `acceptence:` is a gate that never arms, and a gate that never arms is indistinguishable
+# from one that passed. Same class as the unparseable-command refusal in main().
+_JOB_KNOWN_KEYS = frozenset({"goal", "context", "constraints", "deliverable", "acceptance",
+                             "timebox_sec", "env_allow", "acceptance_timeout_sec",
+                             "result_contract"})
 
 
 def _load_job_spec(path):
@@ -8524,16 +8531,49 @@ def _apply_env_allow(allow):
     Absent or unset -> NO-OP. An empty list is meaningful and different: it means this job
     declared that it needs nothing, and the scrub happens. Conflating "not specified" with
     "specified as empty" would silently strip a caller who never opted in.
+
+    The interpreter's own knobs (PYTHON*) always stay. PYTHONUNBUFFERED is how a supervisor's
+    log arrives while the run is still alive; a scrub that strips it re-buffers the very log
+    the run is being read through, which breaks the thing doing the watching. Those variables
+    configure the process, they are not the job's secrets.
     """
     if allow is None:
         return None
     keep = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR", "TERM",
             "PWD", "PYTHONPATH", "PYTHONIOENCODING", "SystemRoot", "COMSPEC"}
     keep.update(str(k) for k in allow)
-    removed = [k for k in list(os.environ) if k not in keep]
+    removed = [k for k in list(os.environ) if k not in keep and not k.startswith("PYTHON")]
     for k in removed:
         os.environ.pop(k, None)
     return removed
+
+
+def _acceptance_parses(cmd):
+    """(ok, message). `bash -n` on the command. A validator that cannot run is itself a
+    refusal, not a traceback: a supervisor reads exit 14 and a reason, never a stack."""
+    try:
+        chk = subprocess.run(["bash", "-n"], input=str(cmd), capture_output=True, text=True)
+    except OSError as e:
+        return False, f"bash is not available to validate the acceptance command ({e})"
+    if chk.returncode != 0:
+        return False, (chk.stderr or "").strip()[:160]
+    return True, ""
+
+
+def _save_acceptance_output(cmd, code, out, path=None):
+    """Keep the gate's full output beside the run. Never raises; returns the path or None.
+
+    The exit line carries one line of it, which is a pointer, not evidence. Whoever asks
+    "why did the gate fail" after the process is gone needs the artifact, not the address.
+    """
+    path = path or os.path.join(".agent", "acceptance-out.txt")
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(f"command: {cmd}\nexit: {code}\n---\n{out}\n")
+        return path
+    except OSError:
+        return None
 
 
 def _run_acceptance(cmd, cwd=None, timeout=300):
@@ -8542,7 +8582,7 @@ def _run_acceptance(cmd, cwd=None, timeout=300):
         proc = subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True,
                               text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return False, None, f"acceptance command exceeded {timeout}s"
+        return False, None, f"acceptance command exceeded {timeout:g}s"
     except OSError as e:
         return False, None, f"acceptance command could not be run: {e}"
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
@@ -8558,15 +8598,29 @@ def _acceptance_verdict():
     """
     if not _JOB_ACCEPTANCE:
         return
-    ok, code, out = _run_acceptance(_JOB_ACCEPTANCE)
-    head = out.splitlines()[0][:200] if out else "(no output)"
+    ok, code, out = _run_acceptance(_JOB_ACCEPTANCE, timeout=_JOB_ACCEPTANCE_TIMEOUT)
+    # The LAST non-empty line: pytest and most tools print a banner first and the verdict last.
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    head = lines[-1].strip()[:200] if lines else "(no output)"
+    saved = _save_acceptance_output(_JOB_ACCEPTANCE, code, out)
+    where = f" [full output: {saved}]" if saved else ""
     if ok:
         print(f"AGENT-ACCEPTANCE: pass — {head}", file=sys.stderr, flush=True)
+        return
+    print(f"AGENT-ACCEPTANCE: FAIL (exit {code}) — {head}{where}", file=sys.stderr, flush=True)
+    # A hard stop already recorded (deadline, contract, context, backend ...) is the CAUSE and
+    # keeps the exit code; the gate's failure is appended to its detail. Exit 16 means "the run
+    # finished and the artifact is wrong" — a supervisor branching on it would retry a run that
+    # actually needs a larger timebox or a live backend. This is the precedence rule
+    # _classify_auto_result already applies: a hard stop beats the generic map.
+    prior = _LAST_EXIT if (_LAST_EXIT and _LAST_EXIT.get("code") not in (None, EXIT_OK)) else None
+    if prior:
+        _set_exit(prior["code"],
+                  f"{prior.get('detail', '')} | acceptance also FAILED (exit {code}): {head}")
         return
     _set_exit(EXIT_ACCEPTANCE,
               f"runner re-ran the acceptance command and it failed "
               f"(exit {code}): {head}")
-    print(f"AGENT-ACCEPTANCE: FAIL (exit {code}) — {head}", file=sys.stderr, flush=True)
 
 
 def main():
@@ -8668,7 +8722,7 @@ def main():
     # cannot express (the gate, the env allowlist). Explicit flags WIN over the file, so a
     # caller can override one field of a shared job without editing it.
     if args.job:
-        global _JOB_ACCEPTANCE, _JOB_PATH
+        global _JOB_ACCEPTANCE, _JOB_PATH, _JOB_ACCEPTANCE_TIMEOUT
         try:
             _spec = _load_job_spec(args.job)
         except (OSError, ValueError, json.JSONDecodeError) as _je:
@@ -8676,22 +8730,50 @@ def main():
         if not isinstance(_spec, dict):
             _exit_now(EXIT_CONFIG, f"--job must contain a mapping, got {type(_spec).__name__}")
         _JOB_PATH = args.job
+        _unknown = sorted(str(k) for k in _spec if str(k) not in _JOB_KNOWN_KEYS)
+        if _unknown:
+            _exit_now(EXIT_CONFIG,
+                      f"--job {_JOB_PATH}: unknown key(s) {', '.join(_unknown)}; known keys are "
+                      f"{', '.join(sorted(_JOB_KNOWN_KEYS))}. A misspelled `acceptance` is a "
+                      f"gate that never arms, so this is refused rather than ignored.")
         if not args.goal and _spec.get("goal"):
             args.goal = str(_spec["goal"]).strip()
         if not args.deliverable and _spec.get("deliverable"):
             args.deliverable = [str(d) for d in _spec["deliverable"]]
-        if args.deadline is None and _spec.get("timebox_sec"):
-            args.deadline = float(_spec["timebox_sec"])
+        # `is not None`, not truthiness: timebox_sec: 0 used to be dropped silently, which armed
+        # nothing while the file said otherwise. It now reaches the same refusal as --deadline 0.
+        if args.deadline is None and _spec.get("timebox_sec") is not None:
+            try:
+                args.deadline = float(_spec["timebox_sec"])
+            except (TypeError, ValueError):
+                _exit_now(EXIT_CONFIG,
+                          f"--job timebox_sec must be a number, got {_spec['timebox_sec']!r}")
+        if _spec.get("acceptance_timeout_sec") is not None:
+            try:
+                _JOB_ACCEPTANCE_TIMEOUT = float(_spec["acceptance_timeout_sec"])
+            except (TypeError, ValueError):
+                _exit_now(EXIT_CONFIG, f"--job acceptance_timeout_sec must be a number, got "
+                                       f"{_spec['acceptance_timeout_sec']!r}")
+            if _JOB_ACCEPTANCE_TIMEOUT <= 0:
+                _exit_now(EXIT_CONFIG, "--job acceptance_timeout_sec must be positive")
+        # result_contract: true arms the built-in schema, a string names a schema file, false
+        # is explicit off. The flags win, as they do for every other field.
+        _rc = _spec.get("result_contract")
+        if _rc is not None and not args.result_schema and not args.result_contract:
+            if isinstance(_rc, str) and _rc.strip():
+                args.result_schema = _rc.strip()
+            elif _rc is True:
+                args.result_contract = True
+            elif _rc is not False:
+                _exit_now(EXIT_CONFIG, f"--job result_contract must be true, false or a schema "
+                                       f"path, got {_rc!r}")
         _JOB_ACCEPTANCE = _spec.get("acceptance") or None
         # An acceptance command that cannot even be PARSED is a dead gate for the whole run,
         # and a dead gate looks exactly like a passing one. Refuse at launch instead.
         if _JOB_ACCEPTANCE:
-            _chk = subprocess.run(["bash", "-n"], input=str(_JOB_ACCEPTANCE),
-                                  capture_output=True, text=True)
-            if _chk.returncode != 0:
-                _exit_now(EXIT_CONFIG,
-                          f"--job acceptance is not a parseable command: "
-                          f"{(_chk.stderr or '').strip()[:160]}")
+            _pok, _pmsg = _acceptance_parses(_JOB_ACCEPTANCE)
+            if not _pok:
+                _exit_now(EXIT_CONFIG, f"--job acceptance is not a parseable command: {_pmsg}")
         # Write the RESOLVED values back before rendering the prompt. The precedence above
         # only reached the flags; the prompt was still rendered from the raw file, so
         # `--job j.yaml --goal X` told the run X through the anchor and the file's goal

@@ -144,6 +144,8 @@ acceptance: &lt;a single executable line&gt;
 
 timebox_sec: 3600        # wall clock, enforced by --deadline
 env_allow: []            # exact variable names this job needs; default is none
+acceptance_timeout_sec: 300   # how long the runner gives `acceptance`; overrun is a FAILURE
+result_contract: true    # true = built-in result schema, &quot;schema.json&quot; = that file, false = off
 </code></pre>
 <p>Every field maps to something that already exists except <code>acceptance</code>, <code>env_allow</code>, and the
 <code>blocked</code> outcome. <code>--job</code> is sugar plus a gate, not a new execution model.</p>
@@ -154,6 +156,17 @@ and no way to tell which one it will be judged against.</p>
 closed: a missing binary, a timeout, or an unparseable command is a failure, never a pass. An
 <code>acceptance</code> line that will not parse is refused at launch, because a gate discovered to be dead
 after the run is a run spent for nothing.</p>
+<p><strong>Unknown keys are refused at launch, for the same reason.</strong> A misspelled <code>acceptence:</code> is a
+gate that never arms, and a gate that never arms looks exactly like one that passed. The keys
+in the file above are the whole vocabulary; anything else stops the launch and names itself.</p>
+<p><strong>When the run also stopped hard, the cause keeps the exit code.</strong> The gate still runs after a
+deadline (<code>10</code>), contract (<code>11</code>), context (<code>12</code>), memory (<code>13</code>) or backend (<code>15</code>) stop, but a
+failure then rides in the exit <em>detail</em> and on the <code>AGENT-ACCEPTANCE:</code> line rather than
+replacing the code. <code>16</code> means <em>the run finished and the artifact is wrong</em>; a supervisor
+branching on it would retry a run that actually needs a larger timebox or a live backend.</p>
+<p>The gate's full output is written to <code>.agent/acceptance-out.txt</code> beside the run. The exit line
+carries only its last line, which is where most tools print their verdict — a pointer, not the
+evidence.</p>
 <hr />
 <h2 id="rules-that-carry-their-reasons">Rules that carry their reasons</h2>
 <p>Each of these is here because a run failed for exactly this reason. They are stated as rules so

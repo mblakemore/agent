@@ -141,3 +141,113 @@ class TestPrecedence:
     def test_prompt_states_that_blocked_is_a_legal_outcome(self):
         """Otherwise the incentive is to produce something rather than report a blocker."""
         assert "blocked" in _job_prompt({"goal": "G"})
+
+
+# ── review tranche (end-to-end review of --job): precedence, schema, diagnostics ───────
+import agent as _agent  # noqa: E402
+
+
+class TestGateExitPrecedence:
+    def test_gate_failure_does_not_mask_a_hard_stop(self, monkeypatch, tmp_path):
+        """A run that hit its deadline and then fails the gate exits DEADLINE, not ACCEPTANCE.
+
+        The supervisor's branch on 10 is "size the timebox"; on 16 it is "the artifact is
+        wrong". Overwriting the cause with the symptom hides the thing the typed vocabulary
+        exists to expose. The file's own rule already says a hard stop beats the generic map;
+        the gate is held to the same rule. Its verdict still lands in the detail.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(_agent, "_JOB_ACCEPTANCE", "false")
+        monkeypatch.setattr(_agent, "_LAST_EXIT", None)
+        _agent._set_exit(_agent.EXIT_DEADLINE, "wall-clock deadline 5s reached at turn 9")
+        _agent._acceptance_verdict()
+        assert _agent._LAST_EXIT["code"] == _agent.EXIT_DEADLINE
+        assert "acceptance" in _agent._LAST_EXIT["detail"].lower()
+
+    def test_gate_failure_on_a_clean_run_is_the_exit(self, monkeypatch, tmp_path):
+        """Control: with no hard stop recorded, the gate's failure IS the exit code."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(_agent, "_JOB_ACCEPTANCE", "false")
+        monkeypatch.setattr(_agent, "_LAST_EXIT", None)
+        _agent._acceptance_verdict()
+        assert _agent._LAST_EXIT["code"] == EXIT_ACCEPTANCE
+
+    def test_gate_pass_after_a_hard_stop_keeps_the_hard_stop(self, monkeypatch, tmp_path):
+        """The artifact being right does not un-happen the deadline."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(_agent, "_JOB_ACCEPTANCE", "true")
+        monkeypatch.setattr(_agent, "_LAST_EXIT", None)
+        _agent._set_exit(_agent.EXIT_DEADLINE, "wall-clock deadline 5s reached at turn 9")
+        _agent._acceptance_verdict()
+        assert _agent._LAST_EXIT["code"] == _agent.EXIT_DEADLINE
+
+
+class TestSchemaRefusals:
+    def test_unknown_top_level_key_is_refused_at_launch(self, tmp_path):
+        """`acceptence:` is a dead gate that looks exactly like a passing one. Same class as
+        the unparseable-command refusal: find it before the run is spent, and name the key."""
+        r = _run(tmp_path, {"goal": "g", "acceptence": "test -f ./never-written.txt"})
+        assert r.returncode == EXIT_CONFIG
+        assert "acceptence" in r.stderr
+
+    def test_non_positive_timebox_is_refused_not_ignored(self, tmp_path):
+        """`--deadline 0` is refused; `timebox_sec: 0` used to be silently dropped."""
+        r = _run(tmp_path, {"goal": "g", "timebox_sec": 0})
+        assert r.returncode == EXIT_CONFIG
+
+    def test_parse_check_without_bash_is_a_config_refusal_not_a_traceback(self, monkeypatch):
+        def _no_bash(*a, **k):
+            raise FileNotFoundError("bash")
+        monkeypatch.setattr(_agent.subprocess, "run", _no_bash)
+        ok, msg = _agent._acceptance_parses("true")
+        assert ok is False
+        assert "bash" in msg
+
+
+class TestGateDiagnostics:
+    def test_failure_line_carries_the_last_line_and_the_output_is_kept(self, tmp_path):
+        """pytest and most tools put the verdict on the LAST line; the first is a banner.
+        And 200 chars of one line is not the evidence — the full output goes to a file."""
+        r = _run(tmp_path, {"goal": "g",
+                            "acceptance": "printf 'banner line\\nFAILED: the reason\\n'; exit 3"})
+        assert r.returncode == EXIT_ACCEPTANCE
+        assert "FAILED: the reason" in r.stderr
+        saved = tmp_path / ".agent" / "acceptance-out.txt"
+        assert saved.exists()
+        body = saved.read_text(encoding="utf-8")
+        assert "banner line" in body and "FAILED: the reason" in body and "exit: 3" in body
+
+    def test_acceptance_timeout_sec_is_a_job_field(self, tmp_path):
+        r = _run(tmp_path, {"goal": "g", "acceptance": "sleep 5", "acceptance_timeout_sec": 1})
+        assert r.returncode == EXIT_ACCEPTANCE
+        assert "exceeded 1s" in r.stderr
+
+
+class TestResultContractField:
+    def test_result_contract_true_in_the_file_arms_the_contract(self, tmp_path):
+        """Without the contract, --result-file gets the raw reply byte-for-byte; with it, the
+        file is the validated (or synthesized) record. The file shape is the discriminator."""
+        out = tmp_path / "result.json"
+        r = _run(tmp_path, {"goal": "g", "result_contract": True}, "--result-file", str(out))
+        assert r.returncode in (0, _agent.EXIT_CONTRACT)
+        data = json.loads(out.read_text(encoding="utf-8"))
+        assert data.get("contract") == 1
+
+    def test_flag_beats_file_for_the_schema(self, tmp_path):
+        schema = tmp_path / "s.json"
+        schema.write_text('{"type": "object"}', encoding="utf-8")
+        out = tmp_path / "result.json"
+        r = _run(tmp_path, {"goal": "g", "result_contract": "does-not-exist.json"},
+                 "--result-schema", str(schema), "--result-file", str(out))
+        assert r.returncode != EXIT_CONFIG
+
+
+class TestEnvAllowKeepsTheInterpreterKnobs:
+    def test_python_runtime_variables_survive_the_scrub(self, tmp_path):
+        """A supervisor reads the run through its log. PYTHONUNBUFFERED is how that log arrives
+        while the run is alive; a scrub that strips it re-buffers the very thing being watched.
+        The interpreter's own knobs are 'what a process needs to run', not job secrets."""
+        r = _run(tmp_path, {"goal": "g", "acceptance": 'test "$PYTHONUNBUFFERED" = "1"',
+                            "env_allow": ["AGENT_FAKE_BACKEND"]},
+                 env={"PYTHONUNBUFFERED": "1"})
+        assert r.returncode == 0

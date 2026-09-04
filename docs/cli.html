@@ -266,6 +266,8 @@ deliverable: [path/to/thing_the_run_must_produce]
 acceptance: pytest -q tests/test_thing.py     # ONE bare command
 timebox_sec: 3600
 env_allow: [API_TOKEN]
+acceptance_timeout_sec: 300                  # optional; overrun is a failure
+result_contract: true                        # optional; true, false, or a schema path
 </code></pre>
 <p><code>goal</code>, <code>deliverable</code> and <code>timebox_sec</code> are folded into <code>--goal</code>, <code>--deliverable</code> and
 <code>--deadline</code>; an explicit flag on the command line overrides the file, so a shared job can be
@@ -277,8 +279,14 @@ run, so it can check itself before finishing — but satisfying it in prose chan
 <p>It fails closed. A missing binary, a timeout, and a non-zero status are all failures, because
 "the check did not run" and "the check passed" must never render the same to a supervisor. A
 command that will not parse is refused at launch rather than discovered as a dead gate an hour
-later.</p>
-<p><strong><code>env_allow</code></strong> scrubs the environment to the listed names plus what a process needs to run.
+later, and so is an unknown key — a misspelled <code>acceptance</code> is a gate that never arms. If the
+run already ended with a typed hard stop (deadline, contract, context, memory, backend), that
+code is kept and the gate's failure is appended to the exit detail; <code>16</code> is reserved for a run
+that finished and whose artifact is wrong. The gate's full output goes to
+<code>.agent/acceptance-out.txt</code>; the exit line carries its last line.</p>
+<p><strong><code>env_allow</code></strong> scrubs the environment to the listed names plus what a process needs to run
+(the interpreter's own <code>PYTHON*</code> variables among them, so a scrub never re-buffers the log a
+supervisor is reading the run through).
 Omitting the key does nothing; <code>[]</code> is a real instruction meaning <em>this job needs no
 inherited variables</em>, and the two are deliberately distinguishable.</p>
 <h3 id="claude-code-gateway-cc">Claude Code gateway (<code>-cc</code>)</h3>

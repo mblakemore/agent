@@ -88,13 +88,25 @@ def cycle_cfg():
     _agent._LAST_EXIT = None
 
 
-def _system_texts(mock_llm):
+def _texts(mock_llm, role):
     out = []
     for call in mock_llm.call_args_list:
         for m in call.kwargs["json"]["messages"]:
-            if m.get("role") == "system":
+            if m.get("role") == role:
                 out.append(str(m.get("content")))
     return out
+
+
+def _system_texts(mock_llm):
+    return _texts(mock_llm, "system")
+
+
+def _notice_texts(mock_llm):
+    """Mid-history notices (the F7 repeat-read nudge among them) are injected with the USER
+    role, because strict chat templates reject a system message anywhere but first. The
+    repeat-read tests filtered on role=system from the day they were written and so could
+    never see the nudge: the "nudges once" assertion had never passed. Look where it lands."""
+    return _texts(mock_llm, "user")
 
 
 class TestRepeatReadLoop:
@@ -108,7 +120,7 @@ class TestRepeatReadLoop:
         with patch("agent._NUDGE_ENABLED", False), \
              patch.dict("agent.MAP_FN", {"read_file": lambda **kw: "contents"}):
             run_agent_single(history, {"text": "", "up_to": 0}, [], MagicMock())
-        nudges = [s for s in _system_texts(mock_llm) if "same read" in s]
+        nudges = [s for s in _notice_texts(mock_llm) if "same read" in s]
         assert len(nudges) == 1, "one nudge, not a nag"
 
     @patch("agent._emit")
@@ -120,6 +132,7 @@ class TestRepeatReadLoop:
         with patch("agent._NUDGE_ENABLED", False), \
              patch.dict("agent.MAP_FN", {"read_file": lambda **kw: "contents"}):
             run_agent_single(history, {"text": "", "up_to": 0}, [], MagicMock())
+        assert not [s for s in _notice_texts(mock_llm) if "same read" in s]
         assert not [s for s in _system_texts(mock_llm) if "same read" in s]
 
 
