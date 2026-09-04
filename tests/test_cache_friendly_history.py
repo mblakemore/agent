@@ -133,3 +133,35 @@ class TestWiring:
             _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], MagicMock())
         tools = [m for m in history if m.get("role") == "tool"]
         assert any(m["content"].startswith("[compressed") for m in tools), "the pass fires under pressure"
+
+
+class TestDynamicLinesTrailTheRequest:
+    """The per-request clock must not be the FIRST thing in the prompt. A prompt-caching server
+    matches the longest common prefix; a second-resolution timestamp at position 0 makes that
+    prefix empty on every request, whatever the history did. Static lines (working directory)
+    stay in the leading system message; the clock and the nudges ride at the END."""
+
+    @patch("agent._emit")
+    @patch("agent._llm_request")
+    def test_clock_is_in_the_last_message_not_the_first(self, mock_llm, _emit, ctx_cfg):
+        mock_llm.side_effect = [_resp(tool_calls=[_exec(1)]), _resp(content="final")]
+        history = [{"role": "user", "content": "x"}]
+        with patch("agent._NUDGE_ENABLED", False), patch.dict("agent.MAP_FN", {"exec_command": lambda **kw: "ok"}):
+            _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], MagicMock())
+        assert mock_llm.call_count == 2
+        for call in mock_llm.call_args_list:
+            msgs = call.kwargs["json"]["messages"]
+            assert "Current time" not in str(msgs[0].get("content")), "the clock must not lead the prompt"
+            assert "Current time" in str(msgs[-1].get("content")), "the clock rides at the end"
+            assert msgs[-1]["role"] == "user", "a trailing system message breaks strict templates"
+            assert "Working directory" in str(msgs[0].get("content")), "static lines stay in the head"
+
+    @patch("agent._emit")
+    @patch("agent._llm_request")
+    def test_head_of_the_request_is_identical_across_turns(self, mock_llm, _emit, ctx_cfg):
+        mock_llm.side_effect = [_resp(tool_calls=[_exec(1)]), _resp(tool_calls=[_exec(2)]), _resp(content="final")]
+        history = [{"role": "user", "content": "x"}]
+        with patch("agent._NUDGE_ENABLED", False), patch.dict("agent.MAP_FN", {"exec_command": lambda **kw: "ok"}):
+            _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], MagicMock())
+        heads = [json.dumps(c.kwargs["json"]["messages"][0], sort_keys=True) for c in mock_llm.call_args_list]
+        assert len(set(heads)) == 1, "the leading message is the cache prefix and must not change turn to turn"

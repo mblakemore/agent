@@ -6286,10 +6286,22 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 telemetry.record_patch_event("repeat_read_nudge", kind="fired")
                 _repeat_msg = None
 
+            # PROMPT-CACHE DISCIPLINE (measured on a live run): the leading system message used to
+            # begin with a second-resolution clock, so the FIRST tokens of every request differed
+            # and a prompt-caching server matched a near-empty prefix (15%) on every turn — ~60 s
+            # of prefill per turn at 40k tokens, whatever the history did. The head of the request
+            # must be byte-stable turn to turn: only lines that do not change within a run stay
+            # there. Everything per-turn — the clock, the phase checkpoint, the nudges — rides as
+            # a trailing USER-role note (strict chat templates reject a non-leading system
+            # message, the c0b2660 lesson), so the whole history remains the cached prefix.
+            _static_lines = [ln for ln in _system_lines
+                             if ln.startswith("Working directory:") or ln.startswith("Tool-selection guidance:")]
+            _dynamic_lines = [ln for ln in _system_lines if ln not in _static_lines]
             _outgoing_messages = [
-                {"role": "system",
-                 "content": "\n\n".join(_system_lines)}
-            ] + messages_to_send
+                {"role": "system", "content": "\n\n".join(_static_lines)}
+            ] + messages_to_send + ([
+                {"role": "user", "content": "[Runtime note — from the framework, not the user]\n" + "\n\n".join(_dynamic_lines)}
+            ] if _dynamic_lines else [])
 
             # Unlock end_cycle after the first nudge so the agent can exit cleanly
             # without calling it before doing any real work.
