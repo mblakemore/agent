@@ -45,6 +45,28 @@ def _expected_def_line(path: str, name: str) -> int:
     raise AssertionError(f"{name} not found in {path}")
 
 
+class _private_cwd:
+    """Run a search that defaults to path='.' from a private directory.
+
+    The conftest routes most classes here to cwd=/tmp, so a search with no
+    path walked EVERY Python file under /tmp on the host (tens of seconds per
+    test, and a runtime that depended on what other programs had left there).
+    These assertions are about argument coercion, not about the tree, so the
+    directory holds one probe module defining ``fn``.
+    """
+
+    def __enter__(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old = os.getcwd()
+        Path(self._tmp.name, "probe.py").write_text("def fn():\n    return 1\n")
+        os.chdir(self._tmp.name)
+        return self
+
+    def __exit__(self, *exc):
+        os.chdir(self._old)
+        self._tmp.cleanup()
+        return False
+
 class TestFindSymbolAC1(unittest.TestCase):
     """AC1: find_symbol('_classify_turn_complexity', path='agent.py', mode='definition')
     returns exactly 1 match at the function's live definition line with kind='function'.
@@ -997,7 +1019,8 @@ class TestFindSymbolNonStringGuards(unittest.TestCase):
 
     def test_path_none_coerces_to_dot(self):
         """path=None must coerce to '.' (the default), not return a type error (#954)."""
-        result = find_symbol(name="fn", path=None)
+        with _private_cwd():
+            result = find_symbol(name="fn", path=None)
         self.assertIsInstance(result, list)
         if result:
             self.assertNotIn("error", result[0], f"path=None should not error: {result[0]}")
@@ -1424,7 +1447,8 @@ class TestFindSymbolPathTypeNameQuoting(unittest.TestCase):
 
     def test_none_path_no_longer_errors(self):
         """path=None now coerces to '.' rather than returning a type error (#954)."""
-        result = find_symbol("ZZZNOMATCH_954", path=None)
+        with _private_cwd():
+            result = find_symbol("ZZZNOMATCH_954", path=None)
         self.assertIsInstance(result, list)
         if result:
             self.assertNotIn("error", result[0], f"path=None should not error: {result[0]}")
@@ -1444,7 +1468,8 @@ class TestFindSymbolModeKindTypeValidation(unittest.TestCase):
 
     def test_none_mode_treated_as_definition(self):
         """mode=None must coerce to 'definition' (the default), not return a type error (#947)."""
-        result = find_symbol("fn", mode=None)
+        with _private_cwd():
+            result = find_symbol("fn", mode=None)
         self.assertIsInstance(result, list)
         if result:
             self.assertNotIn("error", result[0], f"mode=None should not error: {result[0]}")
@@ -1460,7 +1485,8 @@ class TestFindSymbolModeKindTypeValidation(unittest.TestCase):
 
     def test_none_kind_is_valid(self):
         """kind=None must be accepted (means no filter) (#923)."""
-        result = find_symbol("fn", kind=None)
+        with _private_cwd():
+            result = find_symbol("fn", kind=None)
         self.assertIsInstance(result, list)
         if result and "error" in result[0]:
             self.assertNotIn("kind", result[0]["error"].lower(), (
@@ -1469,7 +1495,8 @@ class TestFindSymbolModeKindTypeValidation(unittest.TestCase):
 
     def test_string_mode_still_works(self):
         """Valid string mode must not be broken by the new guard (#923)."""
-        result = find_symbol("fn", mode="both")
+        with _private_cwd():
+            result = find_symbol("fn", mode="both")
         self.assertIsInstance(result, list)
         if result:
             self.assertNotIn("mode must be a string", str(result))
