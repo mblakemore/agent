@@ -743,7 +743,7 @@ EXIT_BACKEND = 15       # backend unreachable / failed after retries
 EXIT_ACCEPTANCE = 16    # --job: the RUNNER re-ran the acceptance command and it failed
 _EXIT_NAMES = {EXIT_OK: "completed", EXIT_ERROR: "error", EXIT_DEADLINE: "deadline",
                EXIT_CONTRACT: "contract", EXIT_CONTEXT: "context", EXIT_MEMORY: "memory",
-               EXIT_CONFIG: "config", EXIT_BACKEND: "backend"}
+               EXIT_CONFIG: "config", EXIT_BACKEND: "backend", EXIT_ACCEPTANCE: "acceptance"}
 # Decided from argv at import so import-time failures (backend build) can already classify.
 _AUTO_MODE = any(a in ("-a", "--auto", "-r", "--repeat") for a in sys.argv[1:])
 _LAST_EXIT = None           # {"code", "name", "detail"} — set by the terminal path that knows why
@@ -817,8 +817,17 @@ def _classify_tool_refusal(func_name, result_str):
     if func_name == "exec_command":
         m = re.search(r"\bexit=(-?\d+)", text[:300])
         code = int(m.group(1)) if m else None
-        if code is None or code == 0:
-            return None
+        if code == 0 or code is None:
+            # The session exit is the status of the LAST command in the line. Models habitually
+            # append `; echo "EXIT_CODE=$?"` — which makes the shell exit 0 and prints the real
+            # status one line down. Measured live: a refusal with exit 2 went unclassified for
+            # exactly this reason. Read the echoed status when the session's is 0.
+            echoed = re.findall(r"\b(?:EXIT_CODE|EXIT|exit code|exit status|rc|status)\s*[=:]\s*(\d+)\b",
+                                text, re.I)
+            if echoed and int(echoed[-1]) != 0:
+                code = int(echoed[-1])
+            else:
+                return None
     elif func_name in _REFUSAL_TEXT_TOOLS:
         code = None
     else:

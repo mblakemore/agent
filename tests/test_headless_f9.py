@@ -48,6 +48,18 @@ class TestClassifier:
     def test_other_capability_shapes(self, text):
         assert _classify_tool_refusal("exec_command", text) is not None
 
+    def test_echoed_status_counts_when_the_session_exit_is_zero(self):
+        """Measured live: the model appended `; echo "EXIT_CODE=$?"`, the shell exited 0, and a
+        refusal with exit 2 went unclassified. The echoed status is the tool's status."""
+        text = ("[session: s1] exit=0\n"
+                "web-scrape: REFUSED — SOME_API_KEY not in environment (the job must grant it)\n"
+                "EXIT_CODE=2")
+        code, head = _classify_tool_refusal("exec_command", text)
+        assert code == 2 and "REFUSED" in head
+
+    def test_echoed_zero_status_is_still_not_a_refusal(self):
+        assert _classify_tool_refusal("exec_command", "[session: s1] exit=0\nREFUSED by policy\nEXIT_CODE=0") is None
+
     def test_network_tool_is_classified_on_text(self):
         assert _classify_tool_refusal("web_fetch", "HTTP 403 Forbidden for https://x") is not None
         assert _classify_tool_refusal("web_fetch", "<html>ok</html>") is None

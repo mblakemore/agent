@@ -82,9 +82,14 @@ class TestExitStatus:
         assert _agent._exit_line({"name": "completed", "detail": ""}) == "AGENT-EXIT: completed"
 
     def test_set_exit_names_every_code(self):
-        for code in (0, 1, 10, 11, 12, 13, 14, 15):
+        # Every typed code, derived from the constants rather than listed by hand: a hand list
+        # missed EXIT_ACCEPTANCE (16) and the exit line named an acceptance failure "error".
+        codes = sorted(v for k, v in vars(_agent).items() if k.startswith("EXIT_") and isinstance(v, int))
+        assert 16 in codes
+        for code in codes:
             info = _agent._set_exit(code, "d")
             assert info["name"] in _agent._EXIT_NAMES.values() and info["code"] == code
+            assert info["name"] != "error" or code == _agent.EXIT_ERROR, f"code {code} has no name"
         _agent._LAST_EXIT = None
 
     @pytest.mark.parametrize("auto,expected_rc", [(True, _agent.EXIT_CONFIG), (False, 2)])
