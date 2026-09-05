@@ -13,7 +13,7 @@ import pytest
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _REPO)
-from agent import (EXIT_ACCEPTANCE, EXIT_CONFIG, _apply_env_allow,  # noqa: E402
+from agent import (EXIT_ACCEPTANCE, EXIT_CONFIG, EXIT_CONTRACT, _apply_env_allow,  # noqa: E402
                    _job_prompt, _load_job_spec, _run_acceptance)
 
 _AGENT = os.path.join(_REPO, "agent.py")
@@ -314,3 +314,32 @@ class TestBareStringListFields:
         p = tmp_path / "job.json"
         p.write_text(json.dumps({"goal": "G", "deliverable": ["a.txt", "b.txt"]}), encoding="utf-8")
         assert _load_job_spec(str(p))["deliverable"] == ["a.txt", "b.txt"]
+
+
+class TestJobExitWithoutAutoFlag:
+    """Live run 2026-09-05: --job with no -a, acceptance failed, the process exited 0 with no
+    AGENT-EXIT line and result.json said completed. The auto-mode gate is read from the raw argv
+    at import time, so --job must be in that scan; and the result file's exit block, written
+    before the gate runs, must be refreshed to the verdict."""
+
+    def _run(self, tmp_path, spec):
+        p = tmp_path / "job.json"
+        p.write_text(json.dumps(spec), encoding="utf-8")
+        e = dict(os.environ, AGENT_FAKE_BACKEND="1")
+        return subprocess.run([sys.executable, _AGENT, "--job", str(p), "--result-file", str(tmp_path / "r.json"), "go"],
+                              cwd=str(tmp_path), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180, env=e)
+
+    def test_contract_off_failing_acceptance_exits_16(self, tmp_path):
+        r = self._run(tmp_path, {"goal": "G", "acceptance": "test -f ./never-written.txt"})
+        assert r.returncode == EXIT_ACCEPTANCE, (r.stdout + r.stderr)[-600:]
+        assert "AGENT-EXIT: acceptance" in r.stderr
+
+    def test_contract_on_keeps_the_hard_stop_and_the_file_agrees(self, tmp_path):
+        """The fake backend emits no result block, so the synthesized contract failure is the
+        CAUSE and keeps its code (precedence rule); the acceptance failure is appended, and the
+        result file's exit block must carry the same code as the process."""
+        r = self._run(tmp_path, {"goal": "G", "acceptance": "test -f ./never-written.txt", "result_contract": True})
+        assert r.returncode == EXIT_CONTRACT, (r.stdout + r.stderr)[-600:]
+        assert "AGENT-EXIT: contract" in r.stderr and "acceptance also FAILED" in r.stderr
+        obj = json.loads((tmp_path / "r.json").read_text(encoding="utf-8"))
+        assert obj.get("exit", {}).get("code") == r.returncode, obj.get("exit")

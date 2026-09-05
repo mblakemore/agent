@@ -745,7 +745,10 @@ _EXIT_NAMES = {EXIT_OK: "completed", EXIT_ERROR: "error", EXIT_DEADLINE: "deadli
                EXIT_CONTRACT: "contract", EXIT_CONTEXT: "context", EXIT_MEMORY: "memory",
                EXIT_CONFIG: "config", EXIT_BACKEND: "backend", EXIT_ACCEPTANCE: "acceptance"}
 # Decided from argv at import so import-time failures (backend build) can already classify.
-_AUTO_MODE = any(a in ("-a", "--auto", "-r", "--repeat") for a in sys.argv[1:])
+# --job is auto mode too (a job is a run that ENDS): the flag-level implication lives in main(),
+# but this gate is read from the raw argv at import time, so it has to know as well. A live job
+# with a failing acceptance exited 0 and printed no AGENT-EXIT line because only this scan gated it.
+_AUTO_MODE = any(a in ("-a", "--auto", "-r", "--repeat", "--job") for a in sys.argv[1:])
 _LAST_EXIT = None           # {"code", "name", "detail"} — set by the terminal path that knows why
 _LAST_ERROR_KIND = None     # "context" | "backend" — set beside the run loop's `return "error"`
 
@@ -8860,6 +8863,24 @@ def _run_acceptance(cmd, cwd=None, timeout=300):
     return proc.returncode == 0, proc.returncode, out
 
 
+def _refresh_result_exit(result_file, info):
+    """Rewrite the `exit` block of an already-written JSON result file so it matches the final
+    verdict. Raw (non-JSON) result files are left alone; a file that cannot be parsed is not
+    a result file this code owns."""
+    if not result_file or not info or not os.path.exists(result_file):
+        return
+    try:
+        with open(result_file, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        if not isinstance(obj, dict):
+            return
+        obj["exit"] = dict(info)
+        with open(result_file, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=2)
+    except (OSError, ValueError):
+        return
+
+
 def _acceptance_verdict():
     """Run the gate and set the process exit accordingly. Called once, after the run ends.
 
@@ -9179,6 +9200,10 @@ def main():
 
     if _AUTO_MODE:
         info = _LAST_EXIT or _set_exit(EXIT_OK, "")
+        # The result file was written on the completion path BEFORE the gate ran, so its `exit`
+        # block said "completed" on a run whose acceptance then failed. A supervisor reading the
+        # file and one reading the process status must see the same verdict.
+        _refresh_result_exit(getattr(args, "result_file", None), info)
         print(_exit_line(info), file=sys.stderr, flush=True)
         if info["code"] != EXIT_OK:
             sys.exit(info["code"])
