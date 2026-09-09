@@ -156,7 +156,7 @@ with no block at all. When armed, the contract instruction is injected as a syst
 and the final message must end with a fenced <code>``json block that parses and validates against
 the schema (built-in default:</code>contract: 1<code>,</code>status: done|failed|blocked|cannot-tell<code>,</code>summary<code>, optional</code>artifacts<code>,</code>verify_output<code>,</code>scope<code>). The key</code>"contract": 1<code>is the
 discriminator — a block without it is prose. Missing or invalid at exit → a correction is
-injected and the run continues, bounded by</code>cycle.result_contract_max_blocks<code _failed_="&quot;failed&quot;," _status_:="&quot;status&quot;:" _summary_:="&quot;summary&quot;:" _wzxhzdk:5_="&quot;<no valid result block emitted: …>&quot;">(default 2);
+injected and the run continues, bounded by</code>cycle.result_contract_max_blocks<code>&quot;">(default 2);
 still missing at the bound, or at the deadline's hard stop, the run exits and the result file
 receives a synthesized</code><code>record, so the caller **always** gets valid JSON; the process exits</code>11<code>unless a harder stop
 already owns the code. Two valid blocks → last wins. The exit classification is folded into
