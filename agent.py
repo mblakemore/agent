@@ -1329,6 +1329,7 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
     global _main_backend, _summary_backend
 
     defaults = {"main": "claude-v4.6-opus", "summary": "claude-v4.5-haiku"}
+    _AICOMMONS_DEFAULT_MODELS = {"main": "claude-v5.5-opus", "summary": "claude-v5.5-haiku"}
 
     # Model IDs the Bedrock gateway accepts. An existing model that doesn't
     # match one of these prefixes was set for the OTHER backend kind (likely
@@ -1345,6 +1346,10 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
             return
         entry = _config["backends"].setdefault(role, {})
         entry["kind"] = kind
+        if kind == "aicommons":
+            existing = entry.get("model", "")
+            if not existing.startswith(_bedrock_prefixes):
+                entry["model"] = _AICOMMONS_DEFAULT_MODELS[role]
         if kind == "bedrock":
             existing = entry.get("model", "")
             if not existing or not existing.startswith(_bedrock_prefixes):
@@ -1723,7 +1728,8 @@ def _calculate_retry_delay(attempt):
 # ``ContextOverflowError`` lives in ``llm_backend`` post-refactor. The alias
 # here keeps ``from agent import ContextOverflowError`` working unchanged for
 # existing tests and callers.
-from llm_backend import BedrockBudgetExceeded, ContextOverflowError
+from llm_backend import BedrockBudgetExceeded, ConfigError, ContextOverflowError
+from anthropic_wire import THINKING_KEY as _THINKING_KEY
 
 
 _LLM_REQUEST_TIMEOUT = 300  # 5 minutes per request
@@ -1830,11 +1836,17 @@ def _trigger_failover(log, backend_type, cause=None):
                 backend_type, other_role, fallback_cfg.get("kind", "?"),
             )
             return False
-        if isinstance(cause, BedrockBudgetExceeded) and \
-                fallback_cfg.get("kind") == "bedrock":
+        # AI Commons quota is per USER, not per model: failing over to another
+        # model on the same gateway re-trips the same allowance.
+        same_quota = fallback_cfg.get("kind") == "bedrock" or (
+            fallback_cfg.get("kind") == "aicommons"
+            and getattr(failing, "kind", None) == "aicommons"
+            and (fallback_cfg.get("base_url") or getattr(failing, "base_url", ""))
+            == getattr(failing, "base_url", ""))
+        if isinstance(cause, BedrockBudgetExceeded) and same_quota:
             log.error(
-                "Failover skipped: %s daily cap tripped and the fallback is "
-                "also bedrock — swapping would re-trip (or evade) the cap",
+                "Failover skipped: %s budget/quota tripped and the fallback "
+                "draws on the same one — swapping would re-trip (or evade) it",
                 backend_type,
             )
             return False
@@ -1932,6 +1944,16 @@ def _iter_stream_chunks(response):
     else:
         for chunk in response:
             yield chunk
+
+
+def _tool_args_complete(tool_call):
+    """True when a streamed tool call's arguments parse as JSON (empty counts as {})."""
+    args = (tool_call.get("function") or {}).get("arguments") or "{}"
+    try:
+        json.loads(args)
+        return True
+    except (json.JSONDecodeError, TypeError):
+        return False
 
 
 def _safe_close(response):
@@ -6451,6 +6473,15 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # Force a resummarize with the tighter window so dropped messages aren't lost
                     _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True)
                 continue
+            except (BedrockBudgetExceeded, ConfigError) as e:
+                # Not retryable within this run (failover already declined or failed):
+                # a spent quota or a rejected key. End as a backend error so --job
+                # still writes its result file and AGENT-EXIT line (exit 15).
+                log.error("Backend refused the request: %s: %s", type(e).__name__, e)
+                telemetry.record_error(kind=type(e).__name__)
+                _emit("on_error", f"Error calling server: {e}")
+                _note_error_kind("backend")
+                return "error"
             except requests.exceptions.RequestException as e:
                 err_str = str(e)
                 if "504" in err_str and _gateway_timeout_recovery_count < _GATEWAY_TIMEOUT_RECOVERY_MAX:
@@ -6515,6 +6546,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         )
         _text_cap_exceeded = False
         _text_cap_limit_fired = _MAX_TEXT_RESPONSE_CHARS  # updated when post-tool cap fires
+        _finish_reason = None      # the stream's own finish_reason, when it sends one
+        _wall_cut = False          # the 600 s wall broke the stream off mid-response
+        _turn_thinking = None      # Anthropic thinking blocks to send back with this turn
         # Stall detection: per a field audit, long latencies with zero
         # deltas (e.g. session_20260513_010952.log Turn 14: latency_ms=78377
         # deltas=0) are strongly correlated with corrupted/garbled output.
@@ -6567,6 +6601,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     if time.monotonic() > _stream_deadline:
                         log.warning("Streaming wall-clock deadline exceeded (600s) — aborting response")
                         _safe_close(response)
+                        _wall_cut = True
                         break
                     # Stall guard: abort fast if no deltas arrive within the
                     # configured timeout. Cuts the 78-second-to-corrupted-
@@ -6653,10 +6688,14 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         if _u_out:
                             telemetry.record_tokens(_u_model, "completion", int(_u_out), backend=_u_backend)
                             _turn_out_tokens += int(_u_out)
+                    if isinstance(chunk, dict) and chunk.get(_THINKING_KEY):
+                        _turn_thinking = chunk[_THINKING_KEY]
                     choices = chunk.get("choices")
                     if not choices:
                         continue  # skip usage/stats chunks
-                    delta = choices[0].get("delta", {})
+                    if choices[0].get("finish_reason"):
+                        _finish_reason = choices[0]["finish_reason"]
+                    delta = choices[0].get("delta", {}) or {}
 
                     # Thinking deltas (reasoning_content — e.g. Qwen3 on
                     # llama-server --reasoning, or any enable_thinking stream)
@@ -6810,10 +6849,33 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         _emit("on_assistant_text", full_content)
         tool_calls = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)] if tool_calls_by_index else []
 
+        # A response cut off by max_tokens or the wall leaves its last tool call with
+        # half-written arguments. Executing it would act on a fragment, and storing it
+        # would poison every later request (aicommons-integration.md §7 H4). Drop it
+        # and tell the model why, so it re-issues the work in smaller pieces.
+        _cut_tool_names = []
+        if tool_calls and (_finish_reason == "length" or _wall_cut):
+            _kept = [tc for tc in tool_calls if _tool_args_complete(tc)]
+            _cut_tool_names = [tc["function"].get("name") or "?" for tc in tool_calls if tc not in _kept]
+            if _cut_tool_names:
+                log.warning("Response cut off (%s) mid tool call — dropping %d incomplete call(s): %s",
+                            "wall" if _wall_cut else "max_tokens", len(_cut_tool_names), _cut_tool_names)
+                tool_calls = _kept
+
         assistant_msg = {"role": "assistant", "content": full_content}
         if tool_calls:
             assistant_msg["tool_calls"] = tool_calls
+        if _turn_thinking and tool_calls:
+            # Bedrock needs this turn's signed thinking before its tool_use when the
+            # turn is sent back; other backends ignore the key.
+            assistant_msg[_THINKING_KEY] = _turn_thinking
         conversation_history.append(assistant_msg)
+        if _cut_tool_names:
+            conversation_history.append({"role": "user", "content": (
+                f"[SYSTEM: your response was cut off before the arguments of "
+                f"{', '.join(_cut_tool_names)} were complete, so that call was NOT run. "
+                f"Split the work: write a large file in several smaller calls (create it, "
+                f"then append or edit in sections), each well under the output limit.]")})
 
         # Text-cap correction: inject a user message so the model understands
         # it was cut off and must use a tool next.  This fires AFTER the
@@ -8951,12 +9013,12 @@ def main():
                              "running interactively and falls back to plain input() automatically "
                              "if `prompt_toolkit` isn't installed.")
     parser.add_argument("--backend-main", dest="backend_main",
-                        choices=["llamacpp", "bedrock", "foundry"], default=None,
+                        choices=["llamacpp", "bedrock", "foundry", "aicommons"], default=None,
                         help="Override the main backend kind (see plan/bedrock-integration.md).")
     parser.add_argument("--result-file", dest="result_file",
                         help="Write the final assistant response to this file (for subagent use).")
     parser.add_argument("--backend-summary", dest="backend_summary",
-                        choices=["llamacpp", "bedrock", "foundry"], default=None,
+                        choices=["llamacpp", "bedrock", "foundry", "aicommons"], default=None,
                         help="Override the summary backend kind.")
     parser.add_argument("-cc", dest="cc", nargs="?", const="127.0.0.1:8788", default=None,
                         metavar="HOST:PORT",

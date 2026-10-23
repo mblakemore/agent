@@ -5,8 +5,9 @@ implements the backend surface: a ``Backend`` Protocol, a concrete
 ``LlamacppBackend`` wrapping the llama.cpp / OpenAI-compatible HTTP transport,
 a ``BedrockBackend`` (AWS Bedrock Chat gateway, with spend tracking and
 credential rotation via ``bedrock_store``), a ``FoundryBackend``
-(Anthropic-native), and a ``build_backend(cfg)`` factory dispatching on
-``cfg["kind"]``. (WS8.6: an earlier revision of this docstring claimed
+(Anthropic-native), an ``AICommonsBackend`` (UCSB AI Commons over the
+Anthropic Messages API; see aicommons-integration.md), and a
+``build_backend(cfg)`` factory dispatching on ``cfg["kind"]``. (WS8.6: an earlier revision of this docstring claimed
 Bedrock was unimplemented — stale since the Phase-2 port landed.)
 
 Key decisions reflected in this module (see plan § 24 decision log):
@@ -67,13 +68,30 @@ class ConfigError(Exception):
     pass
 
 
-class BedrockBudgetExceeded(Exception):
-    """Raised when the daily Bedrock spend cap has been exceeded.
-
-    See plan § 6.5 and § 17 K14.
-    """
+class BudgetExceeded(Exception):
+    """Raised when a spend cap or quota has been exceeded: the daily Bedrock
+    spend cap (plan § 6.5 / § 17 K14) or an AI Commons monthly allowance."""
 
     pass
+
+
+# The pre-AI-Commons name; failover and callers still catch it under this name.
+BedrockBudgetExceeded = BudgetExceeded
+
+
+class BackendUnavailableError(requests.exceptions.ConnectionError):
+    """A transient backend failure that outlived the transport's own retries
+    (throttling, overload, 5xx, a dropped connection). Subclasses the requests
+    error so the agent's failover and request-error paths handle it unchanged."""
+
+
+class GatewayTimeoutError(requests.exceptions.HTTPError):
+    """A gateway 504 (response too slow to produce). Its message starts with
+    "504" so the agent's size-reduction-hint path recognises it."""
+
+
+class BackendRequestError(requests.exceptions.HTTPError):
+    """A request the backend rejected for a reason retrying won't fix."""
 
 
 # Defaults chosen to match agent.py's current behavior.
@@ -1673,6 +1691,7 @@ class BedrockBackend:
 
 
 
+import anthropic_wire
 import foundry_retry_utils
 import os
 import logging
@@ -1762,79 +1781,16 @@ class FoundryBackend:
 
     @staticmethod
     def _to_anthropic_messages(openai_messages: list[dict]) -> tuple[str | None, list[dict]]:
-        """Convert OpenAI-format messages to Anthropic format.
-        Returns (system_prompt_or_None, anthropic_messages).
-
-        Handles orphaned tool_results (produced by context compression that
-        removes the preceding assistant+tool_use messages): any tool_result
-        whose tool_use_id has no matching tool_use in the conversation is
-        silently dropped to prevent 400 errors from the Anthropic API.
-        """
-        system = None
-        out: list[dict] = []
-        seen_tool_use_ids: set[str] = set()
-
-        for msg in openai_messages:
-            role = msg.get("role")
-            content = msg.get("content")
-
-            if role == "system":
-                system = content
-                continue
-
-            if role in ("user", "assistant"):
-                tool_calls = msg.get("tool_calls")
-                if tool_calls:
-                    blocks: list[dict] = []
-                    # Preserve any narrative text alongside tool_use blocks
-                    if content:
-                        blocks.append({"type": "text", "text": content})
-                    for tc in tool_calls:
-                        tid = tc["id"]
-                        seen_tool_use_ids.add(tid)
-                        blocks.append({
-                            "type": "tool_use",
-                            "id": tid,
-                            "name": tc["function"]["name"],
-                            "input": json.loads(tc["function"]["arguments"] or "{}"),
-                        })
-                    out.append({"role": "assistant", "content": blocks})
-                else:
-                    out.append({"role": role, "content": content or ""})
-
-            elif role == "tool":
-                tid = msg.get("tool_call_id", "")
-                if tid not in seen_tool_use_ids:
-                    # Orphaned result — its tool_use was compressed away; skip
-                    # to avoid "unexpected tool_use_id in tool_result" 400 error.
-                    continue
-                result_block = {
-                    "type": "tool_result",
-                    "tool_use_id": tid,
-                    "content": content or "",
-                }
-                if out and out[-1]["role"] == "user" and isinstance(out[-1]["content"], list):
-                    out[-1]["content"].append(result_block)
-                else:
-                    out.append({"role": "user", "content": [result_block]})
-
-        return system, out
+        """OpenAI-format messages → (system, Anthropic messages); see
+        ``anthropic_wire.openai_to_anthropic`` for the rules (every system
+        message kept, same-role turns merged, orphaned results dropped)."""
+        system, messages, _ = anthropic_wire.openai_to_anthropic(openai_messages)
+        return system, messages
 
     @staticmethod
     def _to_anthropic_tools(openai_tools: list[dict] | None) -> list[dict] | None:
-        """Convert OpenAI-format tool definitions to Anthropic format."""
-        if not openai_tools:
-            return None
-        result = []
-        for tool in openai_tools:
-            if tool.get("type") == "function":
-                fn = tool["function"]
-                result.append({
-                    "name": fn["name"],
-                    "description": fn.get("description", ""),
-                    "input_schema": fn.get("parameters", {"type": "object", "properties": {}}),
-                })
-        return result or None
+        """OpenAI-format tool definitions → Anthropic format (sorted by name)."""
+        return anthropic_wire.openai_tools_to_anthropic(openai_tools)
 
     def stream_chat(self, *args, **kwargs):
         log = kwargs.pop("log", None)
@@ -1899,14 +1855,389 @@ class FoundryBackend:
             yield {"choices": [{"delta": {"content": narrative}}]}
         for tc in tool_calls:
             yield {"choices": [{"delta": {"tool_calls": [tc]}}]}
+
+
+# ── AICommonsBackend ───────────────────────────────────────────────────
+#
+# UCSB AI Commons speaks the Anthropic Messages API at <stage>/v1/messages with a
+# per-user API key (the `openai` Cognito group's key, NOT a published-bot key).
+# Unlike the legacy `bedrock` kind it streams for real, takes native tools and
+# thinking, and reports real usage including cache hits. Design and the gateway
+# facts behind each choice: aicommons-integration.md (§2, P2, §7).
+
+try:
+    import anthropic as _anthropic
+    import httpx as _httpx
+except ImportError:  # optional: only needed when this kind is used
+    _anthropic = None
+    _httpx = None
+
+# Gateway model literal → what the client needs to know. The gateway's /v1/models
+# returns ids only, so this is hand-kept until it serves metadata (plan P8.2).
+# Prices are USD per 1K tokens, from the gateway's model_catalog.json; None = not
+# in the catalog we read. context_tokens is the model's own window; the usable
+# window is further capped by `aicommons.max_context_tokens` and the 6 MB payload.
+AICOMMONS_MODELS = {
+    "claude-v5.5-opus":   {"context_tokens": 1_000_000, "max_output": 128_000, "reasoning": True,
+                           "price_in": 0.0055, "price_out": 0.0275,
+                           "price_cache_read": 0.00055, "price_cache_write": 0.006875},
+    "claude-v5.5-sonnet": {"context_tokens": 1_000_000, "max_output": 128_000, "reasoning": True},
+    "claude-v5.5-haiku":  {"context_tokens": 1_000_000, "max_output": 64_000, "reasoning": True},
+    "claude-v5-opus":     {"context_tokens": 1_000_000, "max_output": 128_000, "reasoning": True,
+                           "price_in": 0.0055, "price_out": 0.0275,
+                           "price_cache_read": 0.00055, "price_cache_write": 0.006875},
+    "claude-v5-sonnet":   {"context_tokens": 1_000_000, "max_output": 128_000, "reasoning": True,
+                           "price_in": 0.0022, "price_out": 0.011,
+                           "price_cache_read": 0.00022, "price_cache_write": 0.00275},
+    "claude-v4.6-opus":   {"context_tokens": 1_000_000, "max_output": 128_000, "reasoning": True,
+                           "price_in": 0.0055, "price_out": 0.0275,
+                           "price_cache_read": 0.00055, "price_cache_write": 0.006875},
+    "claude-v4.6-sonnet": {"context_tokens": 1_000_000, "max_output": 128_000, "reasoning": True,
+                           "price_in": 0.0033, "price_out": 0.0165,
+                           "price_cache_read": 0.00033, "price_cache_write": 0.004125},
+    "claude-v4.5-haiku":  {"context_tokens": 200_000, "max_output": 64_000, "reasoning": True,
+                           "price_in": 0.0011, "price_out": 0.0055,
+                           "price_cache_read": 0.00011, "price_cache_write": 0.001375},
+}
+_AICOMMONS_UNKNOWN_MODEL = {"context_tokens": 128_000, "max_output": 8_192, "reasoning": False}
+
+_AICOMMONS_DEFAULTS = {
+    "thinking": "adaptive",            # "off" omits it — but see P5: effort is ignored without it
+    "max_context_tokens": 200_000,     # cost/latency cap; the hard ceiling is the 6 MB payload
+    "max_request_bytes": 5_500_000,    # below the Lambda's 6 MB so we fail locally, not on a 413
+    "wall_seconds": 600,               # the agent's per-response wall (agent.py _stream_deadline)
+    "tokens_per_second": 45,           # Opus-class streaming rate, for sizing max_tokens to the wall
+}
+_AICOMMONS_ROLE_EFFORT = {"main": "high", "summary": "low"}
+_AICOMMONS_COMPLETE_MAX_TOKENS = {"main": 8_192, "summary": 4_096}
+
+# Bedrock's Validation text survives on /v1/messages; these are its overflow phrasings
+# plus the payload-size ones. Refine from the live probe (plan P0.7).
+_AICOMMONS_OVERFLOW_MARKERS = _OVERFLOW_MARKERS + (
+    "too long", "input length", "payload", "too large", "context window",
+)
+# A monthly-allowance 429 (TokenLimitExceeded), as opposed to Bedrock throttling.
+_AICOMMONS_CAP_MARKERS = ("allowance", "weighted tokens", "monthly")
+_AICOMMONS_NOTED_HEADERS = ("x-unimplemented-parameters", "x-dropped-server-tools",
+                            "x-max-tokens-clamped", "x-cache-control-policy")
+
+
+def aicommons_model_info(model: str) -> dict:
+    return AICOMMONS_MODELS.get(model or "", _AICOMMONS_UNKNOWN_MODEL)
+
+
+def _sdk_error_details(e) -> tuple[int | None, str, str, dict]:
+    """(status, error type, message, response headers) from an SDK error."""
+    status = getattr(e, "status_code", None)
+    body = getattr(e, "body", None)
+    etype = ""
+    if isinstance(body, dict):
+        err = body.get("error") if isinstance(body.get("error"), dict) else body
+        etype = str(err.get("type") or "")
+    msg = str(getattr(e, "message", "") or e)
+    resp = getattr(e, "response", None)
+    try:
+        headers = {k.lower(): v for k, v in (getattr(resp, "headers", None) or {}).items()}
+    except Exception:  # noqa: BLE001
+        headers = {}
+    return status, etype, msg, headers
+
+
+def translate_aicommons_error(e: BaseException) -> BaseException:
+    """Map an Anthropic-SDK (or httpx) error to the exception types agent.py recovers from.
+
+    | gateway error                                    | becomes                    |
+    |--------------------------------------------------|----------------------------|
+    | 400/413 naming an input/payload overflow         | ContextOverflowError       |
+    | 401 / 403                                        | ConfigError                |
+    | 429 monthly allowance / x-should-retry: false    | BudgetExceeded             |
+    | 429 throttling, 529, 5xx, connection, timeout    | BackendUnavailableError    |
+    | 504 (request ceiling)                            | GatewayTimeoutError        |
+    | anything else                                    | BackendRequestError        |
+
+    A mid-stream ``error`` event arrives as a status error carrying the 200 of
+    the stream it interrupted, so the error *type* is checked as well as the code.
+    """
+    if _anthropic is not None and isinstance(e, _anthropic.APIConnectionError):
+        return BackendUnavailableError(f"AI Commons connection error: {e}")
+    if _httpx is not None and isinstance(e, _httpx.HTTPError):
+        return BackendUnavailableError(f"AI Commons stream interrupted: {type(e).__name__}: {e}")
+    status, etype, msg, headers = _sdk_error_details(e)
+    low = msg.lower()
+    where = f"{status or '-'} {etype or 'error'}"
+    if status == 413 or etype == "request_too_large" or (
+            (status == 400 or etype == "invalid_request_error")
+            and any(m in low for m in _AICOMMONS_OVERFLOW_MARKERS)):
+        return ContextOverflowError(f"AI Commons: input too large ({where}): {msg}")
+    if status in (401, 403) or etype in ("authentication_error", "permission_error"):
+        return ConfigError(
+            f"AI Commons rejected the API key ({where}): {msg}. The key must be a per-user "
+            "API key (issued in the AI Commons app under API keys) for a user in the `openai` "
+            "group, not a published-bot key; it may also have been revoked.")
+    if status == 429 or etype == "rate_limit_error":
+        if headers.get("x-should-retry") == "false" or any(m in low for m in _AICOMMONS_CAP_MARKERS):
+            return BudgetExceeded(f"AI Commons quota: {msg}")
+        return BackendUnavailableError(f"AI Commons throttled ({where}): {msg}")
+    if status == 504 or etype == "timeout_error" or "request_ceiling" in low:
+        return GatewayTimeoutError(f"504 Gateway Timeout from AI Commons: {msg}")
+    if status == 529 or etype in ("overloaded_error", "api_error") or (status or 0) >= 500:
+        return BackendUnavailableError(f"AI Commons unavailable ({where}): {msg}")
+    return BackendRequestError(f"AI Commons rejected the request ({where}): {msg}")
+
+
+class AICommonsBackend:
+    """UCSB AI Commons over the Anthropic Messages API (``/v1/messages``).
+
+    ``stream_chat`` takes the agent's OpenAI-shaped body, converts it with
+    ``anthropic_wire``, and returns a generator of OpenAI-shaped delta dicts that
+    yields as the stream arrives. Before returning, it opens the stream AND reads
+    the first event, so a rejected request (including Bedrock's "input too long",
+    which the gateway sends as the first event of a 200 stream) raises from
+    ``stream_chat`` itself, where agent.py's overflow/504/failover handling runs
+    (aicommons-integration.md §7 H1).
+    """
+
+    kind = "aicommons"
+    honours_system = True   # top-level `system` is delivered; never fold (P3)
+
+    _noted_headers: set = set()   # (header, value) pairs already logged this process
+
+    def __init__(self, cfg: dict):
+        if _anthropic is None:
+            raise ConfigError("backend kind 'aicommons' needs the 'anthropic' package "
+                              "(pip install -r requirements.txt)")
+        self._cfg = cfg
+        self.role = cfg.get("role", "main")
+        opts = {**_AICOMMONS_DEFAULTS, **(cfg.get("aicommons") or {}),
+                **{k: v for k, v in cfg.items() if k in _AICOMMONS_DEFAULTS}}
+        self.opts = opts
+        base = (cfg.get("base_url") or cfg.get("api_url")
+                or os.environ.get("AICOMMONS_BASE_URL") or "").strip().rstrip("/")
+        key = (cfg.get("api_key") or os.environ.get("AICOMMONS_API_KEY") or "").strip()
+        if not base or not key:
+            raise ConfigError(
+                "aicommons backend needs a base URL and API key: set base_url/api_key on the "
+                "backend (or in the \"aicommons\" block), or AICOMMONS_BASE_URL / AICOMMONS_API_KEY. "
+                "The base URL is the API stage URL, ending in /v1.")
+        # The SDK appends /v1/messages itself; accept a pasted full endpoint too.
+        if base.endswith("/v1/messages"):
+            base = base[: -len("/v1/messages")]
+        self.base_url = base
+        self.api_key = key
+        self.model = cfg.get("model") or "claude-v5.5-opus"
+        self.info = aicommons_model_info(self.model)
+        self.effort = cfg.get("effort") or _AICOMMONS_ROLE_EFFORT.get(self.role, "high")
+        wall_cap = int(0.8 * float(opts["wall_seconds"]) * float(opts["tokens_per_second"]))
+        self.max_tokens = int(cfg.get("max_tokens") or min(self.info["max_output"], wall_cap))
+        self.enabled = cfg.get("enabled", True)
+        self.client = _anthropic.Anthropic(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            max_retries=int(cfg.get("max_retries", 3)),
+            # read can be short: the gateway pings every 30 s; its own wall is 900 s
+            timeout=_httpx.Timeout(connect=10.0, read=90.0, write=60.0, pool=10.0),
+        )
+
+    # ── protocol ──
+
+    def health(self, timeout: int = 3) -> tuple[bool, str]:
+        """GET /v1/models: free, and checks both the key and the `openai` group."""
+        try:
+            ids = self._model_ids(timeout=max(float(timeout), 5.0))
+        except Exception as e:  # noqa: BLE001
+            return False, str(translate_aicommons_error(e))
+        if ids and self.model not in ids:
+            return False, (f"model {self.model!r} is not offered by {self.base_url} "
+                           f"(available: {', '.join(sorted(ids)[:12])})")
+        return True, self.base_url
+
+    def _model_ids(self, timeout: float = 10.0) -> list[str]:
+        page = self.client.with_options(max_retries=0, timeout=timeout).models.list()
+        return [m.id for m in getattr(page, "data", None) or [] if getattr(m, "id", None)]
+
+    def detect_ctx_size(self) -> int:
+        """Usable context in TOKENS: the model's window capped by max_context_tokens."""
+        return min(int(self.info["context_tokens"]), int(self.opts["max_context_tokens"]))
+
+    def list_models(self) -> list[str]:
+        try:
+            return self._model_ids()
+        except Exception:  # noqa: BLE001
+            return [self.model]
+
+    # ── request building ──
+
+    def _thinking_kwargs(self) -> dict:
+        if not self.info.get("reasoning") or str(self.opts.get("thinking")).lower() in ("off", "none", "false"):
+            return {}
+        # effort is applied by the gateway only when `thinking` is present (P0.6/P5)
+        return {"thinking": {"type": "adaptive"}, "output_config": {"effort": self.effort}}
+
+    def _request_kwargs(self, body: dict) -> dict:
+        """Only what the gateway applies goes out: no sampling params (forced/dropped
+        with thinking anyway), none of the llama.cpp keys, tool_choice auto only."""
+        system, messages, tools = anthropic_wire.openai_to_anthropic(
+            body.get("messages") or [], body.get("tools"), model=self.model, end_with_user=True)
+        kw: dict = {"model": self.model, "max_tokens": self.max_tokens, "messages": messages}
+        if system:
+            kw["system"] = system
+        if tools:
+            kw["tools"] = tools
+            kw["tool_choice"] = {"type": "auto"}
+        kw.update(self._thinking_kwargs())
+        return kw
+
+    def _payload_guard(self, kw: dict) -> None:
+        size = len(json.dumps(kw, default=str).encode("utf-8"))
+        limit = int(self.opts["max_request_bytes"])
+        if size > limit:
+            raise ContextOverflowError(
+                f"AI Commons request is {size:,} bytes, over the {limit:,}-byte payload limit "
+                "(the gateway Lambda takes 6 MB at most)")
+
+    def _note_headers(self, headers, log) -> str:
+        """Log the gateway's advisory headers once per process; return the request id."""
+        try:
+            h = {k.lower(): v for k, v in headers.items()}
+        except Exception:  # noqa: BLE001
+            return ""
+        for name in _AICOMMONS_NOTED_HEADERS:
+            val = h.get(name)
+            if val and (name, val) not in AICommonsBackend._noted_headers:
+                AICommonsBackend._noted_headers.add((name, val))
+                log.info("aicommons header %s: %s", name, val)
+        return h.get("request-id") or h.get("x-amzn-requestid") or ""
+
+    def _log_usage(self, log, usage: dict) -> None:
+        read = int(usage.get("cache_read_input_tokens") or 0)
+        write = int(usage.get("cache_creation_input_tokens") or 0)
+        uncached = int(usage.get("input_tokens") or 0)
+        total = read + write + uncached
+        log.info("aicommons.cache role=%s read=%d write=%d uncached=%d hit_pct=%.0f",
+                 self.role, read, write, uncached, (100.0 * read / total) if total else 0.0)
+
+    # ── streaming ──
+
+    def _open(self, kw: dict, log):
+        """Send the request; return (stream, event iterator, first event, request id).
+        Raises the translated error if the request is refused, by status or by a
+        leading `error` event."""
+        try:
+            raw = self.client.messages.with_raw_response.create(**kw, stream=True)
+        except Exception as e:  # noqa: BLE001
+            raise translate_aicommons_error(e) from e
+        rid = self._note_headers(raw.headers, log)
+        stream = raw.parse()
+        events = iter(stream)
+        try:
+            first = next(events, None)
+        except Exception as e:  # noqa: BLE001
+            _safe_close_stream(stream)
+            raise translate_aicommons_error(e) from e
+        return stream, events, first, rid
+
+    def stream_chat(self, log, *, json=None, stream=True, timeout=(30, 300), **extra):
+        log = log or logging.getLogger("llm_backend")
+        kw = self._request_kwargs(json or {})
+        self._payload_guard(kw)
+        _debug_dump_payload("request", kw, kind=self.kind)
+        opened = self._open(kw, log)
+        return self._deltas(kw, opened, log)
+
+    def _deltas(self, kw: dict, opened, log):
+        t0 = time.monotonic()
+        tr = anthropic_wire.AnthropicStreamToDeltas(model=self.model)
+        stream, events, first, rid = opened
+        retried = False
+        ok = False
+        try:
+            while True:
+                try:
+                    pending = [first] if first is not None else []
+                    for ev in _chain(pending, events):
+                        for chunk in tr.feed(ev):
+                            yield chunk
+                    if not tr.saw_stop and tr.emitted == 0:
+                        raise BackendUnavailableError("AI Commons stream ended before any content")
+                    break
+                except Exception as e:  # noqa: BLE001
+                    err = e if isinstance(e, (BackendUnavailableError, ContextOverflowError, ConfigError,
+                                              BudgetExceeded, requests.exceptions.HTTPError)) \
+                        else translate_aicommons_error(e)
+                    # Re-send only if NOTHING (of any kind) reached the caller, and only once.
+                    if tr.emitted == 0 and not retried and isinstance(err, BackendUnavailableError):
+                        retried = True
+                        log.warning("aicommons: stream failed before any content (%s) — re-sending once", err)
+                        _safe_close_stream(stream)
+                        stream, events, first, rid = self._open(kw, log)
+                        tr = anthropic_wire.AnthropicStreamToDeltas(model=self.model)
+                        continue
+                    if err is e:
+                        raise
+                    raise err from e
+            final = tr.final_chunk()
+            yield final
+            self._log_usage(log, final.get("usage") or {})
+            ok = True
+        finally:
+            _safe_close_stream(stream)
+            log.info(
+                "backend.stream_chat.latency_ms backend=%s model=%s role=%s latency_ms=%d deltas=%d "
+                "ok=%s stop=%s request_id=%s",
+                self.kind, self.model, self.role, int((time.monotonic() - t0) * 1000),
+                tr.emitted, ok, tr.stop_reason, rid or "-")
+
+    # ── non-streaming ──
+
+    def complete(self, *, prompt, gen_params=None, cancel_check=None, timeout=120, log=None) -> str:
+        log = log or logging.getLogger("llm_backend")
+        gp = gen_params or {}
+        max_tokens = int(gp.get("max_tokens") or gp.get("n_predict")
+                         or _AICOMMONS_COMPLETE_MAX_TOKENS.get(self.role, 4_096))
+        kw = {"model": self.model, "max_tokens": min(max_tokens, int(self.info["max_output"])),
+              "messages": [{"role": "user", "content": prompt}], **self._thinking_kwargs()}
+        self._payload_guard(kw)
+        if cancel_check:
+            cancel_check()
+        t0 = time.monotonic()
+        ok = False
+        try:
+            resp = self.client.messages.create(**kw, timeout=float(timeout))
+            ok = True
+        except Exception as e:  # noqa: BLE001
+            raise translate_aicommons_error(e) from e
+        finally:
+            log.info("backend.complete.latency_ms backend=%s model=%s role=%s latency_ms=%d ok=%s",
+                     self.kind, self.model, self.role, int((time.monotonic() - t0) * 1000), ok)
+        usage = getattr(resp, "usage", None)
+        if usage is not None:
+            self._log_usage(log, anthropic_wire._as_dict(usage))
+        return "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text")
+
+
+def _chain(head: list, rest):
+    yield from head
+    yield from rest
+
+
+def _safe_close_stream(stream) -> None:
+    closer = getattr(stream, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 # ── Factory ────────────────────────────────────────────────────────────
 
-# The three canonical backend kinds, each with a one-line human label used in
+# The canonical backend kinds, each with a one-line human label used in
 # error messages (so a typo tells the user what the valid choices actually are).
 _KIND_LABELS = {
     "llamacpp": "local llama.cpp / OpenAI-compatible HTTP",
     "bedrock": "AWS Bedrock",
     "foundry": "Azure AI Foundry",
+    "aicommons": "UCSB AI Commons (Anthropic Messages API)",
 }
 
 # Aliases people write by hand or carry over from other tools' docs. The wizard
@@ -1929,6 +2260,9 @@ _KIND_ALIASES = {
     "foundry-azure": "foundry",
     "aws": "bedrock",
     "aws-bedrock": "bedrock",
+    "ucsb": "aicommons",
+    "ai-commons": "aicommons",
+    "ai_commons": "aicommons",
 }
 
 
@@ -1964,6 +2298,8 @@ def build_backend(cfg: dict) -> Backend:
         return BedrockBackend(cfg)
     if kind == "foundry":
         return FoundryBackend(cfg)
+    if kind == "aicommons":
+        return AICommonsBackend(cfg)
     valid = ", ".join(f"{k} ({v})" for k, v in _KIND_LABELS.items())
     raise ValueError(
         f"Unknown backend kind {raw!r} in .agent/config.json. "
@@ -2189,7 +2525,7 @@ def maybe_fold_system(messages: list[dict], backend, log: logging.Logger | None 
     probing, ``auto`` (default) probes once and caches.
     """
     mode = fold_mode()
-    if mode == "never":
+    if mode == "never" or getattr(backend, "honours_system", False):
         return messages
     if not any(m.get("role") in _SYSTEM_ROLES for m in messages):
         return messages
