@@ -4,18 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI Commons backend — agent</title>
-<meta name="description" content="The agent can use the UCSB AI Commons gateway for the main model, the summary model, the advisor, or all of them.">
+<meta name="description" content="The agent can use the UCSB AI Commons gateway for the main model, the summary model, the advisor, or all of them. The gateway serves the Anthropic Messages API (/v1/messages) in front of Bedrock, so this backend gets native tool calling, streaming text, extended thinking and prompt caching. Backend ">
 <link rel="canonical" href="https://mblakemore.github.io/agent/aicommons.html">
 <meta property="og:type" content="article">
 <meta property="og:title" content="AI Commons backend">
-<meta property="og:description" content="The agent can use the UCSB AI Commons gateway for the main model, the summary model, the advisor, or all of them.">
+<meta property="og:description" content="The agent can use the UCSB AI Commons gateway for the main model, the summary model, the advisor, or all of them. The gateway serves the Anthropic Messages API (/v1/messages) in front of Bedrock, so this backend gets native tool calling, streaming text, extended thinking and prompt caching. Backend ">
 <meta property="og:url" content="https://mblakemore.github.io/agent/aicommons.html">
 <meta name="twitter:card" content="summary">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="assets/agent-docs.css">
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"AI Commons backend","url":"https://mblakemore.github.io/agent/aicommons.html","description":"The agent can use the UCSB AI Commons gateway for the main model, the summary model, the advisor, or all of them."}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"AI Commons backend","url":"https://mblakemore.github.io/agent/aicommons.html","description":"The agent can use the UCSB AI Commons gateway for the main model, the summary model, the advisor, or all of them. The gateway serves the Anthropic Messages API (/v1/messages) in front of Bedrock, so this backend gets native tool calling, streaming text, extended thinking and prompt caching. Backend "}</script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -28,7 +28,7 @@
   </nav>
 </div></header>
 <div class="wrap">
-  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="cli.html">CLI and usage</a></li><li><a href="job-contract.html">The job contract — running agent.py as a verifiable worker</a></li><li><a href="models.html">Recommended models</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="aicommons.html" aria-current="page">AI Commons backend</a></li><li><a href="bedrock.html" aria-current="page">Bedrock backend</a></li></ul></aside>
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="cli.html">CLI and usage</a></li><li><a href="job-contract.html">The job contract — running agent.py as a verifiable worker</a></li><li><a href="models.html">Recommended models</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="aicommons.html" aria-current="page">AI Commons backend</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
   <main id="main">
     <p class="eyebrow">AI Commons backend</p>
 <h1>AI Commons backend</h1>
