@@ -2554,6 +2554,21 @@ def normalize_kind(kind) -> str:
     return _KIND_ALIASES.get(k, k)
 
 
+_legacy_bedrock_warned = False
+
+
+def _warn_legacy_bedrock() -> None:
+    """Once per process: the published-bot kind is superseded by ``aicommons``."""
+    global _legacy_bedrock_warned
+    if _legacy_bedrock_warned:
+        return
+    _legacy_bedrock_warned = True
+    logging.getLogger("llm_backend").warning(
+        "backend kind 'bedrock' (published-bot /conversation API) is legacy: no native tools, "
+        "no streaming, no prompt caching. Use kind 'aicommons' (Anthropic Messages API) — "
+        "see docs/aicommons.md. The legacy kind keeps working unchanged.")
+
+
 def build_backend(cfg: dict) -> Backend:
     """Instantiate a concrete backend from a config dict.
 
@@ -2575,6 +2590,7 @@ def build_backend(cfg: dict) -> Backend:
     if kind == "llamacpp":
         return LlamacppBackend(cfg)
     if kind == "bedrock":
+        _warn_legacy_bedrock()
         return BedrockBackend(cfg)
     if kind == "foundry":
         return FoundryBackend(cfg)

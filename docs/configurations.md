@@ -102,7 +102,7 @@ it does not break it.
 ## Hosted backends
 
 `kind` also accepts `"bedrock"` and `"foundry"` instead of `"llamacpp"`, for a hosted endpoint
-rather than a local server. AWS Bedrock has its own guide: [Bedrock backend](bedrock.md).
+rather than a local server. The UCSB AI Commons gateway has its own guide: [AI Commons backend](aicommons.md). The legacy AWS Bedrock published-bot backend has another: [Bedrock backend](bedrock.md).
 
 `kind: "fake"` — or the environment variable `AGENT_FAKE_BACKEND=1` — builds a scriptable
 in-process backend that never opens a socket (`llm_backend.FakeBackend`: a list of text /

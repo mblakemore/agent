@@ -6577,8 +6577,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # OpenAI streaming protocol (which llama.cpp implements) only
                 # emits a final usage chunk when `stream_options.include_usage`
                 # is set. Without this flag, the llamacpp/gemma path produces
-                # no token telemetry. Bedrock builds usage server-side and
-                # ignores this flag, so it is safe to include unconditionally.
+                # no token telemetry. The bedrock and aicommons backends build
+                # usage themselves and drop this key, so it is safe to include
+                # unconditionally.
                 "stream_options": {"include_usage": True},
             }
 
@@ -6868,8 +6869,10 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # the final OpenAI streaming chunk carries `usage` ONLY
                     # when the request body sets
                     # `stream_options: {include_usage: true}` (see request_body
-                    # construction above). Bedrock builds the usage dict
-                    # server-side and emits it in the same shape regardless.
+                    # construction above). The bedrock and aicommons backends
+                    # emit the same shape themselves; aicommons adds the cache
+                    # fields (cache_read/creation_input_tokens) and its
+                    # prompt_tokens counts all three input buckets.
                     # Record before the no-choices skip below so we don't drop it.
                     _usage = chunk.get("usage") if isinstance(chunk, dict) else None
                     if _usage:
@@ -9442,6 +9445,13 @@ def main():
         except ValueError:
             print(f"Invalid -cc port: {port!r} (expected HOST:PORT)", file=sys.stderr)
             sys.exit(2)
+        if getattr(_main_backend, "kind", None) == "aicommons":
+            # The gateway already speaks /v1/messages; translating Anthropic -> OpenAI ->
+            # Anthropic here would only lose thinking, cache control and tool ids.
+            print("Note: AI Commons serves the Anthropic Messages API itself. Claude Code can use it "
+                  f"directly:\n  ANTHROPIC_BASE_URL={_main_backend.base_url} "
+                  "ANTHROPIC_API_KEY=<your key> claude\nStarting the -cc gateway anyway.",
+                  file=sys.stderr)
         import cc_gateway
         cc_gateway.serve(_main_backend, host=host, port=port_num)
         return
