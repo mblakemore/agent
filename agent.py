@@ -1263,6 +1263,49 @@ _set_extra_allowed_paths(_config.get("preferences", {}).get("extra_allowed_paths
 from llm_backend import ConfigError, build_backend as _build_backend
 
 
+def _apply_model_effort_overrides(model, effort) -> None:
+    """``--model`` / ``--effort``: write them into the main backend's config (so a
+    failover rebuild keeps them) and rebuild main. No-op when neither is given."""
+    global _main_backend
+    if not model and not effort:
+        return
+    entry = _config["backends"].setdefault("main", {})
+    if model:
+        entry["model"] = model
+    if effort:
+        entry["effort"] = effort
+    _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
+    if getattr(_main_backend, "model", None):
+        _config["llm"]["model"] = _main_backend.model
+    logging.getLogger("agent").info("main backend override: model=%s effort=%s",
+                                    getattr(_main_backend, "model", None), effort or "-")
+
+
+# M6: what a subagent process inherits. The parent's backend choices ride in the
+# environment (the subagent tool runs in this process and builds the command);
+# `subagent.model` / `subagent.effort` in config pick a cheaper tier for children,
+# which start with a cold cache anyway (E2).
+_SUBAGENT_ARGS_ENV = "AGENT_SUBAGENT_ARGS"
+
+
+def _export_subagent_args(args) -> list:
+    out = []
+    for flag, val in (("--backend-main", getattr(args, "backend_main", None)),
+                      ("--backend-summary", getattr(args, "backend_summary", None))):
+        if val:
+            out += [flag, val]
+    sub = _config.get("subagent") if isinstance(_config.get("subagent"), dict) else {}
+    model = sub.get("model") or getattr(args, "model", None)
+    effort = sub.get("effort") or getattr(args, "effort", None)
+    if model:
+        out += ["--model", str(model)]
+    if effort:
+        out += ["--effort", str(effort)]
+    if out:
+        os.environ[_SUBAGENT_ARGS_ENV] = json.dumps(out)
+    return out
+
+
 def _cfg_with_role(backends: dict, role: str) -> dict:
     """Return the role's backend config dict with ``role`` injected.
 
@@ -5655,6 +5698,16 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 _funnel_ev("no_escalate", source=source)
                 return ""
             setattr(_maybe_advisor_nudge, _latch, True)
+            # E2: on a backend with an effort knob, raise effort first (same model, so
+            # the cache and stored thinking survive; once per run). The advisor path
+            # below still runs.
+            _esc = getattr(_main_backend, "escalate_effort", None)
+            if callable(_esc):
+                _new_effort = _esc()
+                if _new_effort:
+                    log.info("effort escalated to %s (source=%s)", _new_effort, source)
+                    telemetry.record_patch_event("effort_escalation", kind=source + ":" + _new_effort)
+                    _emit("on_notice", "info", f"[raising reasoning effort to {_new_effort}]")
             # First-class telemetry (same pipeline as success_check_block): the
             # trigger SUGGESTED escalation. Pairs with the tool-side advisor_call
             # outcomes + record_tool_call("consult_advisor") to form the funnel
@@ -6694,6 +6747,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         _finish_reason = None      # the stream's own finish_reason, when it sends one
         _wall_cut = False          # the 600 s wall broke the stream off mid-response
         _turn_thinking = None      # Anthropic thinking blocks to send back with this turn
+        _turn_reasoning = []       # streamed thinking text: kept off screen, logged at DEBUG (H5)
         # Stall detection: per a field audit, long latencies with zero
         # deltas (e.g. session_20260513_010952.log Turn 14: latency_ms=78377
         # deltas=0) are strongly correlated with corrupted/garbled output.
@@ -6858,6 +6912,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # the visible answer stream by default; it only counts.
                     if delta.get("reasoning_content"):
                         _deltas_received += 1
+                        _turn_reasoning.append(delta["reasoning_content"])
 
                     if delta.get("content"):
                         if not printed_header:
@@ -7047,6 +7102,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
 
         if full_content:
             log.debug("ASSISTANT: %s", full_content)
+        if _turn_reasoning:
+            log.debug("THINKING (%d chars): %s", sum(map(len, _turn_reasoning)), "".join(_turn_reasoning)[:4000])
 
         # Verbose-only per-turn telemetry — fires once per turn iteration after
         # the assistant response is processed, BEFORE any early-return branches
@@ -9172,6 +9229,12 @@ def main():
     parser.add_argument("--backend-summary", dest="backend_summary",
                         choices=["llamacpp", "bedrock", "foundry", "aicommons"], default=None,
                         help="Override the summary backend kind.")
+    parser.add_argument("--model", dest="model", default=None,
+                        help="Override the main backend's model (e.g. claude-v5.5-sonnet).")
+    parser.add_argument("--effort", dest="effort", default=None,
+                        choices=["low", "medium", "high", "xhigh", "max"],
+                        help="Main backend reasoning effort (aicommons; Claude 5.x). "
+                             "Default: high for main.")
     parser.add_argument("-cc", dest="cc", nargs="?", const="127.0.0.1:8788", default=None,
                         metavar="HOST:PORT",
                         help="Launch an Anthropic-compatible gateway endpoint for Claude "
@@ -9319,6 +9382,8 @@ def main():
 
     # Apply backend-kind overrides before any backend-dependent startup logic.
     _apply_backend_overrides(args.backend_main, args.backend_summary)
+    _apply_model_effort_overrides(getattr(args, "model", None), getattr(args, "effort", None))
+    _export_subagent_args(args)
     # F8a: generation overrides (flag > config > default), applied after backend overrides so
     # the seed support warning names the backend that will actually run.
     _apply_generation_overrides(args)

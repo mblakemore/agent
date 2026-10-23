@@ -10,6 +10,17 @@ from typing import Annotated
 _DEFAULT_TIMEOUT = 600
 
 
+def _inherited_args() -> list:
+    """Backend flags the parent exported (agent._export_subagent_args): its
+    --backend-* overrides and the subagent tier's --model/--effort (M6)."""
+    import json
+    try:
+        val = json.loads(os.environ.get("AGENT_SUBAGENT_ARGS") or "[]")
+    except ValueError:
+        return []
+    return [str(v) for v in val] if isinstance(val, list) else []
+
+
 def subagent(
     prompt: Annotated[str, "The task or question to delegate to a sub-agent"],
     timeout: int = _DEFAULT_TIMEOUT,
@@ -50,6 +61,7 @@ def subagent(
             agent_path,
             "--auto",
             "--result-file", result_file_path,
+            *_inherited_args(),
             prompt
         ]
 

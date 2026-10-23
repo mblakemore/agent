@@ -2186,6 +2186,21 @@ class AICommonsBackend:
         log.info("aicommons.cache role=%s read=%d write=%d uncached=%d hit_pct=%.0f",
                  self.role, read, write, uncached, (100.0 * read / total) if total else 0.0)
 
+    _EFFORT_LADDER = ("low", "medium", "high", "xhigh", "max")
+
+    def escalate_effort(self) -> str | None:
+        """E2: one step up the effort ladder, at most once per backend. Returns the
+        new effort, or None if already escalated, at the top, or thinking is off."""
+        if getattr(self, "_escalated", False) or not self._thinking_kwargs():
+            return None
+        ladder = self._EFFORT_LADDER
+        i = ladder.index(self.effort) if self.effort in ladder else ladder.index("high")
+        if i + 1 >= len(ladder):
+            return None
+        self._escalated = True
+        self.effort = ladder[i + 1]
+        return self.effort
+
     def session_summary(self) -> str:
         """One line for the session-end log: calls, cache hit rate, token buckets."""
         st = self.session_usage
