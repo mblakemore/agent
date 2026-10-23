@@ -788,6 +788,8 @@ def _classify_auto_result(result, error_kind=None, last_exit=None):
             return EXIT_CONTEXT, "context overflow after every reduction"
         if error_kind == "backend":
             return EXIT_BACKEND, "backend request failed after retries"
+        if error_kind == "refusal":
+            return EXIT_BACKEND, "refusal: the model or a gateway guardrail declined the request"
         return EXIT_ERROR, "run loop returned error"
     return EXIT_OK, str(result or "")
 
@@ -7065,6 +7067,17 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 log.warning("Response cut off (%s) mid tool call — dropping %d incomplete call(s): %s",
                             "wall" if _wall_cut else "max_tokens", len(_cut_tool_names), _cut_tool_names)
                 tool_calls = _kept
+
+        # M3: a refusal (model or gateway guardrail; stop_reason "refusal") is not a
+        # text-only turn to nudge — re-sending the same history gets the same answer.
+        # Keep the partial text out of history and end the run as a backend error.
+        if _finish_reason == "content_filter":
+            log.error("Model refused the request (stop_reason=refusal); partial text not stored: %r",
+                      full_content[:300])
+            telemetry.record_error(kind="refusal")
+            _emit("on_error", "The model declined this request (refusal / guardrail). Ending the run.")
+            _note_error_kind("refusal")
+            return "error"
 
         assistant_msg = {"role": "assistant", "content": full_content}
         if tool_calls:

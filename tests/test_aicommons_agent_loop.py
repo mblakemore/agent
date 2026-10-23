@@ -88,3 +88,19 @@ def test_budget_and_config_errors_end_the_run_as_backend_errors(agent_loop_mocks
     assert agent._LAST_ERROR_KIND == "backend"
     code, _ = agent._classify_auto_result("error", agent._LAST_ERROR_KIND, None)
     assert code == agent.EXIT_BACKEND
+
+
+def test_refusal_ends_the_run_without_storing_or_nudging(agent_loop_mocks, monkeypatch):
+    """M3: a refusal re-sent by the nudge loop just refuses again until the nudge cap."""
+    monkeypatch.setattr(agent, "_NUDGE_ENABLED", True)
+    agent_loop_mocks.script(
+        [{"choices": [{"index": 0, "delta": {"content": "I can't help with th"}}]}, _final("content_filter")],
+        [{"choices": [{"index": 0, "delta": {"content": "should never be requested"}}]}, _final("stop")],
+    )
+    history = [{"role": "user", "content": "do the thing"}]
+    monkeypatch.setattr(agent, "_LAST_ERROR_KIND", None)
+    assert _run(history) == "error"
+    assert agent._LAST_ERROR_KIND == "refusal"
+    assert not any(m["role"] == "assistant" for m in history)
+    code, detail = agent._classify_auto_result("error", "refusal")
+    assert code == agent.EXIT_BACKEND and detail.startswith("refusal")
