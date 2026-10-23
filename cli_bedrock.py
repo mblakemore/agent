@@ -18,6 +18,10 @@ Subcommands (all log ``bedrock.cli.<verb>`` at INFO per criterion 10):
 - ``retest [<name> | --all]`` — re-run the health probe.
 - ``prune [--stale-days N] [--yes]`` — drop entries that are
   ``status==down`` and older than ``N`` days (default 30).
+
+``agent.py aicommons <verb> …`` is the same group with ``--api messages`` as
+the default for ``add`` (an AI Commons per-user key, used by the ``aicommons``
+backend kind) and ``list`` showing only those rows.
 """
 
 from __future__ import annotations
@@ -35,10 +39,11 @@ def _log() -> logging.Logger:
     return logging.getLogger("agent")
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser(group: str = "bedrock") -> argparse.ArgumentParser:
+    default_api = bs.API_MESSAGES if group == "aicommons" else bs.API_PUBLISHED
     parser = argparse.ArgumentParser(
-        prog="agent bedrock",
-        description="Manage the bedrock credential store.",
+        prog=f"agent {group}",
+        description="Manage the bedrock / AI Commons credential store.",
     )
     sub = parser.add_subparsers(dest="verb", required=True)
 
@@ -46,10 +51,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p_add.add_argument("--name", required=True)
     p_add.add_argument("--url", required=True)
     p_add.add_argument("--key", required=True)
+    p_add.add_argument("--api", choices=bs.API_KINDS, default=default_api,
+                       help="published = a bedrock-chat published-bot key (kind bedrock); "
+                            "messages = an AI Commons per-user API key (kind aicommons). "
+                            f"Default: {default_api}.")
 
     p_list = sub.add_parser("list", help="List credential entries.")
     p_list.add_argument("--json", dest="as_json", action="store_true",
                         help="Dump the full file as JSON.")
+    p_list.set_defaults(only_api=bs.API_MESSAGES if group == "aicommons" else None)
 
     p_rm = sub.add_parser("rm", help="Remove an entry by name.")
     p_rm.add_argument("name")
@@ -70,6 +80,12 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _str_arg(args: argparse.Namespace, name: str, default: str | None) -> str | None:
+    """An optional string flag; anything else (absent, a test double) is the default."""
+    val = getattr(args, name, None)
+    return val if isinstance(val, str) else default
+
+
 def _truncate(s: str | None, n: int = 60) -> str:
     if not s:
         return ""
@@ -80,10 +96,11 @@ def _truncate(s: str | None, n: int = 60) -> str:
 def _format_table(entries: list[dict]) -> str:
     if not entries:
         return "(no entries)"
-    headers = ["NAME", "STATUS", "SPEND", "LAST_CHECKED", "LAST_ERROR"]
+    headers = ["NAME", "API", "STATUS", "SPEND", "LAST_CHECKED", "LAST_ERROR"]
     rows = [
         [
             str(e.get("name", "")),
+            bs.entry_api(e),
             str(e.get("status", "")),
             f"{float(e.get('daily_spend_usd') or 0.0):.2f}",
             str(e.get("last_checked") or ""),
@@ -101,7 +118,8 @@ def _format_table(entries: list[dict]) -> str:
 
 def cmd_add(args: argparse.Namespace) -> int:
     log = _log()
-    log.info("bedrock.cli.add name=%s url=%s", args.name, args.url)
+    api = _str_arg(args, "api", bs.API_PUBLISHED)
+    log.info("bedrock.cli.add name=%s url=%s api=%s", args.name, args.url, api)
     with bs.with_locked_store() as locked:
         if locked is None:
             print("error: could not lock the store (another process is mutating it)",
@@ -110,13 +128,13 @@ def cmd_add(args: argparse.Namespace) -> int:
         data, path = locked
         try:
             entry = bs.add_entry(
-                data, name=args.name, url=args.url, key=args.key,
+                data, name=args.name, url=args.url, key=args.key, api=api,
             )
         except ValueError as e:
             print(f"error: {e}", file=sys.stderr)
             return 1
         # Probe before persisting so the row goes in with its real status.
-        ok, err = bs.health_check(args.url, args.key)
+        ok, err = bs.health_check(args.url, args.key, api=api)
         entry["status"] = bs.STATUS_UP if ok else bs.STATUS_DOWN
         entry["last_checked"] = bs._now_iso()
         entry["last_error"] = None if ok else err
@@ -132,10 +150,14 @@ def cmd_list(args: argparse.Namespace) -> int:
     log = _log()
     log.info("bedrock.cli.list json=%s", bool(args.as_json))
     data = bs.load_store()
+    entries = data.get("entries", [])
+    only_api = _str_arg(args, "only_api", None)
+    if only_api:
+        entries = [e for e in entries if bs.entry_api(e) == only_api]
     if args.as_json:
-        print(json.dumps(data, indent=2))
+        print(json.dumps({**data, "entries": entries}, indent=2))
         return 0
-    print(_format_table(data.get("entries", [])))
+    print(_format_table(entries))
     return 0
 
 
@@ -187,7 +209,7 @@ def cmd_retest(args: argparse.Namespace) -> int:
             return 0
         for ent in targets:
             ok, err = bs.health_check(
-                str(ent.get("url", "")), str(ent.get("key", "")),
+                str(ent.get("url", "")), str(ent.get("key", "")), api=bs.entry_api(ent),
             )
             ent["status"] = bs.STATUS_UP if ok else bs.STATUS_DOWN
             ent["last_checked"] = bs._now_iso()
@@ -246,9 +268,9 @@ _DISPATCH = {
 }
 
 
-def run(argv: Sequence[str]) -> int:
-    """Parse ``argv`` (without the leading ``bedrock`` token) and dispatch."""
-    parser = _build_parser()
+def run(argv: Sequence[str], group: str = "bedrock") -> int:
+    """Parse ``argv`` (without the leading group token) and dispatch."""
+    parser = _build_parser(group)
     args = parser.parse_args(list(argv))
     handler = _DISPATCH.get(args.verb)
     if handler is None:  # pragma: no cover - argparse already enforces this
@@ -257,10 +279,12 @@ def run(argv: Sequence[str]) -> int:
 
 
 def maybe_dispatch(argv: Sequence[str] | None = None) -> int | None:
-    """If ``argv[1] == 'bedrock'``, run the subcommand and return its
-    exit code. Otherwise return ``None`` so ``agent.main`` keeps going.
+    """If ``argv[1]`` is ``bedrock`` or ``aicommons``, run the subcommand and
+    return its exit code. Otherwise return ``None`` so ``agent.main`` keeps going.
     """
     av = list(sys.argv[1:] if argv is None else argv)
-    if not av or av[0] != "bedrock":
+    if not av or av[0] not in ("bedrock", "aicommons"):
         return None
+    if av[0] == "aicommons":
+        return run(av[1:], group="aicommons")
     return run(av[1:])

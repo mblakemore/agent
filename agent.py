@@ -452,7 +452,7 @@ _DEFAULT_CONFIG = {
         "summary_threshold": 5,
         "summary_max_chars": 3000,
         "max_context_messages": 30,
-        "ctx_size": 114688,
+        "ctx_size": 114688,   # _DEFAULT_CTX_SIZE
         "max_tokens": 16384,
     },
     "cycle": {
@@ -578,6 +578,9 @@ _DEFAULT_CONFIG = {
 }
 
 
+_DEFAULT_CTX_SIZE = 114688
+
+
 def _synthesize_backends_registry(config):
     """Build a ``backends`` registry dict from the legacy ``llm`` / ``summary``
     top-level blocks, or pass through an explicit ``backends`` block.
@@ -623,6 +626,8 @@ def _display_backend_kind(kind, base_url) -> str:
     ``llamacpp`` but live behind ``*.amazonaws.com`` — surface those as ``aws``
     so the banner is meaningful without exposing the endpoint URL.
     """
+    if kind == "aicommons":
+        return "ai-commons"
     if base_url and "amazonaws.com" in str(base_url).lower():
         return "aws"
     return kind or ""
@@ -650,6 +655,8 @@ def _warn_if_world_readable_with_key(config_path, user_config):
             if isinstance(entry, dict) and entry.get("api_key"):
                 has_key = True
                 break
+    if isinstance(user_config.get("aicommons"), dict) and user_config["aicommons"].get("api_key"):
+        has_key = True
     if not has_key:
         return
     try:
@@ -1253,7 +1260,7 @@ _set_extra_allowed_paths(_config.get("preferences", {}).get("extra_allowed_paths
 # Backend instances (plan task 1.4). Phase 1 only wires LlamacppBackend;
 # Phase 2 adds BedrockBackend behind the same factory. Tests may monkeypatch
 # these module globals to swap backends without touching the factory.
-from llm_backend import build_backend as _build_backend
+from llm_backend import ConfigError, build_backend as _build_backend
 
 
 def _cfg_with_role(backends: dict, role: str) -> dict:
@@ -1265,13 +1272,21 @@ def _cfg_with_role(backends: dict, role: str) -> dict:
     """
     entry = dict(backends.get(role, {}))
     entry.setdefault("role", role)
+    try:
+        from llm_backend import normalize_kind
+        if normalize_kind(entry.get("kind")) == "aicommons" and isinstance(_config.get("aicommons"), dict):
+            # the shared top-level block (base_url, api_key, thinking, caps) under the
+            # role's own keys, which win
+            entry["aicommons"] = {**_config["aicommons"], **(entry.get("aicommons") or {})}
+    except NameError:  # _config not built yet (called from tests with a bare registry)
+        pass
     return entry
 
 
 try:
     _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
     _summary_backend = _build_backend(_cfg_with_role(_config["backends"], "summary"))
-except ValueError as _be:
+except (ValueError, ConfigError) as _be:
     # A bad "kind" (or other unbuildable backend config) must not dump a raw
     # import-time traceback on the user — build_backend already phrases these
     # to name the config field and the fix. Same stderr-for-config-integrity
@@ -1944,6 +1959,35 @@ def _iter_stream_chunks(response):
     else:
         for chunk in response:
             yield chunk
+
+
+class _CompletionResponse:
+    """Just enough of a chat-completions response (``.json()``) for tool_recovery."""
+
+    def __init__(self, text):
+        self._text = text or ""
+
+    def json(self):
+        return {"choices": [{"message": {"role": "assistant", "content": self._text}}]}
+
+
+def _recovery_llm_call(log):
+    """The one-shot call tool_recovery makes. llama.cpp keeps the raw non-streaming
+    request it was written for; a streaming-only backend (aicommons, bedrock) gets
+    the question through the summary backend's complete() instead (M4)."""
+    if getattr(_main_backend, "kind", "llamacpp") in ("llamacpp", "fake"):
+        return lambda **kw: _llm_request(log, **kw)
+
+    def _call(json=None, timeout=30, **_kw):
+        msgs = (json or {}).get("messages") or []
+        prompt = "\n\n".join(str(m.get("content", "")) for m in msgs)
+        gen = {"max_tokens": max(int((json or {}).get("max_tokens") or 64), 1024)}
+        try:
+            text = _summary_backend.complete(prompt=prompt, gen_params=gen, timeout=timeout)
+        except TypeError:  # a backend whose complete() takes only the prompt (foundry)
+            text = _summary_backend.complete(prompt=prompt)
+        return _CompletionResponse(text)
+    return _call
 
 
 def _tool_args_complete(tool_call):
@@ -4455,7 +4499,16 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     _CTX_HARD_CAP = 85_000
     _CTX_CONFIG_CAP = _config["context"]["ctx_size"]  # explicit agent cap (may be default 114688)
     detected = _main_backend.detect_ctx_size()
-    if detected:
+    if detected and getattr(_main_backend, "kind", None) == "aicommons":
+        # detect_ctx_size() is already tokens, already capped by
+        # aicommons.max_context_tokens — the 85% / 85K llama_decode guards don't
+        # apply. Only an explicitly LOWERED context.ctx_size still caps it (M7).
+        _explicit = _CTX_CONFIG_CAP if _CTX_CONFIG_CAP != _DEFAULT_CTX_SIZE else None
+        ctx_size = min(int(detected), _explicit or int(detected))
+        _config["context"]["ctx_size"] = ctx_size
+        log.info("AI Commons context: model window capped to %d tokens, using ctx_size=%d",
+                 detected, ctx_size)
+    elif detected:
         ctx_size = min(int(detected * 0.85), _CTX_HARD_CAP, _CTX_CONFIG_CAP)
         _config["context"]["ctx_size"] = ctx_size
         log.info("Auto-detected main model n_ctx=%d, using ctx_size=%d (85%% / cap %dk / config cap %d)",
@@ -7842,7 +7895,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 recovered = attempt_recovery(
                                     func_name, func_args, result_str,
                                     map_fn=MAP_FN,
-                                    llm_call_fn=lambda **kw: _llm_request(log, **kw),
+                                    llm_call_fn=_recovery_llm_call(log),
                                     config=_config, log=log,
                                 )
                                 if recovered is not None:

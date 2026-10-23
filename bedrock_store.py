@@ -62,6 +62,18 @@ STATUS_UP = "up"
 STATUS_DOWN = "down"
 STATUS_UNKNOWN = "unknown"
 
+# Which API an entry's key is for. "published" is a bedrock-chat published-bot
+# key (POST /conversation; the legacy `bedrock` kind). "messages" is an AI
+# Commons per-user API key (/v1/messages; the `aicommons` kind). The two are
+# not interchangeable. Rows written before this field existed are "published".
+API_PUBLISHED = "published"
+API_MESSAGES = "messages"
+API_KINDS = (API_PUBLISHED, API_MESSAGES)
+
+
+def entry_api(entry: dict[str, Any]) -> str:
+    return entry.get("api") or API_PUBLISHED
+
 
 def _now_iso() -> str:
     """UTC timestamp in RFC 3339-ish form (issue #405 example uses ``Z``)."""
@@ -78,11 +90,12 @@ def _empty_store() -> dict[str, Any]:
     return {"entries": []}
 
 
-def _entry_defaults(name: str, url: str, key: str) -> dict[str, Any]:
+def _entry_defaults(name: str, url: str, key: str, api: str = API_PUBLISHED) -> dict[str, Any]:
     return {
         "name": name,
         "url": url.rstrip("/"),
         "key": key,
+        "api": api,
         "status": STATUS_UNKNOWN,
         "last_checked": None,
         "last_error": None,
@@ -249,13 +262,16 @@ def add_entry(
     name: str,
     url: str,
     key: str,
+    api: str = API_PUBLISHED,
 ) -> dict[str, Any]:
     """Append a new entry. Raises ``ValueError`` on duplicate name."""
     if not name:
         raise ValueError("entry name is required")
+    if api not in API_KINDS:
+        raise ValueError(f"api must be one of {', '.join(API_KINDS)}")
     if find_entry(data, name) is not None:
         raise ValueError(f"entry {name!r} already exists")
-    entry = _entry_defaults(name, url, key)
+    entry = _entry_defaults(name, url, key, api)
     data.setdefault("entries", []).append(entry)
     return entry
 
@@ -270,16 +286,16 @@ def remove_entry(data: dict[str, Any], name: str) -> bool:
     return False
 
 
-def select_entry(data: dict[str, Any]) -> dict[str, Any] | None:
+def select_entry(data: dict[str, Any], api: str = API_PUBLISHED) -> dict[str, Any] | None:
     """Pick the next entry to use.
 
-    Filter ``status == "up"``; lowest ``daily_spend_usd`` wins;
+    Filter ``status == "up"`` and the requested ``api``; lowest ``daily_spend_usd`` wins;
     tie-break by oldest ``last_checked`` (None counts as oldest so a
     fresh-but-up entry beats a stale one with identical spend).
     """
     candidates = [
         e for e in data.get("entries", [])
-        if e.get("status") == STATUS_UP
+        if e.get("status") == STATUS_UP and entry_api(e) == api
     ]
     if not candidates:
         return None
@@ -304,6 +320,7 @@ def select_credentials(
     env_url: str | None = None,
     env_key: str | None = None,
     path: Path | None = None,
+    api: str = API_PUBLISHED,
 ) -> tuple[str, str, str | None]:
     """Return ``(api_url, api_key, entry_name_or_None)`` for backend init.
 
@@ -317,7 +334,7 @@ def select_credentials(
        ``llm_backend.py:526``).
     """
     data = load_store(path)
-    entry = select_entry(data)
+    entry = select_entry(data, api)
     if entry is not None:
         return (
             str(entry.get("url", "")),
@@ -326,6 +343,11 @@ def select_credentials(
         )
     if env_url and env_key:
         return env_url, env_key, None
+    if api == API_MESSAGES:
+        raise LookupError(
+            "no AI Commons credentials available — store has no 'up' entries with "
+            "api=messages and AICOMMONS_BASE_URL/AICOMMONS_API_KEY are unset"
+        )
     raise LookupError(
         "no bedrock credentials available — store has no 'up' entries "
         "and BEDROCK_API_URL/BEDROCK_API_KEY are unset"
@@ -369,8 +391,12 @@ def health_check(
     *,
     timeout: float = HEALTH_CHECK_TIMEOUT_SECONDS,
     model: str = "claude-v4.6-sonnet",
+    api: str = API_PUBLISHED,
 ) -> tuple[bool, str | None]:
     """Probe a bedrock endpoint.
+
+    ``api="messages"`` (an AI Commons key) is checked with ``GET {url}/v1/models``
+    instead: free, and it verifies both the key and the `openai` group.
 
     Returns ``(ok, error_summary)``. Treats any 2xx as ``up`` and any
     other status / exception as ``down`` with a one-line summary
@@ -386,6 +412,18 @@ def health_check(
         "Origin": "http://localhost:8000",
     }
     base = url.rstrip("/")
+    if api == API_MESSAGES:
+        try:
+            resp = requests.get(f"{base}/v1/models", headers={"x-api-key": key},
+                                timeout=timeout)
+        except requests.RequestException as e:
+            return False, f"{type(e).__name__}: {str(e)[:80]}"
+        if 200 <= resp.status_code < 300:
+            return True, None
+        if resp.status_code in (401, 403):
+            return False, (f"HTTP {resp.status_code} — not a per-user API key, or the user "
+                           "is not in the openai group")
+        return False, f"HTTP {resp.status_code}"
     try:
         resp = requests.get(
             f"{base}/health",

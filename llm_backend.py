@@ -1908,8 +1908,9 @@ _AICOMMONS_DEFAULTS = {
     "wall_seconds": 600,               # the agent's per-response wall (agent.py _stream_deadline)
     "tokens_per_second": 45,           # Opus-class streaming rate, for sizing max_tokens to the wall
 }
-_AICOMMONS_ROLE_EFFORT = {"main": "high", "summary": "low"}
-_AICOMMONS_COMPLETE_MAX_TOKENS = {"main": 8_192, "summary": 4_096}
+# advisor: the escalation tier (E3) — Opus at max effort for a Sonnet/Haiku main
+_AICOMMONS_ROLE_EFFORT = {"main": "high", "summary": "low", "advisor": "max"}
+_AICOMMONS_COMPLETE_MAX_TOKENS = {"main": 8_192, "summary": 4_096, "advisor": 16_384}
 
 # Bedrock's Validation text survives on /v1/messages; these are its overflow phrasings
 # plus the payload-size ones. Refine from the live probe (plan P0.7).
@@ -1924,6 +1925,48 @@ _AICOMMONS_NOTED_HEADERS = ("x-unimplemented-parameters", "x-dropped-server-tool
 
 def aicommons_model_info(model: str) -> dict:
     return AICOMMONS_MODELS.get(model or "", _AICOMMONS_UNKNOWN_MODEL)
+
+
+# Model-name families the gateway serves; anything else as `model` is taken to be
+# a bot id (a bot-scoped key names its bot), which /v1/models does not list.
+_AICOMMONS_FAMILIES = ("claude-", "amazon-", "llama", "qwen", "openai-", "mistral", "mixtral", "deepseek")
+_catalog_loaded: set = set()
+
+
+def load_aicommons_catalog(path: str) -> int:
+    """Merge the gateway's ``model_catalog.json`` (bedrock-chat backend/app/) into
+    AICOMMONS_MODELS: max output, reasoning flag and per-1K prices. The catalog is
+    the source of truth for prices (P6); the hand table above is only a fallback.
+    Context windows are not in the catalog and stay as tabled. Returns the number
+    of models merged; never raises."""
+    p = os.path.expanduser(path or "")
+    if not p or p in _catalog_loaded:
+        return 0
+    try:
+        with open(p, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return 0
+    items = data.items() if isinstance(data, dict) else ((m.get("id"), m) for m in data or [])
+    n = 0
+    for mid, m in items:
+        if not mid or not isinstance(m, dict) or m.get("active") is False:
+            continue
+        row = dict(AICOMMONS_MODELS.get(mid) or {"context_tokens": 200_000 if "haiku" in mid else
+                                                 (1_000_000 if mid.startswith("claude-") else 128_000)})
+        if m.get("maxOutputTokens"):
+            row["max_output"] = int(m["maxOutputTokens"])
+        row.setdefault("max_output", _AICOMMONS_UNKNOWN_MODEL["max_output"])
+        row["reasoning"] = bool(m.get("reasoning", row.get("reasoning", False)))
+        price = m.get("pricing") or {}
+        for src, dst in (("input", "price_in"), ("output", "price_out"),
+                         ("cache_read", "price_cache_read"), ("cache_write", "price_cache_write")):
+            if isinstance(price.get(src), (int, float)):
+                row[dst] = float(price[src])
+        AICOMMONS_MODELS[mid] = row
+        n += 1
+    _catalog_loaded.add(p)
+    return n
 
 
 def _sdk_error_details(e) -> tuple[int | None, str, str, dict]:
@@ -2011,20 +2054,37 @@ class AICommonsBackend:
         opts = {**_AICOMMONS_DEFAULTS, **(cfg.get("aicommons") or {}),
                 **{k: v for k, v in cfg.items() if k in _AICOMMONS_DEFAULTS}}
         self.opts = opts
-        base = (cfg.get("base_url") or cfg.get("api_url")
+        block = cfg.get("aicommons") or {}
+        base = (cfg.get("base_url") or cfg.get("api_url") or block.get("base_url")
                 or os.environ.get("AICOMMONS_BASE_URL") or "").strip().rstrip("/")
-        key = (cfg.get("api_key") or os.environ.get("AICOMMONS_API_KEY") or "").strip()
+        key = (cfg.get("api_key") or block.get("api_key")
+               or os.environ.get("AICOMMONS_API_KEY") or "").strip()
+        self.store_entry = None
+        if not base or not key:
+            # Last: an `up` api=messages row in the credential store
+            # (`agent.py aicommons add --name … --url … --key …`).
+            try:
+                import bedrock_store  # local import, as in _resolve_bedrock_credentials
+                s_url, s_key, s_name = bedrock_store.select_credentials(api=bedrock_store.API_MESSAGES)
+                base, key, self.store_entry = base or s_url.rstrip("/"), key or s_key, s_name
+            except Exception:  # noqa: BLE001 — no usable row, unreadable store: fall through
+                pass
         if not base or not key:
             raise ConfigError(
                 "aicommons backend needs a base URL and API key: set base_url/api_key on the "
-                "backend (or in the \"aicommons\" block), or AICOMMONS_BASE_URL / AICOMMONS_API_KEY. "
-                "The base URL is the API stage URL, ending in /v1.")
+                "backend or in the \"aicommons\" block, set AICOMMONS_BASE_URL / AICOMMONS_API_KEY, "
+                "or store one with `agent.py aicommons add --name N --url URL --key KEY`. "
+                "The base URL is the API stage URL, ending in /v1; the key is a per-user API "
+                "key, not a published-bot key.")
         # The SDK appends /v1/messages itself; accept a pasted full endpoint too.
         if base.endswith("/v1/messages"):
             base = base[: -len("/v1/messages")]
         self.base_url = base
         self.api_key = key
         self.model = cfg.get("model") or "claude-v5.5-opus"
+        catalog = opts.get("model_catalog") or os.environ.get("AICOMMONS_MODEL_CATALOG")
+        if catalog:
+            load_aicommons_catalog(catalog)
         self.info = aicommons_model_info(self.model)
         self.effort = cfg.get("effort") or _AICOMMONS_ROLE_EFFORT.get(self.role, "high")
         wall_cap = int(0.8 * float(opts["wall_seconds"]) * float(opts["tokens_per_second"]))
@@ -2047,6 +2107,8 @@ class AICommonsBackend:
         except Exception as e:  # noqa: BLE001
             return False, str(translate_aicommons_error(e))
         if ids and self.model not in ids:
+            if not self.model.startswith(_AICOMMONS_FAMILIES):
+                return True, f"{self.base_url} (model {self.model!r} taken as a bot id)"
             return False, (f"model {self.model!r} is not offered by {self.base_url} "
                            f"(available: {', '.join(sorted(ids)[:12])})")
         return True, self.base_url

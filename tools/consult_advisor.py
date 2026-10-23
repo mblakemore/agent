@@ -198,10 +198,28 @@ def _read_role(role: str) -> dict:
     """
     cfg = _load_cfg()
     main = cfg.get("llm", {}) or {}
+    backends = cfg.get("backends") if isinstance(cfg.get("backends"), dict) else {}
     if role == "advisor":
         raw = cfg.get("advisor", {}) or {}
         out = dict(_DEFAULTS)
         out.update(raw)
+        if _is_backend_role(raw):
+            # e.g. {"kind": "aicommons", "model": "claude-v5.5-opus"}: served through
+            # the backend layer, with its own credential chain (M4/E3). The
+            # llama.cpp default endpoint must not masquerade as its URL.
+            if "base_url" not in raw:
+                out.pop("base_url", None)
+            out["enabled"] = advisor_active(cfg)
+            out["role"] = "advisor"
+            return _with_shared_blocks(out, cfg)
+        if not raw.get("base_url") and _is_backend_role(backends.get("main") or {}):
+            # A backends-only config (no llm block): self-consult on main's backend
+            # instead of probing the llama.cpp default port.
+            out.pop("base_url", None)
+            out.update({k: v for k, v in backends["main"].items() if k not in raw})
+            out["enabled"] = advisor_active(cfg)
+            out["role"] = "advisor"
+            return _with_shared_blocks(out, cfg)
         if not raw.get("base_url"):
             # No advisor endpoint of its own — self-consult on main.
             out["base_url"] = main.get("base_url") or _MAIN_DEFAULT_URL
@@ -213,6 +231,11 @@ def _read_role(role: str) -> dict:
         return out
     # summary role (for distillation) — own block, else the main endpoint.
     out = {"enabled": True, "timeout_s": 120}
+    for b in (backends.get("summary"), backends.get("main")):
+        if _is_backend_role(b or {}):
+            out.update(b)
+            out["role"] = "summary"
+            return _with_shared_blocks(out, cfg)
     s = cfg.get("summary", {}) or {}
     if s.get("base_url") or s.get("api_url"):
         out.update(s)
@@ -224,6 +247,40 @@ def _read_role(role: str) -> dict:
         out.update({k: v for k, v in s.items() if k not in
                     ("base_url", "api_url", "model", "api_key")})
     return out
+
+
+def _is_backend_role(block: dict) -> bool:
+    """A role block that names a non-OpenAI backend kind (aicommons, foundry,
+    bedrock) is served through ``llm_backend``, not a raw chat-completions POST."""
+    kind = block.get("kind") if isinstance(block, dict) else None
+    if not kind:
+        return False
+    try:
+        from llm_backend import normalize_kind
+        return normalize_kind(kind) != "llamacpp"
+    except Exception:
+        return False
+
+
+def _with_shared_blocks(out: dict, cfg: dict) -> dict:
+    """Carry the shared per-kind block (e.g. top-level ``aicommons``) along."""
+    if isinstance(cfg.get("aicommons"), dict):
+        out["aicommons"] = {**cfg["aicommons"], **(out.get("aicommons") or {})}
+    return out
+
+
+def _backend_for(role_cfg: dict, role: str):
+    from llm_backend import build_backend
+    return build_backend({**role_cfg, "role": role_cfg.get("role") or role})
+
+
+def _messages_to_prompt(messages: list) -> str:
+    parts = []
+    for m in messages:
+        c = m.get("content")
+        text = c if isinstance(c, str) else json.dumps(c)
+        parts.append(text if m.get("role") == "user" else f"[{m.get('role')}]\n{text}")
+    return "\n\n".join(parts)
 
 
 def _chat(role_cfg: dict, messages: list, max_tokens: int, temperature: float,
@@ -245,6 +302,11 @@ def _chat_full(role_cfg: dict, messages: list, max_tokens: int,
     2026-08-24: two GPU-advisor consults, both empty). Callers that care
     inspect the extra fields to retry or salvage.
     """
+    if _is_backend_role(role_cfg):
+        backend = _backend_for(role_cfg, "advisor")
+        text = backend.complete(prompt=_messages_to_prompt(messages),
+                                gen_params={"max_tokens": max_tokens}, timeout=timeout_s)
+        return (text or "").strip(), "", "stop"
     body = {
         "model": role_cfg.get("model", ""),
         "messages": messages,
@@ -315,6 +377,12 @@ def startup_check(timeout_s: int = 5) -> tuple:
     a = _read_role("advisor")
     if not a.get("enabled"):
         return False, "disabled"
+    if _is_backend_role(a):
+        try:
+            ok, detail = _backend_for(a, "advisor").health(timeout=timeout_s)
+            return bool(ok), ("ok" if ok else str(detail))
+        except Exception as e:
+            return False, f"{type(e).__name__}: {e}"
     url = a["base_url"].rstrip("/") + "/v1/models"
     try:
         r = requests.get(url, timeout=timeout_s)
