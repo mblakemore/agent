@@ -1961,6 +1961,19 @@ def _iter_stream_chunks(response):
             yield chunk
 
 
+def _prompt_caching_backend():
+    """True when the main backend caches the request prefix server-side and bills
+    misses (aicommons): the history must then grow append-only and evict in chunks
+    (aicommons-integration.md P4). Other kinds keep the per-turn sliding window."""
+    return getattr(globals().get("_main_backend"), "kind", None) == "aicommons"
+
+
+# P4.2 — on a prompt-caching backend, evict down to this fraction of the window
+# in one step, then grow append-only again: one cache miss per eviction instead
+# of one per turn.
+_CACHE_EVICT_TO_FRAC = 0.6
+
+
 class _CompletionResponse:
     """Just enough of a chat-completions response (``.json()``) for tool_recovery."""
 
@@ -1988,6 +2001,34 @@ def _recovery_llm_call(log):
             text = _summary_backend.complete(prompt=prompt)
         return _CompletionResponse(text)
     return _call
+
+
+_RUNTIME_NOTE_HEAD = "[Runtime note — from the framework, not the user or the tool]"
+
+
+def _persist_runtime_note(conversation_history, messages_to_send, lines, turn):
+    """P4.1: append this turn's runtime note to the newest history message (a user turn
+    or a tool result — never sent before, so editing it costs no cache), or add it as
+    a user turn after an assistant one. Idempotent within a turn: a retried request
+    (overflow reduction, stall) re-sends the same note rather than stacking another."""
+    if not lines or not conversation_history:
+        return
+    note = _RUNTIME_NOTE_HEAD + "\n" + "\n\n".join(lines)
+    last = conversation_history[-1]
+    if last.get("_note_turn") == turn:
+        return
+    # A message noted on an EARLIER turn has already been sent; editing it would
+    # break the prefix, so the new note gets its own message.
+    if (last.get("role") in ("user", "tool") and isinstance(last.get("content"), str)
+            and last.get("_note_turn") is None):
+        last["content"] = (last["content"] + "\n\n" + note) if last["content"] else note
+        last.pop("_tokens", None)          # M7: token_utils caches counts per message
+        last["_note_turn"] = turn
+        return
+    msg = {"role": "user", "content": note, "_note_turn": turn}
+    conversation_history.append(msg)
+    if messages_to_send is not None:
+        messages_to_send.append(msg)
 
 
 def _tool_args_complete(tool_call):
@@ -3140,6 +3181,7 @@ def _compress_repeated_tool_results(conversation_history: list, func_name: str, 
         if content.startswith("[compressed"):
             continue
         conversation_history[idx]["content"] = _summarize_for_compression(content, func_name, log)
+        conversation_history[idx].pop("_tokens", None)   # token_utils caches per message
         changed += 1
     if changed:
         log.info("history compression: %d older %s result(s) compressed", changed, func_name)
@@ -3629,20 +3671,41 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
     used = 0
     selected = []
     oldest_idx = len(conversation_history)
-    for i in range(len(conversation_history) - 1, -1, -1):
-        if len(selected) >= effective_max:
-            break
-        msg_tokens = _estimate_tokens(conversation_history[i])
-        needed = used + msg_tokens
-        if context_msg and i > 0:
-            needed += context_tokens
-        if needed > budget:
-            break
-        selected.append(conversation_history[i])
-        used += msg_tokens
-        oldest_idx = i
-
-    selected.reverse()
+    head = summary_state.get("_cache_head") if _prompt_caching_backend() and not max_messages_override else None
+    if head is not None and 0 <= head < len(conversation_history):
+        # P4.2: keep the window's head where it is while everything from it still
+        # fits, so this request extends the previous one byte for byte.
+        window = conversation_history[head:]
+        used = sum(_estimate_tokens(m) for m in window)
+        extra = context_tokens if (context_msg and head > 0) else 0
+        if len(window) <= effective_max and used + extra <= budget:
+            selected, oldest_idx = list(window), head
+        else:
+            used = 0
+    if not selected:
+        # Greedy fill from the newest message back. On a caching backend, fill only
+        # to a fraction of the limits, so the new head then holds for many turns.
+        frac = _CACHE_EVICT_TO_FRAC if (_prompt_caching_backend() and not max_messages_override) else 1.0
+        fill_budget = int(budget * frac) if frac < 1.0 else budget
+        fill_max = max(2, int(effective_max * frac)) if frac < 1.0 else effective_max
+        for i in range(len(conversation_history) - 1, -1, -1):
+            if len(selected) >= fill_max:
+                break
+            msg_tokens = _estimate_tokens(conversation_history[i])
+            needed = used + msg_tokens
+            if context_msg and i > 0:
+                needed += context_tokens
+            if needed > fill_budget:
+                break
+            selected.append(conversation_history[i])
+            used += msg_tokens
+            oldest_idx = i
+        selected.reverse()
+        if frac < 1.0:
+            if summary_state.get("_cache_head") not in (None, oldest_idx):
+                log.info("cache-friendly eviction: window head %s -> %d (%d messages, ~%d tokens)",
+                         summary_state.get("_cache_head"), oldest_idx, len(selected), used)
+            summary_state["_cache_head"] = oldest_idx
 
     if oldest_idx > 0 and context_msg:
         selected.insert(0, context_msg)
@@ -4321,8 +4384,17 @@ def _log_bedrock_session_spend(log):
     Fires at session end so operators grep-ing the session log see an
     at-a-glance spend snapshot even when ``bedrock.cost.tick`` is at
     DEBUG (plan § 15.75 telemetry default). Silent when no Bedrock
-    backend is in use.
+    backend is in use. AI Commons backends log their session cache totals
+    (P4.5) and quota/spend (P6) here too.
     """
+    _seen = set()
+    for backend in (_main_backend, _summary_backend):
+        if getattr(backend, "kind", None) == "aicommons" and id(backend) not in _seen:
+            _seen.add(id(backend))
+            try:
+                log.info("%s", backend.session_summary())
+            except Exception as _e:  # noqa: BLE001 — never fail an exit path over a log line
+                log.debug("aicommons session summary skipped: %s", _e)
     try:
         from llm_backend import (
             _load_today_spend as _load,
@@ -5896,6 +5968,12 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
     # end_cycle is unlocked (appended to _session_tools) after the first nudge
     # fires so the agent can't skip the cycle by calling it before doing work.
     _end_cycle_unlocked = False
+    if _prompt_caching_backend() and not any(
+            (t.get("function") or {}).get("name") == "end_cycle" for t in _session_tools):
+        # P4.4: tools render FIRST in the request, so adding one mid-run invalidates the
+        # whole cached prompt. Offer end_cycle from turn 1; the dispatcher refuses it
+        # until the usual unlock (first nudge).
+        _session_tools.append(_end_cycle_tool.definition)
 
     # Reviewer sessions rarely make code edits (they verify and merge), so the
     # edit-deadline nudge is a false positive for that role.  Detect by
@@ -6378,10 +6456,23 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # message, the c0b2660 lesson), so the whole history remains the cached prefix.
             _static_lines = [ln for ln in _system_lines
                              if ln.startswith("Working directory:") or ln.startswith("Tool-selection guidance:")]
+            if _prompt_caching_backend():
+                # E7: nothing run-specific before the first user turn, so runs that start
+                # within the cache TTL share the cached system prompt + tools.
+                _static_lines = [ln for ln in _static_lines if not ln.startswith("Working directory:")]
             _dynamic_lines = [ln for ln in _system_lines if ln not in _static_lines]
-            _outgoing_messages = [
+            if _prompt_caching_backend():
+                # P4.1: the note is STORED in history (once per turn), so the next request
+                # extends this one exactly and the server's last-message cache point hits.
+                # Wind-down rides in the same note rather than as an unstored message.
+                if wind_down_msg and messages_to_send and messages_to_send[-1].get("content") == wind_down_msg:
+                    messages_to_send.pop()
+                    _dynamic_lines.append(wind_down_msg)
+                _persist_runtime_note(conversation_history, messages_to_send, _dynamic_lines, turn)
+                _dynamic_lines = []
+            _outgoing_messages = ([
                 {"role": "system", "content": "\n\n".join(_static_lines)}
-            ] + messages_to_send + ([
+            ] if _static_lines else []) + messages_to_send + ([
                 {"role": "user", "content": "[Runtime note — from the framework, not the user]\n" + "\n\n".join(_dynamic_lines)}
             ] if _dynamic_lines else [])
 
@@ -6389,7 +6480,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # without calling it before doing any real work.
             if _total_nudges >= 1 and not _end_cycle_unlocked:
                 _end_cycle_unlocked = True
-                _session_tools.append(_end_cycle_tool.definition)
+                if not any((t.get("function") or {}).get("name") == "end_cycle" for t in _session_tools):
+                    _session_tools.append(_end_cycle_tool.definition)
                 log.info("end_cycle tool unlocked (nudges=%d)", _total_nudges)
                 telemetry.record_patch_event("end_cycle_unlocked", kind="fired")
 
@@ -6741,6 +6833,10 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         if _u_out:
                             telemetry.record_tokens(_u_model, "completion", int(_u_out), backend=_u_backend)
                             _turn_out_tokens += int(_u_out)
+                        for _ck, _kind in (("cache_read_input_tokens", "cache_read"),
+                                           ("cache_creation_input_tokens", "cache_write")):
+                            if _usage.get(_ck):   # E5: hit rate chartable from the token counter
+                                telemetry.record_tokens(_u_model, _kind, int(_usage[_ck]), backend=_u_backend)
                     if isinstance(chunk, dict) and chunk.get(_THINKING_KEY):
                         _turn_thinking = chunk[_THINKING_KEY]
                     choices = chunk.get("choices")
@@ -7851,6 +7947,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         pass  # result_str already holds the redirect
                     elif _cicd_blocked:
                         result_str = cicd_error
+                    elif func_name == "end_cycle" and not _end_cycle_unlocked and _prompt_caching_backend():
+                        result_str = ("Error: end_cycle is not available yet — do the task's work "
+                                      "first; it unlocks once the work is under way.")
                     elif func_name not in MAP_FN:
                         result_str = f"Error: Unknown tool '{func_name}'"
                     else:

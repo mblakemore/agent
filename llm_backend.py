@@ -2090,6 +2090,7 @@ class AICommonsBackend:
         wall_cap = int(0.8 * float(opts["wall_seconds"]) * float(opts["tokens_per_second"]))
         self.max_tokens = int(cfg.get("max_tokens") or min(self.info["max_output"], wall_cap))
         self.enabled = cfg.get("enabled", True)
+        self.session_usage = {"calls": 0, "read": 0, "write": 0, "uncached": 0, "output": 0}
         self.client = _anthropic.Anthropic(
             base_url=self.base_url,
             api_key=self.api_key,
@@ -2175,8 +2176,24 @@ class AICommonsBackend:
         write = int(usage.get("cache_creation_input_tokens") or 0)
         uncached = int(usage.get("input_tokens") or 0)
         total = read + write + uncached
+        out = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+        st = self.session_usage
+        st["calls"] += 1
+        st["read"] += read
+        st["write"] += write
+        st["uncached"] += uncached
+        st["output"] += out
         log.info("aicommons.cache role=%s read=%d write=%d uncached=%d hit_pct=%.0f",
                  self.role, read, write, uncached, (100.0 * read / total) if total else 0.0)
+
+    def session_summary(self) -> str:
+        """One line for the session-end log: calls, cache hit rate, token buckets."""
+        st = self.session_usage
+        prompt = st["read"] + st["write"] + st["uncached"]
+        hit = (100.0 * st["read"] / prompt) if prompt else 0.0
+        return (f"aicommons.session role={self.role} model={self.model} calls={st['calls']} "
+                f"cache_read={st['read']} cache_write={st['write']} uncached={st['uncached']} "
+                f"output={st['output']} hit_pct={hit:.0f}")
 
     # ── streaming ──
 
