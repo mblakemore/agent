@@ -32,16 +32,6 @@ main p a, main li a, main td a, main th a, main blockquote a{text-decoration:und
 .topbar nav a{font-family:var(--mono);font-size:12px;color:var(--ink-3)}
 .wrap{max-width:1080px;margin:0 auto;padding:0 20px;display:grid;grid-template-columns:230px minmax(0,1fr);
   gap:36px;align-items:start}
-/* On a phone the document list stacks ABOVE the content, so the reader scrolls past the nav to
-   reach the document. Found by rendering at 390px and LOOKING -- no scan reports "the reader must
-   scroll past the nav", because nothing overflows, mis-contrasts or lacks a label.
-   I TRIED WRAPPING IT INTO COMPACT CHIPS AND MEASURED IT WORSE: these titles are long, so every
-   chip wrapped to two lines and the nav grew 302px -> 496px, pushing content from y=366 to y=560.
-   A 64% regression that looked tidier in my head. Kept as a plain list, tightened instead.
-   Do not re-propose chips without re-measuring -- the titles are the reason, not the styling. */
-@media (max-width:860px){ .wrap{grid-template-columns:minmax(0,1fr);gap:0} .side{position:static;
-  border-right:0;border-bottom:1px solid var(--hair);margin-bottom:16px;padding:14px 0 12px}
-  .side ul{margin-bottom:2px} .side li{margin:0 0 5px} }
 .side{position:sticky;top:64px;padding:26px 0;font-size:14px}
 .side .lbl{font-family:var(--mich);font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;
   color:var(--ink-4);margin:0 0 10px}
@@ -49,6 +39,18 @@ main p a, main li a, main td a, main th a, main blockquote a{text-decoration:und
 .side li{margin:0 0 7px}
 .side a{color:var(--ink-3);font-size:13.5px}
 .side a[aria-current="page"]{color:var(--cyan)}
+/* On a phone the document list stacks ABOVE the content, so the reader scrolls past the nav to
+   reach the document. Found by rendering at 390px and LOOKING -- no scan reports "the reader must
+   scroll past the nav", because nothing overflows, mis-contrasts or lacks a label.
+   I TRIED WRAPPING IT INTO COMPACT CHIPS AND MEASURED IT WORSE: these titles are long, so every
+   chip wrapped to two lines and the nav grew 302px -> 496px, pushing content from y=366 to y=560.
+   A 64% regression that looked tidier in my head. Kept as a plain list, tightened instead.
+   Do not re-propose chips without re-measuring -- the titles are the reason, not the styling.
+   This block MUST stay below the base .side rules: same specificity, so the later rule wins.
+   Placed above them it was dead -- the sidebar stayed sticky and painted over the text. */
+@media (max-width:860px){ .wrap{grid-template-columns:minmax(0,1fr);gap:0} .side{position:static;
+  border-right:0;border-bottom:1px solid var(--hair);margin-bottom:16px;padding:14px 0 12px}
+  .side ul{margin-bottom:2px} .side li{margin:0 0 5px} }
 main{padding:26px 0 70px;min-width:0}
 h1{font-size:clamp(26px,4.4vw,38px);font-weight:300;line-height:1.15;color:var(--ink);margin:.1em 0 .5em;
   letter-spacing:-.01em}
