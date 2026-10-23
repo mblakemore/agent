@@ -1907,7 +1907,13 @@ _AICOMMONS_DEFAULTS = {
     "max_request_bytes": 5_500_000,    # below the Lambda's 6 MB so we fail locally, not on a 413
     "wall_seconds": 600,               # the agent's per-response wall (agent.py _stream_deadline)
     "tokens_per_second": 45,           # Opus-class streaming rate, for sizing max_tokens to the wall
+    "quota_floor_pct": 98,             # stop before the gateway's monthly-allowance 429 (P6)
+    "quota_poll_seconds": 300,         # GET /v1/token-usage at most this often
 }
+# Daily dollar caps per role (USD); `daily_cost_cap_usd` on the backend or in the
+# aicommons block (a number or {role: n}), or AICOMMONS_DAILY_CAP_USD, override.
+_AICOMMONS_DAILY_CAPS = {"main": 60.00, "summary": 3.00, "advisor": 10.00}
+_AICOMMONS_MIN_MAX_TOKENS = 1_024     # below this a shrunk reservation is not worth sending
 # advisor: the escalation tier (E3) — Opus at max effort for a Sonnet/Haiku main
 _AICOMMONS_ROLE_EFFORT = {"main": "high", "summary": "low", "advisor": "max"}
 _AICOMMONS_COMPLETE_MAX_TOKENS = {"main": 8_192, "summary": 4_096, "advisor": 16_384}
@@ -2028,6 +2034,90 @@ def translate_aicommons_error(e: BaseException) -> BaseException:
     return BackendRequestError(f"AI Commons rejected the request ({where}): {msg}")
 
 
+# ── AI Commons spend (P6) ──
+#
+# Dollars are computed from REAL usage (uncached, cache read, cache write, output)
+# and the model's prices. The file is shared by every agent process on the host
+# (subagents, parallel CICD jobs), so the read-modify-write runs under the
+# credential store's cross-process flock, not a thread lock (§7 M6).
+
+
+def aicommons_spend_path() -> Path:
+    return Path(os.path.expanduser(os.environ.get("AICOMMONS_SPEND_FILE")
+                                   or "~/.local/state/agent/aicommons_spend.json"))
+
+
+def _with_spend_file(fn):
+    """Run ``fn(data) -> result`` on the spend file under an exclusive lock;
+    writes ``data`` back if ``fn`` changed it. Never raises (spend accounting must
+    not fail a request); returns None on any failure."""
+    import bedrock_store
+    path = aicommons_spend_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = os.open(str(path) + ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return None
+    try:
+        if not bedrock_store._acquire_lock(lock_fd, 2.0):
+            return None
+        try:
+            try:
+                data = json.loads(path.read_text())
+                data = data if isinstance(data, dict) else {}
+            except (OSError, ValueError):
+                data = {}
+            before = json.dumps(data, sort_keys=True)
+            result = fn(data)
+            if json.dumps(data, sort_keys=True) != before:
+                fd, tmp = tempfile.mkstemp(prefix=".aicommons_spend.", dir=str(path.parent))
+                with os.fdopen(fd, "w") as fh:
+                    json.dump(data, fh, indent=1)
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, path)
+            return result
+        finally:
+            bedrock_store._release_lock(lock_fd)
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        os.close(lock_fd)
+
+
+def aicommons_cost_usd(model: str, usage: dict) -> float | None:
+    """USD for one call from real usage; None when the model has no prices."""
+    info = aicommons_model_info(model)
+    if info.get("price_in") is None or info.get("price_out") is None:
+        return None
+    pin, pout = float(info["price_in"]), float(info["price_out"])
+    pread = float(info.get("price_cache_read", pin))
+    pwrite = float(info.get("price_cache_write", pin))
+    return (int(usage.get("input_tokens") or 0) * pin
+            + int(usage.get("cache_read_input_tokens") or 0) * pread
+            + int(usage.get("cache_creation_input_tokens") or 0) * pwrite
+            + int(usage.get("completion_tokens") or usage.get("output_tokens") or 0) * pout) / 1000.0
+
+
+def aicommons_today_spend(role: str) -> float:
+    today = date.today().isoformat()
+    val = _with_spend_file(lambda d: float(((d.get(today) or {}).get(role) or {}).get("usd", 0.0)))
+    return float(val or 0.0)
+
+
+def aicommons_record_spend(role: str, model: str, usd: float, usage: dict) -> float:
+    today = date.today().isoformat()
+
+    def _add(d):
+        row = d.setdefault(today, {}).setdefault(role, {"usd": 0.0, "calls": 0, "tokens": 0})
+        row["usd"] = round(float(row.get("usd", 0.0)) + usd, 6)
+        row["calls"] = int(row.get("calls", 0)) + 1
+        row["tokens"] = int(row.get("tokens", 0)) + int(usage.get("total_tokens") or 0)
+        row.setdefault("models", {})
+        row["models"][model] = round(float(row["models"].get(model, 0.0)) + usd, 6)
+        return row["usd"]
+    return float(_with_spend_file(_add) or 0.0)
+
+
 class AICommonsBackend:
     """UCSB AI Commons over the Anthropic Messages API (``/v1/messages``).
 
@@ -2090,7 +2180,11 @@ class AICommonsBackend:
         wall_cap = int(0.8 * float(opts["wall_seconds"]) * float(opts["tokens_per_second"]))
         self.max_tokens = int(cfg.get("max_tokens") or min(self.info["max_output"], wall_cap))
         self.enabled = cfg.get("enabled", True)
-        self.session_usage = {"calls": 0, "read": 0, "write": 0, "uncached": 0, "output": 0}
+        self.session_usage = {"calls": 0, "read": 0, "write": 0, "uncached": 0, "output": 0, "usd": 0.0}
+        self.daily_cap = self._resolve_daily_cap(cfg, block)
+        self._quota_cache: tuple[float, dict] | None = None
+        self._quota_at_start: dict | None = None
+        self._price_warned = False
         self.client = _anthropic.Anthropic(
             base_url=self.base_url,
             api_key=self.api_key,
@@ -2107,6 +2201,7 @@ class AICommonsBackend:
             ids = self._model_ids(timeout=max(float(timeout), 5.0))
         except Exception as e:  # noqa: BLE001
             return False, str(translate_aicommons_error(e))
+        self.quota()   # startup poll: the session summary reports quota used from here
         if ids and self.model not in ids:
             if not self.model.startswith(_AICOMMONS_FAMILIES):
                 return True, f"{self.base_url} (model {self.model!r} taken as a bot id)"
@@ -2186,6 +2281,86 @@ class AICommonsBackend:
         log.info("aicommons.cache role=%s read=%d write=%d uncached=%d hit_pct=%.0f",
                  self.role, read, write, uncached, (100.0 * read / total) if total else 0.0)
 
+    def _resolve_daily_cap(self, cfg: dict, block: dict) -> float | None:
+        env = os.environ.get("AICOMMONS_DAILY_CAP_USD")
+        if env:
+            try:
+                return float(env)
+            except ValueError:
+                pass
+        for cap in (cfg.get("daily_cost_cap_usd"), block.get("daily_cost_cap_usd")):
+            if isinstance(cap, (int, float)):
+                return float(cap)
+            if isinstance(cap, dict) and isinstance(cap.get(self.role), (int, float)):
+                return float(cap[self.role])
+        return _AICOMMONS_DAILY_CAPS.get(self.role, 10.00)
+
+    # ── quota (P6) ──
+
+    def quota(self, force: bool = False) -> dict | None:
+        """``GET /v1/token-usage`` → {total_tokens, limit, remaining, reset_at}, cached
+        for ``quota_poll_seconds``. None if the gateway can't say (never raises)."""
+        now = time.monotonic()
+        if not force and self._quota_cache and now - self._quota_cache[0] < float(self.opts["quota_poll_seconds"]):
+            return self._quota_cache[1]
+        try:
+            q = self.client.with_options(max_retries=0, timeout=10.0).get("/v1/token-usage", cast_to=object)
+        except Exception as e:  # noqa: BLE001
+            logging.getLogger("llm_backend").debug("aicommons token-usage unavailable: %s", e)
+            return self._quota_cache[1] if self._quota_cache else None
+        if not isinstance(q, dict) or not q.get("limit"):
+            return None
+        self._quota_cache = (now, q)
+        if self._quota_at_start is None:
+            self._quota_at_start = dict(q)
+        return q
+
+    def _check_budget(self, kw: dict, log) -> None:
+        """Refuse before sending once the quota floor or the daily dollar cap is
+        reached; shrink max_tokens when the gateway's up-front reservation
+        (estimated prompt + max_tokens) would not fit what is left."""
+        if self.daily_cap is not None:
+            spent = aicommons_today_spend(self.role)
+            if spent >= self.daily_cap:
+                raise BudgetExceeded(
+                    f"AI Commons daily cap reached for role {self.role}: ${spent:.2f} of "
+                    f"${self.daily_cap:.2f} today (set daily_cost_cap_usd or AICOMMONS_DAILY_CAP_USD)")
+        q = self.quota()
+        if not q:
+            return
+        limit, used = float(q.get("limit") or 0), float(q.get("total_tokens") or 0)
+        reset = q.get("reset_at") or "the next monthly reset"
+        if limit and 100.0 * used / limit >= float(self.opts["quota_floor_pct"]):
+            raise BudgetExceeded(
+                f"AI Commons monthly allowance {100.0 * used / limit:.1f}% used ({int(used):,} of "
+                f"{int(limit):,} weighted tokens); stopping at the {self.opts['quota_floor_pct']}% floor. "
+                f"Resets {reset}.")
+        remaining = q.get("remaining")
+        if remaining is None:
+            return
+        est_prompt = len(json.dumps(kw, default=str)) // 4      # the gateway's own estimate
+        if int(remaining) < est_prompt + int(kw["max_tokens"]):
+            room = int(remaining) - est_prompt
+            if room < _AICOMMONS_MIN_MAX_TOKENS:
+                raise BudgetExceeded(
+                    f"AI Commons allowance nearly spent: {int(remaining):,} weighted tokens left, this "
+                    f"request needs ~{est_prompt:,} plus output. Resets {reset}.")
+            log.warning("aicommons: %d tokens of allowance left — max_tokens %d -> %d",
+                        int(remaining), kw["max_tokens"], room)
+            kw["max_tokens"] = room
+
+    def _record_spend(self, usage: dict, log) -> None:
+        usd = aicommons_cost_usd(self.model, usage)
+        if usd is None:
+            if not self._price_warned:
+                self._price_warned = True
+                log.warning("aicommons: no prices for %s — dollar spend not tracked (set "
+                            "aicommons.model_catalog to the gateway's model_catalog.json)", self.model)
+            return
+        self.session_usage["usd"] += usd
+        total = aicommons_record_spend(self.role, self.model, usd, usage)
+        log.debug("aicommons.cost role=%s model=%s usd=%.5f today_usd=%.4f", self.role, self.model, usd, total)
+
     _EFFORT_LADDER = ("low", "medium", "high", "xhigh", "max")
 
     def escalate_effort(self) -> str | None:
@@ -2206,9 +2381,15 @@ class AICommonsBackend:
         st = self.session_usage
         prompt = st["read"] + st["write"] + st["uncached"]
         hit = (100.0 * st["read"] / prompt) if prompt else 0.0
-        return (f"aicommons.session role={self.role} model={self.model} calls={st['calls']} "
+        line = (f"aicommons.session role={self.role} model={self.model} calls={st['calls']} "
                 f"cache_read={st['read']} cache_write={st['write']} uncached={st['uncached']} "
-                f"output={st['output']} hit_pct={hit:.0f}")
+                f"output={st['output']} hit_pct={hit:.0f} usd={st['usd']:.4f}")
+        if self._quota_at_start is not None:
+            q = self.quota(force=True) or {}
+            used = int(q.get("total_tokens") or 0) - int(self._quota_at_start.get("total_tokens") or 0)
+            line += (f" quota_used_this_session={max(used, 0)} quota_remaining={q.get('remaining')} "
+                     f"quota_limit={q.get('limit')} reset_at={q.get('reset_at')}")
+        return line
 
     # ── streaming ──
 
@@ -2234,6 +2415,7 @@ class AICommonsBackend:
         log = log or logging.getLogger("llm_backend")
         kw = self._request_kwargs(json or {})
         self._payload_guard(kw)
+        self._check_budget(kw, log)
         _debug_dump_payload("request", kw, kind=self.kind)
         opened = self._open(kw, log)
         return self._deltas(kw, opened, log)
@@ -2272,6 +2454,7 @@ class AICommonsBackend:
             final = tr.final_chunk()
             yield final
             self._log_usage(log, final.get("usage") or {})
+            self._record_spend(final.get("usage") or {}, log)
             ok = True
         finally:
             _safe_close_stream(stream)
@@ -2291,6 +2474,7 @@ class AICommonsBackend:
         kw = {"model": self.model, "max_tokens": min(max_tokens, int(self.info["max_output"])),
               "messages": [{"role": "user", "content": prompt}], **self._thinking_kwargs()}
         self._payload_guard(kw)
+        self._check_budget(kw, log)
         if cancel_check:
             cancel_check()
         t0 = time.monotonic()
@@ -2305,7 +2489,9 @@ class AICommonsBackend:
                      self.kind, self.model, self.role, int((time.monotonic() - t0) * 1000), ok)
         usage = getattr(resp, "usage", None)
         if usage is not None:
-            self._log_usage(log, anthropic_wire._as_dict(usage))
+            u = anthropic_wire._as_dict(usage)
+            self._log_usage(log, u)
+            self._record_spend(u, log)
         return "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text")
 
 

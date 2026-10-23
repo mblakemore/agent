@@ -46,11 +46,19 @@ def error_event(etype, message):
 class Gateway:
     """Scripted responses, one per request; records every request."""
 
-    def __init__(self, *responses):
+    def __init__(self, *responses, quota=None):
         self.responses = list(responses)
         self.requests = []
+        self.quota = quota            # dict served at /v1/token-usage; None → 404
+        self.quota_calls = 0
 
     def __call__(self, request: httpx.Request):
+        if request.url.path.endswith("/token-usage"):
+            self.quota_calls += 1
+            if self.quota is None:
+                return httpx.Response(404, json={"type": "error", "error": {"type": "not_found_error",
+                                                                            "message": "no"}})
+            return httpx.Response(200, json=self.quota)
         self.requests.append(request)
         item = self.responses.pop(0)
         if isinstance(item, Exception):
@@ -70,8 +78,10 @@ def status(code, etype, message, headers=None):
 
 
 @pytest.fixture
-def make(monkeypatch):
+def make(monkeypatch, tmp_path):
     monkeypatch.delenv("AGENT_FAKE_BACKEND", raising=False)
+    monkeypatch.setenv("AICOMMONS_SPEND_FILE", str(tmp_path / "spend.json"))
+    monkeypatch.delenv("AICOMMONS_DAILY_CAP_USD", raising=False)
 
     def _make(gw, **cfg):
         b = lb.AICommonsBackend({"kind": "aicommons", "base_url": BASE, "api_key": "sk-test",
@@ -285,3 +295,62 @@ def test_system_is_never_folded_for_this_kind(make):
     b = make(Gateway())                 # no responses scripted: a probe request would fail the test
     msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
     assert lb.maybe_fold_system(msgs, b, log) is msgs
+
+
+# ── P6: quota and spend ─────────────────────────────────────────────────
+
+
+def test_real_usage_is_priced_and_recorded(make, tmp_path):
+    gw = Gateway(text_turn("hi", usage={"input_tokens": 1000, "output_tokens": 2000,
+                                        "cache_read_input_tokens": 10_000, "cache_creation_input_tokens": 0}))
+    b = make(gw)
+    list(b.stream_chat(log, json=AGENT_BODY))
+    # opus 5.5 per 1K: in .0055, out .0275, cache read .00055
+    expected = 1 * 0.0055 + 2 * 0.0275 + 10 * 0.00055
+    assert b.session_usage["usd"] == pytest.approx(expected)
+    assert lb.aicommons_today_spend("main") == pytest.approx(expected)
+    assert "usd=" in b.session_summary()
+
+
+def test_daily_cap_refuses_before_sending(make, monkeypatch):
+    monkeypatch.setenv("AICOMMONS_DAILY_CAP_USD", "0.01")
+    lb.aicommons_record_spend("main", "claude-v5.5-opus", 0.02, {})
+    gw = Gateway(text_turn())
+    with pytest.raises(lb.BudgetExceeded, match="daily cap"):
+        make(gw).stream_chat(log, json=AGENT_BODY)
+    assert gw.requests == []
+
+
+def test_quota_floor_refuses_with_reset_time(make):
+    gw = Gateway(text_turn(), quota={"total_tokens": 990, "limit": 1000, "remaining": 10,
+                                     "reset_at": "2026-11-01T00:00:00Z"})
+    with pytest.raises(lb.BudgetExceeded) as ei:
+        make(gw).stream_chat(log, json=AGENT_BODY)
+    assert "2026-11-01" in str(ei.value) and gw.requests == []
+
+
+def test_max_tokens_shrinks_to_fit_the_reservation(make):
+    gw = Gateway(text_turn(), quota={"total_tokens": 0, "limit": 10_000_000, "remaining": 10_000,
+                                     "reset_at": "x"})
+    list(make(gw).stream_chat(log, json=AGENT_BODY))
+    assert 1024 <= gw.body()["max_tokens"] < 10_000
+
+
+def test_quota_is_polled_at_most_every_five_minutes(make):
+    gw = Gateway(text_turn(), text_turn(), quota={"total_tokens": 1, "limit": 10_000_000,
+                                                  "remaining": 9_999_999, "reset_at": "x"})
+    b = make(gw)
+    list(b.stream_chat(log, json=AGENT_BODY))
+    list(b.stream_chat(log, json=AGENT_BODY))
+    assert gw.quota_calls == 1
+
+
+def test_spend_file_survives_concurrent_writers(make):
+    import threading
+    threads = [threading.Thread(target=lambda: [lb.aicommons_record_spend("main", "m", 0.001, {})
+                                                for _ in range(20)]) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert lb.aicommons_today_spend("main") == pytest.approx(0.1)
