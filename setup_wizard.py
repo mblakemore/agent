@@ -443,6 +443,12 @@ def probe_throughput(section, role="main", http=None):
                 "detail": "bedrock complete() cannot cap tokens — not probed",
                 "body": None}
 
+    if kind == "aicommons":
+        # metered against the user's monthly quota; the backend sizes max_tokens
+        # to the response wall itself, so a throughput figure buys nothing here
+        return {"status": UNMEASURED, "gen_tps": None, "prompt_tps": None,
+                "detail": "aicommons: metered quota — not probed", "body": None}
+
     if kind == "foundry":
         base = (section.get("api_url") or "").rstrip("/")
         hdrs = {"x-api-key": section.get("api_key", ""),
@@ -870,6 +876,8 @@ def _fmt_probe(report):
 
 
 _BEDROCK_MODEL_DEFAULTS = {"main": "claude-v4.6-opus", "summary": "claude-v4.5-haiku"}
+_AICOMMONS_MODEL_DEFAULTS = {"main": "claude-v5.5-opus", "summary": "claude-v5.5-haiku"}
+_AICOMMONS_EFFORT_DEFAULTS = {"main": "high", "summary": "low"}
 
 
 def _bedrock_cap_default(role):
@@ -893,13 +901,14 @@ def _consent_asker(input_fn, print_fn):
 def _role_screen(role, current, input_fn, print_fn, http, found=None):
     """One role's questions + inline probe. Returns (section_dict, report)."""
     print_fn(_section(role.upper(), " model"))
-    cur_kind = {"llamacpp": "1", "bedrock": "2", "foundry": "3"}.get(
+    cur_kind = {"llamacpp": "1", "bedrock": "2", "foundry": "3", "aicommons": "4"}.get(
         current.get("kind", "llamacpp"), "1")
     kind_ans = _ask("backend kind: 1) llama.cpp / OpenAI-compatible  "
-                    "2) AWS Bedrock  3) Azure (foundry)", cur_kind,
+                    "2) AWS Bedrock (legacy published-bot API)  3) Azure (foundry)  "
+                    "4) UCSB AI Commons", cur_kind,
                     input_fn).strip()
-    kind = {"1": "llamacpp", "2": "bedrock", "3": "foundry"}.get(kind_ans,
-                                                                 "llamacpp")
+    kind = {"1": "llamacpp", "2": "bedrock", "3": "foundry", "4": "aicommons"}.get(kind_ans,
+                                                                                 "llamacpp")
 
     if kind == "bedrock":
         section = {"kind": "bedrock"}
@@ -923,6 +932,20 @@ def _role_screen(role, current, input_fn, print_fn, http, found=None):
             section["daily_cost_cap_usd"] = float(cap)
         except ValueError:
             print_fn(f"   cap {cap!r} not a number — default kept")
+    elif kind == "aicommons":
+        section = {"kind": "aicommons"}
+        base_url = _ask("API stage URL, ending in /v1 (ENTER = env AICOMMONS_BASE_URL / "
+                        "credential store)", current.get("base_url", ""), input_fn)
+        api_key = _ask("per-user API key — not a published-bot key (ENTER = env "
+                       "AICOMMONS_API_KEY / store)", current.get("api_key", ""), input_fn)
+        model = _ask("model id", current.get("model", _AICOMMONS_MODEL_DEFAULTS.get(role, "")),
+                     input_fn)
+        effort = _ask("effort (low / medium / high / xhigh / max)",
+                      current.get("effort", _AICOMMONS_EFFORT_DEFAULTS.get(role, "high")), input_fn)
+        for k, v in (("base_url", base_url), ("api_key", api_key), ("model", model),
+                     ("effort", effort)):
+            if v:
+                section[k] = v
     elif kind == "foundry":
         section = {"kind": "foundry"}
         section["api_url"] = _ask(

@@ -42,6 +42,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+import anthropic_wire
+
 log = logging.getLogger("cc-gateway")
 
 # Default read timeout is generous — a local gemma backend can take minutes to
@@ -103,165 +105,21 @@ class MessagesRequest(BaseModel):
     tool_choice: Optional[dict] = None
 
 
-def _block_dict(block) -> dict:
-    if isinstance(block, dict):
-        return block
-    return block.model_dump() if hasattr(block, "model_dump") else dict(block.__dict__)
-
-
 # ---------------------------------------------------------------------------
-# Anthropic  →  OpenAI request translation
+# Anthropic  →  OpenAI request translation (shared with the backends; see
+# anthropic_wire.py — these names stay for callers and tests)
 # ---------------------------------------------------------------------------
-def _system_text(system) -> str:
-    if not system:
-        return ""
-    if isinstance(system, str):
-        return system
-    parts = []
-    for block in system:
-        b = _block_dict(block)
-        if b.get("type") == "text":
-            parts.append(b.get("text", ""))
-    return "\n".join(parts)
-
-
-def _flatten_tool_result(content) -> str:
-    """A tool_result's ``content`` may be a string or a list of blocks."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for rb in content:
-            b = _block_dict(rb)
-            if b.get("type") == "text":
-                parts.append(b.get("text", ""))
-            elif b.get("type") == "image":
-                parts.append("[image omitted]")
-        return "\n".join(parts)
-    return str(content)
-
-
-def _user_content_blocks(blocks: List[dict]) -> Union[str, list]:
-    """Build OpenAI user-message content from Anthropic text/image blocks.
-
-    Returns a plain string when there are no images (the common case), or the
-    OpenAI multimodal list form when images are present.
-    """
-    text_parts: List[str] = []
-    parts: List[dict] = []
-    has_image = False
-    for block in blocks:
-        b = _block_dict(block)
-        t = b.get("type")
-        if t == "text":
-            txt = b.get("text", "")
-            text_parts.append(txt)
-            parts.append({"type": "text", "text": txt})
-        elif t == "image":
-            src = b.get("source", {})
-            if src.get("type") == "base64":
-                has_image = True
-                url = f"data:{src.get('media_type', 'image/png')};base64,{src.get('data', '')}"
-                parts.append({"type": "image_url", "image_url": {"url": url}})
-    if has_image:
-        return parts
-    return "\n".join(text_parts)
+_system_text = anthropic_wire.system_text
+_flatten_tool_result = anthropic_wire.flatten_tool_result
+_user_content_blocks = anthropic_wire.user_content_blocks
+anthropic_tools_to_openai = anthropic_wire.anthropic_tools_to_openai
+map_tool_choice = anthropic_wire.map_tool_choice
 
 
 def anthropic_to_openai_messages(req: MessagesRequest) -> List[dict]:
-    """Translate Anthropic messages + system into an OpenAI message list.
-
-    Per-block rules:
-      - system (str | text blocks)         → leading ``role:"system"`` message
-      - user text/image blocks             → ``role:"user"`` (string or vision list)
-      - user tool_result blocks            → one ``role:"tool"`` message *each*
-                                             (never merged), carrying tool_call_id
-      - assistant text blocks              → assistant ``content``
-      - assistant tool_use blocks          → assistant ``tool_calls`` (args stringified)
-    """
-    out: List[dict] = []
-
-    sys_text = _system_text(req.system)
-    if sys_text:
-        out.append({"role": "system", "content": sys_text})
-
-    for msg in req.messages:
-        content = msg.content
-
-        if isinstance(content, str):
-            out.append({"role": msg.role, "content": content})
-            continue
-
-        if msg.role == "user":
-            # tool_result blocks each become a standalone tool message; the
-            # remaining text/image blocks form one user message.
-            non_tool = []
-            for block in content:
-                b = _block_dict(block)
-                if b.get("type") == "tool_result":
-                    out.append({
-                        "role": "tool",
-                        "tool_call_id": b.get("tool_use_id", ""),
-                        "content": _flatten_tool_result(b.get("content", "")),
-                    })
-                else:
-                    non_tool.append(b)
-            if non_tool:
-                out.append({"role": "user", "content": _user_content_blocks(non_tool)})
-
-        else:  # assistant
-            text_parts = []
-            tool_calls = []
-            for block in content:
-                b = _block_dict(block)
-                t = b.get("type")
-                if t == "text":
-                    text_parts.append(b.get("text", ""))
-                elif t == "tool_use":
-                    tool_calls.append({
-                        "id": b.get("id", ""),
-                        "type": "function",
-                        "function": {
-                            "name": b.get("name", ""),
-                            "arguments": json.dumps(b.get("input", {})),
-                        },
-                    })
-            assistant_msg: dict = {"role": "assistant"}
-            assistant_msg["content"] = "\n".join(text_parts) if text_parts else None
-            if tool_calls:
-                assistant_msg["tool_calls"] = tool_calls
-            out.append(assistant_msg)
-
-    return out
-
-
-def anthropic_tools_to_openai(tools: Optional[List[dict]]) -> Optional[List[dict]]:
-    if not tools:
-        return None
-    out = []
-    for tool in tools:
-        out.append({
-            "type": "function",
-            "function": {
-                "name": tool.get("name", ""),
-                "description": tool.get("description", ""),
-                "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
-            },
-        })
-    return out
-
-
-def map_tool_choice(tool_choice: Optional[dict]) -> Optional[Union[str, dict]]:
-    if not tool_choice:
-        return None
-    t = tool_choice.get("type")
-    if t == "auto":
-        return "auto"
-    if t == "any":
-        return "required"
-    if t == "tool" and tool_choice.get("name"):
-        return {"type": "function", "function": {"name": tool_choice["name"]}}
-    return "auto"
+    """Translate Anthropic messages + system into an OpenAI message list
+    (rules in ``anthropic_wire.anthropic_to_openai``)."""
+    return anthropic_wire.anthropic_to_openai(req.system, req.messages)
 
 
 def build_openai_body(req: MessagesRequest, backend) -> dict:

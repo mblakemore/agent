@@ -452,7 +452,7 @@ _DEFAULT_CONFIG = {
         "summary_threshold": 5,
         "summary_max_chars": 3000,
         "max_context_messages": 30,
-        "ctx_size": 114688,
+        "ctx_size": 114688,   # _DEFAULT_CTX_SIZE
         "max_tokens": 16384,
     },
     "cycle": {
@@ -578,6 +578,9 @@ _DEFAULT_CONFIG = {
 }
 
 
+_DEFAULT_CTX_SIZE = 114688
+
+
 def _synthesize_backends_registry(config):
     """Build a ``backends`` registry dict from the legacy ``llm`` / ``summary``
     top-level blocks, or pass through an explicit ``backends`` block.
@@ -623,6 +626,8 @@ def _display_backend_kind(kind, base_url) -> str:
     ``llamacpp`` but live behind ``*.amazonaws.com`` — surface those as ``aws``
     so the banner is meaningful without exposing the endpoint URL.
     """
+    if kind == "aicommons":
+        return "ai-commons"
     if base_url and "amazonaws.com" in str(base_url).lower():
         return "aws"
     return kind or ""
@@ -650,6 +655,8 @@ def _warn_if_world_readable_with_key(config_path, user_config):
             if isinstance(entry, dict) and entry.get("api_key"):
                 has_key = True
                 break
+    if isinstance(user_config.get("aicommons"), dict) and user_config["aicommons"].get("api_key"):
+        has_key = True
     if not has_key:
         return
     try:
@@ -781,6 +788,8 @@ def _classify_auto_result(result, error_kind=None, last_exit=None):
             return EXIT_CONTEXT, "context overflow after every reduction"
         if error_kind == "backend":
             return EXIT_BACKEND, "backend request failed after retries"
+        if error_kind == "refusal":
+            return EXIT_BACKEND, "refusal: the model or a gateway guardrail declined the request"
         return EXIT_ERROR, "run loop returned error"
     return EXIT_OK, str(result or "")
 
@@ -1253,7 +1262,67 @@ _set_extra_allowed_paths(_config.get("preferences", {}).get("extra_allowed_paths
 # Backend instances (plan task 1.4). Phase 1 only wires LlamacppBackend;
 # Phase 2 adds BedrockBackend behind the same factory. Tests may monkeypatch
 # these module globals to swap backends without touching the factory.
-from llm_backend import build_backend as _build_backend
+from llm_backend import ConfigError, build_backend as _build_backend
+
+
+def _apply_model_effort_overrides(model, effort) -> None:
+    """``--model`` / ``--effort``: write them into the main backend's config (so a
+    failover rebuild keeps them) and rebuild main. No-op when neither is given."""
+    global _main_backend
+    if not model and not effort:
+        return
+    entry = _config["backends"].setdefault("main", {})
+    if model:
+        entry["model"] = model
+    if effort:
+        entry["effort"] = effort
+    _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
+    if getattr(_main_backend, "model", None):
+        _config["llm"]["model"] = _main_backend.model
+    logging.getLogger("agent").info("main backend override: model=%s effort=%s",
+                                    getattr(_main_backend, "model", None), effort or "-")
+
+
+# M6: what a subagent process inherits. The parent's backend choices ride in the
+# environment (the subagent tool runs in this process and builds the command);
+# `subagent.model` / `subagent.effort` in config pick a cheaper tier for children,
+# which start with a cold cache anyway (E2).
+_SUBAGENT_ARGS_ENV = "AGENT_SUBAGENT_ARGS"
+
+
+def _export_backend_overrides(args) -> dict:
+    """Tell in-process tools that read config from disk (consult_advisor) which backend
+    the command line chose: kind / model / effort per role, never URLs or keys."""
+    out = {}
+    for role, kind in (("main", getattr(args, "backend_main", None)),
+                       ("summary", getattr(args, "backend_summary", None))):
+        if kind:
+            out[role] = {"kind": kind, "model": _config["backends"].get(role, {}).get("model")}
+    if getattr(args, "model", None) or getattr(args, "effort", None):
+        out.setdefault("main", {"kind": _config["backends"].get("main", {}).get("kind")})
+        out["main"].update({"model": _config["backends"]["main"].get("model"),
+                            "effort": getattr(args, "effort", None)})
+    if out:
+        os.environ["AGENT_BACKEND_OVERRIDES"] = json.dumps(out)
+    return out
+
+
+def _export_subagent_args(args) -> list:
+    out = []
+    for flag, val in (("--backend-main", getattr(args, "backend_main", None)),
+                      ("--backend-summary", getattr(args, "backend_summary", None))):
+        if val:
+            out += [flag, val]
+    sub = _config.get("subagent") if isinstance(_config.get("subagent"), dict) else {}
+    model = sub.get("model") or getattr(args, "model", None)
+    effort = sub.get("effort") or getattr(args, "effort", None)
+    if model:
+        out += ["--model", str(model)]
+    if effort:
+        out += ["--effort", str(effort)]
+    if out:
+        os.environ[_SUBAGENT_ARGS_ENV] = json.dumps(out)
+    return out
 
 
 def _cfg_with_role(backends: dict, role: str) -> dict:
@@ -1265,13 +1334,21 @@ def _cfg_with_role(backends: dict, role: str) -> dict:
     """
     entry = dict(backends.get(role, {}))
     entry.setdefault("role", role)
+    try:
+        from llm_backend import normalize_kind
+        if normalize_kind(entry.get("kind")) == "aicommons" and isinstance(_config.get("aicommons"), dict):
+            # the shared top-level block (base_url, api_key, thinking, caps) under the
+            # role's own keys, which win
+            entry["aicommons"] = {**_config["aicommons"], **(entry.get("aicommons") or {})}
+    except NameError:  # _config not built yet (called from tests with a bare registry)
+        pass
     return entry
 
 
 try:
     _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
     _summary_backend = _build_backend(_cfg_with_role(_config["backends"], "summary"))
-except ValueError as _be:
+except (ValueError, ConfigError) as _be:
     # A bad "kind" (or other unbuildable backend config) must not dump a raw
     # import-time traceback on the user — build_backend already phrases these
     # to name the config field and the fix. Same stderr-for-config-integrity
@@ -1329,6 +1406,7 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
     global _main_backend, _summary_backend
 
     defaults = {"main": "claude-v4.6-opus", "summary": "claude-v4.5-haiku"}
+    _AICOMMONS_DEFAULT_MODELS = {"main": "claude-v5.5-opus", "summary": "claude-v5.5-haiku"}
 
     # Model IDs the Bedrock gateway accepts. An existing model that doesn't
     # match one of these prefixes was set for the OTHER backend kind (likely
@@ -1344,7 +1422,19 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
         if not kind:
             return
         entry = _config["backends"].setdefault(role, {})
+        prev_kind = entry.get("kind")
         entry["kind"] = kind
+        if kind == "aicommons":
+            if prev_kind not in ("aicommons", "ucsb", "ai-commons", "ai_commons"):
+                # The entry's endpoint and key belong to the kind being replaced (usually the
+                # llamacpp default http://127.0.0.1:8080). Left in place they outrank the
+                # aicommons block, AICOMMONS_* env and the keystore, and every request goes
+                # to the local server instead of the gateway.
+                for k in ("base_url", "api_key", "api_key_env"):
+                    entry.pop(k, None)
+            existing = entry.get("model", "")
+            if not existing.startswith(_bedrock_prefixes):
+                entry["model"] = _AICOMMONS_DEFAULT_MODELS[role]
         if kind == "bedrock":
             existing = entry.get("model", "")
             if not existing or not existing.startswith(_bedrock_prefixes):
@@ -1723,7 +1813,8 @@ def _calculate_retry_delay(attempt):
 # ``ContextOverflowError`` lives in ``llm_backend`` post-refactor. The alias
 # here keeps ``from agent import ContextOverflowError`` working unchanged for
 # existing tests and callers.
-from llm_backend import BedrockBudgetExceeded, ContextOverflowError
+from llm_backend import BedrockBudgetExceeded, ConfigError, ContextOverflowError
+from anthropic_wire import THINKING_KEY as _THINKING_KEY
 
 
 _LLM_REQUEST_TIMEOUT = 300  # 5 minutes per request
@@ -1830,11 +1921,17 @@ def _trigger_failover(log, backend_type, cause=None):
                 backend_type, other_role, fallback_cfg.get("kind", "?"),
             )
             return False
-        if isinstance(cause, BedrockBudgetExceeded) and \
-                fallback_cfg.get("kind") == "bedrock":
+        # AI Commons quota is per USER, not per model: failing over to another
+        # model on the same gateway re-trips the same allowance.
+        same_quota = fallback_cfg.get("kind") == "bedrock" or (
+            fallback_cfg.get("kind") == "aicommons"
+            and getattr(failing, "kind", None) == "aicommons"
+            and (fallback_cfg.get("base_url") or getattr(failing, "base_url", ""))
+            == getattr(failing, "base_url", ""))
+        if isinstance(cause, BedrockBudgetExceeded) and same_quota:
             log.error(
-                "Failover skipped: %s daily cap tripped and the fallback is "
-                "also bedrock — swapping would re-trip (or evade) the cap",
+                "Failover skipped: %s budget/quota tripped and the fallback "
+                "draws on the same one — swapping would re-trip (or evade) it",
                 backend_type,
             )
             return False
@@ -1932,6 +2029,86 @@ def _iter_stream_chunks(response):
     else:
         for chunk in response:
             yield chunk
+
+
+def _prompt_caching_backend():
+    """True when the main backend caches the request prefix server-side and bills
+    misses (aicommons): the history must then grow append-only and evict in chunks
+    (aicommons-integration.md P4). Other kinds keep the per-turn sliding window."""
+    return getattr(globals().get("_main_backend"), "kind", None) == "aicommons"
+
+
+# P4.2 — on a prompt-caching backend, evict down to this fraction of the window
+# in one step, then grow append-only again: one cache miss per eviction instead
+# of one per turn.
+_CACHE_EVICT_TO_FRAC = 0.6
+
+
+class _CompletionResponse:
+    """Just enough of a chat-completions response (``.json()``) for tool_recovery."""
+
+    def __init__(self, text):
+        self._text = text or ""
+
+    def json(self):
+        return {"choices": [{"message": {"role": "assistant", "content": self._text}}]}
+
+
+def _recovery_llm_call(log):
+    """The one-shot call tool_recovery makes. llama.cpp keeps the raw non-streaming
+    request it was written for; a streaming-only backend (aicommons, bedrock) gets
+    the question through the summary backend's complete() instead (M4)."""
+    if getattr(_main_backend, "kind", "llamacpp") in ("llamacpp", "fake"):
+        return lambda **kw: _llm_request(log, **kw)
+
+    def _call(json=None, timeout=30, **_kw):
+        msgs = (json or {}).get("messages") or []
+        prompt = "\n\n".join(str(m.get("content", "")) for m in msgs)
+        gen = {"max_tokens": max(int((json or {}).get("max_tokens") or 64), 1024)}
+        try:
+            text = _summary_backend.complete(prompt=prompt, gen_params=gen, timeout=timeout)
+        except TypeError:  # a backend whose complete() takes only the prompt (foundry)
+            text = _summary_backend.complete(prompt=prompt)
+        return _CompletionResponse(text)
+    return _call
+
+
+_RUNTIME_NOTE_HEAD = "[Runtime note — from the framework, not the user or the tool]"
+
+
+def _persist_runtime_note(conversation_history, messages_to_send, lines, turn):
+    """P4.1: append this turn's runtime note to the newest history message (a user turn
+    or a tool result — never sent before, so editing it costs no cache), or add it as
+    a user turn after an assistant one. Idempotent within a turn: a retried request
+    (overflow reduction, stall) re-sends the same note rather than stacking another."""
+    if not lines or not conversation_history:
+        return
+    note = _RUNTIME_NOTE_HEAD + "\n" + "\n\n".join(lines)
+    last = conversation_history[-1]
+    if last.get("_note_turn") == turn:
+        return
+    # A message noted on an EARLIER turn has already been sent; editing it would
+    # break the prefix, so the new note gets its own message.
+    if (last.get("role") in ("user", "tool") and isinstance(last.get("content"), str)
+            and last.get("_note_turn") is None):
+        last["content"] = (last["content"] + "\n\n" + note) if last["content"] else note
+        last.pop("_tokens", None)          # M7: token_utils caches counts per message
+        last["_note_turn"] = turn
+        return
+    msg = {"role": "user", "content": note, "_note_turn": turn}
+    conversation_history.append(msg)
+    if messages_to_send is not None:
+        messages_to_send.append(msg)
+
+
+def _tool_args_complete(tool_call):
+    """True when a streamed tool call's arguments parse as JSON (empty counts as {})."""
+    args = (tool_call.get("function") or {}).get("arguments") or "{}"
+    try:
+        json.loads(args)
+        return True
+    except (json.JSONDecodeError, TypeError):
+        return False
 
 
 def _safe_close(response):
@@ -3074,6 +3251,7 @@ def _compress_repeated_tool_results(conversation_history: list, func_name: str, 
         if content.startswith("[compressed"):
             continue
         conversation_history[idx]["content"] = _summarize_for_compression(content, func_name, log)
+        conversation_history[idx].pop("_tokens", None)   # token_utils caches per message
         changed += 1
     if changed:
         log.info("history compression: %d older %s result(s) compressed", changed, func_name)
@@ -3563,20 +3741,41 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
     used = 0
     selected = []
     oldest_idx = len(conversation_history)
-    for i in range(len(conversation_history) - 1, -1, -1):
-        if len(selected) >= effective_max:
-            break
-        msg_tokens = _estimate_tokens(conversation_history[i])
-        needed = used + msg_tokens
-        if context_msg and i > 0:
-            needed += context_tokens
-        if needed > budget:
-            break
-        selected.append(conversation_history[i])
-        used += msg_tokens
-        oldest_idx = i
-
-    selected.reverse()
+    head = summary_state.get("_cache_head") if _prompt_caching_backend() and not max_messages_override else None
+    if head is not None and 0 <= head < len(conversation_history):
+        # P4.2: keep the window's head where it is while everything from it still
+        # fits, so this request extends the previous one byte for byte.
+        window = conversation_history[head:]
+        used = sum(_estimate_tokens(m) for m in window)
+        extra = context_tokens if (context_msg and head > 0) else 0
+        if len(window) <= effective_max and used + extra <= budget:
+            selected, oldest_idx = list(window), head
+        else:
+            used = 0
+    if not selected:
+        # Greedy fill from the newest message back. On a caching backend, fill only
+        # to a fraction of the limits, so the new head then holds for many turns.
+        frac = _CACHE_EVICT_TO_FRAC if (_prompt_caching_backend() and not max_messages_override) else 1.0
+        fill_budget = int(budget * frac) if frac < 1.0 else budget
+        fill_max = max(2, int(effective_max * frac)) if frac < 1.0 else effective_max
+        for i in range(len(conversation_history) - 1, -1, -1):
+            if len(selected) >= fill_max:
+                break
+            msg_tokens = _estimate_tokens(conversation_history[i])
+            needed = used + msg_tokens
+            if context_msg and i > 0:
+                needed += context_tokens
+            if needed > fill_budget:
+                break
+            selected.append(conversation_history[i])
+            used += msg_tokens
+            oldest_idx = i
+        selected.reverse()
+        if frac < 1.0:
+            if summary_state.get("_cache_head") not in (None, oldest_idx):
+                log.info("cache-friendly eviction: window head %s -> %d (%d messages, ~%d tokens)",
+                         summary_state.get("_cache_head"), oldest_idx, len(selected), used)
+            summary_state["_cache_head"] = oldest_idx
 
     if oldest_idx > 0 and context_msg:
         selected.insert(0, context_msg)
@@ -4255,8 +4454,19 @@ def _log_bedrock_session_spend(log):
     Fires at session end so operators grep-ing the session log see an
     at-a-glance spend snapshot even when ``bedrock.cost.tick`` is at
     DEBUG (plan § 15.75 telemetry default). Silent when no Bedrock
-    backend is in use.
+    backend is in use. AI Commons backends log their session cache totals
+    (P4.5) and quota/spend (P6) here too.
     """
+    _seen = set()
+    for backend in (_main_backend, _summary_backend):
+        if (getattr(backend, "kind", None) == "aicommons" and id(backend) not in _seen
+                and not getattr(backend, "_session_logged", False)):
+            _seen.add(id(backend))
+            backend._session_logged = True   # the exit path can run this twice
+            try:
+                log.info("%s", backend.session_summary())
+            except Exception as _e:  # noqa: BLE001 — never fail an exit path over a log line
+                log.debug("aicommons session summary skipped: %s", _e)
     try:
         from llm_backend import (
             _load_today_spend as _load,
@@ -4433,7 +4643,16 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     _CTX_HARD_CAP = 85_000
     _CTX_CONFIG_CAP = _config["context"]["ctx_size"]  # explicit agent cap (may be default 114688)
     detected = _main_backend.detect_ctx_size()
-    if detected:
+    if detected and getattr(_main_backend, "kind", None) == "aicommons":
+        # detect_ctx_size() is already tokens, already capped by
+        # aicommons.max_context_tokens — the 85% / 85K llama_decode guards don't
+        # apply. Only an explicitly LOWERED context.ctx_size still caps it (M7).
+        _explicit = _CTX_CONFIG_CAP if _CTX_CONFIG_CAP != _DEFAULT_CTX_SIZE else None
+        ctx_size = min(int(detected), _explicit or int(detected))
+        _config["context"]["ctx_size"] = ctx_size
+        log.info("AI Commons context: model window capped to %d tokens, using ctx_size=%d",
+                 detected, ctx_size)
+    elif detected:
         ctx_size = min(int(detected * 0.85), _CTX_HARD_CAP, _CTX_CONFIG_CAP)
         _config["context"]["ctx_size"] = ctx_size
         log.info("Auto-detected main model n_ctx=%d, using ctx_size=%d (85%% / cap %dk / config cap %d)",
@@ -4490,7 +4709,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         log.info("Advisor probe skipped: fake backend active")
     if advisor_enabled:
         _emit("on_boot_progress",
-              f"checking advisor backend — {_adv_eff.get('base_url', '?')} "
+              f"checking advisor backend — "
+              f"{_adv_eff.get('base_url') or _display_backend_kind(_adv_eff.get('kind') or '?', '')} "
               f"{_adv_eff.get('model') or '(served model)'}")
         try:
             from tools.consult_advisor import startup_check as _advisor_check
@@ -5508,6 +5728,16 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 _funnel_ev("no_escalate", source=source)
                 return ""
             setattr(_maybe_advisor_nudge, _latch, True)
+            # E2: on a backend with an effort knob, raise effort first (same model, so
+            # the cache and stored thinking survive; once per run). The advisor path
+            # below still runs.
+            _esc = getattr(_main_backend, "escalate_effort", None)
+            if callable(_esc):
+                _new_effort = _esc()
+                if _new_effort:
+                    log.info("effort escalated to %s (source=%s)", _new_effort, source)
+                    telemetry.record_patch_event("effort_escalation", kind=source + ":" + _new_effort)
+                    _emit("on_notice", "info", f"[raising reasoning effort to {_new_effort}]")
             # First-class telemetry (same pipeline as success_check_block): the
             # trigger SUGGESTED escalation. Pairs with the tool-side advisor_call
             # outcomes + record_tool_call("consult_advisor") to form the funnel
@@ -5821,6 +6051,14 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
     # end_cycle is unlocked (appended to _session_tools) after the first nudge
     # fires so the agent can't skip the cycle by calling it before doing work.
     _end_cycle_unlocked = False
+    if _prompt_caching_backend() and not any(
+            (t.get("function") or {}).get("name") == "end_cycle" for t in _session_tools):
+        # P4.4: tools render FIRST in the request, so adding one mid-run invalidates the
+        # whole cached prompt. Offer end_cycle from turn 1. It is NOT gated on the
+        # first-nudge unlock: a model that finishes cleanly is never nudged, and live it
+        # had its correct end_cycle refused. The success-check / phase / CICD gates still
+        # apply, and ending this way is what a text-only finish would do anyway.
+        _session_tools.append(_end_cycle_tool.definition)
 
     # Reviewer sessions rarely make code edits (they verify and merge), so the
     # edit-deadline nudge is a false positive for that role.  Detect by
@@ -6303,10 +6541,23 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # message, the c0b2660 lesson), so the whole history remains the cached prefix.
             _static_lines = [ln for ln in _system_lines
                              if ln.startswith("Working directory:") or ln.startswith("Tool-selection guidance:")]
+            if _prompt_caching_backend():
+                # E7: nothing run-specific before the first user turn, so runs that start
+                # within the cache TTL share the cached system prompt + tools.
+                _static_lines = [ln for ln in _static_lines if not ln.startswith("Working directory:")]
             _dynamic_lines = [ln for ln in _system_lines if ln not in _static_lines]
-            _outgoing_messages = [
+            if _prompt_caching_backend():
+                # P4.1: the note is STORED in history (once per turn), so the next request
+                # extends this one exactly and the server's last-message cache point hits.
+                # Wind-down rides in the same note rather than as an unstored message.
+                if wind_down_msg and messages_to_send and messages_to_send[-1].get("content") == wind_down_msg:
+                    messages_to_send.pop()
+                    _dynamic_lines.append(wind_down_msg)
+                _persist_runtime_note(conversation_history, messages_to_send, _dynamic_lines, turn)
+                _dynamic_lines = []
+            _outgoing_messages = ([
                 {"role": "system", "content": "\n\n".join(_static_lines)}
-            ] + messages_to_send + ([
+            ] if _static_lines else []) + messages_to_send + ([
                 {"role": "user", "content": "[Runtime note — from the framework, not the user]\n" + "\n\n".join(_dynamic_lines)}
             ] if _dynamic_lines else [])
 
@@ -6314,7 +6565,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # without calling it before doing any real work.
             if _total_nudges >= 1 and not _end_cycle_unlocked:
                 _end_cycle_unlocked = True
-                _session_tools.append(_end_cycle_tool.definition)
+                if not any((t.get("function") or {}).get("name") == "end_cycle" for t in _session_tools):
+                    _session_tools.append(_end_cycle_tool.definition)
                 log.info("end_cycle tool unlocked (nudges=%d)", _total_nudges)
                 telemetry.record_patch_event("end_cycle_unlocked", kind="fired")
 
@@ -6355,8 +6607,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # OpenAI streaming protocol (which llama.cpp implements) only
                 # emits a final usage chunk when `stream_options.include_usage`
                 # is set. Without this flag, the llamacpp/gemma path produces
-                # no token telemetry. Bedrock builds usage server-side and
-                # ignores this flag, so it is safe to include unconditionally.
+                # no token telemetry. The bedrock and aicommons backends build
+                # usage themselves and drop this key, so it is safe to include
+                # unconditionally.
                 "stream_options": {"include_usage": True},
             }
 
@@ -6451,6 +6704,15 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # Force a resummarize with the tighter window so dropped messages aren't lost
                     _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True)
                 continue
+            except (BedrockBudgetExceeded, ConfigError) as e:
+                # Not retryable within this run (failover already declined or failed):
+                # a spent quota or a rejected key. End as a backend error so --job
+                # still writes its result file and AGENT-EXIT line (exit 15).
+                log.error("Backend refused the request: %s: %s", type(e).__name__, e)
+                telemetry.record_error(kind=type(e).__name__)
+                _emit("on_error", f"Error calling server: {e}")
+                _note_error_kind("backend")
+                return "error"
             except requests.exceptions.RequestException as e:
                 err_str = str(e)
                 if "504" in err_str and _gateway_timeout_recovery_count < _GATEWAY_TIMEOUT_RECOVERY_MAX:
@@ -6515,6 +6777,10 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         )
         _text_cap_exceeded = False
         _text_cap_limit_fired = _MAX_TEXT_RESPONSE_CHARS  # updated when post-tool cap fires
+        _finish_reason = None      # the stream's own finish_reason, when it sends one
+        _wall_cut = False          # the 600 s wall broke the stream off mid-response
+        _turn_thinking = None      # Anthropic thinking blocks to send back with this turn
+        _turn_reasoning = []       # streamed thinking text: kept off screen, logged at DEBUG (H5)
         # Stall detection: per a field audit, long latencies with zero
         # deltas (e.g. session_20260513_010952.log Turn 14: latency_ms=78377
         # deltas=0) are strongly correlated with corrupted/garbled output.
@@ -6567,6 +6833,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     if time.monotonic() > _stream_deadline:
                         log.warning("Streaming wall-clock deadline exceeded (600s) — aborting response")
                         _safe_close(response)
+                        _wall_cut = True
                         break
                     # Stall guard: abort fast if no deltas arrive within the
                     # configured timeout. Cuts the 78-second-to-corrupted-
@@ -6632,8 +6899,10 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # the final OpenAI streaming chunk carries `usage` ONLY
                     # when the request body sets
                     # `stream_options: {include_usage: true}` (see request_body
-                    # construction above). Bedrock builds the usage dict
-                    # server-side and emits it in the same shape regardless.
+                    # construction above). The bedrock and aicommons backends
+                    # emit the same shape themselves; aicommons adds the cache
+                    # fields (cache_read/creation_input_tokens) and its
+                    # prompt_tokens counts all three input buckets.
                     # Record before the no-choices skip below so we don't drop it.
                     _usage = chunk.get("usage") if isinstance(chunk, dict) else None
                     if _usage:
@@ -6653,10 +6922,18 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         if _u_out:
                             telemetry.record_tokens(_u_model, "completion", int(_u_out), backend=_u_backend)
                             _turn_out_tokens += int(_u_out)
+                        for _ck, _kind in (("cache_read_input_tokens", "cache_read"),
+                                           ("cache_creation_input_tokens", "cache_write")):
+                            if _usage.get(_ck):   # E5: hit rate chartable from the token counter
+                                telemetry.record_tokens(_u_model, _kind, int(_usage[_ck]), backend=_u_backend)
+                    if isinstance(chunk, dict) and chunk.get(_THINKING_KEY):
+                        _turn_thinking = chunk[_THINKING_KEY]
                     choices = chunk.get("choices")
                     if not choices:
                         continue  # skip usage/stats chunks
-                    delta = choices[0].get("delta", {})
+                    if choices[0].get("finish_reason"):
+                        _finish_reason = choices[0]["finish_reason"]
+                    delta = choices[0].get("delta", {}) or {}
 
                     # Thinking deltas (reasoning_content — e.g. Qwen3 on
                     # llama-server --reasoning, or any enable_thinking stream)
@@ -6670,6 +6947,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # the visible answer stream by default; it only counts.
                     if delta.get("reasoning_content"):
                         _deltas_received += 1
+                        _turn_reasoning.append(delta["reasoning_content"])
 
                     if delta.get("content"):
                         if not printed_header:
@@ -6810,10 +7088,44 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         _emit("on_assistant_text", full_content)
         tool_calls = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)] if tool_calls_by_index else []
 
+        # A response cut off by max_tokens or the wall leaves its last tool call with
+        # half-written arguments. Executing it would act on a fragment, and storing it
+        # would poison every later request (aicommons-integration.md §7 H4). Drop it
+        # and tell the model why, so it re-issues the work in smaller pieces.
+        _cut_tool_names = []
+        if tool_calls and (_finish_reason == "length" or _wall_cut):
+            _kept = [tc for tc in tool_calls if _tool_args_complete(tc)]
+            _cut_tool_names = [tc["function"].get("name") or "?" for tc in tool_calls if tc not in _kept]
+            if _cut_tool_names:
+                log.warning("Response cut off (%s) mid tool call — dropping %d incomplete call(s): %s",
+                            "wall" if _wall_cut else "max_tokens", len(_cut_tool_names), _cut_tool_names)
+                tool_calls = _kept
+
+        # M3: a refusal (model or gateway guardrail; stop_reason "refusal") is not a
+        # text-only turn to nudge — re-sending the same history gets the same answer.
+        # Keep the partial text out of history and end the run as a backend error.
+        if _finish_reason == "content_filter":
+            log.error("Model refused the request (stop_reason=refusal); partial text not stored: %r",
+                      full_content[:300])
+            telemetry.record_error(kind="refusal")
+            _emit("on_error", "The model declined this request (refusal / guardrail). Ending the run.")
+            _note_error_kind("refusal")
+            return "error"
+
         assistant_msg = {"role": "assistant", "content": full_content}
         if tool_calls:
             assistant_msg["tool_calls"] = tool_calls
+        if _turn_thinking and tool_calls:
+            # Bedrock needs this turn's signed thinking before its tool_use when the
+            # turn is sent back; other backends ignore the key.
+            assistant_msg[_THINKING_KEY] = _turn_thinking
         conversation_history.append(assistant_msg)
+        if _cut_tool_names:
+            conversation_history.append({"role": "user", "content": (
+                f"[SYSTEM: your response was cut off before the arguments of "
+                f"{', '.join(_cut_tool_names)} were complete, so that call was NOT run. "
+                f"Split the work: write a large file in several smaller calls (create it, "
+                f"then append or edit in sections), each well under the output limit.]")})
 
         # Text-cap correction: inject a user message so the model understands
         # it was cut off and must use a tool next.  This fires AFTER the
@@ -6836,6 +7148,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
 
         if full_content:
             log.debug("ASSISTANT: %s", full_content)
+        if _turn_reasoning:
+            log.debug("THINKING (%d chars): %s", sum(map(len, _turn_reasoning)), "".join(_turn_reasoning)[:4000])
 
         # Verbose-only per-turn telemetry — fires once per turn iteration after
         # the assistant response is processed, BEFORE any early-return branches
@@ -7780,7 +8094,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 recovered = attempt_recovery(
                                     func_name, func_args, result_str,
                                     map_fn=MAP_FN,
-                                    llm_call_fn=lambda **kw: _llm_request(log, **kw),
+                                    llm_call_fn=_recovery_llm_call(log),
                                     config=_config, log=log,
                                 )
                                 if recovered is not None:
@@ -8951,13 +9265,19 @@ def main():
                              "running interactively and falls back to plain input() automatically "
                              "if `prompt_toolkit` isn't installed.")
     parser.add_argument("--backend-main", dest="backend_main",
-                        choices=["llamacpp", "bedrock", "foundry"], default=None,
+                        choices=["llamacpp", "bedrock", "foundry", "aicommons"], default=None,
                         help="Override the main backend kind (see plan/bedrock-integration.md).")
     parser.add_argument("--result-file", dest="result_file",
                         help="Write the final assistant response to this file (for subagent use).")
     parser.add_argument("--backend-summary", dest="backend_summary",
-                        choices=["llamacpp", "bedrock", "foundry"], default=None,
+                        choices=["llamacpp", "bedrock", "foundry", "aicommons"], default=None,
                         help="Override the summary backend kind.")
+    parser.add_argument("--model", dest="model", default=None,
+                        help="Override the main backend's model (e.g. claude-v5.5-sonnet).")
+    parser.add_argument("--effort", dest="effort", default=None,
+                        choices=["low", "medium", "high", "xhigh", "max"],
+                        help="Main backend reasoning effort (aicommons; Claude 5.x). "
+                             "Default: high for main.")
     parser.add_argument("-cc", dest="cc", nargs="?", const="127.0.0.1:8788", default=None,
                         metavar="HOST:PORT",
                         help="Launch an Anthropic-compatible gateway endpoint for Claude "
@@ -9105,6 +9425,9 @@ def main():
 
     # Apply backend-kind overrides before any backend-dependent startup logic.
     _apply_backend_overrides(args.backend_main, args.backend_summary)
+    _apply_model_effort_overrides(getattr(args, "model", None), getattr(args, "effort", None))
+    _export_subagent_args(args)
+    _export_backend_overrides(args)
     # F8a: generation overrides (flag > config > default), applied after backend overrides so
     # the seed support warning names the backend that will actually run.
     _apply_generation_overrides(args)
@@ -9150,6 +9473,13 @@ def main():
         except ValueError:
             print(f"Invalid -cc port: {port!r} (expected HOST:PORT)", file=sys.stderr)
             sys.exit(2)
+        if getattr(_main_backend, "kind", None) == "aicommons":
+            # The gateway already speaks /v1/messages; translating Anthropic -> OpenAI ->
+            # Anthropic here would only lose thinking, cache control and tool ids.
+            print("Note: AI Commons serves the Anthropic Messages API itself. Claude Code can use it "
+                  f"directly:\n  ANTHROPIC_BASE_URL={_main_backend.base_url} "
+                  "ANTHROPIC_API_KEY=<your key> claude\nStarting the -cc gateway anyway.",
+                  file=sys.stderr)
         import cc_gateway
         cc_gateway.serve(_main_backend, host=host, port=port_num)
         return

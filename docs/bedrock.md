@@ -1,5 +1,7 @@
 # Bedrock backend
 
+> **Legacy.** This page covers the `bedrock` kind, which uses a published bot's `/conversation` API. For the UCSB AI Commons gateway use the `aicommons` kind instead. It has native tools, streaming and prompt caching. See [AI Commons backend](aicommons.md).
+
 The agent can use an AWS Bedrock Chat gateway ([aws-samples/bedrock-chat](https://github.com/aws-samples/bedrock-chat)) for either the main model, the summary model, or both.
 
 ## Credentials

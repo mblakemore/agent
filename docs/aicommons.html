@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Commons backend — agent</title>
+<meta name="description" content="The agent can use the UCSB AI Commons gateway for the main model, the summary model, the advisor, or all of them. The gateway serves the Anthropic Messages API (/v1/messages) in front of Bedrock, so this backend gets native tool calling, streaming text, extended thinking and prompt caching. Backend ">
+<link rel="canonical" href="https://mblakemore.github.io/agent/aicommons.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="AI Commons backend">
+<meta property="og:description" content="The agent can use the UCSB AI Commons gateway for the main model, the summary model, the advisor, or all of them. The gateway serves the Anthropic Messages API (/v1/messages) in front of Bedrock, so this backend gets native tool calling, streaming text, extended thinking and prompt caching. Backend ">
+<meta property="og:url" content="https://mblakemore.github.io/agent/aicommons.html">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/agent-docs.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"AI Commons backend","url":"https://mblakemore.github.io/agent/aicommons.html","description":"The agent can use the UCSB AI Commons gateway for the main model, the summary model, the advisor, or all of them. The gateway serves the Anthropic Messages API (/v1/messages) in front of Bedrock, so this backend gets native tool calling, streaming text, extended thinking and prompt caching. Backend "}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><div class="in">
+  <span class="brand"><a href="index.html">agent</a></span>
+  <span class="tag">documentation</span>
+  <nav aria-label="primary">
+    <a href="index.html">Overview</a>
+    <a href="https://github.com/mblakemore/agent">Source</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="cli.html">CLI and usage</a></li><li><a href="job-contract.html">The job contract — running agent.py as a verifiable worker</a></li><li><a href="models.html">Recommended models</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="aicommons.html" aria-current="page">AI Commons backend</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
+  <main id="main">
+    <p class="eyebrow">AI Commons backend</p>
+<h1>AI Commons backend</h1>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/aicommons.md"><code>docs/aicommons.md</code></a> · last changed 2026-10-24 (bbff34d)</p>
+<p>The agent can use the UCSB AI Commons gateway for the main model, the summary model, the advisor, or all of them. The gateway serves the Anthropic Messages API (<code>/v1/messages</code>) in front of Bedrock, so this backend gets native tool calling, streaming text, extended thinking and prompt caching. Backend kind: <code>aicommons</code> (aliases <code>ucsb</code>, <code>ai-commons</code>).</p>
+<p>This replaces the legacy <code>bedrock</code> kind, which talks to a published bot's <code>/conversation</code> API and has none of those. The legacy kind still works and is documented in <a href="bedrock.html">Bedrock backend</a>.</p>
+<h2 id="quick-start">Quick start</h2>
+<pre tabindex="0"><code class="language-bash">export AICOMMONS_BASE_URL=&quot;https://&lt;stage&gt;.execute-api.us-west-2.amazonaws.com/v1&quot;
+export AICOMMONS_API_KEY=&quot;&lt;key&gt;&quot;
+python agent.py --backend-main aicommons --backend-summary aicommons &quot;your task&quot;
+</code></pre>
+<p>The defaults are <code>claude-v5.5-opus</code> for main and <code>claude-v5.5-haiku</code> for summary. <code>--model</code> picks another main model and <code>--effort</code> sets its reasoning effort (<code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, <code>max</code>).</p>
+<h2 id="credentials">Credentials</h2>
+<p>Resolved in this order:</p>
+<ol>
+<li>The role's own block in <code>backends</code> (<code>base_url</code>, <code>api_key</code>).</li>
+<li>The shared <code>aicommons</code> block at the top of <code>.agent/config.json</code>.</li>
+<li><code>AICOMMONS_BASE_URL</code> and <code>AICOMMONS_API_KEY</code>.</li>
+<li>The keystore: the first <code>up</code> entry whose <code>api</code> is <code>messages</code>.</li>
+</ol>
+<p>The keystore is the same file as the legacy backend's (<code>~/.config/agent/bedrock_creds.json</code>). Each entry carries an <code>api</code> field, and the two kinds never pick each other's entries.</p>
+<pre tabindex="0"><code class="language-bash">python agent.py aicommons add --name ucsb --url &quot;$AICOMMONS_BASE_URL&quot; --key &quot;$AICOMMONS_API_KEY&quot;
+python agent.py aicommons list
+python agent.py aicommons retest --all
+</code></pre>
+<p><code>add</code> and <code>retest</code> probe <code>GET /v1/models</code>. A 403 there usually means the key's group does not have Messages API access.</p>
+<p><code>/setup</code> offers "UCSB AI Commons" as a choice and writes the same configuration.</p>
+<h2 id="config">Config</h2>
+<pre tabindex="0"><code class="language-json">{
+  &quot;aicommons&quot;: {
+    &quot;base_url&quot;: &quot;https://&lt;stage&gt;.execute-api.us-west-2.amazonaws.com/v1&quot;,
+    &quot;api_key&quot;: &quot;&lt;key&gt;&quot;,
+    &quot;model_catalog&quot;: &quot;/path/to/model_catalog.json&quot;
+  },
+  &quot;backends&quot;: {
+    &quot;main&quot;:    { &quot;kind&quot;: &quot;aicommons&quot;, &quot;model&quot;: &quot;claude-v5.5-opus&quot;,  &quot;effort&quot;: &quot;high&quot; },
+    &quot;summary&quot;: { &quot;kind&quot;: &quot;aicommons&quot;, &quot;model&quot;: &quot;claude-v5.5-haiku&quot; }
+  },
+  &quot;advisor&quot;:  { &quot;kind&quot;: &quot;aicommons&quot;, &quot;model&quot;: &quot;claude-v5.5-opus&quot; },
+  &quot;subagent&quot;: { &quot;model&quot;: &quot;claude-v5.5-sonnet&quot;, &quot;effort&quot;: &quot;medium&quot; }
+}
+</code></pre>
+<p>Keys in the shared <code>aicommons</code> block apply to every role, and a role's own <code>aicommons</code> block overrides them.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>thinking</code></td>
+<td><code>adaptive</code></td>
+<td><code>off</code> omits thinking. Effort is ignored without it.</td>
+</tr>
+<tr>
+<td><code>effort</code></td>
+<td>main <code>high</code>, summary <code>low</code>, advisor <code>max</code></td>
+<td>Sent as <code>output_config.effort</code>.</td>
+</tr>
+<tr>
+<td><code>max_context_tokens</code></td>
+<td>200000</td>
+<td>Context the agent fills before it summarizes. A cost and latency cap; the models take 1M.</td>
+</tr>
+<tr>
+<td><code>max_request_bytes</code></td>
+<td>5500000</td>
+<td>Requests over this fail locally. The gateway's Lambda limit is 6 MB.</td>
+</tr>
+<tr>
+<td><code>quota_floor_pct</code></td>
+<td>98</td>
+<td>Stop at this share of the monthly allowance.</td>
+</tr>
+<tr>
+<td><code>quota_poll_seconds</code></td>
+<td>300</td>
+<td>How often <code>/v1/token-usage</code> is polled.</td>
+</tr>
+<tr>
+<td><code>daily_cost_cap_usd</code></td>
+<td>main 60, summary 3, advisor 10</td>
+<td>A number, or <code>{role: n}</code>. <code>AICOMMONS_DAILY_CAP_USD</code> overrides.</td>
+</tr>
+<tr>
+<td><code>model_catalog</code></td>
+<td>none</td>
+<td>The gateway's <code>model_catalog.json</code>, for prices and limits of models the built-in table lacks. Also <code>AICOMMONS_MODEL_CATALOG</code>.</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>ctx_size</code> in the <code>context</code> block still caps the window when it is set lower.</p>
+<h2 id="models-and-effort">Models and effort</h2>
+<p>Prices are only built in for some models (Opus 5.5, Opus 5, Sonnet 5, the 4.6 models, Haiku 4.5). For others, point <code>model_catalog</code> at the gateway's catalog or dollar spend is not tracked (the agent says so once).</p>
+<p><code>max_tokens</code> is sized to what the model can stream inside the agent's 600-second response wall (about 21,600 tokens), never above the model's own limit.</p>
+<p>When the escalation policy fires (the success check keeps failing, or the run is stuck or grinding), the main backend first steps its effort up once, for example <code>high</code> to <code>xhigh</code>. It stays on the same model, so the cache and the stored thinking survive. The advisor path still runs after that.</p>
+<p>Subagents inherit the parent's <code>--backend-*</code> choices. <code>subagent.model</code> and <code>subagent.effort</code> give them a cheaper tier, since each one starts with a cold cache anyway.</p>
+<p>Thinking text is not shown in the terminal. It is written to the session log at DEBUG. Signed thinking blocks are kept on tool-calling turns and sent back, as the API requires.</p>
+<h2 id="prompt-caching">Prompt caching</h2>
+<p>The gateway caches at the end of the last message, so a turn reads from cache only when the previous request is an exact prefix of this one. On this backend the agent keeps its requests that way:</p>
+<ul>
+<li>The per-turn runtime note (clock, phase checkpoint, nudges, wind-down) is stored in history, not sent as a throwaway trailing message.</li>
+<li>The context window keeps its oldest message in place while everything fits. When it overflows, it drops to about 60% in one step, so there is one cache miss per eviction instead of one per turn.</li>
+<li><code>end_cycle</code> is in the tool list from the first turn. Adding a tool mid-run would change the start of every request.</li>
+<li>The working directory is in the runtime note, not the system prompt, so runs that start within a few minutes of each other share the cached system prompt and tools.</li>
+</ul>
+<p>Measured on a real eight-turn coding task: from the second turn on, 94–98% of each request was read from cache, and 83–86% over the whole session.</p>
+<p>Every call logs an <code>aicommons.cache role=… read=… write=… uncached=… hit_pct=…</code> line. The session ends with an <code>aicommons.session</code> line that has the totals, the dollars and the quota used. <code>cache_read</code> and <code>cache_write</code> are also recorded as telemetry token kinds.</p>
+<h2 id="quota-and-spend">Quota and spend</h2>
+<p>The monthly allowance is shared by every key in the account. The agent polls <code>GET /v1/token-usage</code> at startup and every five minutes:</p>
+<ul>
+<li>At <code>quota_floor_pct</code> it stops before sending, with the reset time in the message.</li>
+<li>When the gateway's up-front reservation (estimated prompt plus <code>max_tokens</code>) would not fit what is left, <code>max_tokens</code> shrinks to fit.</li>
+</ul>
+<p>Dollar spend is computed from the real usage of each call (uncached, cache read, cache write and output tokens at the model's prices). It is kept per day, role and model in <code>~/.local/state/agent/aicommons_spend.json</code> (<code>AICOMMONS_SPEND_FILE</code>). The file is locked across processes, so subagents and parallel jobs add up correctly. A role that reaches its daily cap stops before sending.</p>
+<h2 id="errors">Errors</h2>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Gateway response</th>
+<th>What the agent does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Input too long, 413</td>
+<td>Context overflow: summarize and retry with less.</td>
+</tr>
+<tr>
+<td>401, 403</td>
+<td>Configuration error: exit 15.</td>
+</tr>
+<tr>
+<td>429 with the allowance exhausted or <code>x-should-retry: false</code></td>
+<td>Budget exceeded: fail over if another backend is configured, else exit 15.</td>
+</tr>
+<tr>
+<td>Other 429, 5xx, 529, connection errors</td>
+<td>Retried by the SDK, then failover.</td>
+</tr>
+<tr>
+<td>504</td>
+<td>The existing gateway-timeout recovery: ask the model for smaller steps.</td>
+</tr>
+<tr>
+<td><code>refusal</code></td>
+<td>Not nudged and not stored: exit 15 with <code>refusal</code> in the detail.</td>
+</tr>
+</tbody>
+</table></div>
+<p>A response cut off by <code>max_tokens</code> or the wall in the middle of a tool call does not run that call. The model is told the call was cut off and to split the work.</p>
+<h2 id="claude-code">Claude Code</h2>
+<p><code>-cc</code> still works against this backend, but it is not needed. The gateway speaks the Messages API, so Claude Code can use it directly:</p>
+<pre tabindex="0"><code class="language-bash">ANTHROPIC_BASE_URL=&quot;$AICOMMONS_BASE_URL&quot; ANTHROPIC_API_KEY=&quot;$AICOMMONS_API_KEY&quot; claude
+</code></pre>
+<h2 id="checking-a-gateway">Checking a gateway</h2>
+<p><code>scripts/aicommons_probe.py</code> runs the plan's eleven P0 probes against a live gateway (streaming, tools, thinking, caching, usage, errors). Probe 7 sends an oversized request and needs <code>--overflow</code>.</p>
+<pre tabindex="0"><code class="language-bash">AICOMMONS_BASE_URL=… AICOMMONS_API_KEY=… python scripts/aicommons_probe.py
+</code></pre>
+    <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
+  </main>
+</div>
+</body>
+</html>
