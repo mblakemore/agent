@@ -4478,9 +4478,15 @@ def _set_model_for_role(role, new_model):
     section = "llm" if role == "main" else "summary"
     _config.setdefault(section, {})["model"] = new_model
     backend = _main_backend if role == "main" else _summary_backend
+    entry = (_config.get("backends") or {}).get(role)
+    if isinstance(entry, dict):
+        entry["model"] = new_model      # the registry is what a rebuild reads
     if backend is not None:
         try:
-            backend.model = new_model
+            if hasattr(backend, "set_model"):
+                backend.set_model(new_model)   # re-derives per-model limits
+            else:
+                backend.model = new_model
         except AttributeError:
             pass
     return _persist_config_value(section, "model", new_model)

@@ -249,9 +249,10 @@ class Backend(Protocol):
 
     def health(self, timeout: int = 3) -> tuple[bool, str]: ...
 
-    def detect_ctx_size(self) -> int | None: ...
+    # agent.py's /model picker and probes pass timeout= to every backend
+    def detect_ctx_size(self, timeout: int = 3) -> int | None: ...
 
-    def list_models(self) -> list[str]: ...
+    def list_models(self, timeout: int = 3) -> list[str]: ...
 
     def stream_chat(
         self,
@@ -326,7 +327,7 @@ class FakeBackend:
     def health(self, timeout: int = 3):
         return True, "fake backend"
 
-    def detect_ctx_size(self):
+    def detect_ctx_size(self, timeout: int = 3):
         return self.ctx_size
 
     def list_models(self, timeout: int = 3):
@@ -1219,7 +1220,7 @@ class BedrockBackend:
             return False, f"error: {str(e)[:60]}"
         return (True, self.api_url) if ok else (False, "gateway health failed")
 
-    def detect_ctx_size(self) -> int | None:
+    def detect_ctx_size(self, timeout: int = 3) -> int | None:
         """Gateway doesn't expose ctx_size; return per-model default char
         budget or None if the model is unknown. Plan § 10 / D9.
 
@@ -1240,7 +1241,7 @@ class BedrockBackend:
             ctx = max(ctx - _DEV_MODE_PREAMBLE_RESERVE_CHARS, 4096)
         return ctx
 
-    def list_models(self) -> list[str]:
+    def list_models(self, timeout: int = 3) -> list[str]:
         """Try the gateway's OpenAPI spec first; fall back to the
         ported ``_MODEL_CONTEXT_CHARS`` keys if that fails.
         """
@@ -1746,10 +1747,10 @@ class FoundryBackend:
     def health(self, timeout: int = 3) -> tuple[bool, str]:  # timeout unused (no probe)
         return True, self.api_url
 
-    def detect_ctx_size(self) -> int:
+    def detect_ctx_size(self, timeout: int = 3) -> int:
         return 200000
 
-    def list_models(self) -> list[str]:
+    def list_models(self, timeout: int = 3) -> list[str]:
         return [self.model]
     def complete(self, prompt: str, log=None) -> str:
         log = log or logging.getLogger("llm_backend")
@@ -2240,15 +2241,27 @@ class AICommonsBackend:
                 ids.append(m.id)
         return rank_aicommons_models(ids)
 
-    def detect_ctx_size(self) -> int:
+    def detect_ctx_size(self, timeout: int = 3) -> int:
         """Usable context in TOKENS: the model's window capped by max_context_tokens."""
         return min(int(self.info["context_tokens"]), int(self.opts["max_context_tokens"]))
 
-    def list_models(self) -> list[str]:
+    def list_models(self, timeout: int = 3) -> list[str]:
+        """The /model picker's list: the same ranked, alias-free list /setup shows."""
         try:
-            return self._model_ids()
+            return self.model_choices(timeout=max(float(timeout), 5.0))
         except Exception:  # noqa: BLE001
-            return [self.model]
+            return [self.model] if self.model else []
+
+    def set_model(self, model: str) -> None:
+        """Switch model in place (/model). The model's limits and thinking support
+        were read from the table at construction; re-derive them so a switch to a
+        model without thinking, or with a smaller output cap, doesn't send what the
+        old one accepted."""
+        self.model = model
+        self.info = aicommons_model_info(model)
+        if not self._cfg.get("max_tokens"):
+            wall_cap = int(0.8 * float(self.opts["wall_seconds"]) * float(self.opts["tokens_per_second"]))
+            self.max_tokens = min(self.info["max_output"], wall_cap)
 
     # ── request building ──
 

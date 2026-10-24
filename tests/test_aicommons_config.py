@@ -284,3 +284,42 @@ def test_no_model_configured_is_unhealthy_with_a_way_out(store):
          patch.object(b, "quota", return_value=None):
         ok, detail = b.health()
     assert not ok and "/setup" in detail
+
+
+def test_every_backend_accepts_timeout_on_list_and_ctx():
+    """Found live: /model crashed with AICommonsBackend.list_models() got an unexpected
+    keyword argument 'timeout' — agent.py passes timeout= to whichever backend is active."""
+    import inspect
+    classes = [c for c in vars(lb).values() if inspect.isclass(c) and c.__module__ == lb.__name__
+               and hasattr(c, "list_models") and hasattr(c, "detect_ctx_size")
+               and c.__name__ != "Backend"]
+    assert {"LlamacppBackend", "AICommonsBackend"} <= {c.__name__ for c in classes}
+    for cls in classes:
+        for meth in ("list_models", "detect_ctx_size"):
+            params = inspect.signature(getattr(cls, meth)).parameters
+            assert "timeout" in params, f"{cls.__name__}.{meth} has no timeout parameter"
+
+
+def test_model_picker_lists_the_gateway_through_the_live_backend(monkeypatch, store):
+    import agent
+    b = lb.AICommonsBackend({"kind": "aicommons", "base_url": "https://g/v1", "api_key": "k",
+                             "model": "claude-v5.5-haiku"})
+    monkeypatch.setattr(b, "model_choices", lambda timeout=10.0: ["claude-v5.5-sonnet", "qwen3-32b"])
+    monkeypatch.setattr(agent, "_main_backend", b)
+    assert agent._list_available_models("https://g/v1") == ["claude-v5.5-sonnet", "qwen3-32b"]
+
+
+def test_switching_model_rederives_its_limits(monkeypatch, store):
+    import agent
+    b = lb.AICommonsBackend({"kind": "aicommons", "base_url": "https://g/v1", "api_key": "k",
+                             "model": "claude-v5.5-opus"})
+    assert b._thinking_kwargs()                       # opus: thinking on
+    live = json.loads(json.dumps(agent._DEFAULT_CONFIG))
+    live["backends"] = {"main": {"kind": "aicommons", "model": "claude-v5.5-opus"}}
+    monkeypatch.setattr(agent, "_config", live)
+    monkeypatch.setattr(agent, "_main_backend", b)
+    monkeypatch.setattr(agent, "_persist_config_value", lambda *a: None)
+    agent._set_model_for_role("main", "qwen3-32b")
+    assert b.model == "qwen3-32b" and not b._thinking_kwargs()   # unknown: no thinking sent
+    assert b.max_tokens <= lb._AICOMMONS_UNKNOWN_MODEL["max_output"]
+    assert live["backends"]["main"]["model"] == "qwen3-32b"
