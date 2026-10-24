@@ -692,7 +692,7 @@ class TestWelcome(unittest.TestCase):
         updates, on_disk, out, _ = self._run(["", "", ""], http)
         self.assertIn("Hi, let's get you connected", out)
         self.assertIn("gpu-27b", out)                      # found servers listed
-        self.assertEqual(updates["llm"], {"base_url": "http://127.0.0.1:8080",
+        self.assertEqual(updates["llm"], {"kind": "llamacpp", "base_url": "http://127.0.0.1:8080",
                                           "model": "gpu-27b"})
         self.assertEqual(updates["summary"]["base_url"], "http://127.0.0.1:8080")
         self.assertTrue(updates["summary"]["enabled"])
@@ -721,7 +721,7 @@ class TestWelcome(unittest.TestCase):
              ""],                             # extras: hosted -> none ticked
             http)
         self.assertIn("No local model servers found", out)
-        self.assertEqual(updates["llm"], {"base_url": "https://api.example.com",
+        self.assertEqual(updates["llm"], {"kind": "llamacpp", "base_url": "https://api.example.com",
                                           "api_key": "sk-x", "model": "gpt-b"})
         self.assertNotIn("context", updates)          # ctx unknown -> defaults
         self.assertIn("context not reported", out)
@@ -752,7 +752,7 @@ class TestWelcome(unittest.TestCase):
         updates, _, _, _ = self._run(
             ["", "", "1,3",        # main: first server; extras: summary on, speed off
              "", "2"], http)       # summary: OpenAI-compatible, second server
-        self.assertEqual(updates["summary"], {"base_url": "http://127.0.0.1:8082",
+        self.assertEqual(updates["summary"], {"kind": "llamacpp", "base_url": "http://127.0.0.1:8082",
                                               "model": "cpu-4b", "enabled": True})
 
     def test_advisor_extra_runs_the_advisor_screen_without_calibrating(self):
@@ -823,6 +823,54 @@ class TestWelcome(unittest.TestCase):
         self.assertEqual(updates["llm"]["daily_cost_cap_usd"], 25.5)
         self.assertEqual(updates["summary"]["kind"], "bedrock")
         self.assertEqual(updates["context"]["ctx_size"], int(180000 * 0.9))
+
+
+class TestWelcomeKindSwitch(unittest.TestCase):
+    """Re-running setup onto an existing file: a role whose kind changes is
+    replaced. Merged, the old llamacpp base_url outranked AI Commons' own
+    credentials (live: every request went to the local server)."""
+
+    REPORT = {"p1_reach": {"status": W.OK}, "p2_auth": {"status": W.OK}, "p4_ctx": {}}
+
+    def test_openai_to_aicommons_drops_the_old_endpoint(self):
+        current = {"llm": {"kind": "llamacpp", "base_url": "https://api.example.com",
+                           "api_key": "sk-old", "model": "gpt-b", "temperature": 0.3},
+                   "summary": {"base_url": "http://127.0.0.1:8082", "model": "small"}}
+        with mock.patch.object(W, "_aicommons_saved_credentials", return_value="env"), \
+             mock.patch.object(W, "probe_gateway_backend", return_value=self.REPORT):
+            _, on_disk, _, _ = TestWelcome._run(self, ["2", "", ""], multi_http({}),
+                                                current=current)
+        self.assertEqual(on_disk["llm"], {"temperature": 0.3, "kind": "aicommons",
+                                          "model": "claude-v5.5-opus"})
+        self.assertEqual(on_disk["summary"], {"enabled": True, "kind": "aicommons",
+                                              "model": "claude-v5.5-haiku"})
+
+    def test_aicommons_back_to_openai_writes_the_kind(self):
+        current = {"llm": {"kind": "aicommons", "model": "claude-v5.5-opus", "effort": "high"}}
+        _, on_disk, _, _ = TestWelcome._run(self, ["1", "", "3"], multi_http(LOCAL2),
+                                            current=current)     # kind defaults to AI Commons
+        self.assertEqual(on_disk["llm"], {"effort": "high", "kind": "llamacpp",
+                                          "base_url": "http://127.0.0.1:8080",
+                                          "model": "gpu-27b"})
+
+
+class TestRoleJumpKindSwitch(unittest.TestCase):
+    def test_setup_main_switching_to_aicommons_replaces_the_section(self):
+        it = iter(["4", "https://gw.example/v1", "k-1", "", ""])  # kind 4 = aicommons
+        report = {"p1_reach": {"status": W.OK}, "p2_auth": {"status": W.OK}, "p4_ctx": {}}
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(W, "probe_gateway_backend", return_value=report):
+            p = Path(d) / ".agent" / "config.json"
+            p.parent.mkdir()
+            p.write_text(json.dumps({"llm": {"base_url": "http://127.0.0.1:8080",
+                                             "api_key": "sk-old", "model": "gpu-27b"}}))
+            W.run_wizard(p, {}, jump_to="main", input_fn=lambda _: next(it, ""),
+                         print_fn=lambda s: None, http=multi_http({}))
+            llm = json.loads(p.read_text())["llm"]
+        self.assertEqual(llm["kind"], "aicommons")
+        self.assertEqual(llm["base_url"], "https://gw.example/v1")
+        self.assertEqual(llm["api_key"], "k-1")
+        self.assertNotEqual(llm.get("model"), "gpu-27b")
 
 
 class TestWelcomeClaimGuard(unittest.TestCase):

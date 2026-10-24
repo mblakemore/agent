@@ -209,3 +209,50 @@ def test_advisor_follows_the_command_line_backend(tmp_path, monkeypatch):
     adv = ca._read_role("advisor")
     assert adv["kind"] == "aicommons" and adv["model"] == "claude-v5.5-opus" and adv["effort"] == "xhigh"
     assert "127.0.0.1" not in str(adv.get("base_url"))
+
+
+def test_llm_block_with_a_gateway_kind_drops_the_llamacpp_defaults(tmp_path, monkeypatch):
+    """/setup writes {"llm": {"kind": "aicommons", ...}}. Merged over the shipped
+    defaults it inherited base_url http://127.0.0.1:8080 (summary :8082), which
+    outranks every AI Commons credential source: main went to the local server."""
+    import agent
+    from tools import consult_advisor as ca
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "config.json").write_text(json.dumps({
+        "llm": {"kind": "aicommons", "model": "claude-v5.5-opus"},
+        "summary": {"enabled": True, "kind": "aicommons", "model": "claude-v5.5-haiku"}}))
+    monkeypatch.chdir(tmp_path)
+    cfg = agent._load_config()
+    for role in ("main", "summary"):
+        assert "base_url" not in cfg["backends"][role], role
+    assert cfg["llm"]["base_url"]       # legacy block keeps it: BASE_URL reads it at import
+    assert cfg["backends"]["main"]["model"] == "claude-v5.5-opus"
+    adv = ca._read_role("advisor")
+    assert adv["kind"] == "aicommons" and not adv.get("base_url")
+    summ = ca._read_role("summary")
+    assert summ["kind"] == "aicommons" and summ["model"] == "claude-v5.5-haiku"
+
+
+def test_llamacpp_block_keeps_the_default_endpoint(tmp_path, monkeypatch):
+    import agent
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "config.json").write_text(json.dumps({"llm": {"model": "m"}}))
+    monkeypatch.chdir(tmp_path)
+    assert agent._load_config()["llm"]["base_url"] == "http://127.0.0.1:8080"
+
+
+def test_live_setup_apply_switching_kind_drops_the_old_endpoint(monkeypatch):
+    import agent
+    live = json.loads(json.dumps(agent._DEFAULT_CONFIG))
+    live["llm"]["api_key"] = "sk-old"
+    monkeypatch.setattr(agent, "_config", live)
+    # _apply_setup_updates reassigns these globals; patch them so they're restored
+    for name in ("_main_backend", "_summary_backend", "BASE_URL"):
+        monkeypatch.setattr(agent, name, getattr(agent, name))
+    monkeypatch.setattr(agent, "_build_backend", lambda cfg: MagicMock(model=cfg.get("model")))
+    agent._apply_setup_updates({"llm": {"kind": "aicommons", "model": "claude-v5.5-opus"},
+                                "summary": {"enabled": True, "kind": "aicommons",
+                                            "model": "claude-v5.5-haiku"}})
+    for role in ("main", "summary"):
+        entry = agent._config["backends"][role]
+        assert entry["kind"] == "aicommons" and "base_url" not in entry and "api_key" not in entry

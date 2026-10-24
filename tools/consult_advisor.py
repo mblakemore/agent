@@ -243,11 +243,13 @@ def _read_role(role: str) -> dict:
             out["enabled"] = advisor_active(cfg)
             out["role"] = "advisor"
             return _with_shared_blocks(out, cfg)
-        if not raw.get("base_url") and _is_backend_role(backends.get("main") or {}):
-            # A backends-only config (no llm block): self-consult on main's backend
-            # instead of probing the llama.cpp default port.
+        main_role = backends.get("main") or (main if _is_backend_role(main) else {})
+        if not raw.get("base_url") and _is_backend_role(main_role):
+            # Main is a gateway backend (a backends block, or an llm block with a kind,
+            # as /setup writes for AI Commons): self-consult on main's backend instead
+            # of probing the llama.cpp default port.
             out.pop("base_url", None)
-            out.update({k: v for k, v in backends["main"].items() if k not in raw})
+            out.update({k: v for k, v in main_role.items() if k not in raw})
             out["enabled"] = advisor_active(cfg)
             out["role"] = "advisor"
             return _with_shared_blocks(out, cfg)
@@ -262,12 +264,12 @@ def _read_role(role: str) -> dict:
         return out
     # summary role (for distillation) — own block, else the main endpoint.
     out = {"enabled": True, "timeout_s": 120}
-    for b in (backends.get("summary"), backends.get("main")):
+    s = cfg.get("summary", {}) or {}
+    for b in (backends.get("summary"), s, backends.get("main"), main):
         if _is_backend_role(b or {}):
             out.update(b)
             out["role"] = "summary"
             return _with_shared_blocks(out, cfg)
-    s = cfg.get("summary", {}) or {}
     if s.get("base_url") or s.get("api_url"):
         out.update(s)
     else:

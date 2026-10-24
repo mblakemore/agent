@@ -718,6 +718,37 @@ def calibrate(report, defaults, chars_per_token=_CHARS_PER_TOKEN):
 # ── Config writing ────────────────────────────────────────────────────
 
 
+_ENDPOINT_KEYS = ("base_url", "api_url", "api_key", "api_key_env", "model")
+
+
+def _replace_section(config_path, key):
+    """Drop one top-level section from the config file so the next write_config
+    writes it whole instead of deep-merging into it."""
+    path = Path(config_path)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return
+    if isinstance(data, dict) and key in data:
+        del data[key]
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                        encoding="utf-8")
+
+
+def _replace_switched_roles(config_path, current_cfg, updates):
+    """A role whose kind changed is replaced, not merged: the old kind's base_url
+    or key left underneath would outrank the new backend's own credentials.
+    Settings that aren't the endpoint (temperature, effort, ...) carry over."""
+    for role in ("llm", "summary"):
+        old, new = current_cfg.get(role), updates.get(role)
+        if not (isinstance(old, dict) and isinstance(new, dict)):
+            continue
+        if (old.get("kind") or "llamacpp") != (new.get("kind") or "llamacpp"):
+            updates[role] = {**{k: v for k, v in old.items()
+                                if k not in _ENDPOINT_KEYS and k != "kind"}, **new}
+            _replace_section(config_path, role)
+
+
 def write_config(config_path, updates):
     """Deep-merge ``updates`` into the JSON file at ``config_path``.
 
@@ -976,6 +1007,8 @@ def _role_screen(role, current, input_fn, print_fn, http, found=None):
     kind = {"1": "llamacpp", "2": "bedrock", "3": "foundry", "4": "aicommons"}.get(kind_ans,
                                                                                  "llamacpp")
 
+    if (current.get("kind") or "llamacpp") != kind:
+        current = {}        # another kind's URL/key/model are not defaults for this one
     if kind in ("bedrock", "aicommons", "foundry"):
         section = _gateway_questions(kind, role, current, input_fn, print_fn)
     else:
@@ -1325,7 +1358,7 @@ def _connect_openai(role, ui, found, current, http):
             model = models[0]
         if model:
             report = probe_llamacpp(base, key, model, http=http, allow_empirical=False)
-    section = {"base_url": base}
+    section = {"kind": "llamacpp", "base_url": base}
     if key:
         section["api_key"] = key
     resolved = model or report.get("p3_model", {}).get("value")
@@ -1365,6 +1398,8 @@ def _connect(role, ui, found, current, http, kind=None):
                        kinds.index(cur_kind) if cur_kind in kinds else
                        (1 if (not found and _aicommons_saved_credentials()) else 0))
         kind = kinds[idx]
+    if (current.get("kind") or "llamacpp") != kind:
+        current = {}        # another kind's URL/key/model are not defaults for this one
     if kind == "llamacpp":
         return _connect_openai(role, ui, found, current, http)
     if kind == "aicommons":
@@ -1541,6 +1576,7 @@ def run_welcome(config_path, effective_cfg=None, input_fn=None, print_fn=None,
     elif claim_on:
         updates.setdefault("cycle", {})["claim_trace_max_blocks"] = 0
 
+    _replace_switched_roles(config_path, current_cfg, updates)
     path = write_config(config_path, updates)
     model = section.get("model") or "the server's model"
     ctx = report.get("p4_ctx", {}).get("value")
@@ -1693,6 +1729,7 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
     if not updates:
         print_fn("nothing to write.")
         return {}
+    _replace_switched_roles(config_path, current_cfg, updates)
     path = write_config(config_path, updates)
     print_fn(f"\nwrote {path}")
     return updates
