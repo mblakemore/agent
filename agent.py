@@ -1436,7 +1436,7 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
     global _main_backend, _summary_backend
 
     defaults = {"main": "claude-v4.6-opus", "summary": "claude-v4.5-haiku"}
-    _AICOMMONS_DEFAULT_MODELS = {"main": "claude-v5.5-opus", "summary": "claude-v5.5-haiku"}
+    _AICOMMONS_DEFAULT_MODELS = {"main": "claude-v5.5-sonnet", "summary": "claude-v5.5-haiku"}
 
     from llm_backend import normalize_kind
 

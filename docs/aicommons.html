@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">AI Commons backend</p>
 <h1>AI Commons backend</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/aicommons.md"><code>docs/aicommons.md</code></a> · last changed 2026-10-24 (bbff34d)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/aicommons.md"><code>docs/aicommons.md</code></a> · last changed 2026-10-24 (b4433a4)</p>
 <p>The agent can use the UCSB AI Commons gateway for the main model, the summary model, the advisor, or all of them. The gateway serves the Anthropic Messages API (<code>/v1/messages</code>) in front of Bedrock, so this backend gets native tool calling, streaming text, extended thinking and prompt caching. Backend kind: <code>aicommons</code> (aliases <code>ucsb</code>, <code>ai-commons</code>).</p>
 <p>This replaces the legacy <code>bedrock</code> kind, which talks to a published bot's <code>/conversation</code> API and has none of those. The legacy kind still works and is documented in <a href="bedrock.html">Bedrock backend</a>.</p>
 <h2 id="quick-start">Quick start</h2>
@@ -40,7 +40,7 @@
 export AICOMMONS_API_KEY=&quot;&lt;key&gt;&quot;
 python agent.py --backend-main aicommons --backend-summary aicommons &quot;your task&quot;
 </code></pre>
-<p>On the command line, without a configured model, the defaults are <code>claude-v5.5-opus</code> for main and <code>claude-v5.5-haiku</code> for summary. <code>--model</code> picks another main model and <code>--effort</code> sets its reasoning effort (<code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, <code>max</code>).</p>
+<p>On the command line, without a configured model, the defaults are <code>claude-v5.5-sonnet</code> for main and <code>claude-v5.5-haiku</code> for summary. <code>--model</code> picks another main model and <code>--effort</code> sets its reasoning effort (<code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, <code>max</code>).</p>
 <h2 id="credentials">Credentials</h2>
 <p>Resolved in this order:</p>
 <ol>

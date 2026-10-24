@@ -12,7 +12,7 @@ export AICOMMONS_API_KEY="<key>"
 python agent.py --backend-main aicommons --backend-summary aicommons "your task"
 ```
 
-On the command line, without a configured model, the defaults are `claude-v5.5-opus` for main and `claude-v5.5-haiku` for summary. `--model` picks another main model and `--effort` sets its reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`).
+On the command line, without a configured model, the defaults are `claude-v5.5-sonnet` for main and `claude-v5.5-haiku` for summary. `--model` picks another main model and `--effort` sets its reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`).
 
 ## Credentials
 

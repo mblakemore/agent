@@ -188,7 +188,7 @@ def test_backend_flag_drops_the_replaced_kinds_endpoint(monkeypatch):
     monkeypatch.setattr(agent, "_summary_backend", None)
     agent._apply_backend_overrides("aicommons", "aicommons")
     assert agent._main_backend.base_url == "https://gw/v1"
-    assert agent._main_backend.model == "claude-v5.5-opus"
+    assert agent._main_backend.model == "claude-v5.5-sonnet"    # the CLI default
     assert agent._summary_backend.base_url == "https://own/v1"     # already aicommons: kept
 
 
