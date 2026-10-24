@@ -82,7 +82,7 @@ def _auth_headers(api_key):
 
 
 def probe_llamacpp(base_url, api_key=None, model=None, http=None,
-                   allow_empirical=True):
+                   allow_empirical=True, ask_consent=None):
     """Run P1-P4 against a llama.cpp / OpenAI-compatible endpoint.
 
     Returns a report dict:
@@ -147,10 +147,18 @@ def probe_llamacpp(base_url, api_key=None, model=None, http=None,
         report["p3_model"] = {"status": UNMEASURED, "value": model,
                               "detail": f"/v1/models gave {status}"}
 
-    # P4: max context — /props → /slots → /v1/models metadata → empirical
+    # P4: max context — /props → /slots → /v1/models metadata → empirical.
+    # The empirical search sends prompts up to the 512k cap — millions of tokens
+    # worst case — so it runs ONLY with explicit consent, on every endpoint: a
+    # hosted OpenAI-compatible API bills it like any input (it used to run
+    # unasked whenever the metadata routes were missing).
     ctx, how = _probe_ctx(base, hdrs, http, body if status == 200 else None)
     if ctx:
         report["p4_ctx"] = {"status": OK, "value": int(ctx), "detail": how}
+    elif reachable and allow_empirical and not (
+            ask_consent is not None and ask_consent(empirical_worst_case_tokens())):
+        report["p4_ctx"] = {"status": UNMEASURED, "value": None,
+                            "detail": "server doesn't report it; measuring declined"}
     elif reachable and allow_empirical:
         ctx, how = _probe_ctx_empirical(
             base, hdrs, http, report["p3_model"].get("value"))
@@ -212,6 +220,22 @@ def _binary_search_ctx(accepted, cap=_EMPIRICAL_CAP_TOKENS):
         else:
             hi = mid
     return (lo_measured or lo), f"empirical: largest accepted ~{lo} tokens"
+
+
+def empirical_worst_case_tokens(cap=_EMPIRICAL_CAP_TOKENS):
+    """Total prompt tokens the empirical search can send, worst case over every
+    possible context limit (rejected requests included — a gateway may bill them).
+    About 3.9M at the 512k cap: several full context windows."""
+    worst = 0
+    for limit in list(range(1024, cap + 1, 997)) + [cap, cap + 1]:
+        sent = [0]
+
+        def accepted(n, limit=limit):
+            sent[0] += n
+            return n <= limit, n
+        _binary_search_ctx(accepted, cap)
+        worst = max(worst, sent[0])
+    return worst
 
 
 def _probe_ctx_empirical(base, hdrs, http, model, cap=_EMPIRICAL_CAP_TOKENS):
@@ -383,8 +407,7 @@ def probe_gateway_backend(section, role, http=None, ask_consent=None):
         report["p4_ctx"] = {"status": OK, "value": int(ctx),
                             "detail": "backend table/metadata"}
     elif kind == "foundry" and ask_consent is not None:
-        estimate = _EMPIRICAL_CAP_TOKENS * 2  # worst-case total prompt tokens
-        if ask_consent(estimate):
+        if ask_consent(empirical_worst_case_tokens()):
             val, how = _probe_ctx_empirical_anthropic(
                 getattr(backend, "api_url", ""), getattr(backend, "api_key", ""),
                 http, backend.model)
@@ -412,7 +435,8 @@ def probe_backend(section, role="main", http=None, ask_consent=None,
     if kind == "llamacpp":
         return probe_llamacpp(section.get("base_url", ""),
                               section.get("api_key"), section.get("model"),
-                              http=http, allow_empirical=allow_empirical)
+                              http=http, allow_empirical=allow_empirical,
+                              ask_consent=ask_consent)
     return probe_gateway_backend(section, role, http=http,
                                  ask_consent=ask_consent)
 
@@ -888,12 +912,17 @@ def _bedrock_cap_default(role):
         return {"main": 60.00, "summary": 3.00}.get(role, 10.00)
 
 
+def _consent_text(estimate_tokens):
+    return (f"   ⚠ This endpoint doesn't report its context size. Measuring it sends test\n"
+            f"     prompts of up to ~{estimate_tokens:,} tokens in total — several full\n"
+            "     context windows. A paid API bills that like any input. Skipping keeps\n"
+            "     the default; the agent also recovers from overflow at run time.")
+
+
 def _consent_asker(input_fn, print_fn):
     def ask(estimate_tokens):
-        print_fn(f"   ⚠ empirical context probe sends up to ~{estimate_tokens:,} "
-                 "prompt tokens to a METERED endpoint (billed at your input "
-                 "rate).")
-        return _ask("   run the metered probe? (y/n)", "n",
+        print_fn(_consent_text(estimate_tokens))
+        return _ask("   measure it anyway? (y/n)", "n",
                     input_fn).lower().startswith("y")
     return ask
 

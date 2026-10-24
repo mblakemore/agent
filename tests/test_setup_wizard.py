@@ -94,11 +94,47 @@ class TestProbes(unittest.TestCase):
         routes = {"/health": (200, {}), "/v1/models": (200, {"data": []}),
                   "/props": (404, ""), "/slots": (404, ""),
                   "/v1/chat/completions": chat}
-        r = W.probe_llamacpp("http://x:8080", http=fake_http(routes))
+        r = W.probe_llamacpp("http://x:8080", http=fake_http(routes),
+                             ask_consent=lambda est: True)
         self.assertEqual(r["p4_ctx"]["status"], W.OK)
         # binary search brackets the true limit from below within ~2x/64 steps
         self.assertGreater(r["p4_ctx"]["value"], limit * 0.7)
         self.assertLessEqual(r["p4_ctx"]["value"], limit)
+
+
+class TestEmpiricalConsent(unittest.TestCase):
+    """The empirical context search sends millions of tokens worst case; it used to run
+    unasked on any OpenAI-compatible endpoint without metadata routes (a hosted API
+    billed it before the user had typed anything)."""
+
+    ROUTES = {"/health": (200, {}), "/v1/models": (200, {"data": [{"id": "gpt-x"}]}),
+              "/props": (404, ""), "/slots": (404, ""),
+              "/v1/chat/completions": (200, {"usage": {"prompt_tokens": 5}})}
+
+    def _chat_calls(self, http):
+        return [c for c in http.calls if c[0].endswith("/v1/chat/completions")]
+
+    def test_no_consent_callback_never_measures(self):
+        http = fake_http(self.ROUTES)
+        r = W.probe_llamacpp("https://api.example", http=http)
+        self.assertEqual(r["p4_ctx"]["status"], W.UNMEASURED)
+        self.assertEqual(self._chat_calls(http), [])
+
+    def test_declined_consent_sends_nothing_and_was_told_the_cost(self):
+        http, asked = fake_http(self.ROUTES), []
+        r = W.probe_llamacpp("https://api.example", http=http,
+                             ask_consent=lambda est: asked.append(est) or False)
+        self.assertEqual(self._chat_calls(http), [])
+        self.assertIn("declined", r["p4_ctx"]["detail"])
+        self.assertEqual(asked, [W.empirical_worst_case_tokens()])
+        self.assertGreater(asked[0], 3_000_000)      # not the old "~1M" undercount
+
+    def test_metadata_ctx_never_asks(self):
+        asked = []
+        r = W.probe_llamacpp("http://x:8080", http=fake_http(LLAMA_ROUTES),
+                             ask_consent=lambda est: asked.append(est) or True)
+        self.assertEqual(r["p4_ctx"]["value"], 196608)
+        self.assertEqual(asked, [])
 
 
 class TestCalibrate(unittest.TestCase):
