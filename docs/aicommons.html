@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">AI Commons backend</p>
 <h1>AI Commons backend</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/aicommons.md"><code>docs/aicommons.md</code></a> · last changed 2026-10-23 (dd149cb)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/aicommons.md"><code>docs/aicommons.md</code></a> · last changed 2026-10-24 (bbff34d)</p>
 <p>The agent can use the UCSB AI Commons gateway for the main model, the summary model, the advisor, or all of them. The gateway serves the Anthropic Messages API (<code>/v1/messages</code>) in front of Bedrock, so this backend gets native tool calling, streaming text, extended thinking and prompt caching. Backend kind: <code>aicommons</code> (aliases <code>ucsb</code>, <code>ai-commons</code>).</p>
 <p>This replaces the legacy <code>bedrock</code> kind, which talks to a published bot's <code>/conversation</code> API and has none of those. The legacy kind still works and is documented in <a href="bedrock.html">Bedrock backend</a>.</p>
 <h2 id="quick-start">Quick start</h2>
@@ -135,9 +135,10 @@ python agent.py aicommons retest --all
 <ul>
 <li>The per-turn runtime note (clock, phase checkpoint, nudges, wind-down) is stored in history, not sent as a throwaway trailing message.</li>
 <li>The context window keeps its oldest message in place while everything fits. When it overflows, it drops to about 60% in one step, so there is one cache miss per eviction instead of one per turn.</li>
-<li><code>end_cycle</code> is in the tool list from the first turn and refused until it unlocks. Adding a tool mid-run would change the start of every request.</li>
+<li><code>end_cycle</code> is in the tool list from the first turn. Adding a tool mid-run would change the start of every request.</li>
 <li>The working directory is in the runtime note, not the system prompt, so runs that start within a few minutes of each other share the cached system prompt and tools.</li>
 </ul>
+<p>Measured on a real eight-turn coding task: from the second turn on, 94–98% of each request was read from cache, and 83–86% over the whole session.</p>
 <p>Every call logs an <code>aicommons.cache role=… read=… write=… uncached=… hit_pct=…</code> line. The session ends with an <code>aicommons.session</code> line that has the totals, the dollars and the quota used. <code>cache_read</code> and <code>cache_write</code> are also recorded as telemetry token kinds.</p>
 <h2 id="quota-and-spend">Quota and spend</h2>
 <p>The monthly allowance is shared by every key in the account. The agent polls <code>GET /v1/token-usage</code> at startup and every five minutes:</p>
