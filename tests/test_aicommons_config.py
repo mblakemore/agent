@@ -171,3 +171,41 @@ def test_backends_only_config_advisor_self_consults_main(tmp_path, monkeypatch):
     assert adv["kind"] == "aicommons" and "127.0.0.1" not in str(adv.get("base_url"))
     summ = ca._read_role("summary")
     assert summ["model"] == "claude-v5.5-haiku" and summ["role"] == "summary"
+
+
+def test_backend_flag_drops_the_replaced_kinds_endpoint(monkeypatch):
+    """Found live: --backend-main aicommons kept the llamacpp default base_url, which outranks
+    AICOMMONS_BASE_URL, so every request went to http://127.0.0.1:8080."""
+    import agent
+    monkeypatch.delenv("AGENT_FAKE_BACKEND", raising=False)
+    monkeypatch.setenv("AICOMMONS_BASE_URL", "https://gw/v1")
+    monkeypatch.setenv("AICOMMONS_API_KEY", "k")
+    monkeypatch.setitem(agent._config, "backends", {
+        "main": {"kind": "llamacpp", "base_url": "http://127.0.0.1:8080", "model": "local-27b"},
+        "summary": {"kind": "aicommons", "base_url": "https://own/v1", "api_key": "own"}})
+    monkeypatch.setattr(agent, "_main_backend", None)
+    monkeypatch.setattr(agent, "_summary_backend", None)
+    agent._apply_backend_overrides("aicommons", "aicommons")
+    assert agent._main_backend.base_url == "https://gw/v1"
+    assert agent._main_backend.model == "claude-v5.5-opus"
+    assert agent._summary_backend.base_url == "https://own/v1"     # already aicommons: kept
+
+
+def test_advisor_follows_the_command_line_backend(tmp_path, monkeypatch):
+    """Found live: with --backend-main aicommons the advisor still self-consulted the llamacpp
+    endpoint named in the config file."""
+    import agent
+    from types import SimpleNamespace
+    from tools import consult_advisor as ca
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "config.json").write_text(json.dumps({
+        "llm": {"base_url": "http://127.0.0.1:8080", "model": "local-27b"},
+        "backends": {"main": {"kind": "llamacpp", "base_url": "http://127.0.0.1:8080"}}}))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("AGENT_BACKEND_OVERRIDES", raising=False)
+    monkeypatch.setitem(agent._config, "backends", {"main": {"kind": "aicommons", "model": "claude-v5.5-opus"}})
+    agent._export_backend_overrides(SimpleNamespace(backend_main="aicommons", backend_summary=None,
+                                                    model=None, effort="xhigh"))
+    adv = ca._read_role("advisor")
+    assert adv["kind"] == "aicommons" and adv["model"] == "claude-v5.5-opus" and adv["effort"] == "xhigh"
+    assert "127.0.0.1" not in str(adv.get("base_url"))

@@ -9,8 +9,8 @@ checked and §6 of the plan filled in.
     AICOMMONS_API_KEY=... python3 scripts/aicommons_probe.py [--only 2,5] [--overflow]
 
 Writes a JSON record per probe to aicommons-probe-<timestamp>.json and prints a
-Markdown summary. --overflow adds probe 7 (a ~7 MB request and a ~1.2M-token
-request); both should be refused before any model runs, but they are opt-in.
+Markdown summary. --overflow adds probe 7 (a ~7 MB request, and ~260K tokens to
+the 200K-context Haiku 4.5); both are refused before any model runs.
 The key never appears in the output.
 """
 
@@ -183,15 +183,17 @@ def p6_effort():
 
 
 def p7_overflow():
-    big_payload = msg(messages=[{"role": "user", "content": "x " * 3_600_000}])          # ~7.2 MB
-    r1 = call("POST", "/v1/messages", big_payload)
-    tokens = msg(messages=[{"role": "user", "content": "word " * 1_200_000}])            # ~1.2M tokens, ~6 MB
-    r2 = call("POST", "/v1/messages", tokens, stream=False)
-    r3 = call("POST", "/v1/messages", {**msg(messages=[{"role": "user", "content": "word " * 1_100_000}]),
-                                       "stream": True}, stream=True)
+    # The model-limit case uses claude-v4.5-haiku (200K context) with ~260K tokens (~1.3 MB),
+    # so it reaches the model instead of the 6 MB payload limit. Measured 2026-10-24: neither
+    # request moves /v1/token-usage, so the probe costs nothing.
+    big_payload = msg(model="claude-v4.5-haiku", messages=[{"role": "user", "content": "word " * 1_450_000}])
+    r1 = call("POST", "/v1/messages", big_payload)                                       # ~7.3 MB
+    over = msg(model="claude-v4.5-haiku", messages=[{"role": "user", "content": "word " * 260_000}])
+    r2 = call("POST", "/v1/messages", over)
+    r3 = call("POST", "/v1/messages", {**over, "stream": True}, stream=True)
     record(7, "Overflow: payload limit and model limit (non-stream and stream)",
            payload_7mb={"status": r1.get("status"), "body": r1.get("body"), "exc": r1.get("exception")},
-           tokens_1_2m={"status": r2.get("status"), "body": r2.get("body")},
+           tokens_260k={"status": r2.get("status"), "body": r2.get("body")},
            tokens_stream={"status": r3.get("status"), "events": (r3.get("events") or [])[:3]})
 
 

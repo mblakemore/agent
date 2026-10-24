@@ -1290,6 +1290,23 @@ def _apply_model_effort_overrides(model, effort) -> None:
 _SUBAGENT_ARGS_ENV = "AGENT_SUBAGENT_ARGS"
 
 
+def _export_backend_overrides(args) -> dict:
+    """Tell in-process tools that read config from disk (consult_advisor) which backend
+    the command line chose: kind / model / effort per role, never URLs or keys."""
+    out = {}
+    for role, kind in (("main", getattr(args, "backend_main", None)),
+                       ("summary", getattr(args, "backend_summary", None))):
+        if kind:
+            out[role] = {"kind": kind, "model": _config["backends"].get(role, {}).get("model")}
+    if getattr(args, "model", None) or getattr(args, "effort", None):
+        out.setdefault("main", {"kind": _config["backends"].get("main", {}).get("kind")})
+        out["main"].update({"model": _config["backends"]["main"].get("model"),
+                            "effort": getattr(args, "effort", None)})
+    if out:
+        os.environ["AGENT_BACKEND_OVERRIDES"] = json.dumps(out)
+    return out
+
+
 def _export_subagent_args(args) -> list:
     out = []
     for flag, val in (("--backend-main", getattr(args, "backend_main", None)),
@@ -1405,8 +1422,16 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
         if not kind:
             return
         entry = _config["backends"].setdefault(role, {})
+        prev_kind = entry.get("kind")
         entry["kind"] = kind
         if kind == "aicommons":
+            if prev_kind not in ("aicommons", "ucsb", "ai-commons", "ai_commons"):
+                # The entry's endpoint and key belong to the kind being replaced (usually the
+                # llamacpp default http://127.0.0.1:8080). Left in place they outrank the
+                # aicommons block, AICOMMONS_* env and the keystore, and every request goes
+                # to the local server instead of the gateway.
+                for k in ("base_url", "api_key", "api_key_env"):
+                    entry.pop(k, None)
             existing = entry.get("model", "")
             if not existing.startswith(_bedrock_prefixes):
                 entry["model"] = _AICOMMONS_DEFAULT_MODELS[role]
@@ -4434,8 +4459,10 @@ def _log_bedrock_session_spend(log):
     """
     _seen = set()
     for backend in (_main_backend, _summary_backend):
-        if getattr(backend, "kind", None) == "aicommons" and id(backend) not in _seen:
+        if (getattr(backend, "kind", None) == "aicommons" and id(backend) not in _seen
+                and not getattr(backend, "_session_logged", False)):
             _seen.add(id(backend))
+            backend._session_logged = True   # the exit path can run this twice
             try:
                 log.info("%s", backend.session_summary())
             except Exception as _e:  # noqa: BLE001 — never fail an exit path over a log line
@@ -4682,7 +4709,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         log.info("Advisor probe skipped: fake backend active")
     if advisor_enabled:
         _emit("on_boot_progress",
-              f"checking advisor backend — {_adv_eff.get('base_url', '?')} "
+              f"checking advisor backend — "
+              f"{_adv_eff.get('base_url') or _display_backend_kind(_adv_eff.get('kind') or '?', '')} "
               f"{_adv_eff.get('model') or '(served model)'}")
         try:
             from tools.consult_advisor import startup_check as _advisor_check
@@ -6026,8 +6054,10 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
     if _prompt_caching_backend() and not any(
             (t.get("function") or {}).get("name") == "end_cycle" for t in _session_tools):
         # P4.4: tools render FIRST in the request, so adding one mid-run invalidates the
-        # whole cached prompt. Offer end_cycle from turn 1; the dispatcher refuses it
-        # until the usual unlock (first nudge).
+        # whole cached prompt. Offer end_cycle from turn 1. It is NOT gated on the
+        # first-nudge unlock: a model that finishes cleanly is never nudged, and live it
+        # had its correct end_cycle refused. The success-check / phase / CICD gates still
+        # apply, and ending this way is what a text-only finish would do anyway.
         _session_tools.append(_end_cycle_tool.definition)
 
     # Reviewer sessions rarely make code edits (they verify and merge), so the
@@ -8020,9 +8050,6 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         pass  # result_str already holds the redirect
                     elif _cicd_blocked:
                         result_str = cicd_error
-                    elif func_name == "end_cycle" and not _end_cycle_unlocked and _prompt_caching_backend():
-                        result_str = ("Error: end_cycle is not available yet — do the task's work "
-                                      "first; it unlocks once the work is under way.")
                     elif func_name not in MAP_FN:
                         result_str = f"Error: Unknown tool '{func_name}'"
                     else:
@@ -9400,6 +9427,7 @@ def main():
     _apply_backend_overrides(args.backend_main, args.backend_summary)
     _apply_model_effort_overrides(getattr(args, "model", None), getattr(args, "effort", None))
     _export_subagent_args(args)
+    _export_backend_overrides(args)
     # F8a: generation overrides (flag > config > default), applied after backend overrides so
     # the seed support warning names the backend that will actually run.
     _apply_generation_overrides(args)

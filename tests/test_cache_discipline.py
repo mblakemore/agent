@@ -89,13 +89,18 @@ def test_nudge_turns_keep_the_prefix_and_end_cycle_is_offered_from_turn_one(cach
     _assert_prefix_chain(sent)
 
 
-def test_end_cycle_is_refused_before_it_unlocks(caching):
+def test_end_cycle_is_accepted_without_a_prior_nudge(caching):
+    """Found live: a model that finishes cleanly is never nudged, so gating end_cycle on the
+    first-nudge unlock refused a correct finish twice."""
     mocks, sent = caching
+    ran = []
+    mocks.stub_tool("end_cycle", "ended")
+    agent.MAP_FN["end_cycle"] = lambda **kw: ran.append(kw) or "ended"
     mocks.script(_tool_turn("t1", "end_cycle", '{"summary": "x"}'))
     history = [{"role": "user", "content": "do the task"}]
     agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
-    result = next(m for m in history if m.get("role") == "tool")
-    assert result["content"].startswith("Error: end_cycle is not available yet")
+    assert ran == [{"summary": "x"}]
+    assert not any("not available" in str(m.get("content")) for m in history)
 
 
 def test_working_directory_is_not_in_the_system_head(caching):

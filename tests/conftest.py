@@ -383,3 +383,13 @@ def agent_loop_mocks(monkeypatch):
     monkeypatch.setattr(_agent, "_NUDGE_ENABLED", False)
     monkeypatch.setattr(_agent, "_emit", lambda *a, **kw: None)
     return mocks
+
+
+@pytest.fixture(autouse=True)
+def _clear_agent_exported_env():
+    """agent.py exports its command-line backend choices into os.environ for in-process
+    tools and subagents (AGENT_BACKEND_OVERRIDES, AGENT_SUBAGENT_ARGS). Tests that drive
+    those paths would otherwise leak them into every later test."""
+    yield
+    for name in ("AGENT_BACKEND_OVERRIDES", "AGENT_SUBAGENT_ARGS"):
+        os.environ.pop(name, None)

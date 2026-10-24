@@ -176,17 +176,48 @@ def _load_cfg() -> dict:
     """Read .agent/config.json FIRST, then legacy ./config.json — the SAME
     precedence as agent.py's _load_config, so the tool and the gate hook
     agree on configuration (a mismatch made auto-invoke read "disabled"
-    whenever config lived in .agent/, e.g. the replay + agentx)."""
+    whenever config lived in .agent/, e.g. the replay + agentx).
+    The running agent's --backend-* / --model / --effort overrides are then
+    applied on top (see _apply_cli_overrides)."""
+    cfg = {}
     for _p in (os.path.join(os.getcwd(), ".agent", "config.json"),
                os.path.join(os.getcwd(), "config.json")):
         try:
             if os.path.exists(_p):
                 with open(_p, encoding="utf-8", errors="replace") as f:
                     loaded = json.load(f)
-                return loaded if isinstance(loaded, dict) else {}
+                cfg = loaded if isinstance(loaded, dict) else {}
+                break
         except Exception:
-            return {}
-    return {}
+            cfg = {}
+            break
+    return _apply_cli_overrides(cfg)
+
+
+# Set by agent.py (_export_backend_overrides): {role: {kind, model, effort}} from its
+# command line. Without it the advisor self-consulted the backend NAMED IN THE FILE
+# (live: the local llama server) while main ran on the backend the flags chose.
+_OVERRIDES_ENV = "AGENT_BACKEND_OVERRIDES"
+
+
+def _apply_cli_overrides(cfg: dict) -> dict:
+    try:
+        ov = json.loads(os.environ.get(_OVERRIDES_ENV) or "{}")
+    except ValueError:
+        return cfg
+    if not isinstance(ov, dict) or not ov:
+        return cfg
+    backends = dict(cfg.get("backends") or {}) if isinstance(cfg.get("backends"), dict) else {}
+    for role, o in ov.items():
+        if not isinstance(o, dict):
+            continue
+        entry = dict(backends.get(role) or {})
+        if o.get("kind") and o["kind"] != entry.get("kind"):
+            # the file's endpoint belongs to the kind being replaced
+            entry = {k: v for k, v in entry.items() if k not in ("base_url", "api_key", "api_key_env")}
+        entry.update({k: v for k, v in o.items() if v})
+        backends[role] = entry
+    return {**cfg, "backends": backends}
 
 
 def _read_role(role: str) -> dict:

@@ -86,8 +86,10 @@ The gateway caches at the end of the last message, so a turn reads from cache on
 
 - The per-turn runtime note (clock, phase checkpoint, nudges, wind-down) is stored in history, not sent as a throwaway trailing message.
 - The context window keeps its oldest message in place while everything fits. When it overflows, it drops to about 60% in one step, so there is one cache miss per eviction instead of one per turn.
-- `end_cycle` is in the tool list from the first turn and refused until it unlocks. Adding a tool mid-run would change the start of every request.
+- `end_cycle` is in the tool list from the first turn. Adding a tool mid-run would change the start of every request.
 - The working directory is in the runtime note, not the system prompt, so runs that start within a few minutes of each other share the cached system prompt and tools.
+
+Measured on a real eight-turn coding task: from the second turn on, 94–98% of each request was read from cache, and 83–86% over the whole session.
 
 Every call logs an `aicommons.cache role=… read=… write=… uncached=… hit_pct=…` line. The session ends with an `aicommons.session` line that has the totals, the dollars and the quota used. `cache_read` and `cache_write` are also recorded as telemetry token kinds.
 
