@@ -32,14 +32,74 @@
   <main id="main">
     <p class="eyebrow">Install</p>
 <h1>Install</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/install.md"><code>docs/install.md</code></a> · last changed 2026-08-15 (1de4a5f)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/install.md"><code>docs/install.md</code></a> · last changed 2026-10-24 (2c21258)</p>
 <p><code>agent.py</code> is cross-platform Python. Installing it is separate from getting a model server
 running — that is <a href="setup.html">Setup</a>.</p>
+<p>It needs Python 3.10 or newer: Ubuntu 22.04+, Debian 12+, or a Homebrew or python.org Python
+on macOS.</p>
+<h2 id="install-script-linux-and-macos">Install script (Linux and macOS)</h2>
+<pre tabindex="0"><code class="language-bash">git clone https://github.com/mblakemore/agent.git &amp;&amp; cd agent
+./install.sh
+</code></pre>
+<p>By default the script:</p>
+<ol>
+<li>Picks the newest <code>python3.x</code> on your <code>PATH</code> that is 3.10 or newer.</li>
+<li>Creates a venv in <code>./.venv</code> and installs <code>requirements.txt</code> into it. Nothing is installed into
+   the system Python, so it works on PEP 668 "externally managed" systems (Ubuntu 24.04,
+   Debian 12, Homebrew Python) without <code>--break-system-packages</code>.</li>
+<li>Checks that <code>agent.py</code> starts.</li>
+<li>Adds an <code>agent</code> alias that runs the venv's Python on <code>agent.py</code>. The alias goes into
+   <code>~/.bashrc</code> for bash, <code>~/.zshrc</code> for zsh, or <code>~/.bash_profile</code> for bash on macOS. You don't
+   need to activate the venv.</li>
+</ol>
+<p>Then open a new shell, or <code>source</code> the file it names, and run <code>agent --setup</code>.</p>
+<p>Re-running it is safe: the venv is reused, the requirements are re-applied, and the alias block
+is replaced, not duplicated. <code>/alias</code> inside the agent writes the same block.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--user</code></td>
+<td>Install with <code>pip install --user</code> into the system Python instead of a venv. On an externally managed Python this adds <code>--break-system-packages</code>, which only touches <code>~/.local</code> but can still shadow apt-installed packages.</td>
+</tr>
+<tr>
+<td><code>--python PATH</code></td>
+<td>Use this interpreter.</td>
+</tr>
+<tr>
+<td><code>--no-alias</code></td>
+<td>Don't touch your shell rc file.</td>
+</tr>
+<tr>
+<td><code>--yes</code></td>
+<td>Install a missing <code>python3.X-venv</code> or <code>python3-pip</code> with apt without asking.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Ubuntu and Debian:</strong> a minimal server usually has <code>python3</code> but not the <code>venv</code> module's pip
+bootstrap. When that is missing, the script offers to run <code>sudo apt install python3.12-venv</code>
+(with the version matching your Python). Without a terminal, sudo or <code>--yes</code>, it prints the
+command and stops.</p>
+<p><strong>macOS:</strong> the <code>python3</code> that comes with Xcode's command-line tools is 3.9, which is too old.
+Install a newer one with <code>brew install python@3.12</code> or from python.org, then run the script.
+macOS needs nothing else. The pinned packages ship wheels for Intel and Apple Silicon, and the
+<code>exec_command</code> tool uses the system <code>/bin/bash</code>.</p>
+<h2 id="manual-install">Manual install</h2>
+<p>In a venv:</p>
+<pre tabindex="0"><code class="language-bash">python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python agent.py
+</code></pre>
+<p>Or into your user site-packages:</p>
 <pre tabindex="0"><code class="language-bash">pip install --user -r requirements.txt
 </code></pre>
-<p>On Ubuntu 24.04+ (PEP 668 / externally-managed system python), add <code>--break-system-packages</code>, or install into a venv:</p>
-<pre tabindex="0"><code class="language-bash">python3 -m venv .venv &amp;&amp; .venv/bin/pip install -r requirements.txt
-</code></pre>
+<p>On an externally managed Python, the user install needs <code>--break-system-packages</code>. The venv
+doesn't.</p>
 <h2 id="windows-git-bash-setup">Windows (Git-Bash) setup</h2>
 <p>The runtime is cross-platform Python. The <code>exec_command</code> tool shells out to <code>bash</code> so shell idioms (heredocs, pipes, <code>&amp;&amp;</code>, <code>/tmp/...</code>) run unchanged — on Windows that bash comes from Git-Bash, <strong>not</strong> <code>cmd</code> or PowerShell.</p>
 <ol>
