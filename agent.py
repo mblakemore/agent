@@ -581,6 +581,28 @@ _DEFAULT_CONFIG = {
 _DEFAULT_CTX_SIZE = 114688
 
 
+_ENDPOINT_KEYS = ("base_url", "api_key", "api_key_env", "model")
+
+
+def _drop_llamacpp_defaults(block, user_block):
+    """A user ``llm`` / ``summary`` block that names another backend kind (e.g.
+    ``{"kind": "aicommons", "model": ...}``) must not inherit the shipped llamacpp
+    endpoint: a role's own ``base_url`` outranks every credential source the
+    gateway backends have, so the default http://127.0.0.1:8080 (main) and :8082
+    (summary) silently won and every request went to the local server. Drops the
+    endpoint keys the user did not write themselves."""
+    from llm_backend import normalize_kind
+    try:
+        kind = normalize_kind((user_block or {}).get("kind") or "llamacpp")
+    except Exception:  # noqa: BLE001 — an unknown kind is build_backend's error to report
+        return
+    if kind == "llamacpp":
+        return
+    for k in _ENDPOINT_KEYS:
+        if k not in user_block:
+            block.pop(k, None)
+
+
 def _synthesize_backends_registry(config):
     """Build a ``backends`` registry dict from the legacy ``llm`` / ``summary``
     top-level blocks, or pass through an explicit ``backends`` block.
@@ -731,6 +753,12 @@ def _load_config():
     merge_src.setdefault("llm", config["llm"])
     merge_src.setdefault("summary", config["summary"])
     config["backends"] = _synthesize_backends_registry(merge_src)
+    if user_config and "backends" not in merge_src:
+        # Scrub the registry, not the legacy blocks: plenty of code reads
+        # _config["llm"]["base_url"] / ["model"] directly (BASE_URL at import).
+        for role, section in (("main", "llm"), ("summary", "summary")):
+            if isinstance(user_config.get(section), dict):
+                _drop_llamacpp_defaults(config["backends"][role], user_config[section])
 
     return config
 
@@ -4400,6 +4428,12 @@ def _apply_setup_updates(updates):
     if "llm" in updates or "summary" in updates:
         _config["backends"] = _synthesize_backends_registry(
             {k: v for k, v in _config.items() if k != "backends"})
+        # The wizard writes a role's whole endpoint: for a gateway kind, any
+        # base_url/key/model it didn't write is a llamacpp default or the previous
+        # kind's, and would outrank the gateway's own credentials.
+        for role, section in (("main", "llm"), ("summary", "summary")):
+            if isinstance(updates.get(section), dict):
+                _drop_llamacpp_defaults(_config["backends"][role], updates[section])
         if "llm" in updates:
             _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
             if getattr(_main_backend, "model", None):

@@ -437,7 +437,7 @@ server-side fix is picked up automatically without a config change.</p>
 </tr>
 <tr>
 <td><code>/setup [main\|summary\|advisor\|test\|calibrate]</code></td>
-<td>Configure and calibrate the model roles: intro + localhost server scan, per-role endpoint menus (llamacpp/bedrock/foundry), live probes (reach, auth, model, max-context, throughput, capabilities), probe-driven calibration with drift detection. <code>test</code> probes without changing or spending anything. Auto-launches on first run in an unconfigured folder (TTY sessions only).</td>
+<td>Connect a model and calibrate. With no argument: pick OpenAI-compatible (found local servers or a URL), UCSB AI Commons, Azure AI Foundry or legacy Bedrock, then an optional checklist (separate summary model, advisor, speed and tool-call check, context measurement, claim guard, agent scaffold). <code>main</code>, <code>summary</code> and <code>advisor</code> reconfigure one role; <code>calibrate</code> re-derives the context knobs with a drift report; <code>test</code> probes without changing or spending anything. Auto-launches on first run in an unconfigured folder (TTY sessions only).</td>
 </tr>
 <tr>
 <td><code>/agent</code></td>

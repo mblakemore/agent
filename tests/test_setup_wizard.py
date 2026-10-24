@@ -94,11 +94,47 @@ class TestProbes(unittest.TestCase):
         routes = {"/health": (200, {}), "/v1/models": (200, {"data": []}),
                   "/props": (404, ""), "/slots": (404, ""),
                   "/v1/chat/completions": chat}
-        r = W.probe_llamacpp("http://x:8080", http=fake_http(routes))
+        r = W.probe_llamacpp("http://x:8080", http=fake_http(routes),
+                             ask_consent=lambda est: True)
         self.assertEqual(r["p4_ctx"]["status"], W.OK)
         # binary search brackets the true limit from below within ~2x/64 steps
         self.assertGreater(r["p4_ctx"]["value"], limit * 0.7)
         self.assertLessEqual(r["p4_ctx"]["value"], limit)
+
+
+class TestEmpiricalConsent(unittest.TestCase):
+    """The empirical context search sends millions of tokens worst case; it used to run
+    unasked on any OpenAI-compatible endpoint without metadata routes (a hosted API
+    billed it before the user had typed anything)."""
+
+    ROUTES = {"/health": (200, {}), "/v1/models": (200, {"data": [{"id": "gpt-x"}]}),
+              "/props": (404, ""), "/slots": (404, ""),
+              "/v1/chat/completions": (200, {"usage": {"prompt_tokens": 5}})}
+
+    def _chat_calls(self, http):
+        return [c for c in http.calls if c[0].endswith("/v1/chat/completions")]
+
+    def test_no_consent_callback_never_measures(self):
+        http = fake_http(self.ROUTES)
+        r = W.probe_llamacpp("https://api.example", http=http)
+        self.assertEqual(r["p4_ctx"]["status"], W.UNMEASURED)
+        self.assertEqual(self._chat_calls(http), [])
+
+    def test_declined_consent_sends_nothing_and_was_told_the_cost(self):
+        http, asked = fake_http(self.ROUTES), []
+        r = W.probe_llamacpp("https://api.example", http=http,
+                             ask_consent=lambda est: asked.append(est) or False)
+        self.assertEqual(self._chat_calls(http), [])
+        self.assertIn("declined", r["p4_ctx"]["detail"])
+        self.assertEqual(asked, [W.empirical_worst_case_tokens()])
+        self.assertGreater(asked[0], 3_000_000)      # not the old "~1M" undercount
+
+    def test_metadata_ctx_never_asks(self):
+        asked = []
+        r = W.probe_llamacpp("http://x:8080", http=fake_http(LLAMA_ROUTES),
+                             ask_consent=lambda est: asked.append(est) or True)
+        self.assertEqual(r["p4_ctx"]["value"], 196608)
+        self.assertEqual(asked, [])
 
 
 class TestCalibrate(unittest.TestCase):
@@ -172,38 +208,11 @@ class TestWizardScripted(unittest.TestCase):
             on_disk = json.loads(p.read_text()) if p.exists() else {}
         return updates, on_disk, printed
 
-    def test_full_run_defaults_shared_summary(self):
-        # answers: kind, base_url, key, model, reuse-summary, accept-calibration
-        updates, on_disk, printed = self._run(["n", "", "", "", "", "y", "", "y"])
-        self.assertNotIn("advisor", updates)   # skipped -> untouched
-        self.assertEqual(updates["llm"]["base_url"], "http://127.0.0.1:8080")
-        self.assertEqual(updates["llm"]["model"], "qwen3.8-27b")   # auto-picked
-        self.assertEqual(updates["summary"]["base_url"],
-                         updates["llm"]["base_url"])
-        self.assertTrue(updates["summary"]["enabled"])
-        self.assertEqual(updates["context"]["ctx_size"], int(196608 * 0.9))
-        self.assertEqual(on_disk["llm"]["model"], "qwen3.8-27b")
-        self.assertIn("_calibrated", on_disk)
-
-    def test_declined_calibration_keeps_defaults(self):
-        updates, on_disk, _ = self._run(["n", "", "", "", "", "y", "", "n"])
-        self.assertNotIn("context", updates)
-        self.assertNotIn("_calibrated", on_disk)
-        self.assertIn("llm", on_disk)   # endpoint config still written
-
     def test_jump_to_summary_only(self):
         updates, on_disk, _ = self._run(["", "http://s:9090", "", ""],
                                         jump_to="summary")
         self.assertNotIn("llm", updates)
         self.assertEqual(updates["summary"]["base_url"], "http://s:9090")
-
-    def test_unreachable_endpoint_still_writes_no_calibration(self):
-        updates, on_disk, printed = self._run(
-            ["n", "", "http://dead:1", "", "", "y", "", "y"], routes={})
-        self.assertEqual(updates["llm"]["base_url"], "http://dead:1")
-        self.assertNotIn("context", updates)   # ctx unmeasured -> no knobs
-        self.assertTrue(any("UNMEASURED" in s for s in printed))
-
 
 class _FakeBackend:
     def __init__(self, healthy=True, models=None, ctx=None, kind="bedrock",
@@ -301,33 +310,6 @@ class TestGatewayProbes(unittest.TestCase):
         with mock.patch.object(L, "build_backend", return_value=b):
             r = W.probe_backend({"kind": "bedrock", "model": "m"})
         self.assertEqual(r["p4_ctx"]["value"], 1000)    # gateway path
-
-
-class TestWizardBedrockScreen(unittest.TestCase):
-    def test_bedrock_answers_produce_kinded_section(self):
-        import llm_backend as L
-        b = _FakeBackend(models=["claude-v4.6-opus"], ctx=180000)
-        answers = iter(["n",                          # scan: skip
-                        "2", "https://gw.example", "sekrit",
-                        "claude-v4.6-opus", "25.5",  # main screen
-                        "y",                          # summary: reuse main
-                        "",                           # advisor: skip
-                        "y"])                         # accept calibration
-        printed = []
-        with tempfile.TemporaryDirectory() as d, \
-             mock.patch.object(L, "build_backend", return_value=b):
-            p = Path(d) / ".agent" / "config.json"
-            updates = W.run_wizard(p, {},
-                                   input_fn=lambda _: next(answers, ""),
-                                   print_fn=printed.append)
-            on_disk = json.loads(p.read_text())
-            mode = os.stat(p).st_mode & 0o777
-        self.assertEqual(updates["llm"]["kind"], "bedrock")
-        self.assertEqual(updates["llm"]["daily_cost_cap_usd"], 25.5)
-        self.assertEqual(updates["summary"]["kind"], "bedrock")  # shared carries kind
-        self.assertEqual(updates["context"]["ctx_size"], int(180000 * 0.9))
-        self.assertEqual(on_disk["llm"]["kind"], "bedrock")
-        self.assertEqual(mode, stat.S_IRUSR | stat.S_IWUSR)  # key -> chmod 600
 
 
 class TestThroughputAndCapabilities(unittest.TestCase):
@@ -605,41 +587,6 @@ class TestServerScanAndMenus(unittest.TestCase):
     def test_scan_empty_when_nothing_listens(self):
         self.assertEqual(W.scan_local_servers(http=self._port_http({})), [])
 
-    def test_menu_number_selects_discovered_server(self):
-        http = self._port_http({8080: ("gpu-27b", 196608),
-                                8082: ("cpu-4b", 40960)})
-        # scan y -> main pick 1 -> summary separate pick 2 -> advisor pick 1
-        answers = iter(["y",
-                        "", "1", "", "",       # main: kind, MENU 1, key, model
-                        "n",                    # summary: separate
-                        "", "2", "", "",        # summary: MENU 2
-                        "1", "",                # advisor: MENU 1, key
-                        "y", ""])               # calibration, (chain absent->n)
-        printed = []
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / ".agent" / "config.json"
-            updates = W.run_wizard(p, {}, input_fn=lambda _: next(answers, ""),
-                                   print_fn=printed.append, http=http)
-        self.assertEqual(updates["llm"]["base_url"], "http://127.0.0.1:8080")
-        self.assertEqual(updates["summary"]["base_url"], "http://127.0.0.1:8082")
-        self.assertEqual(updates["summary"]["model"], "cpu-4b")
-        self.assertEqual(updates["advisor"]["base_url"], "http://127.0.0.1:8080")
-        self.assertTrue(updates["advisor"]["enabled"])
-        joined = "\n".join(printed)
-        self.assertIn("Welcome to agent.py", joined)
-        self.assertIn("ROLLING", joined)
-        self.assertIn("found 2 server(s)", joined)
-
-    def test_typed_url_still_wins_over_menu(self):
-        http = self._port_http({8080: ("gpu-27b", 196608)})
-        answers = iter(["y", "", "http://elsewhere:9999", "", "",
-                        "y", "", "y", ""])
-        with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / ".agent" / "config.json"
-            updates = W.run_wizard(p, {}, input_fn=lambda _: next(answers, ""),
-                                   print_fn=lambda s: None, http=http)
-        self.assertEqual(updates["llm"]["base_url"], "http://elsewhere:9999")
-
     def test_intro_and_scan_only_on_full_runs(self):
         printed = []
         answers = iter(["", "http://s:9090", "", ""])
@@ -677,21 +624,320 @@ class TestClaimGuard(unittest.TestCase):
             int((agent._DEFAULT_CONFIG.get("cycle") or {})
                 .get("claim_trace_max_blocks", 0) or 0), 0)
 
-    def test_wizard_defaults_to_no_and_writes_nothing(self):
-        updates, out = self._run(["n", "", "", "", "", "y", "", "y"])
+def multi_http(servers, auth=None):
+    """servers: {"http://host:port": {"models": [...], "ctx": n|None}}.
+    auth: {base: key} — that server answers 401 unless the Bearer key matches.
+    Records every call; completions answer with server timings and a tool call."""
+    calls = []
+
+    def http(url, data=None, headers=None, timeout=20):
+        calls.append((url, data))
+        for base, srv in servers.items():
+            if not url.startswith(base + "/"):
+                continue
+            path = url[len(base):]
+            want = (auth or {}).get(base)
+            if want and (headers or {}).get("Authorization") != f"Bearer {want}":
+                return 401, {"error": "bad key"}
+            if path == "/health":
+                return (200, {"status": "ok"}) if srv.get("health", True) else (404, "")
+            if path == "/v1/models":
+                return 200, {"data": [{"id": m} for m in srv["models"]]}
+            if path == "/props" and srv.get("ctx"):
+                return 200, {"default_generation_settings": {"n_ctx": srv["ctx"]}}
+            if path == "/v1/chat/completions":
+                return 200, {"timings": {"predicted_per_second": 40.0},
+                             "usage": {"completion_tokens": 64},
+                             "choices": [{"message": {"content": "",
+                                                      "tool_calls": [{"id": "1"}]}}]}
+            return 404, ""
+        return 0, "refused"
+    http.calls = calls
+    return http
+
+
+LOCAL2 = {"http://127.0.0.1:8080": {"models": ["gpu-27b"], "ctx": 196608},
+          "http://127.0.0.1:8082": {"models": ["cpu-4b"], "ctx": 40960}}
+HOSTED = {"https://api.example.com": {"models": ["gpt-a", "gpt-b", "gpt-c"],
+                                      "health": False}}
+
+
+class TestWelcome(unittest.TestCase):
+    """The first-run / full /setup path: connect, optional extras, write.
+
+    PlainUI answers: a radio takes a number (ENTER = its default); the extras
+    checklist takes the numbers to switch (ENTER = as shown)."""
+
+    def _run(self, answers, http, effective=None, current=None):
+        it = iter(answers)
+        printed = []
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / ".agent" / "config.json"
+            if current is not None:
+                p.parent.mkdir()
+                p.write_text(json.dumps(current))
+            updates = W.run_wizard(p, effective or {},
+                                   input_fn=lambda _: next(it, ""),
+                                   print_fn=printed.append, http=http)
+            on_disk = json.loads(p.read_text()) if p.exists() else {}
+            mode = os.stat(p).st_mode & 0o777 if p.exists() else None
+        return updates, on_disk, "\n".join(printed), mode
+
+    @staticmethod
+    def _posts(http):
+        return [u for u, data in http.calls if data is not None]
+
+    def test_quick_path_three_enters_local(self):
+        http = multi_http(LOCAL2)
+        updates, on_disk, out, _ = self._run(["", "", ""], http)
+        self.assertIn("Hi, let's get you connected", out)
+        self.assertIn("gpu-27b", out)                      # found servers listed
+        self.assertEqual(updates["llm"], {"kind": "llamacpp", "base_url": "http://127.0.0.1:8080",
+                                          "model": "gpu-27b"})
+        self.assertEqual(updates["summary"]["base_url"], "http://127.0.0.1:8080")
+        self.assertTrue(updates["summary"]["enabled"])
+        self.assertEqual(updates["context"]["ctx_size"], int(196608 * 0.9))
+        self.assertNotIn("advisor", updates)
         self.assertNotIn("cycle", updates)
-        self.assertIn("CLAIM GUARD", out)
-        self.assertIn("CODING projects", out)
+        self.assertIn("✓ Connected: gpu-27b", out)
+        self.assertEqual(on_disk["llm"]["model"], "gpu-27b")
+        # the free local speed/tool check is ticked by default on a local server
+        self.assertTrue(self._posts(http))
+        self.assertTrue(all(u.startswith("http://127.0.0.1:8080") for u in self._posts(http)))
 
-    def test_yes_enables_with_two_blocks(self):
-        updates, _ = self._run(["n", "", "", "", "", "y", "", "y", "y"])
-        self.assertEqual(updates["cycle"]["claim_trace_max_blocks"], 2)
+    def test_unticking_the_speed_check_sends_no_completions(self):
+        http = multi_http(LOCAL2)
+        updates, _, _, _ = self._run(["", "", "3"], http)   # 3 = speed check off
+        self.assertEqual(self._posts(http), [])
+        self.assertIn("llm", updates)
 
-    def test_no_when_currently_enabled_writes_explicit_zero(self):
-        updates, _ = self._run(["n", "", "", "", "", "y", "", "y", "n"],
-                               effective={"cycle": {"claim_trace_max_blocks": 2}})
-        self.assertEqual(updates["cycle"]["claim_trace_max_blocks"], 0)
+    def test_hosted_url_asks_key_then_model_and_spends_nothing(self):
+        http = multi_http(HOSTED, auth={"https://api.example.com": "sk-x"})
+        updates, _, out, mode = self._run(
+            ["",                              # OpenAI-compatible
+             "https://api.example.com/v1",    # no local servers -> URL
+             "sk-x",                          # 401 without a key -> key asked
+             "2",                             # model radio
+             ""],                             # extras: hosted -> none ticked
+            http)
+        self.assertIn("No local model servers found", out)
+        self.assertEqual(updates["llm"], {"kind": "llamacpp", "base_url": "https://api.example.com",
+                                          "api_key": "sk-x", "model": "gpt-b"})
+        self.assertNotIn("context", updates)          # ctx unknown -> defaults
+        self.assertIn("context not reported", out)
+        self.assertIn("Measure the context window", out)
+        self.assertIn("billed on a paid API", out)
+        self.assertEqual(self._posts(http), [])
+        self.assertEqual(mode, stat.S_IRUSR | stat.S_IWUSR)
 
+    def test_measure_ctx_warns_and_enter_skips(self):
+        http = multi_http(HOSTED)
+        updates, _, out, _ = self._run(
+            ["", "https://api.example.com", "", "4", ""], http)   # 4 = measure ctx; ENTER = skip
+        self.assertIn("doesn't report its context size", out)
+        self.assertIn(f"{W.empirical_worst_case_tokens():,}", out)
+        self.assertNotIn("context", updates)
+        self.assertEqual(self._posts(http), [])
+
+    def test_measure_ctx_accepts_a_typed_size(self):
+        http = multi_http(HOSTED)
+        updates, _, _, _ = self._run(
+            ["", "https://api.example.com", "", "4", "2", "131,072"], http)
+        self.assertEqual(updates["context"]["ctx_size"], int(131072 * 0.9))
+        self.assertEqual(updates["_calibrated"]["ctx_source"], "entered by you")
+        self.assertEqual(self._posts(http), [])
+
+    def test_separate_summary_picks_the_second_server(self):
+        http = multi_http(LOCAL2)
+        updates, _, _, _ = self._run(
+            ["", "", "1,3",        # main: first server; extras: summary on, speed off
+             "", "2"], http)       # summary: OpenAI-compatible, second server
+        self.assertEqual(updates["summary"], {"kind": "llamacpp", "base_url": "http://127.0.0.1:8082",
+                                              "model": "cpu-4b", "enabled": True})
+
+    def test_advisor_extra_runs_the_advisor_screen_without_calibrating(self):
+        http = multi_http(LOCAL2)
+        updates, _, _, _ = self._run(["", "", "2,3", "1", ""], http)
+        self.assertEqual(updates["advisor"]["base_url"], "http://127.0.0.1:8080")
+        self.assertTrue(updates["advisor"]["enabled"])
+        self.assertEqual(self._posts(http), [])     # speed calibration defaults to no
+
+    def test_rerun_preselects_the_configured_server(self):
+        http = multi_http(LOCAL2)
+        updates, _, _, _ = self._run(
+            ["", "", ""], http,
+            current={"llm": {"base_url": "http://127.0.0.1:8082/v1"}})
+        self.assertEqual(updates["llm"]["base_url"], "http://127.0.0.1:8082")
+
+    def test_unreachable_save_anyway(self):
+        updates, _, out, _ = self._run(["", "http://dead:1", "2", ""], multi_http({}))
+        self.assertIn("Couldn't connect", out)
+        self.assertNotIn("Measure the context window", out)   # nothing to measure
+        self.assertNotIn("Check speed", out)
+        self.assertEqual(updates["llm"]["base_url"], "http://dead:1")
+        self.assertNotIn("context", updates)
+
+    def test_unreachable_cancel_writes_nothing(self):
+        updates, on_disk, out, _ = self._run(["", "http://dead:1", "3"], multi_http({}))
+        self.assertEqual(updates, {})
+        self.assertEqual(on_disk, {})
+
+    def test_exhausted_answers_cannot_loop(self):
+        updates, _, out, _ = self._run([], multi_http({}))
+        self.assertEqual(out.count("Couldn't connect"), 2)   # retried once, then kept
+        self.assertIn("llm", updates)
+
+    def test_aicommons_with_saved_key_asks_only_the_model(self):
+        report = {"p1_reach": {"status": W.OK}, "p2_auth": {"status": W.OK},
+                  "p3_model": {"status": W.OK},
+                  "p4_ctx": {"status": W.OK, "value": 200000, "detail": "model table"}}
+        with mock.patch.object(W, "_aicommons_saved_credentials", return_value="env"), \
+             mock.patch.object(W, "probe_gateway_backend", return_value=report):
+            updates, _, out, _ = self._run(["2", "", ""], multi_http({}))
+        self.assertIn("Using your AI Commons key from env", out)
+        self.assertEqual(updates["llm"], {"kind": "aicommons", "model": "claude-v5.5-opus"})
+        self.assertEqual(updates["summary"], {"enabled": True, "kind": "aicommons",
+                                              "model": "claude-v5.5-haiku"})
+        self.assertNotIn("Check speed", out)        # metered: not even offered
+
+    def test_aicommons_typed_key_reaches_summary_and_chmods(self):
+        report = {"p1_reach": {"status": W.OK}, "p2_auth": {"status": W.OK}, "p4_ctx": {}}
+        with mock.patch.object(W, "_aicommons_saved_credentials", return_value=None), \
+             mock.patch.object(W, "probe_gateway_backend", return_value=report):
+            updates, _, _, mode = self._run(
+                ["2", "https://gw.example/v1", "k-1", "3", ""], multi_http({}))
+        self.assertEqual(updates["llm"]["model"], "claude-v5.5-haiku")
+        self.assertEqual(updates["llm"]["api_key"], "k-1")
+        self.assertEqual(updates["summary"]["api_key"], "k-1")
+        self.assertEqual(mode, stat.S_IRUSR | stat.S_IWUSR)
+
+    def test_legacy_bedrock_under_more(self):
+        import llm_backend as L
+        b = _FakeBackend(models=["claude-v4.6-opus"], ctx=180000)
+        with mock.patch.object(L, "build_backend", return_value=b):
+            updates, _, out, _ = self._run(
+                ["4", "https://gw.example", "sekrit", "claude-v4.6-opus", "25.5", ""],
+                multi_http({}))
+        self.assertIn("published bot", out)
+        self.assertEqual(updates["llm"]["kind"], "bedrock")
+        self.assertEqual(updates["llm"]["daily_cost_cap_usd"], 25.5)
+        self.assertEqual(updates["summary"]["kind"], "bedrock")
+        self.assertEqual(updates["context"]["ctx_size"], int(180000 * 0.9))
+
+
+class TestWelcomeKindSwitch(unittest.TestCase):
+    """Re-running setup onto an existing file: a role whose kind changes is
+    replaced. Merged, the old llamacpp base_url outranked AI Commons' own
+    credentials (live: every request went to the local server)."""
+
+    REPORT = {"p1_reach": {"status": W.OK}, "p2_auth": {"status": W.OK}, "p4_ctx": {}}
+
+    def test_openai_to_aicommons_drops_the_old_endpoint(self):
+        current = {"llm": {"kind": "llamacpp", "base_url": "https://api.example.com",
+                           "api_key": "sk-old", "model": "gpt-b", "temperature": 0.3},
+                   "summary": {"base_url": "http://127.0.0.1:8082", "model": "small"}}
+        with mock.patch.object(W, "_aicommons_saved_credentials", return_value="env"), \
+             mock.patch.object(W, "probe_gateway_backend", return_value=self.REPORT):
+            _, on_disk, _, _ = TestWelcome._run(self, ["2", "", ""], multi_http({}),
+                                                current=current)
+        self.assertEqual(on_disk["llm"], {"temperature": 0.3, "kind": "aicommons",
+                                          "model": "claude-v5.5-opus"})
+        self.assertEqual(on_disk["summary"], {"enabled": True, "kind": "aicommons",
+                                              "model": "claude-v5.5-haiku"})
+
+    def test_aicommons_back_to_openai_writes_the_kind(self):
+        current = {"llm": {"kind": "aicommons", "model": "claude-v5.5-opus", "effort": "high"}}
+        _, on_disk, _, _ = TestWelcome._run(self, ["1", "", "3"], multi_http(LOCAL2),
+                                            current=current)     # kind defaults to AI Commons
+        self.assertEqual(on_disk["llm"], {"effort": "high", "kind": "llamacpp",
+                                          "base_url": "http://127.0.0.1:8080",
+                                          "model": "gpu-27b"})
+
+
+class TestRoleJumpKindSwitch(unittest.TestCase):
+    def test_setup_main_switching_to_aicommons_replaces_the_section(self):
+        it = iter(["4", "https://gw.example/v1", "k-1", "", ""])  # kind 4 = aicommons
+        report = {"p1_reach": {"status": W.OK}, "p2_auth": {"status": W.OK}, "p4_ctx": {}}
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(W, "probe_gateway_backend", return_value=report):
+            p = Path(d) / ".agent" / "config.json"
+            p.parent.mkdir()
+            p.write_text(json.dumps({"llm": {"base_url": "http://127.0.0.1:8080",
+                                             "api_key": "sk-old", "model": "gpu-27b"}}))
+            W.run_wizard(p, {}, jump_to="main", input_fn=lambda _: next(it, ""),
+                         print_fn=lambda s: None, http=multi_http({}))
+            llm = json.loads(p.read_text())["llm"]
+        self.assertEqual(llm["kind"], "aicommons")
+        self.assertEqual(llm["base_url"], "https://gw.example/v1")
+        self.assertEqual(llm["api_key"], "k-1")
+        self.assertNotEqual(llm.get("model"), "gpu-27b")
+
+
+class TestWelcomeClaimGuard(unittest.TestCase):
+    """The claim-vs-trace kick is OFF by default (prose false-positives on
+    chat/creative use); the welcome checklist turns it on for coding."""
+
+    def _run(self, toggles, effective=None):
+        return TestWelcome._run(self, ["", "", toggles], multi_http(LOCAL2), effective)[0]
+
+    def test_default_writes_nothing(self):
+        self.assertNotIn("cycle", self._run(""))
+
+    def test_ticking_enables_with_two_blocks(self):
+        self.assertEqual(self._run("4")["cycle"]["claim_trace_max_blocks"], 2)
+
+    def test_currently_on_is_preticked_and_unticking_writes_zero(self):
+        on = {"cycle": {"claim_trace_max_blocks": 2}}
+        self.assertEqual(self._run("", on)["cycle"]["claim_trace_max_blocks"], 2)
+        self.assertEqual(self._run("4", on)["cycle"]["claim_trace_max_blocks"], 0)
+
+
+class TestFreeToProbe(unittest.TestCase):
+    def test_local_and_private_only(self):
+        for url in ("http://127.0.0.1:8080", "http://localhost:1", "http://192.168.1.5:8000",
+                    "http://10.0.0.2", "http://box.local:8080"):
+            self.assertTrue(W._free_to_probe({"base_url": url}), url)
+        for url in ("https://api.openai.com", "https://openrouter.ai/api"):
+            self.assertFalse(W._free_to_probe({"base_url": url}), url)
+        self.assertFalse(W._free_to_probe({"kind": "aicommons", "base_url": "http://127.0.0.1"}))
+
+    def test_setup_test_never_posts_to_a_hosted_api(self):
+        http = multi_http(HOSTED)
+        W.run_probe_report({"llm": {"base_url": "https://api.example.com"}},
+                           print_fn=lambda s: None, http=http)
+        self.assertEqual([u for u, d in http.calls if d is not None], [])
+
+    def test_normalize_base_url(self):
+        self.assertEqual(W._normalize_base_url("https://api.openai.com/v1/"),
+                         "https://api.openai.com")
+        self.assertEqual(W._normalize_base_url("box:8080"), "http://box:8080")
+
+
+class TestWizardUI(unittest.TestCase):
+    def test_plain_radio_retries_then_defaults(self):
+        import wizard_ui
+        it = iter(["9", "x", "0"])
+        ui = wizard_ui.PlainUI(lambda _: next(it, ""), lambda s: None)
+        self.assertEqual(ui.radio("t", [("a", ""), ("b", "")], 1), 1)
+
+    def test_plain_checkboxes_toggle(self):
+        import wizard_ui
+        ui = wizard_ui.PlainUI(lambda _: "1, 3 9", lambda s: None)
+        self.assertEqual(ui.checkboxes("t", [("a", ""), ("b", ""), ("c", "")], {0, 1}), {1, 2})
+
+    def test_tty_checkbox_enter_accepts_space_ticks(self):
+        import wizard_ui
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        with create_pipe_input() as inp:
+            inp.send_text("\x1b[B \r")
+            app = wizard_ui.build_checkbox_app("t", [(0, "a"), (1, "b"), (2, "c")], {0},
+                                               input=inp, output=DummyOutput())
+            self.assertEqual(app.run(), {0, 1})
+
+    def test_input_fn_always_gets_plain(self):
+        import wizard_ui
+        self.assertIs(type(wizard_ui.make_ui(lambda _: "", print)), wizard_ui.PlainUI)
 
 class TestForceSetupFlag(unittest.TestCase):
     """--setup forces the wizard even when a config exists (one-shot)."""

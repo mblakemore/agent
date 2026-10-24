@@ -52,8 +52,8 @@ setup: <strong><a href="install.html">docs/install.md</a></strong>.</p>
    <code>bash
    llama-server -m your-model.gguf --port 8080</code></li>
 <li>Run interactively in a fresh folder — the <strong>first-run setup wizard</strong> launches
-   automatically, scans localhost for your running servers, and configures +
-   calibrates everything (see <a href="#setup-wizard--setup">Setup wizard</a>):
+   automatically, finds your running server, and connects in three presses of Enter
+   (see <a href="#setup-wizard--setup">Setup wizard</a>):
    <code>bash
    python agent.py</code>
    Or skip the wizard and go straight to a task (a hand-written <code>config.json</code>
@@ -72,30 +72,50 @@ for the <code>config.json</code> shapes that combine them.</p>
 no legacy <code>config.json</code>) launches a <strong>first-run wizard</strong> before the first prompt —
 real-TTY sessions only; <code>-a</code>/piped/scripted runs never block on it. The same wizard is
 available any time as <code>/setup</code>.</p>
-<p>It opens with a short intro (the rolling-window model, the three roles), then offers
-to <strong>scan localhost for running model servers</strong> — llama-server's 8080–8086,
-<code>glm serve</code> :8000/:8001, :5000, ollama :11434. Hits show their model name and context
-size and become numbered menu options, so a multi-endpoint setup is a few keystrokes:</p>
-<pre tabindex="0"><code>found 2 server(s):
-   • http://127.0.0.1:8080  Qwen3.8-27B-GGUF, ctx 196,608
-   • http://127.0.0.1:8082  Qwen3-4B-GGUF:Q8_0, ctx 40,960
+<p>It starts with <strong>"Hi, let's get you connected"</strong> and asks where your model is:
+an <strong>OpenAI-compatible server</strong> (local llama.cpp, Ollama or vLLM, or a hosted API),
+<strong>UCSB AI Commons</strong>, <strong>Azure AI Foundry</strong>, or <strong>More…</strong> (the legacy Bedrock gateway).
+For an OpenAI-compatible server it scans localhost (llama-server's 8080–8086, <code>glm serve</code>
+:8000/:8001, :5000, ollama :11434) and lists what's running with its model and context
+size. Another URL asks for a key only if the server wants one, and offers its models as
+a list. AI Commons reuses a key you've already saved and asks only which Claude model.</p>
+<pre tabindex="0"><code>Hi, let's get you connected.
+ Where's your model?
+&gt;  1. OpenAI-compatible server   local llama.cpp / Ollama / vLLM, or a hosted API
+   2. UCSB AI Commons            Claude through your AI Commons key
+   3. Azure AI Foundry
+   4. More…                      legacy AWS Bedrock published-bot gateway
+ Found running locally:
+&gt;  1. http://127.0.0.1:8080   Qwen3.8-27B · 196,608 ctx
+   2. Another URL…
+✓ Connected: Qwen3.8-27B at http://127.0.0.1:8080, context 196,608 (/props n_ctx)
+Anything else? (all optional)
+[ ] Use a separate SUMMARY model   default: the same model
+[ ] Add an ADVISOR model           a bigger model the agent can consult
+[*] Check speed and tool calling   4 short requests
+[ ] Turn on the claim guard        for coding projects
+[ ] Set up this folder as an agent git repo + AGENT.md
 </code></pre>
-<p>Each role — <strong>main</strong>, <strong>summary</strong>, <strong>advisor</strong> — is configured against <code>llamacpp</code>
-(any OpenAI-compatible endpoint), <code>bedrock</code>, or <code>foundry</code> (Azure), then <strong>probed
-live</strong>: reachability, auth (a 401 is kept distinct from unreachable), model resolve
-(auto-picks from <code>/v1/models</code>), <strong>max context</strong> (<code>/props</code> → <code>/slots</code> → model
-metadata → an empirical binary search that trusts the server's own token counts,
-consent-gated with a cost estimate on metered backends), throughput, and capability
-flags (tool-call roundtrip, reasoning parameter, server timings). A probe that
-cannot run reports <code>UNMEASURED</code> — never conflated with <code>FAILED</code>.</p>
-<p><strong>Calibration</strong> derives the engine's context budget from what was actually measured
-— <code>ctx_size</code> (measured − 10%), summary threshold, message caps — and records the
-derivation in a <code>_calibrated</code> sidecar so later runs can report <strong>drift</strong>. Nothing
-unmeasured is ever written: shipped defaults stay, and the wizard says so.</p>
-<p>The wizard also asks about the <strong>claim guard</strong> — the end-of-response check that
-blocks a "verified/committed" claim with no matching tool call. It's <strong>off by
-default</strong> (story prose can false-positive as a claim); enable it for coding
-projects.</p>
+<p>With a local server that's three presses of Enter, and connecting sends only free GETs
+(<code>/health</code>, <code>/v1/models</code>, <code>/props</code>). Everything after that is a checklist:</p>
+<ul>
+<li><strong>Check speed and tool calling</strong> sends four short completions, catching the one fatal
+  problem early: a model or chat template that can't make tool calls. Ticked for a local
+  server, unticked for a hosted one, where they're billed.</li>
+<li><strong>Measure the context window</strong> is offered only when the server doesn't report it. It
+  sends test prompts of up to about 3.9M tokens in total, so it warns first and defaults to
+  skipping; you can type a known size instead. Skipping keeps the default, and the agent
+  recovers from overflow at run time anyway.</li>
+<li><strong>Claim guard</strong>: the end-of-response check that blocks a "verified/committed" claim with
+  no matching tool call. Off by default (story prose can false-positive as a claim); turn it
+  on for coding projects.</li>
+<li><strong>Separate summary model</strong>, <strong>advisor</strong>, and <strong>set up this folder as an agent</strong> (the
+  <code>/agent</code> scaffold below) each run their own short screen.</li>
+</ul>
+<p><strong>Calibration</strong> derives the engine's context budget from the measured or reported context
+— <code>ctx_size</code> (measured − 10%), summary threshold, message caps — and records the derivation
+in a <code>_calibrated</code> sidecar so later runs can report <strong>drift</strong>. Nothing unmeasured is ever
+written: shipped defaults stay.</p>
 <p>Forms: <code>/setup</code> (full run) · <code>/setup main|summary|advisor</code> (one section) ·
 <code>/setup test</code> (probe everything, change nothing, spend nothing) ·
 <code>/setup calibrate</code> (re-derive + drift report). Config lands in
@@ -105,8 +125,8 @@ file is already tracked</strong> — gitignore doesn't untrack, and the warning 
 the exact <code>git rm --cached</code> fix.</p>
 <h2 id="agent-scaffold-agent">Agent scaffold — <code>/agent</code></h2>
 <p><code>/agent</code> mints an autonomous-agent identity in the current folder — an instructions
-file the agent <em>is</em>, plus its state tree. A full <code>/setup</code> run offers to chain
-straight into it at the end.</p>
+file the agent <em>is</em>, plus its state tree. A full <code>/setup</code> run offers it as the last
+item on its checklist.</p>
 <ul>
 <li><strong>Type first, then name</strong>: <code>six-phase</code> (the full agent — identity, patterns,
   anchors, creator messages, verification gate), <code>worker</code> (4-phase task agent
