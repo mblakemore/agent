@@ -243,7 +243,7 @@ Preferred shape. Replaces the legacy `llm` / `summary` flat blocks (which still 
 | --- | --- | --- |
 | `kind` | `"llamacpp"` | Backend type: `"llamacpp"`, `"bedrock"`, or `"foundry"`. |
 | `base_url` | `"http://127.0.0.1:8080"` | OpenAI-compatible endpoint. |
-| `model` | `"gemma-4-31B"` | Model name passed to the endpoint (informational for llamacpp; selects the Bedrock model ID for bedrock). |
+| `model` | `""` | Model name passed to the endpoint. Empty takes the server's own: at startup the agent reads `/v1/models` and uses the model listed (the first, if several). Selects the model ID for gateway kinds. |
 | `api_key` | `""` | Bearer token sent as `Authorization: Bearer <key>`. Keep this file `chmod 600`. |
 | `stream` | `true` | Set `false` to use non-streaming completions (useful for debugging). |
 | `enabled` | `true` (main) / `true` (summary) | Set `false` to disable the summary backend entirely. |
@@ -422,7 +422,8 @@ Guards fire after the built-in hallucination guards (`/home/user`, `python`→`p
     "summary": { "kind": "llamacpp", "base_url": "http://127.0.0.1:8082", "enabled": true }
   },
   "generation": { "temperature": 0.8, "enable_thinking": false },
-  "think":      { "depths": { "brief": 2048, "normal": 4096, "deep": 16384 } },
+  "think":      { "depths": { "brief": 2048, "normal": 4096, "deep": 16384 },
+                  "system_prompt": null },
   "context":    { "ctx_size": 32768 },
   "cycle":      { "max_turns": 50 },
   "preferences": {
@@ -438,6 +439,10 @@ Guards fire after the built-in hallucination guards (`/home/user`, `python`→`p
 }
 ```
 
+`think.system_prompt` is sent as the system turn of every `think` call; leave it unset unless
+your model's chat template needs a trigger token there to start thinking. By default thinking is
+switched on through the template (`enable_thinking`), and nothing model-specific is sent.
+
 ## Bedrock backend
 
 The agent supports AWS Bedrock Chat gateway for either the main or summary model. See [docs/bedrock.md](docs/bedrock.md) for credentials, keystore management, spend caps, config examples, and known limitations.
@@ -446,7 +451,7 @@ The agent supports AWS Bedrock Chat gateway for either the main or summary model
 
 - Python 3.10+
 - `requests` — HTTP to the LLM endpoint
-- `transformers` + `torch` — Gemma tokenizer (optional; falls back to char-based estimate)
+- `transformers` — exact token counts (optional). Off unless `AGENT_TOKENIZER` names the Hugging Face tokenizer matching your model; otherwise a conservative char-based estimate
 - `PyMuPDF` (`fitz`) — PDF extraction (`tools/read_pdf.py`)
 - `markdownify` — HTML → Markdown (`tools/web_fetch.py`)
 - `prompt_toolkit` — interactive TUI (optional; falls back to plain `input()` automatically)

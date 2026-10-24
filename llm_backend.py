@@ -23,8 +23,8 @@ Key decisions reflected in this module (see plan § 24 decision log):
   pointers; each backend dict carries its own ``kind`` field.
 - D5: Default when nothing is configured is both backends = llamacpp at
   today's URLs (:8080 main, :8082 summary). Rollback-safe.
-- D7: Token counts for non-llamacpp backends are approximate (Gemma-3
-  fallback) — over-reserves context, which is the safe direction.
+- D7: Token counts for non-llamacpp backends are approximate (a chars-based
+  estimate) — over-reserves context, which is the safe direction.
 - D9: ``detect_ctx_size()`` returns ``None`` when a backend can't introspect;
   callers already handle ``None``.
 - D10: Cancellation flows through a ``cancel_check`` callback threaded from
@@ -967,10 +967,9 @@ def _resolve_daily_cap(cfg: dict, role: str) -> float:
 
 
 def _approx_token_count(text: str) -> int:
-    """Char-based token approximation used when ``token_utils`` can't be
-    imported (lazy import — avoids pulling tokenizer deps into startup).
-    The Gemma-3 tokenizer overshoots Claude text by ~10-20% (safe
-    direction for a budget guardrail). Fallback: chars/4.
+    """Token estimate via ``token_utils`` (chars/3 unless AGENT_TOKENIZER names
+    an exact tokenizer; overcounting is the safe direction for a budget guardrail).
+    Fallback when it can't be imported: chars/4.
     """
     try:
         from token_utils import count_tokens
@@ -1933,6 +1932,19 @@ def aicommons_model_info(model: str) -> dict:
     return AICOMMONS_MODELS.get(model or "", _AICOMMONS_UNKNOWN_MODEL)
 
 
+def rank_aicommons_models(ids: list[str]) -> list[str]:
+    """Order a gateway's model list for a picker without naming any model: models
+    this table knows (context window, prices) first, newest version first (the
+    numbers in the id, compared as a tuple), then the rest in the gateway's order."""
+    import re as _re
+
+    def version(mid):
+        return tuple(int(n) for n in _re.findall(r"\d+", mid))
+    known = sorted((m for m in ids if m in AICOMMONS_MODELS),
+                   key=lambda m: (version(m), m), reverse=True)
+    return known + [m for m in ids if m not in AICOMMONS_MODELS]
+
+
 # Model-name families the gateway serves; anything else as `model` is taken to be
 # a bot id (a bot-scoped key names its bot), which /v1/models does not list.
 _AICOMMONS_FAMILIES = ("claude-", "amazon-", "llama", "qwen", "openai-", "mistral", "mixtral", "deepseek")
@@ -2171,7 +2183,7 @@ class AICommonsBackend:
             base = base[: -len("/v1/messages")]
         self.base_url = base
         self.api_key = key
-        self.model = cfg.get("model") or "claude-v5.5-opus"
+        self.model = cfg.get("model") or ""     # /setup lists the gateway's models
         catalog = opts.get("model_catalog") or os.environ.get("AICOMMONS_MODEL_CATALOG")
         if catalog:
             load_aicommons_catalog(catalog)
@@ -2202,6 +2214,9 @@ class AICommonsBackend:
         except Exception as e:  # noqa: BLE001
             return False, str(translate_aicommons_error(e))
         self.quota()   # startup poll: the session summary reports quota used from here
+        if not self.model:
+            return False, ("no model configured — run /setup to pick one from the gateway's "
+                           "list, or pass --model")
         if ids and self.model not in ids:
             if not self.model.startswith(_AICOMMONS_FAMILIES):
                 return True, f"{self.base_url} (model {self.model!r} taken as a bot id)"
@@ -2212,6 +2227,18 @@ class AICommonsBackend:
     def _model_ids(self, timeout: float = 10.0) -> list[str]:
         page = self.client.with_options(max_retries=0, timeout=timeout).models.list()
         return [m.id for m in getattr(page, "data", None) or [] if getattr(m, "id", None)]
+
+    def model_choices(self, timeout: float = 10.0) -> list[str]:
+        """The gateway's models for a picker: ranked, aliases (``owned_by`` ending in
+        "alias", e.g. OpenAI names mapped onto another model) left out."""
+        page = self.client.with_options(max_retries=0, timeout=timeout).models.list()
+        ids = []
+        for m in getattr(page, "data", None) or []:
+            owner = str(getattr(m, "owned_by", None) or (getattr(m, "model_extra", None) or {})
+                        .get("owned_by") or "")
+            if getattr(m, "id", None) and not owner.endswith("alias"):
+                ids.append(m.id)
+        return rank_aicommons_models(ids)
 
     def detect_ctx_size(self) -> int:
         """Usable context in TOKENS: the model's window capped by max_context_tokens."""

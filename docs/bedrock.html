@@ -70,20 +70,20 @@ python agent.py bedrock prune --stale-days 14
 <h2 id="config-examples">Config examples</h2>
 <pre tabindex="0"><code class="language-json">// llamacpp main + llamacpp summary (default)
 { &quot;backends&quot;: {
-    &quot;main&quot;:    { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8080&quot;, &quot;model&quot;: &quot;gemma-4-31B&quot; },
-    &quot;summary&quot;: { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8082&quot;, &quot;model&quot;: &quot;gemma-4-E4B&quot; }
+    &quot;main&quot;:    { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8080&quot; },
+    &quot;summary&quot;: { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8082&quot; }
 }}
 
 // llamacpp main + bedrock summary (cheapest way to try Bedrock)
 { &quot;backends&quot;: {
-    &quot;main&quot;:    { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8080&quot;, &quot;model&quot;: &quot;gemma-4-31B&quot; },
+    &quot;main&quot;:    { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8080&quot; },
     &quot;summary&quot;: { &quot;kind&quot;: &quot;bedrock&quot;,  &quot;model&quot;: &quot;claude-v4.5-haiku&quot;, &quot;enabled&quot;: true, &quot;max_wait_on_save&quot;: 30 }
 }}
 
 // bedrock main + llamacpp summary
 { &quot;backends&quot;: {
     &quot;main&quot;:    { &quot;kind&quot;: &quot;bedrock&quot;,  &quot;model&quot;: &quot;claude-v4.5-sonnet&quot; },
-    &quot;summary&quot;: { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8082&quot;, &quot;model&quot;: &quot;gemma-4-E4B&quot; }
+    &quot;summary&quot;: { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8082&quot; }
 }}
 
 // bedrock everywhere
@@ -102,7 +102,7 @@ python agent.py bedrock prune --stale-days 14
 <h2 id="known-limitations">Known limitations</h2>
 <ul>
 <li><strong>Prompt overhead.</strong> Bedrock has no native tool-calling in the gateway; tools are serialized into the prompt text (~1.5–2k tokens per turn with the agent's ~10-tool set).</li>
-<li><strong>Gemma tokenizer approximation.</strong> Token counts for non-llamacpp backends use the Gemma-3 tokenizer and overshoot Claude text by ~10–20% (safe direction).</li>
+<li><strong>Approximate token counts.</strong> Token counts for non-llamacpp backends are a char-based estimate that overcounts (the safe direction).</li>
 <li><strong>No progressive streaming.</strong> The gateway doesn't expose in-progress message text; Bedrock turns deliver a single content delta at the end.</li>
 </ul>
 <p>See <code>plan/bedrock-integration.md</code> § 8 for dev-mode prompt-stuffing details and § 18.5 for the operator runbook (5xx bursts, truncation exhaustion, key rotation, cost spikes, rollback).</p>

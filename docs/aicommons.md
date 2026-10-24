@@ -12,7 +12,7 @@ export AICOMMONS_API_KEY="<key>"
 python agent.py --backend-main aicommons --backend-summary aicommons "your task"
 ```
 
-The defaults are `claude-v5.5-opus` for main and `claude-v5.5-haiku` for summary. `--model` picks another main model and `--effort` sets its reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`).
+On the command line, without a configured model, the defaults are `claude-v5.5-opus` for main and `claude-v5.5-haiku` for summary. `--model` picks another main model and `--effort` sets its reasoning effort (`low`, `medium`, `high`, `xhigh`, `max`).
 
 ## Credentials
 
@@ -33,7 +33,7 @@ python agent.py aicommons retest --all
 
 `add` and `retest` probe `GET /v1/models`. A 403 there usually means the key's group does not have Messages API access.
 
-`/setup` offers "UCSB AI Commons" as a choice and writes the same configuration.
+`/setup` offers "UCSB AI Commons" as a choice and writes the same configuration. It lists the models the gateway serves (`GET /v1/models`, which is free), leaving out aliases such as the OpenAI names mapped onto other models. Models the agent has a price and context table for come first, newest version first. The summary role uses the same model unless you pick a separate one.
 
 ## Config
 

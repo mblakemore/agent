@@ -47,20 +47,20 @@ python agent.py bedrock prune --stale-days 14
 ```json
 // llamacpp main + llamacpp summary (default)
 { "backends": {
-    "main":    { "kind": "llamacpp", "base_url": "http://127.0.0.1:8080", "model": "gemma-4-31B" },
-    "summary": { "kind": "llamacpp", "base_url": "http://127.0.0.1:8082", "model": "gemma-4-E4B" }
+    "main":    { "kind": "llamacpp", "base_url": "http://127.0.0.1:8080" },
+    "summary": { "kind": "llamacpp", "base_url": "http://127.0.0.1:8082" }
 }}
 
 // llamacpp main + bedrock summary (cheapest way to try Bedrock)
 { "backends": {
-    "main":    { "kind": "llamacpp", "base_url": "http://127.0.0.1:8080", "model": "gemma-4-31B" },
+    "main":    { "kind": "llamacpp", "base_url": "http://127.0.0.1:8080" },
     "summary": { "kind": "bedrock",  "model": "claude-v4.5-haiku", "enabled": true, "max_wait_on_save": 30 }
 }}
 
 // bedrock main + llamacpp summary
 { "backends": {
     "main":    { "kind": "bedrock",  "model": "claude-v4.5-sonnet" },
-    "summary": { "kind": "llamacpp", "base_url": "http://127.0.0.1:8082", "model": "gemma-4-E4B" }
+    "summary": { "kind": "llamacpp", "base_url": "http://127.0.0.1:8082" }
 }}
 
 // bedrock everywhere
@@ -81,7 +81,7 @@ Per-run override: `--backend-main bedrock` / `--backend-summary bedrock`.
 ## Known limitations
 
 - **Prompt overhead.** Bedrock has no native tool-calling in the gateway; tools are serialized into the prompt text (~1.5–2k tokens per turn with the agent's ~10-tool set).
-- **Gemma tokenizer approximation.** Token counts for non-llamacpp backends use the Gemma-3 tokenizer and overshoot Claude text by ~10–20% (safe direction).
+- **Approximate token counts.** Token counts for non-llamacpp backends are a char-based estimate that overcounts (the safe direction).
 - **No progressive streaming.** The gateway doesn't expose in-progress message text; Bedrock turns deliver a single content delta at the end.
 
 See `plan/bedrock-integration.md` § 8 for dev-mode prompt-stuffing details and § 18.5 for the operator runbook (5xx bursts, truncation exhaustion, key rotation, cost spikes, rollback).

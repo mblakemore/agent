@@ -93,6 +93,7 @@ def _single_call(messages, depth_max_tokens, temperature, base_url, log, label="
         "presence_penalty": 0.0,
         "max_tokens": depth_max_tokens,
         "stream": True,
+        "chat_template_kwargs": {"enable_thinking": True},
     }
     try:
         response = requests.post(
@@ -215,8 +216,13 @@ def fn(prompt: str, depth: str = "brief", context: str = "", n_samples: int = 1)
     max_tokens = _budgets[depth]
     base_url = _get_base_url()
 
-    # <|think|> triggers Gemma 4 thinking; harmless no-op on Qwen3 (server --reasoning handles it)
-    base_messages = [{"role": "system", "content": "<|think|>"}]
+    # Thinking is switched on through the chat template (enable_thinking in
+    # _single_call), which any template that supports it honours. A model whose
+    # template wants a trigger token in the system turn instead can have one set
+    # in config: {"think": {"system_prompt": "..."}}. Nothing model-specific is
+    # sent by default.
+    sys_prompt = _load_agent_config().get("think", {}).get("system_prompt")
+    base_messages = [{"role": "system", "content": sys_prompt}] if sys_prompt else []
     if context:
         base_messages.append({"role": "user", "content": context})
         base_messages.append({"role": "assistant", "content": "Understood. I have the context."})

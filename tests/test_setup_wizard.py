@@ -656,6 +656,8 @@ def multi_http(servers, auth=None):
     return http
 
 
+GATEWAY_MODELS = ["claude-v5.5-opus", "claude-v5.5-sonnet", "claude-v5.5-haiku",
+                  "amazon-nova-pro", "qwen3-32b"]
 LOCAL2 = {"http://127.0.0.1:8080": {"models": ["gpu-27b"], "ctx": 196608},
           "http://127.0.0.1:8082": {"models": ["cpu-4b"], "ctx": 40960}}
 HOSTED = {"https://api.example.com": {"models": ["gpt-a", "gpt-b", "gpt-c"],
@@ -792,21 +794,26 @@ class TestWelcome(unittest.TestCase):
                   "p3_model": {"status": W.OK},
                   "p4_ctx": {"status": W.OK, "value": 200000, "detail": "model table"}}
         with mock.patch.object(W, "_aicommons_saved_credentials", return_value="env"), \
+             mock.patch.object(W, "_aicommons_model_list", return_value=GATEWAY_MODELS), \
              mock.patch.object(W, "probe_gateway_backend", return_value=report):
             updates, _, out, _ = self._run(["2", "", ""], multi_http({}))
         self.assertIn("Using your AI Commons key from env", out)
-        self.assertEqual(updates["llm"], {"kind": "aicommons", "model": "claude-v5.5-opus"})
+        self.assertIn("qwen3-32b", out)                    # the gateway's whole list
+        self.assertIn("qwen3-32b   untested here", out)    # no table entry: said so
+        self.assertEqual(updates["llm"], {"kind": "aicommons", "model": GATEWAY_MODELS[0]})
         self.assertEqual(updates["summary"], {"enabled": True, "kind": "aicommons",
-                                              "model": "claude-v5.5-haiku"})
+                                              "model": GATEWAY_MODELS[0]})
         self.assertNotIn("Check speed", out)        # metered: not even offered
 
     def test_aicommons_typed_key_reaches_summary_and_chmods(self):
         report = {"p1_reach": {"status": W.OK}, "p2_auth": {"status": W.OK}, "p4_ctx": {}}
         with mock.patch.object(W, "_aicommons_saved_credentials", return_value=None), \
+             mock.patch.object(W, "_aicommons_model_list", return_value=GATEWAY_MODELS) as listed, \
              mock.patch.object(W, "probe_gateway_backend", return_value=report):
             updates, _, _, mode = self._run(
                 ["2", "https://gw.example/v1", "k-1", "3", ""], multi_http({}))
-        self.assertEqual(updates["llm"]["model"], "claude-v5.5-haiku")
+        self.assertEqual(listed.call_args.args[0]["api_key"], "k-1")   # asked with the typed key
+        self.assertEqual(updates["llm"]["model"], GATEWAY_MODELS[2])
         self.assertEqual(updates["llm"]["api_key"], "k-1")
         self.assertEqual(updates["summary"]["api_key"], "k-1")
         self.assertEqual(mode, stat.S_IRUSR | stat.S_IWUSR)
@@ -825,6 +832,27 @@ class TestWelcome(unittest.TestCase):
         self.assertEqual(updates["context"]["ctx_size"], int(180000 * 0.9))
 
 
+class TestWelcomeAicommonsList(unittest.TestCase):
+    def test_unlistable_gateway_falls_back_to_typing_an_id(self):
+        report = {"p1_reach": {"status": W.OK}, "p2_auth": {"status": W.OK}, "p4_ctx": {}}
+        with mock.patch.object(W, "_aicommons_saved_credentials", return_value="env"), \
+             mock.patch.object(W, "_aicommons_model_list", return_value=[]), \
+             mock.patch.object(W, "probe_gateway_backend", return_value=report):
+            updates, _, out, _ = TestWelcome._run(self, ["2", "my-bot-id", ""], multi_http({}))
+        self.assertIn("Couldn't list the gateway's models", out)
+        self.assertEqual(updates["llm"]["model"], "my-bot-id")
+
+    def test_rerun_preselects_the_configured_model(self):
+        report = {"p1_reach": {"status": W.OK}, "p2_auth": {"status": W.OK}, "p4_ctx": {}}
+        with mock.patch.object(W, "_aicommons_saved_credentials", return_value="env"), \
+             mock.patch.object(W, "_aicommons_model_list", return_value=GATEWAY_MODELS), \
+             mock.patch.object(W, "probe_gateway_backend", return_value=report):
+            updates, _, _, _ = TestWelcome._run(
+                self, ["", "", ""], multi_http({}),
+                current={"llm": {"kind": "aicommons", "model": "qwen3-32b"}})
+        self.assertEqual(updates["llm"]["model"], "qwen3-32b")
+
+
 class TestWelcomeKindSwitch(unittest.TestCase):
     """Re-running setup onto an existing file: a role whose kind changes is
     replaced. Merged, the old llamacpp base_url outranked AI Commons' own
@@ -837,13 +865,14 @@ class TestWelcomeKindSwitch(unittest.TestCase):
                            "api_key": "sk-old", "model": "gpt-b", "temperature": 0.3},
                    "summary": {"base_url": "http://127.0.0.1:8082", "model": "small"}}
         with mock.patch.object(W, "_aicommons_saved_credentials", return_value="env"), \
+             mock.patch.object(W, "_aicommons_model_list", return_value=GATEWAY_MODELS), \
              mock.patch.object(W, "probe_gateway_backend", return_value=self.REPORT):
             _, on_disk, _, _ = TestWelcome._run(self, ["2", "", ""], multi_http({}),
                                                 current=current)
         self.assertEqual(on_disk["llm"], {"temperature": 0.3, "kind": "aicommons",
-                                          "model": "claude-v5.5-opus"})
+                                          "model": GATEWAY_MODELS[0]})
         self.assertEqual(on_disk["summary"], {"enabled": True, "kind": "aicommons",
-                                              "model": "claude-v5.5-haiku"})
+                                              "model": GATEWAY_MODELS[0]})
 
     def test_aicommons_back_to_openai_writes_the_kind(self):
         current = {"llm": {"kind": "aicommons", "model": "claude-v5.5-opus", "effort": "high"}}

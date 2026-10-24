@@ -51,7 +51,8 @@ def test_backend_falls_back_to_the_store(store):
 
 
 def test_shared_block_supplies_credentials(store):
-    b = lb.AICommonsBackend({"kind": "aicommons", "aicommons": {"base_url": "https://blk/v1", "api_key": "kb",
+    b = lb.AICommonsBackend({"kind": "aicommons", "model": "claude-v5.5-opus",
+                             "aicommons": {"base_url": "https://blk/v1", "api_key": "kb",
                                                                 "max_context_tokens": 300_000}})
     assert b.base_url == "https://blk/v1" and b.detect_ctx_size() == 300_000
 
@@ -256,3 +257,30 @@ def test_live_setup_apply_switching_kind_drops_the_old_endpoint(monkeypatch):
     for role in ("main", "summary"):
         entry = agent._config["backends"][role]
         assert entry["kind"] == "aicommons" and "base_url" not in entry and "api_key" not in entry
+
+
+def test_rank_puts_known_models_first_newest_version_first():
+    ids = ["amazon-nova-pro", "claude-v4.5-haiku", "claude-v5.5-opus", "qwen3-32b",
+           "claude-v5-sonnet"]
+    ranked = lb.rank_aicommons_models(ids)
+    assert ranked[:3] == ["claude-v5.5-opus", "claude-v5-sonnet", "claude-v4.5-haiku"]
+    assert ranked[3:] == ["amazon-nova-pro", "qwen3-32b"]      # unknown: gateway order
+
+
+def test_model_choices_drop_aliases(store):
+    b = lb.AICommonsBackend({"kind": "aicommons", "base_url": "https://g/v1", "api_key": "k"})
+    rows = [MagicMock(id="claude-v5.5-haiku", owned_by="bedrock"),
+            MagicMock(id="gpt-4o", owned_by="openai-alias"),
+            MagicMock(id="qwen3-32b", owned_by="bedrock")]
+    b.client = MagicMock()
+    b.client.with_options.return_value.models.list.return_value = MagicMock(data=rows)
+    assert b.model_choices() == ["claude-v5.5-haiku", "qwen3-32b"]
+
+
+def test_no_model_configured_is_unhealthy_with_a_way_out(store):
+    b = lb.AICommonsBackend({"kind": "aicommons", "base_url": "https://g/v1", "api_key": "k"})
+    assert b.model == ""
+    with patch.object(b, "_model_ids", return_value=["claude-v5.5-haiku"]), \
+         patch.object(b, "quota", return_value=None):
+        ok, detail = b.health()
+    assert not ok and "/setup" in detail
