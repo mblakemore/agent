@@ -233,12 +233,23 @@ class TestThinkCoverage(unittest.TestCase):
         request_body = kwargs['json']
         messages = request_body['messages']
         
-        # Expected messages: system, user(context), assistant(understood), user(prompt)
-        self.assertEqual(len(messages), 4)
-        self.assertEqual(messages[1]['role'], 'user')
-        self.assertEqual(messages[1]['content'], 'some context')
-        self.assertEqual(messages[2]['role'], 'assistant')
-        self.assertEqual(messages[3]['content'], 'prompt')
+        # Expected messages: user(context), assistant(understood), user(prompt) — no
+        # model-specific system token by default; thinking goes via the template
+        self.assertEqual(len(messages), 3)
+        self.assertEqual(messages[0]['role'], 'user')
+        self.assertEqual(messages[0]['content'], 'some context')
+        self.assertEqual(messages[1]['role'], 'assistant')
+        self.assertEqual(messages[2]['content'], 'prompt')
+        self.assertEqual(request_body['chat_template_kwargs'], {'enable_thinking': True})
+
+    @patch("tools.think._load_agent_config", return_value={"think": {"system_prompt": "<tok>"}})
+    @patch("tools.think._get_base_url", return_value="http://127.0.0.1:8080")
+    @patch("requests.post")
+    def test_configured_system_prompt_leads(self, mock_post, _url, _cfg):
+        mock_post.return_value = MagicMock(iter_lines=MagicMock(return_value=[b'data: [DONE]']))
+        think_mod.fn("prompt", depth="brief")
+        messages = mock_post.call_args.kwargs['json']['messages']
+        self.assertEqual(messages[0], {"role": "system", "content": "<tok>"})
 
     def test_null_byte_in_prompt_returns_error_without_http_call(self):
         """think.fn with a null byte in prompt must return an error, no HTTP call."""

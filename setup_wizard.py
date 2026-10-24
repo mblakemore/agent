@@ -909,7 +909,6 @@ def _fmt_probe(report):
 
 
 _BEDROCK_MODEL_DEFAULTS = {"main": "claude-v4.6-opus", "summary": "claude-v4.5-haiku"}
-_AICOMMONS_MODEL_DEFAULTS = {"main": "claude-v5.5-opus", "summary": "claude-v5.5-haiku"}
 _AICOMMONS_EFFORT_DEFAULTS = {"main": "high", "summary": "low"}
 
 
@@ -967,7 +966,11 @@ def _gateway_questions(kind, role, current, input_fn, print_fn):
                         "credential store)", current.get("base_url", ""), input_fn)
         api_key = _ask("per-user API key — not a published-bot key (ENTER = env "
                        "AICOMMONS_API_KEY / store)", current.get("api_key", ""), input_fn)
-        model = _ask("model id", current.get("model", _AICOMMONS_MODEL_DEFAULTS.get(role, "")),
+        probe = {k: v for k, v in (("base_url", base_url), ("api_key", api_key)) if v}
+        offered = _aicommons_model_list(probe)
+        if offered:
+            print_fn("   the gateway offers: " + ", ".join(offered))
+        model = _ask("model id", current.get("model") or (offered[0] if offered else ""),
                      input_fn)
         effort = _ask("effort (low / medium / high / xhigh / max)",
                       current.get("effort", _AICOMMONS_EFFORT_DEFAULTS.get(role, "high")), input_fn)
@@ -1256,12 +1259,6 @@ _WELCOME_KINDS = (
     ("bedrock", "More…", "legacy AWS Bedrock published-bot gateway"),
 )
 
-_AICOMMONS_MODEL_CHOICES = (
-    ("claude-v5.5-opus", "Opus 5.5", "most capable"),
-    ("claude-v5.5-sonnet", "Sonnet 5.5", "faster and cheaper"),
-    ("claude-v5.5-haiku", "Haiku 5.5", "fastest"),
-)
-
 _MODEL_RADIO_MAX = 15
 
 
@@ -1379,12 +1376,48 @@ def _connect_aicommons(role, ui, current, http):
             section["base_url"] = url.rstrip("/")
         if key:
             section["api_key"] = key
-    ids = [m for m, _l, _h in _AICOMMONS_MODEL_CHOICES]
-    want = current.get("model") or _AICOMMONS_MODEL_DEFAULTS.get(role, ids[0])
-    pick = ui.radio("Which model?", [(label, hint) for _m, label, hint in _AICOMMONS_MODEL_CHOICES],
-                    ids.index(want) if want in ids else 0)
-    section["model"] = ids[pick]
+    ids = _aicommons_model_list(section)
+    want = current.get("model")
+    if not ids:
+        ui.say("Couldn't list the gateway's models (check the URL and key).")
+        if want:
+            section["model"] = want
+        else:
+            typed = ui.text("Model id", "")
+            if typed:
+                section["model"] = typed
+    else:
+        pick = ui.radio("Which model?", [(m, _aicommons_hint(m)) for m in ids],
+                        ids.index(want) if want in ids else 0)
+        section["model"] = ids[pick]
     return section, probe_gateway_backend(section, role, http=http, ask_consent=None)
+
+
+def _aicommons_model_list(section):
+    """The gateway's models, ranked, aliases left out; [] when it can't be asked
+    (no credentials, unreachable, key refused). A free GET /v1/models."""
+    try:
+        import llm_backend
+        return llm_backend.build_backend({"kind": "aicommons", "role": "main",
+                                          **section}).model_choices()
+    except Exception:
+        return []
+
+
+def _aicommons_hint(model_id):
+    """What the agent knows about a model, from its table: context and thinking."""
+    try:
+        import llm_backend
+        if model_id not in llm_backend.AICOMMONS_MODELS:
+            return "untested here — 128k ctx and no thinking assumed"
+        info = llm_backend.aicommons_model_info(model_id)
+    except Exception:
+        return ""
+    ctx = info.get("context_tokens") or 0
+    parts = [f"{ctx // 1000:,}k ctx" if ctx < 1_000_000 else f"{ctx // 1_000_000}M ctx"]
+    if info.get("reasoning"):
+        parts.append("thinking")
+    return " · ".join(parts)
 
 
 def _connect(role, ui, found, current, http, kind=None):
@@ -1429,13 +1462,6 @@ def _connected_line(section, report):
 
 def _shared_summary(main_section):
     """The summary role when the user didn't ask for a separate one."""
-    if main_section.get("kind") == "aicommons":
-        out = {"enabled": True, "kind": "aicommons",
-               "model": _AICOMMONS_MODEL_DEFAULTS["summary"]}
-        for k in ("base_url", "api_key"):
-            if main_section.get(k):
-                out[k] = main_section[k]
-        return out
     out = {"enabled": True}
     for key in ("kind", "base_url", "api_url", "api_key", "model"):
         if main_section.get(key):
@@ -1514,7 +1540,7 @@ def run_welcome(config_path, effective_cfg=None, input_fn=None, print_fn=None,
     ctx_known = bool(report.get("p4_ctx", {}).get("value"))
 
     extras = [("summary", "Use a separate SUMMARY model",
-               "default: Haiku 5.5" if kind == "aicommons" else "default: the same model"),
+               "default: the same model"),
               ("advisor", "Add an ADVISOR model", "a bigger model the agent can consult")]
     if kind == "llamacpp" and ok:       # both need a server that answers
         extras.append(("speed", "Check speed and tool calling",
@@ -1606,7 +1632,7 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
     from ``effective_cfg`` (the defaults-merged runtime config), whose
     shipped placeholder model names would otherwise present as keepable
     answers and poison the auto-pick (caught live 2026-08-15: first run
-    wrote 'gemma-4-31B' instead of the server's real model).
+    wrote the shipped placeholder model instead of the server's real model).
     ``effective_cfg`` is used only where effective values are the right
     baseline: calibration's keep-default rules and the drift sidecar.
     """

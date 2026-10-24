@@ -1,8 +1,9 @@
-"""Token utilities with Gemma 3 tokenizer counting.
+"""Token counting: a conservative character-based estimate, or an exact count
+with a Hugging Face tokenizer you name.
 
-Uses the Gemma 3 tokenizer (shared by Gemma 4 variants) for precise context
-window management. Falls back to conservative character-based estimation if
-the tokenizer is unavailable.
+No tokenizer is assumed: counting every model's text with one model family's
+tokenizer is wrong for the rest. Set AGENT_TOKENIZER to a Hugging Face repo id
+(the one matching the model you serve) to count exactly; it needs `transformers`.
 """
 
 import logging
@@ -18,15 +19,18 @@ _tokenizer = None
 _EXACT_TOKENIZER_AVAILABLE = False
 _TOKENIZER_ERROR = None
 
-try:
-    from transformers import AutoTokenizer, logging as tf_logging
-    tf_logging.set_verbosity_error()
-    _tokenizer = AutoTokenizer.from_pretrained("unsloth/gemma-3-4b-it")
-    _EXACT_TOKENIZER_AVAILABLE = True
-except ImportError:
-    _TOKENIZER_ERROR = "transformers not installed — run: pip install transformers"
-except Exception as e:
-    _TOKENIZER_ERROR = f"Failed to load Gemma tokenizer: {e}"
+_TOKENIZER_NAME = os.environ.get("AGENT_TOKENIZER", "").strip()
+
+if _TOKENIZER_NAME:
+    try:
+        from transformers import AutoTokenizer, logging as tf_logging
+        tf_logging.set_verbosity_error()
+        _tokenizer = AutoTokenizer.from_pretrained(_TOKENIZER_NAME)
+        _EXACT_TOKENIZER_AVAILABLE = True
+    except ImportError:
+        _TOKENIZER_ERROR = "AGENT_TOKENIZER is set but transformers is not installed"
+    except Exception as e:
+        _TOKENIZER_ERROR = f"Failed to load tokenizer {_TOKENIZER_NAME!r}: {e}"
 
 if not _EXACT_TOKENIZER_AVAILABLE:
     if _TOKENIZER_ERROR is None:

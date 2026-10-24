@@ -55,7 +55,7 @@ def test_calculate_retry_delay():
 def test_load_config_no_file():
     with patch("agent.Path.exists", return_value=False):
         config = _load_config()
-        assert config["llm"]["model"] == "gemma-4-31B"
+        assert config["llm"]["model"] == ""      # no model name ships; the server's is used
 
 def test_load_config_valid_file():
     mock_config = {"llm": {"model": "custom-model"}}
@@ -68,7 +68,7 @@ def test_load_config_invalid_json():
     with patch("agent.Path.exists", return_value=True):
         with patch("builtins.open", mock_open(read_data="not-json")):
             config = _load_config()
-            assert config["llm"]["model"] == "gemma-4-31B"
+            assert config["llm"]["model"] == ""
 
 import requests
 from agent import _check_api_health, _detect_ctx_size, _list_available_models, _render_context_bar

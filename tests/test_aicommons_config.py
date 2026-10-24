@@ -51,7 +51,8 @@ def test_backend_falls_back_to_the_store(store):
 
 
 def test_shared_block_supplies_credentials(store):
-    b = lb.AICommonsBackend({"kind": "aicommons", "aicommons": {"base_url": "https://blk/v1", "api_key": "kb",
+    b = lb.AICommonsBackend({"kind": "aicommons", "model": "claude-v5.5-opus",
+                             "aicommons": {"base_url": "https://blk/v1", "api_key": "kb",
                                                                 "max_context_tokens": 300_000}})
     assert b.base_url == "https://blk/v1" and b.detect_ctx_size() == 300_000
 
@@ -187,7 +188,7 @@ def test_backend_flag_drops_the_replaced_kinds_endpoint(monkeypatch):
     monkeypatch.setattr(agent, "_summary_backend", None)
     agent._apply_backend_overrides("aicommons", "aicommons")
     assert agent._main_backend.base_url == "https://gw/v1"
-    assert agent._main_backend.model == "claude-v5.5-opus"
+    assert agent._main_backend.model == "claude-v5.5-sonnet"    # the CLI default
     assert agent._summary_backend.base_url == "https://own/v1"     # already aicommons: kept
 
 
@@ -256,3 +257,69 @@ def test_live_setup_apply_switching_kind_drops_the_old_endpoint(monkeypatch):
     for role in ("main", "summary"):
         entry = agent._config["backends"][role]
         assert entry["kind"] == "aicommons" and "base_url" not in entry and "api_key" not in entry
+
+
+def test_rank_puts_known_models_first_newest_version_first():
+    ids = ["amazon-nova-pro", "claude-v4.5-haiku", "claude-v5.5-opus", "qwen3-32b",
+           "claude-v5-sonnet"]
+    ranked = lb.rank_aicommons_models(ids)
+    assert ranked[:3] == ["claude-v5.5-opus", "claude-v5-sonnet", "claude-v4.5-haiku"]
+    assert ranked[3:] == ["amazon-nova-pro", "qwen3-32b"]      # unknown: gateway order
+
+
+def test_model_choices_drop_aliases(store):
+    b = lb.AICommonsBackend({"kind": "aicommons", "base_url": "https://g/v1", "api_key": "k"})
+    rows = [MagicMock(id="claude-v5.5-haiku", owned_by="bedrock"),
+            MagicMock(id="gpt-4o", owned_by="openai-alias"),
+            MagicMock(id="qwen3-32b", owned_by="bedrock")]
+    b.client = MagicMock()
+    b.client.with_options.return_value.models.list.return_value = MagicMock(data=rows)
+    assert b.model_choices() == ["claude-v5.5-haiku", "qwen3-32b"]
+
+
+def test_no_model_configured_is_unhealthy_with_a_way_out(store):
+    b = lb.AICommonsBackend({"kind": "aicommons", "base_url": "https://g/v1", "api_key": "k"})
+    assert b.model == ""
+    with patch.object(b, "_model_ids", return_value=["claude-v5.5-haiku"]), \
+         patch.object(b, "quota", return_value=None):
+        ok, detail = b.health()
+    assert not ok and "/setup" in detail
+
+
+def test_every_backend_accepts_timeout_on_list_and_ctx():
+    """Found live: /model crashed with AICommonsBackend.list_models() got an unexpected
+    keyword argument 'timeout' — agent.py passes timeout= to whichever backend is active."""
+    import inspect
+    classes = [c for c in vars(lb).values() if inspect.isclass(c) and c.__module__ == lb.__name__
+               and hasattr(c, "list_models") and hasattr(c, "detect_ctx_size")
+               and c.__name__ != "Backend"]
+    assert {"LlamacppBackend", "AICommonsBackend"} <= {c.__name__ for c in classes}
+    for cls in classes:
+        for meth in ("list_models", "detect_ctx_size"):
+            params = inspect.signature(getattr(cls, meth)).parameters
+            assert "timeout" in params, f"{cls.__name__}.{meth} has no timeout parameter"
+
+
+def test_model_picker_lists_the_gateway_through_the_live_backend(monkeypatch, store):
+    import agent
+    b = lb.AICommonsBackend({"kind": "aicommons", "base_url": "https://g/v1", "api_key": "k",
+                             "model": "claude-v5.5-haiku"})
+    monkeypatch.setattr(b, "model_choices", lambda timeout=10.0: ["claude-v5.5-sonnet", "qwen3-32b"])
+    monkeypatch.setattr(agent, "_main_backend", b)
+    assert agent._list_available_models("https://g/v1") == ["claude-v5.5-sonnet", "qwen3-32b"]
+
+
+def test_switching_model_rederives_its_limits(monkeypatch, store):
+    import agent
+    b = lb.AICommonsBackend({"kind": "aicommons", "base_url": "https://g/v1", "api_key": "k",
+                             "model": "claude-v5.5-opus"})
+    assert b._thinking_kwargs()                       # opus: thinking on
+    live = json.loads(json.dumps(agent._DEFAULT_CONFIG))
+    live["backends"] = {"main": {"kind": "aicommons", "model": "claude-v5.5-opus"}}
+    monkeypatch.setattr(agent, "_config", live)
+    monkeypatch.setattr(agent, "_main_backend", b)
+    monkeypatch.setattr(agent, "_persist_config_value", lambda *a: None)
+    agent._set_model_for_role("main", "qwen3-32b")
+    assert b.model == "qwen3-32b" and not b._thinking_kwargs()   # unknown: no thinking sent
+    assert b.max_tokens <= lb._AICOMMONS_UNKNOWN_MODEL["max_output"]
+    assert live["backends"]["main"]["model"] == "qwen3-32b"

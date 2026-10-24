@@ -438,7 +438,9 @@ def _extract_pinned(text):
 # ── Configuration ──────────────────────────────────────────────────────
 
 _DEFAULT_CONFIG = {
-    "llm": {"base_url": "http://127.0.0.1:8080", "model": "gemma-4-31B"},
+    # No model name ships: an empty model takes the server's own (startup reads
+    # /v1/models), and /setup writes the one picked.
+    "llm": {"base_url": "http://127.0.0.1:8080", "model": ""},
     "retry": {
         "max_retries": 10,
         "base_delay_seconds": 2,
@@ -524,7 +526,7 @@ _DEFAULT_CONFIG = {
     },
     "summary": {
         "base_url": "http://127.0.0.1:8082",
-        "model": "gemma-4-E4B",
+        "model": "",
         "enabled": True,
         "max_wait_on_save": 10,
     },
@@ -1434,17 +1436,15 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
     global _main_backend, _summary_backend
 
     defaults = {"main": "claude-v4.6-opus", "summary": "claude-v4.5-haiku"}
-    _AICOMMONS_DEFAULT_MODELS = {"main": "claude-v5.5-opus", "summary": "claude-v5.5-haiku"}
+    _AICOMMONS_DEFAULT_MODELS = {"main": "claude-v5.5-sonnet", "summary": "claude-v5.5-haiku"}
 
-    # Model IDs the Bedrock gateway accepts. An existing model that doesn't
-    # match one of these prefixes was set for the OTHER backend kind (likely
-    # a llamacpp default like ``gemma-4-31B`` carried over from
-    # _synthesize_backends_registry), so the CLI override must replace it
-    # with a Bedrock-compatible default — otherwise the gateway returns 422.
-    _bedrock_prefixes = (
-        "claude-", "mistral-", "mixtral-", "amazon-nova-",
-        "deepseek-", "llama-", "llama3-", "qwen",
-    )
+    from llm_backend import normalize_kind
+
+    def _same_kind(a, b):
+        try:
+            return normalize_kind(a or "llamacpp") == normalize_kind(b or "llamacpp")
+        except Exception:  # noqa: BLE001
+            return False
 
     def _override(role: str, kind: str | None):
         if not kind:
@@ -1452,6 +1452,10 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
         entry = _config["backends"].setdefault(role, {})
         prev_kind = entry.get("kind")
         entry["kind"] = kind
+        # A model set for the kind being replaced (e.g. a local server's model name
+        # carried over from the llm block) means nothing to the new one and the
+        # gateway would 422 on it; only a model set for this same kind is kept.
+        foreign_model = not _same_kind(prev_kind, kind)
         if kind == "aicommons":
             if prev_kind not in ("aicommons", "ucsb", "ai-commons", "ai_commons"):
                 # The entry's endpoint and key belong to the kind being replaced (usually the
@@ -1461,11 +1465,11 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
                 for k in ("base_url", "api_key", "api_key_env"):
                     entry.pop(k, None)
             existing = entry.get("model", "")
-            if not existing.startswith(_bedrock_prefixes):
+            if not existing or foreign_model:
                 entry["model"] = _AICOMMONS_DEFAULT_MODELS[role]
         if kind == "bedrock":
             existing = entry.get("model", "")
-            if not existing or not existing.startswith(_bedrock_prefixes):
+            if not existing or foreign_model:
                 entry["model"] = defaults[role]
                 logging.getLogger("agent").info(
                     "backend-override role=%s kind=bedrock model=%s "
@@ -4474,9 +4478,15 @@ def _set_model_for_role(role, new_model):
     section = "llm" if role == "main" else "summary"
     _config.setdefault(section, {})["model"] = new_model
     backend = _main_backend if role == "main" else _summary_backend
+    entry = (_config.get("backends") or {}).get(role)
+    if isinstance(entry, dict):
+        entry["model"] = new_model      # the registry is what a rebuild reads
     if backend is not None:
         try:
-            backend.model = new_model
+            if hasattr(backend, "set_model"):
+                backend.set_model(new_model)   # re-derives per-model limits
+            else:
+                backend.model = new_model
         except AttributeError:
             pass
     return _persist_config_value(section, "model", new_model)
@@ -4639,12 +4649,12 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     )
     ok, detail = _main_backend.health(timeout=_startup_health_timeout())
 
-    # Auto-detect the model name from /v1/models so the TUI shows the actual
-    # loaded model rather than the config default ("gemma-4-31B").  Only update
-    # when the server returns exactly one model — ambiguous lists are left alone.
+    # Auto-detect the model name from /v1/models so requests and the TUI carry the
+    # server's real model. A single listed model always wins; with several, only
+    # an unset model takes the first (a configured one is left alone).
     if ok and getattr(_main_backend, "kind", None) == "llamacpp":
         _detected_models = _main_backend.list_models(timeout=3)
-        if len(_detected_models) == 1:
+        if len(_detected_models) == 1 or (_detected_models and not _main_backend.model):
             _main_backend.model = _detected_models[0]
             _config["llm"]["model"] = _detected_models[0]
             log.info("Auto-detected main model name from /v1/models: %s", _detected_models[0])
@@ -4657,16 +4667,16 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     )
 
     # Warn if the main llamacpp backend's chat template doesn't support tool calls.
-    # Symptom: Gemma 4 native <|tool_call> tokens appear as content text, get stripped
-    # by HARMONY filter, and no tools ever fire. Fix: --chat-template-file interleaved.jinja
+    # Symptom: the model's native tool-call tokens appear as content text, get
+    # stripped, and no tools ever fire. Fix: a template that supports tools.
     if getattr(_main_backend, 'kind', '') == 'llamacpp':
         caps = _main_backend.check_tool_caps()
         if caps and not caps.get('supports_tool_calls', True):
             log.warning(
                 "TOOL CALLS DISABLED: main backend chat template does not support tool calls "
                 "(chat_template_caps.supports_tool_calls=false). Tools will not execute. "
-                "Add --chat-template-file models/templates/google-gemma-4-31B-it-interleaved.jinja "
-                "to your llama-server launch command."
+                "Start llama-server with --jinja and a chat template that supports tool calls "
+                "(--chat-template-file <template>; docs/setup.md covers this)."
             )
 
     # Auto-detect context size from the main backend. Apply 85% buffer,
@@ -4709,7 +4719,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             summary_ok, summary_detail = False, "unreachable"
         if summary_ok and getattr(_summary_backend, "kind", None) == "llamacpp":
             _det = _summary_backend.list_models(timeout=3)
-            if len(_det) == 1:
+            if len(_det) == 1 or (_det and not _summary_backend.model):
                 _summary_backend.model = _det[0]
                 log.info("Auto-detected summary model name from /v1/models: %s", _det[0])
 

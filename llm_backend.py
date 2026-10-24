@@ -23,8 +23,8 @@ Key decisions reflected in this module (see plan § 24 decision log):
   pointers; each backend dict carries its own ``kind`` field.
 - D5: Default when nothing is configured is both backends = llamacpp at
   today's URLs (:8080 main, :8082 summary). Rollback-safe.
-- D7: Token counts for non-llamacpp backends are approximate (Gemma-3
-  fallback) — over-reserves context, which is the safe direction.
+- D7: Token counts for non-llamacpp backends are approximate (a chars-based
+  estimate) — over-reserves context, which is the safe direction.
 - D9: ``detect_ctx_size()`` returns ``None`` when a backend can't introspect;
   callers already handle ``None``.
 - D10: Cancellation flows through a ``cancel_check`` callback threaded from
@@ -249,9 +249,10 @@ class Backend(Protocol):
 
     def health(self, timeout: int = 3) -> tuple[bool, str]: ...
 
-    def detect_ctx_size(self) -> int | None: ...
+    # agent.py's /model picker and probes pass timeout= to every backend
+    def detect_ctx_size(self, timeout: int = 3) -> int | None: ...
 
-    def list_models(self) -> list[str]: ...
+    def list_models(self, timeout: int = 3) -> list[str]: ...
 
     def stream_chat(
         self,
@@ -326,7 +327,7 @@ class FakeBackend:
     def health(self, timeout: int = 3):
         return True, "fake backend"
 
-    def detect_ctx_size(self):
+    def detect_ctx_size(self, timeout: int = 3):
         return self.ctx_size
 
     def list_models(self, timeout: int = 3):
@@ -967,10 +968,9 @@ def _resolve_daily_cap(cfg: dict, role: str) -> float:
 
 
 def _approx_token_count(text: str) -> int:
-    """Char-based token approximation used when ``token_utils`` can't be
-    imported (lazy import — avoids pulling tokenizer deps into startup).
-    The Gemma-3 tokenizer overshoots Claude text by ~10-20% (safe
-    direction for a budget guardrail). Fallback: chars/4.
+    """Token estimate via ``token_utils`` (chars/3 unless AGENT_TOKENIZER names
+    an exact tokenizer; overcounting is the safe direction for a budget guardrail).
+    Fallback when it can't be imported: chars/4.
     """
     try:
         from token_utils import count_tokens
@@ -1220,7 +1220,7 @@ class BedrockBackend:
             return False, f"error: {str(e)[:60]}"
         return (True, self.api_url) if ok else (False, "gateway health failed")
 
-    def detect_ctx_size(self) -> int | None:
+    def detect_ctx_size(self, timeout: int = 3) -> int | None:
         """Gateway doesn't expose ctx_size; return per-model default char
         budget or None if the model is unknown. Plan § 10 / D9.
 
@@ -1241,7 +1241,7 @@ class BedrockBackend:
             ctx = max(ctx - _DEV_MODE_PREAMBLE_RESERVE_CHARS, 4096)
         return ctx
 
-    def list_models(self) -> list[str]:
+    def list_models(self, timeout: int = 3) -> list[str]:
         """Try the gateway's OpenAPI spec first; fall back to the
         ported ``_MODEL_CONTEXT_CHARS`` keys if that fails.
         """
@@ -1747,10 +1747,10 @@ class FoundryBackend:
     def health(self, timeout: int = 3) -> tuple[bool, str]:  # timeout unused (no probe)
         return True, self.api_url
 
-    def detect_ctx_size(self) -> int:
+    def detect_ctx_size(self, timeout: int = 3) -> int:
         return 200000
 
-    def list_models(self) -> list[str]:
+    def list_models(self, timeout: int = 3) -> list[str]:
         return [self.model]
     def complete(self, prompt: str, log=None) -> str:
         log = log or logging.getLogger("llm_backend")
@@ -1931,6 +1931,19 @@ _AICOMMONS_NOTED_HEADERS = ("x-unimplemented-parameters", "x-dropped-server-tool
 
 def aicommons_model_info(model: str) -> dict:
     return AICOMMONS_MODELS.get(model or "", _AICOMMONS_UNKNOWN_MODEL)
+
+
+def rank_aicommons_models(ids: list[str]) -> list[str]:
+    """Order a gateway's model list for a picker without naming any model: models
+    this table knows (context window, prices) first, newest version first (the
+    numbers in the id, compared as a tuple), then the rest in the gateway's order."""
+    import re as _re
+
+    def version(mid):
+        return tuple(int(n) for n in _re.findall(r"\d+", mid))
+    known = sorted((m for m in ids if m in AICOMMONS_MODELS),
+                   key=lambda m: (version(m), m), reverse=True)
+    return known + [m for m in ids if m not in AICOMMONS_MODELS]
 
 
 # Model-name families the gateway serves; anything else as `model` is taken to be
@@ -2171,7 +2184,7 @@ class AICommonsBackend:
             base = base[: -len("/v1/messages")]
         self.base_url = base
         self.api_key = key
-        self.model = cfg.get("model") or "claude-v5.5-opus"
+        self.model = cfg.get("model") or ""     # /setup lists the gateway's models
         catalog = opts.get("model_catalog") or os.environ.get("AICOMMONS_MODEL_CATALOG")
         if catalog:
             load_aicommons_catalog(catalog)
@@ -2202,6 +2215,9 @@ class AICommonsBackend:
         except Exception as e:  # noqa: BLE001
             return False, str(translate_aicommons_error(e))
         self.quota()   # startup poll: the session summary reports quota used from here
+        if not self.model:
+            return False, ("no model configured — run /setup to pick one from the gateway's "
+                           "list, or pass --model")
         if ids and self.model not in ids:
             if not self.model.startswith(_AICOMMONS_FAMILIES):
                 return True, f"{self.base_url} (model {self.model!r} taken as a bot id)"
@@ -2213,15 +2229,39 @@ class AICommonsBackend:
         page = self.client.with_options(max_retries=0, timeout=timeout).models.list()
         return [m.id for m in getattr(page, "data", None) or [] if getattr(m, "id", None)]
 
-    def detect_ctx_size(self) -> int:
+    def model_choices(self, timeout: float = 10.0) -> list[str]:
+        """The gateway's models for a picker: ranked, aliases (``owned_by`` ending in
+        "alias", e.g. OpenAI names mapped onto another model) left out."""
+        page = self.client.with_options(max_retries=0, timeout=timeout).models.list()
+        ids = []
+        for m in getattr(page, "data", None) or []:
+            owner = str(getattr(m, "owned_by", None) or (getattr(m, "model_extra", None) or {})
+                        .get("owned_by") or "")
+            if getattr(m, "id", None) and not owner.endswith("alias"):
+                ids.append(m.id)
+        return rank_aicommons_models(ids)
+
+    def detect_ctx_size(self, timeout: int = 3) -> int:
         """Usable context in TOKENS: the model's window capped by max_context_tokens."""
         return min(int(self.info["context_tokens"]), int(self.opts["max_context_tokens"]))
 
-    def list_models(self) -> list[str]:
+    def list_models(self, timeout: int = 3) -> list[str]:
+        """The /model picker's list: the same ranked, alias-free list /setup shows."""
         try:
-            return self._model_ids()
+            return self.model_choices(timeout=max(float(timeout), 5.0))
         except Exception:  # noqa: BLE001
-            return [self.model]
+            return [self.model] if self.model else []
+
+    def set_model(self, model: str) -> None:
+        """Switch model in place (/model). The model's limits and thinking support
+        were read from the table at construction; re-derive them so a switch to a
+        model without thinking, or with a smaller output cap, doesn't send what the
+        old one accepted."""
+        self.model = model
+        self.info = aicommons_model_info(model)
+        if not self._cfg.get("max_tokens"):
+            wall_cap = int(0.8 * float(self.opts["wall_seconds"]) * float(self.opts["tokens_per_second"]))
+            self.max_tokens = min(self.info["max_output"], wall_cap)
 
     # ── request building ──
 

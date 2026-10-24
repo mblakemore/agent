@@ -77,17 +77,19 @@ def test_token_caching():
 def test_tokenizer_import_error():
     """Test handling of ImportError when loading transformers."""
     # Simulate transformers not being installed by removing it from sys.modules
-    with patch.dict('sys.modules', {'transformers': None}):
+    with patch.dict('sys.modules', {'transformers': None}), \
+         patch.dict('os.environ', {'AGENT_TOKENIZER': 'some/tokenizer'}):
         importlib.reload(token_utils)
-        assert token_utils._TOKENIZER_ERROR == "transformers not installed — run: pip install transformers"
+        assert token_utils._TOKENIZER_ERROR == "AGENT_TOKENIZER is set but transformers is not installed"
         assert not token_utils._EXACT_TOKENIZER_AVAILABLE
 
 def test_tokenizer_generic_exception():
     """Test handling of generic Exception when loading the tokenizer."""
     # Mock AutoTokenizer.from_pretrained to raise an Exception
-    with patch('transformers.AutoTokenizer.from_pretrained', side_effect=Exception("Loading failed")):
+    with patch('transformers.AutoTokenizer.from_pretrained', side_effect=Exception("Loading failed")), \
+         patch.dict('os.environ', {'AGENT_TOKENIZER': 'some/tokenizer'}):
         importlib.reload(token_utils)
-        assert "Failed to load Gemma tokenizer: Loading failed" in token_utils._TOKENIZER_ERROR
+        assert "Failed to load tokenizer 'some/tokenizer': Loading failed" in token_utils._TOKENIZER_ERROR
         assert not token_utils._EXACT_TOKENIZER_AVAILABLE
 
 def test_tokenizer_fallback_error_msg():
@@ -125,3 +127,16 @@ def test_tokenizer_fallback_error_msg():
     
     # Let's just ensure we hit as many as possible.
     assert token_utils.count_tokens("test") >= 0
+
+
+def test_no_tokenizer_is_loaded_unless_named():
+    """Counting every model's text with one family's tokenizer is wrong for the rest;
+    the exact path runs only for a tokenizer the user names."""
+    import os
+    env = {k: v for k, v in os.environ.items() if k != "AGENT_TOKENIZER"}
+    with patch.dict('os.environ', env, clear=True), \
+         patch('transformers.AutoTokenizer.from_pretrained') as load:
+        importlib.reload(token_utils)
+        load.assert_not_called()
+        assert not token_utils._EXACT_TOKENIZER_AVAILABLE
+    importlib.reload(token_utils)
