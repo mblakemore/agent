@@ -8,9 +8,18 @@ A local, tool-driven coding assistant that talks to an OpenAI-compatible LLM end
 
 ## Install
 
-`pip install --user -r requirements.txt`, or into a venv. Windows runs via Git-Bash rather than
-`cmd`/PowerShell. Full instructions, PEP 668 notes and Git-Bash resolution order:
-**[docs/install.md](docs/install.md)**.
+Linux and macOS (Python 3.10 or newer):
+
+```bash
+git clone https://github.com/mblakemore/agent.git && cd agent
+./install.sh
+```
+
+The script installs the dependencies into a venv in `./.venv`, so it works on Ubuntu 24.04 and
+other "externally managed" Pythons without `--break-system-packages`. It also adds an `agent`
+alias to your shell rc file. `./install.sh --user` installs into the system Python instead.
+Windows runs via Git-Bash rather than `cmd`/PowerShell. Options, manual steps and the Git-Bash
+setup: **[docs/install.md](docs/install.md)**.
 
 ## Quick start
 
@@ -417,7 +426,7 @@ The agent supports AWS Bedrock Chat gateway for either the main or summary model
 
 ## Dependencies
 
-- Python 3.7+
+- Python 3.10+
 - `requests` — HTTP to the LLM endpoint
 - `transformers` + `torch` — Gemma tokenizer (optional; falls back to char-based estimate)
 - `PyMuPDF` (`fitz`) — PDF extraction (`tools/read_pdf.py`)

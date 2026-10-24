@@ -3,15 +3,67 @@
 `agent.py` is cross-platform Python. Installing it is separate from getting a model server
 running — that is [Setup](setup.md).
 
+It needs Python 3.10 or newer: Ubuntu 22.04+, Debian 12+, or a Homebrew or python.org Python
+on macOS.
+
+## Install script (Linux and macOS)
+
+```bash
+git clone https://github.com/mblakemore/agent.git && cd agent
+./install.sh
+```
+
+By default the script:
+
+1. Picks the newest `python3.x` on your `PATH` that is 3.10 or newer.
+2. Creates a venv in `./.venv` and installs `requirements.txt` into it. Nothing is installed into
+   the system Python, so it works on PEP 668 "externally managed" systems (Ubuntu 24.04,
+   Debian 12, Homebrew Python) without `--break-system-packages`.
+3. Checks that `agent.py` starts.
+4. Adds an `agent` alias that runs the venv's Python on `agent.py`. The alias goes into
+   `~/.bashrc` for bash, `~/.zshrc` for zsh, or `~/.bash_profile` for bash on macOS. You don't
+   need to activate the venv.
+
+Then open a new shell, or `source` the file it names, and run `agent --setup`.
+
+Re-running it is safe: the venv is reused, the requirements are re-applied, and the alias block
+is replaced, not duplicated. `/alias` inside the agent writes the same block.
+
+| Option | Effect |
+| --- | --- |
+| `--user` | Install with `pip install --user` into the system Python instead of a venv. On an externally managed Python this adds `--break-system-packages`, which only touches `~/.local` but can still shadow apt-installed packages. |
+| `--python PATH` | Use this interpreter. |
+| `--no-alias` | Don't touch your shell rc file. |
+| `--yes` | Install a missing `python3.X-venv` or `python3-pip` with apt without asking. |
+
+**Ubuntu and Debian:** a minimal server usually has `python3` but not the `venv` module's pip
+bootstrap. When that is missing, the script offers to run `sudo apt install python3.12-venv`
+(with the version matching your Python). Without a terminal, sudo or `--yes`, it prints the
+command and stops.
+
+**macOS:** the `python3` that comes with Xcode's command-line tools is 3.9, which is too old.
+Install a newer one with `brew install python@3.12` or from python.org, then run the script.
+macOS needs nothing else. The pinned packages ship wheels for Intel and Apple Silicon, and the
+`exec_command` tool uses the system `/bin/bash`.
+
+## Manual install
+
+In a venv:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python agent.py
+```
+
+Or into your user site-packages:
+
 ```bash
 pip install --user -r requirements.txt
 ```
 
-On Ubuntu 24.04+ (PEP 668 / externally-managed system python), add `--break-system-packages`, or install into a venv:
-
-```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-```
+On an externally managed Python, the user install needs `--break-system-packages`. The venv
+doesn't.
 
 ## Windows (Git-Bash) setup
 

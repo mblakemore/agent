@@ -22,7 +22,6 @@ markdownify==1.2.2
 packaging==26.0
 pluggy==1.6.0
 prompt-toolkit==3.0.52
-puremagic==2.2.0
 pydantic==2.13.4
 pydantic_core==2.46.4
 Pygments==2.20.0

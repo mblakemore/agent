@@ -17,13 +17,22 @@ _MARKER = "# >>> agent alias (added by /alias) >>>"
 _MARKER_END = "# <<< agent alias (added by /alias) <<<"
 
 
+def _in_venv() -> bool:
+    return sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+
+
 def detect_python_cmd() -> str:
     """Return a command that launches the *current* Python.
 
-    Prefers the ``python3``/``python`` name on PATH that matches the running
-    interpreter and isn't the Windows Store stub; falls back to the absolute
-    ``sys.executable`` path, which always works.
+    Inside a virtualenv this is always the venv's own interpreter path: a bare
+    ``python3`` would resolve to the system Python once the venv isn't active,
+    and that one lacks the dependencies. Otherwise prefers the ``python3``/
+    ``python`` name on PATH that matches the running interpreter and isn't the
+    Windows Store stub; falls back to the absolute ``sys.executable`` path,
+    which always works.
     """
+    if _in_venv():
+        return sys.executable
     exe_base = os.path.splitext(os.path.basename(sys.executable))[0].lower()
     order = [exe_base] if exe_base in ("python3", "python") else []
     for name in ("python3", "python"):
@@ -74,6 +83,9 @@ def rc_file_for(kind: str) -> str | None:
     """The shell rc file to edit for *kind*, or None when there isn't one we
     can safely write (pure Windows cmd/PowerShell)."""
     home = os.path.expanduser("~")
+    if kind == "bash" and sys.platform == "darwin":
+        # macOS Terminal starts LOGIN shells, which read ~/.bash_profile, not ~/.bashrc.
+        return os.path.join(home, ".bash_profile")
     if kind in ("gitbash", "bash"):
         return os.path.join(home, ".bashrc")
     if kind == "zsh":
@@ -103,7 +115,39 @@ def install_alias_block(rc_path: str, alias_line: str) -> str:
             f.write(new)
         return "updated"
 
+    # A blank line before the block only when there is something above it; on an
+    # empty file the leading blank line was stripped by the next run, which then
+    # reported "updated" instead of "unchanged".
     sep = "" if (not existing or existing.endswith("\n")) else "\n"
     with open(rc_path, "a", encoding="utf-8") as f:
-        f.write(sep + "\n" + block)
+        f.write(sep + ("\n" if existing else "") + block)
     return "added"
+
+
+def main(argv=None) -> int:
+    """``python alias_setup.py [--python CMD] [--rc FILE]`` — used by install.sh.
+
+    Writes the same marked block as ``/alias``, so either one can update it later.
+    """
+    import argparse
+    ap = argparse.ArgumentParser(description="Install the `agent` shell alias.")
+    ap.add_argument("--python", help="interpreter command for the alias (default: this one)")
+    ap.add_argument("--rc", help="shell rc file to edit (default: from $SHELL)")
+    ap.add_argument("--agent", help="path to agent.py (default: next to this file)")
+    a = ap.parse_args(argv)
+    py = a.python or detect_python_cmd()
+    agent = os.path.abspath(a.agent or os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent.py"))
+    line = build_alias_commands(py, agent)["bash"]
+    rc = a.rc or rc_file_for(current_shell_kind())
+    if not rc:
+        print("No shell rc file to edit on this shell. Add this yourself:")
+        print("  " + build_alias_commands(py, agent)["powershell"])
+        return 1
+    status = install_alias_block(rc, line)
+    print(f"{rc}: {status}")
+    print(f"  {line}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

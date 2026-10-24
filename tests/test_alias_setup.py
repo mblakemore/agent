@@ -2,7 +2,15 @@
 
 import os
 
+import pytest
+
 import alias_setup as A
+
+
+@pytest.fixture(autouse=True)
+def _not_in_venv(monkeypatch):
+    # The suite itself may run inside a venv; detection tests pin the answer.
+    monkeypatch.setattr(A, "_in_venv", lambda: False)
 
 
 # ── detect_python_cmd ───────────────────────────────────────────────────────
@@ -29,6 +37,15 @@ def test_detect_falls_back_to_sys_executable(monkeypatch):
     monkeypatch.setattr(A.sys, "executable", "/opt/py/bin/python3.14")
     monkeypatch.setattr(A.shutil, "which", lambda n: None)
     assert A.detect_python_cmd() == "/opt/py/bin/python3.14"
+
+
+def test_detect_inside_a_venv_uses_the_venv_interpreter(monkeypatch):
+    """A bare python3 resolves to the system Python once the venv isn't active, and that
+    one has none of the dependencies."""
+    monkeypatch.setattr(A, "_in_venv", lambda: True)
+    monkeypatch.setattr(A.sys, "executable", "/home/u/agent/.venv/bin/python3")
+    monkeypatch.setattr(A.shutil, "which", lambda n: f"/usr/bin/{n}")
+    assert A.detect_python_cmd() == "/home/u/agent/.venv/bin/python3"
 
 
 # ── build_alias_commands ────────────────────────────────────────────────────
@@ -70,6 +87,22 @@ def test_rc_file_for(monkeypatch, tmp_path):
     assert A.rc_file_for("gitbash").endswith(".bashrc")
     assert A.rc_file_for("zsh").endswith(".zshrc")
     assert A.rc_file_for("windows") is None
+
+
+def test_rc_file_for_macos_bash_is_the_login_profile(monkeypatch, tmp_path):
+    monkeypatch.setattr(A.os.path, "expanduser", lambda p: str(tmp_path))
+    monkeypatch.setattr(A.sys, "platform", "darwin")
+    assert A.rc_file_for("bash").endswith(".bash_profile")
+    assert A.rc_file_for("zsh").endswith(".zshrc")
+
+
+def test_main_writes_the_block(tmp_path, capsys):
+    rc = tmp_path / ".bashrc"
+    assert A.main(["--python", "/x/.venv/bin/python", "--rc", str(rc), "--agent", "/x/agent.py"]) == 0
+    text = rc.read_text()
+    assert A._MARKER in text and "alias agent='/x/.venv/bin/python \"/x/agent.py\"'" in text
+    assert A.main(["--python", "/x/.venv/bin/python", "--rc", str(rc), "--agent", "/x/agent.py"]) == 0
+    assert rc.read_text() == text
 
 
 # ── install_alias_block ─────────────────────────────────────────────────────
