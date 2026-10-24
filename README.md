@@ -28,8 +28,8 @@ setup: **[docs/install.md](docs/install.md)**.
    llama-server -m your-model.gguf --port 8080
    ```
 2. Run interactively in a fresh folder — the **first-run setup wizard** launches
-   automatically, scans localhost for your running servers, and configures +
-   calibrates everything (see [Setup wizard](#setup-wizard--setup)):
+   automatically, finds your running server, and connects in three presses of Enter
+   (see [Setup wizard](#setup-wizard--setup)):
    ```bash
    python agent.py
    ```
@@ -54,35 +54,53 @@ no legacy `config.json`) launches a **first-run wizard** before the first prompt
 real-TTY sessions only; `-a`/piped/scripted runs never block on it. The same wizard is
 available any time as `/setup`.
 
-It opens with a short intro (the rolling-window model, the three roles), then offers
-to **scan localhost for running model servers** — llama-server's 8080–8086,
-`glm serve` :8000/:8001, :5000, ollama :11434. Hits show their model name and context
-size and become numbered menu options, so a multi-endpoint setup is a few keystrokes:
+It starts with **"Hi, let's get you connected"** and asks where your model is:
+an **OpenAI-compatible server** (local llama.cpp, Ollama or vLLM, or a hosted API),
+**UCSB AI Commons**, **Azure AI Foundry**, or **More…** (the legacy Bedrock gateway).
+For an OpenAI-compatible server it scans localhost (llama-server's 8080–8086, `glm serve`
+:8000/:8001, :5000, ollama :11434) and lists what's running with its model and context
+size. Another URL asks for a key only if the server wants one, and offers its models as
+a list. AI Commons reuses a key you've already saved and asks only which Claude model.
 
 ```
-found 2 server(s):
-   • http://127.0.0.1:8080  Qwen3.8-27B-GGUF, ctx 196,608
-   • http://127.0.0.1:8082  Qwen3-4B-GGUF:Q8_0, ctx 40,960
+Hi, let's get you connected.
+ Where's your model?
+>  1. OpenAI-compatible server   local llama.cpp / Ollama / vLLM, or a hosted API
+   2. UCSB AI Commons            Claude through your AI Commons key
+   3. Azure AI Foundry
+   4. More…                      legacy AWS Bedrock published-bot gateway
+ Found running locally:
+>  1. http://127.0.0.1:8080   Qwen3.8-27B · 196,608 ctx
+   2. Another URL…
+✓ Connected: Qwen3.8-27B at http://127.0.0.1:8080, context 196,608 (/props n_ctx)
+Anything else? (all optional)
+[ ] Use a separate SUMMARY model   default: the same model
+[ ] Add an ADVISOR model           a bigger model the agent can consult
+[*] Check speed and tool calling   4 short requests
+[ ] Turn on the claim guard        for coding projects
+[ ] Set up this folder as an agent git repo + AGENT.md
 ```
 
-Each role — **main**, **summary**, **advisor** — is configured against `llamacpp`
-(any OpenAI-compatible endpoint), `bedrock`, or `foundry` (Azure), then **probed
-live**: reachability, auth (a 401 is kept distinct from unreachable), model resolve
-(auto-picks from `/v1/models`), **max context** (`/props` → `/slots` → model
-metadata → an empirical binary search that trusts the server's own token counts,
-consent-gated with a cost estimate on metered backends), throughput, and capability
-flags (tool-call roundtrip, reasoning parameter, server timings). A probe that
-cannot run reports `UNMEASURED` — never conflated with `FAILED`.
+With a local server that's three presses of Enter, and connecting sends only free GETs
+(`/health`, `/v1/models`, `/props`). Everything after that is a checklist:
 
-**Calibration** derives the engine's context budget from what was actually measured
-— `ctx_size` (measured − 10%), summary threshold, message caps — and records the
-derivation in a `_calibrated` sidecar so later runs can report **drift**. Nothing
-unmeasured is ever written: shipped defaults stay, and the wizard says so.
+- **Check speed and tool calling** sends four short completions, catching the one fatal
+  problem early: a model or chat template that can't make tool calls. Ticked for a local
+  server, unticked for a hosted one, where they're billed.
+- **Measure the context window** is offered only when the server doesn't report it. It
+  sends test prompts of up to about 3.9M tokens in total, so it warns first and defaults to
+  skipping; you can type a known size instead. Skipping keeps the default, and the agent
+  recovers from overflow at run time anyway.
+- **Claim guard**: the end-of-response check that blocks a "verified/committed" claim with
+  no matching tool call. Off by default (story prose can false-positive as a claim); turn it
+  on for coding projects.
+- **Separate summary model**, **advisor**, and **set up this folder as an agent** (the
+  `/agent` scaffold below) each run their own short screen.
 
-The wizard also asks about the **claim guard** — the end-of-response check that
-blocks a "verified/committed" claim with no matching tool call. It's **off by
-default** (story prose can false-positive as a claim); enable it for coding
-projects.
+**Calibration** derives the engine's context budget from the measured or reported context
+— `ctx_size` (measured − 10%), summary threshold, message caps — and records the derivation
+in a `_calibrated` sidecar so later runs can report **drift**. Nothing unmeasured is ever
+written: shipped defaults stay.
 
 Forms: `/setup` (full run) · `/setup main|summary|advisor` (one section) ·
 `/setup test` (probe everything, change nothing, spend nothing) ·
@@ -95,8 +113,8 @@ the exact `git rm --cached` fix.
 ## Agent scaffold — `/agent`
 
 `/agent` mints an autonomous-agent identity in the current folder — an instructions
-file the agent *is*, plus its state tree. A full `/setup` run offers to chain
-straight into it at the end.
+file the agent *is*, plus its state tree. A full `/setup` run offers it as the last
+item on its checklist.
 
 - **Type first, then name**: `six-phase` (the full agent — identity, patterns,
   anchors, creator messages, verification gate), `worker` (4-phase task agent

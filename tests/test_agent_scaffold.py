@@ -150,14 +150,8 @@ class TestSetupChain(unittest.TestCase):
             return 0, "no route"
         return http
 
-    def test_setup_offers_agent_chain_and_launches_on_yes(self):
-        answers = iter(["n",                  # scan: skip
-                        "", "", "", "",       # main defaults
-                        "y",                  # summary: reuse
-                        "",                   # advisor: skip
-                        "y",                  # accept calibration
-                        "n",                  # claim guard: leave off
-                        "y"])                 # configure an agent? YES
+    def test_setup_offers_agent_chain_and_launches_when_ticked(self):
+        answers = iter(["", "", "5"])     # OpenAI-compatible, found server, tick "agent"
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("agent_scaffold.run_agent_wizard") as agent_wiz:
             p = Path(d) / ".agent" / "config.json"
@@ -167,7 +161,7 @@ class TestSetupChain(unittest.TestCase):
             self.assertEqual(Path(agent_wiz.call_args.kwargs["cwd"]), Path(d))
 
     def test_setup_chain_defaults_to_no(self):
-        answers = iter(["n", "", "", "", "", "y", "", "y"])   # chain answer absent
+        answers = iter(["", "", ""])
         with tempfile.TemporaryDirectory() as d, \
              mock.patch("agent_scaffold.run_agent_wizard") as agent_wiz:
             p = Path(d) / ".agent" / "config.json"

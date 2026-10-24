@@ -860,28 +860,6 @@ def _print_program_header(print_fn):
     print_fn(bar)
 
 
-def _intro_text():
-    return (
-        "Welcome to agent.py — an open-source, tool-rich, extensible\n"
-        "autonomous agent engine.\n"
-        "\n"
-        "How it works:\n"
-        "  • Your conversation lives in a " + theme.c(theme.SKY, "ROLLING WINDOW", bold=True)
-        + " — the effective\n    context is essentially unlimited.\n"
-        "  • Messages that age out are auto-summarized by a background\n"
-        "    process. The summarizer is its own model role, pointable at any\n"
-        "    endpoint — a common shape: " + _role_word("MAIN") + " on the GPU, a small\n    "
-        + _role_word("SUMMARY") + " model on CPU.\n"
-        "  • A third role, the " + _role_word("ADVISOR") + ", is an on-demand tool you can\n"
-        "    aim at a bigger, slower model for the rare hard call.\n"
-        "\n"
-        "This wizard configures those three roles, probes each endpoint\n"
-        "live, and calibrates the engine to what it actually measures.\n"
-        "\n"
-        "You can run this wizard again at any time with /setup."
-    )
-
-
 def _ask(prompt, default, input_fn):
     shown = f"{prompt} [{default}]: " if default not in (None, "") else f"{prompt}: "
     ans = input_fn(shown).strip()
@@ -927,18 +905,9 @@ def _consent_asker(input_fn, print_fn):
     return ask
 
 
-def _role_screen(role, current, input_fn, print_fn, http, found=None):
-    """One role's questions + inline probe. Returns (section_dict, report)."""
-    print_fn(_section(role.upper(), " model"))
-    cur_kind = {"llamacpp": "1", "bedrock": "2", "foundry": "3", "aicommons": "4"}.get(
-        current.get("kind", "llamacpp"), "1")
-    kind_ans = _ask("backend kind: 1) llama.cpp / OpenAI-compatible  "
-                    "2) AWS Bedrock (legacy published-bot API)  3) Azure (foundry)  "
-                    "4) UCSB AI Commons", cur_kind,
-                    input_fn).strip()
-    kind = {"1": "llamacpp", "2": "bedrock", "3": "foundry", "4": "aicommons"}.get(kind_ans,
-                                                                                 "llamacpp")
-
+def _gateway_questions(kind, role, current, input_fn, print_fn):
+    """The questions for a gateway kind (bedrock / aicommons / foundry). Returns
+    the section dict. Shared by the per-role screens and the welcome flow."""
     if kind == "bedrock":
         section = {"kind": "bedrock"}
         api_url = _ask("gateway api_url (ENTER = env BEDROCK_API_URL / "
@@ -992,6 +961,23 @@ def _role_screen(role, current, input_fn, print_fn, http, found=None):
         section["model"] = model
         if not section["api_url"]:
             section.pop("api_url")
+    return section
+
+
+def _role_screen(role, current, input_fn, print_fn, http, found=None):
+    """One role's questions + inline probe. Returns (section_dict, report)."""
+    print_fn(_section(role.upper(), " model"))
+    cur_kind = {"llamacpp": "1", "bedrock": "2", "foundry": "3", "aicommons": "4"}.get(
+        current.get("kind", "llamacpp"), "1")
+    kind_ans = _ask("backend kind: 1) llama.cpp / OpenAI-compatible  "
+                    "2) AWS Bedrock (legacy published-bot API)  3) Azure (foundry)  "
+                    "4) UCSB AI Commons", cur_kind,
+                    input_fn).strip()
+    kind = {"1": "llamacpp", "2": "bedrock", "3": "foundry", "4": "aicommons"}.get(kind_ans,
+                                                                                 "llamacpp")
+
+    if kind in ("bedrock", "aicommons", "foundry"):
+        section = _gateway_questions(kind, role, current, input_fn, print_fn)
     else:
         section = {"kind": "llamacpp"}
         section["base_url"] = _ask_endpoint(
@@ -1204,7 +1190,7 @@ def _advisor_screen(current, input_fn, print_fn, http, found=None):
             section["model"] = resolved
         cal = _ask("measure advisor speed and derive its context budget + "
                    "timeout now? (y/n; two slow probes, minutes on a CPU "
-                   "advisor)", "y", input_fn)
+                   "advisor)", "n", input_fn)
         if cal.lower().startswith("y"):
             measured, notes = probe_advisor_speed(section, http=http,
                                                   print_fn=print_fn)
@@ -1224,13 +1210,361 @@ def _advisor_screen(current, input_fn, print_fn, http, found=None):
     return section
 
 
+# ── Welcome flow (the full /setup and first-run path) ─────────────────
+#
+# "Hi, let's get you connected": pick where the model is, pick the server or
+# model, then optional extras, all unticked except the free tool-call check on a
+# local server. The quick path is three keypresses and sends only free GETs.
+
+_WELCOME_KINDS = (
+    ("llamacpp", "OpenAI-compatible server", "local llama.cpp / Ollama / vLLM, or a hosted API"),
+    ("aicommons", "UCSB AI Commons", "Claude through your AI Commons key"),
+    ("foundry", "Azure AI Foundry", ""),
+    ("bedrock", "More…", "legacy AWS Bedrock published-bot gateway"),
+)
+
+_AICOMMONS_MODEL_CHOICES = (
+    ("claude-v5.5-opus", "Opus 5.5", "most capable"),
+    ("claude-v5.5-sonnet", "Sonnet 5.5", "faster and cheaper"),
+    ("claude-v5.5-haiku", "Haiku 5.5", "fastest"),
+)
+
+_MODEL_RADIO_MAX = 15
+
+
+def _normalize_base_url(url):
+    """The llamacpp backend appends /v1/... itself; people paste URLs ending in /v1."""
+    url = (url or "").strip().rstrip("/")
+    if url.endswith("/v1"):
+        url = url[:-3]
+    if url and "://" not in url:
+        url = "http://" + url
+    return url
+
+
+def _is_local_url(url):
+    """Loopback or a private-network address: probing it costs nothing."""
+    import ipaddress
+    from urllib.parse import urlparse
+    host = (urlparse(url).hostname or "").lower()
+    if host in ("localhost", ""):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return host.endswith(".local")
+    return ip.is_loopback or ip.is_private
+
+
+def _free_to_probe(section):
+    """True when completions against this section cost nothing: a llamacpp-kind
+    endpoint on this machine or the local network."""
+    return ((section.get("kind") or "llamacpp") == "llamacpp"
+            and _is_local_url(section.get("base_url") or ""))
+
+
+def _list_models(base, api_key, http):
+    status, body = http(f"{base}/v1/models", headers=_auth_headers(api_key))
+    if status == 200 and isinstance(body, dict):
+        return [m.get("id") for m in body.get("data", []) if isinstance(m, dict) and m.get("id")]
+    return []
+
+
+def _aicommons_saved_credentials():
+    """(source description) when AI Commons credentials already exist, else None."""
+    if os.environ.get("AICOMMONS_BASE_URL") and os.environ.get("AICOMMONS_API_KEY"):
+        return "AICOMMONS_BASE_URL / AICOMMONS_API_KEY"
+    try:
+        import bedrock_store
+        _url, _key, name = bedrock_store.select_credentials(api=bedrock_store.API_MESSAGES)
+        return f"the credential store entry '{name}'"
+    except Exception:
+        return None
+
+
+def _connect_openai(role, ui, found, current, http):
+    """Server radio (found servers + another URL), key only when asked for, model
+    radio when the server lists several. Free GETs only."""
+    cur_url = _normalize_base_url(current.get("base_url", ""))
+    options = [(s["base_url"], " · ".join(x for x in (
+        s.get("model") or "", f"{s['ctx']:,} ctx" if s.get("ctx") else "") if x))
+        for s in found]
+    options.append(("Another URL…", "a hosted API, or a server on another machine"))
+    if found:
+        default = next((i for i, s in enumerate(found) if s["base_url"] == cur_url), 0)
+        if cur_url and not any(s["base_url"] == cur_url for s in found):
+            default = len(found)
+        idx = ui.radio("Found running locally:", options, default)
+    else:
+        ui.say("No local model servers found on the usual ports.")
+        idx = len(found)
+    if idx < len(found):
+        base, model, key = found[idx]["base_url"], found[idx].get("model"), None
+    else:
+        base = _normalize_base_url(ui.text(
+            "Server URL (e.g. https://api.openai.com/v1 or http://host:8080)",
+            cur_url or ("" if found else "http://127.0.0.1:8080")))
+        model, key = None, current.get("api_key") or None
+    report = probe_llamacpp(base, key, model, http=http, allow_empirical=False)
+    if report["p1_reach"]["status"] == OK and (
+            report["p2_auth"]["status"] == FAILED
+            or (not _is_local_url(base) and not key and report["p3_model"]["status"] != OK)):
+        key = ui.text("API key", "", secret=True) or None
+        report = probe_llamacpp(base, key, model, http=http, allow_empirical=False)
+    if not model and report["p1_reach"]["status"] == OK:
+        models = _list_models(base, key, http)
+        cur_model = current.get("model")
+        if len(models) > 1:
+            shown = models[:_MODEL_RADIO_MAX]
+            opts = [(m, "") for m in shown] + ([("Type a model id…", f"{len(models)} available")]
+                                               if len(models) > _MODEL_RADIO_MAX else [])
+            default = shown.index(cur_model) if cur_model in shown else 0
+            pick = ui.radio("Which model?", opts, default)
+            model = shown[pick] if pick < len(shown) else ui.text("Model id", cur_model or "")
+        elif models:
+            model = models[0]
+        if model:
+            report = probe_llamacpp(base, key, model, http=http, allow_empirical=False)
+    section = {"base_url": base}
+    if key:
+        section["api_key"] = key
+    resolved = model or report.get("p3_model", {}).get("value")
+    if resolved:
+        section["model"] = resolved
+    return section, report
+
+
+def _connect_aicommons(role, ui, current, http):
+    saved = _aicommons_saved_credentials()
+    section = {"kind": "aicommons"}
+    if saved and not current.get("base_url"):
+        ui.say(f"Using your AI Commons key from {saved}.")
+    else:
+        url = ui.text("AI Commons API URL (ends in /v1)", current.get("base_url", ""))
+        key = ui.text("Your AI Commons API key", "", secret=True) or current.get("api_key", "")
+        if url:
+            section["base_url"] = url.rstrip("/")
+        if key:
+            section["api_key"] = key
+    ids = [m for m, _l, _h in _AICOMMONS_MODEL_CHOICES]
+    want = current.get("model") or _AICOMMONS_MODEL_DEFAULTS.get(role, ids[0])
+    pick = ui.radio("Which model?", [(label, hint) for _m, label, hint in _AICOMMONS_MODEL_CHOICES],
+                    ids.index(want) if want in ids else 0)
+    section["model"] = ids[pick]
+    return section, probe_gateway_backend(section, role, http=http, ask_consent=None)
+
+
+def _connect(role, ui, found, current, http, kind=None):
+    """One role's connection: kind radio (unless given), then that kind's screen.
+    Returns (section, report)."""
+    if kind is None:
+        cur_kind = current.get("kind", "llamacpp")
+        kinds = [k for k, _l, _h in _WELCOME_KINDS]
+        idx = ui.radio("Where's your model?",
+                       [(label, hint) for _k, label, hint in _WELCOME_KINDS],
+                       kinds.index(cur_kind) if cur_kind in kinds else
+                       (1 if (not found and _aicommons_saved_credentials()) else 0))
+        kind = kinds[idx]
+    if kind == "llamacpp":
+        return _connect_openai(role, ui, found, current, http)
+    if kind == "aicommons":
+        return _connect_aicommons(role, ui, current, http)
+    if kind == "bedrock":
+        ui.say(theme.dim("The legacy Bedrock kind uses a published bot's /conversation API: "
+                         "no native tools, no streaming. For AI Commons pick UCSB AI Commons."))
+    section = _gateway_questions(kind, role, current, ui.input_fn, ui.say)
+    return section, probe_gateway_backend(section, role, http=http, ask_consent=None)
+
+
+def _connected_line(section, report):
+    p1 = report.get("p1_reach", {})
+    if p1.get("status") != OK:
+        return False, f"✗ Couldn't connect: {p1.get('detail', 'unknown error')}"
+    if report.get("p2_auth", {}).get("status") == FAILED:
+        return False, f"✗ The server refused the key: {report['p2_auth'].get('detail', '')}"
+    where = section.get("base_url") or section.get("api_url") or {
+        "aicommons": "AI Commons", "foundry": "Azure", "bedrock": "Bedrock"}.get(
+        section.get("kind"), "the endpoint")
+    model = section.get("model") or report.get("p3_model", {}).get("value") or "(server default)"
+    p4 = report.get("p4_ctx", {})
+    ctx = (f"context {p4['value']:,} ({p4.get('detail', 'reported')})" if p4.get("value")
+           else "context not reported (default kept)")
+    return True, f"✓ Connected: {model} at {where}, {ctx}"
+
+
+def _shared_summary(main_section):
+    """The summary role when the user didn't ask for a separate one."""
+    if main_section.get("kind") == "aicommons":
+        out = {"enabled": True, "kind": "aicommons",
+               "model": _AICOMMONS_MODEL_DEFAULTS["summary"]}
+        for k in ("base_url", "api_key"):
+            if main_section.get(k):
+                out[k] = main_section[k]
+        return out
+    out = {"enabled": True}
+    for key in ("kind", "base_url", "api_url", "api_key", "model"):
+        if main_section.get(key):
+            out[key] = main_section[key]
+    return out
+
+
+def _measure_ctx_screen(section, report, ui, http):
+    """The opt-in context measurement: warn with the real worst case, default to
+    skipping, allow typing a known size instead. Mutates ``report['p4_ctx']``."""
+    kind = section.get("kind", "llamacpp")
+    ui.say(_consent_text(empirical_worst_case_tokens()))
+    pick = ui.radio("Context window:", [
+        ("Skip", "keep the default"),
+        ("Enter the size", "if you know it, e.g. 131072"),
+        ("Measure it", "sends the test prompts above")], 0)
+    if pick == 1:
+        raw = ui.text("Context size in tokens", "").replace(",", "").replace("_", "")
+        if raw.isdigit() and int(raw) >= 1024:
+            report["p4_ctx"] = {"status": OK, "value": int(raw), "detail": "entered by you"}
+        else:
+            ui.say("   not a token count — default kept")
+    elif pick == 2:
+        ui.say("   measuring…")
+        if kind == "llamacpp":
+            val, how = _probe_ctx_empirical(section["base_url"].rstrip("/"),
+                                            _auth_headers(section.get("api_key")),
+                                            http, section.get("model"))
+            report["p4_ctx"] = ({"status": OK, "value": int(val), "detail": how} if val
+                                else {"status": UNMEASURED, "value": None, "detail": how})
+        else:
+            fresh = probe_gateway_backend(section, "main", http=http,
+                                          ask_consent=lambda est: True)
+            report["p4_ctx"] = fresh.get("p4_ctx", report.get("p4_ctx", {}))
+        p4 = report["p4_ctx"]
+        ui.say(f"   {p4.get('value') or 'unmeasured'} ({p4.get('detail', '')})")
+
+
+def run_welcome(config_path, effective_cfg=None, input_fn=None, print_fn=None,
+                http=None, ui=None):
+    """The full setup: connect, optional extras, write config. Returns the updates
+    written ({} if nothing was)."""
+    from wizard_ui import make_ui
+    ui = ui or make_ui(input_fn, print_fn)
+    print_fn = ui.say
+    effective_cfg = effective_cfg or {}
+    try:
+        loaded = json.loads(Path(config_path).read_text(encoding="utf-8", errors="replace"))
+        current_cfg = loaded if isinstance(loaded, dict) else {}
+    except (OSError, json.JSONDecodeError, ValueError):
+        current_cfg = {}
+
+    _print_program_header(print_fn)
+    print_fn("Hi, let's get you connected.\n")
+    found = scan_local_servers(http=http)
+
+    for attempt in range(3):
+        section, report = _connect("main", ui, found, current_cfg.get("llm", {}), http)
+        ok, line = _connected_line(section, report)
+        print_fn(line)
+        if ok or attempt == 2:
+            break
+        # ENTER retries once; after that it keeps what was entered, so a
+        # script that runs out of answers can't loop here.
+        nxt = ui.radio("What now?", [("Try again", ""),
+                                     ("Save it anyway", "fix the server later; /setup test re-checks"),
+                                     ("Cancel setup", "nothing is written")], min(attempt, 1))
+        if nxt == 1:
+            break
+        if nxt == 2:
+            print_fn("setup cancelled — nothing written")
+            return {}
+
+    kind = section.get("kind", "llamacpp")
+    local = _free_to_probe(section)
+    ctx_known = bool(report.get("p4_ctx", {}).get("value"))
+
+    extras = [("summary", "Use a separate SUMMARY model",
+               "default: Haiku 5.5" if kind == "aicommons" else "default: the same model"),
+              ("advisor", "Add an ADVISOR model", "a bigger model the agent can consult")]
+    if kind == "llamacpp" and ok:       # both need a server that answers
+        extras.append(("speed", "Check speed and tool calling",
+                       "4 short requests" + ("" if local else " — billed on a paid API")))
+    if ok and not ctx_known and kind in ("llamacpp", "foundry"):
+        extras.append(("ctx", "Measure the context window", "⚠ can send millions of tokens"))
+    extras += [("claim", "Turn on the claim guard", "for coding projects"),
+               ("agent", "Set up this folder as an agent", "git repo + AGENT.md")]
+    keys = [k for k, _l, _h in extras]
+    claim_on = int((effective_cfg.get("cycle") or {}).get("claim_trace_max_blocks", 0) or 0) > 0
+    default_on = {keys.index(k) for k in keys
+                  if (k == "speed" and local) or (k == "claim" and claim_on)}
+    picked = {keys[i] for i in ui.checkboxes("Anything else? (all optional)",
+                                             [(label, hint) for _k, label, hint in extras],
+                                             default_on)}
+
+    updates = {"llm": section}
+    if "summary" in picked:
+        print_fn(_section("SUMMARY", " model"))
+        s_sec, s_rep = _connect("summary", ui, found, current_cfg.get("summary", {}), http)
+        s_sec["enabled"] = True
+        updates["summary"] = s_sec
+        print_fn(_connected_line(s_sec, s_rep)[1])
+    else:
+        updates["summary"] = _shared_summary(section)
+
+    if "advisor" in picked:
+        adv = _advisor_screen(current_cfg.get("advisor", {}), ui.input_fn, print_fn, http,
+                              found=found)
+        if adv is not None:
+            updates["advisor"] = adv
+
+    throughput = caps = None
+    if "speed" in picked:
+        print_fn(_section("SPEED AND TOOLS"))
+        throughput = probe_throughput(section, "main", http=http)
+        if throughput.get("status") == OK:
+            pt = throughput.get("prompt_tps")
+            print_fn(f"    speed  {throughput['gen_tps']} t/s gen"
+                     + (f" · {pt} t/s prompt" if pt else "") + f"  ({throughput['detail']})")
+        caps = probe_capabilities(section, "main", http=http, throughput=throughput)
+        for name in ("tools_accepted", "tool_roundtrip"):
+            e = caps.get(name, {})
+            print_fn(f"    {name:16s} {e.get('status', '?'):10s} {e.get('detail', '')}")
+        for r in recommend(report, throughput=throughput, caps=caps):
+            print_fn(f"    • {r}")
+
+    if "ctx" in picked:
+        print_fn(_section("CONTEXT WINDOW"))
+        _measure_ctx_screen(section, report, ui, http)
+
+    cal_updates, _notes = calibrate(report, effective_cfg)
+    updates.update(cal_updates)
+
+    # Claim guard: blocks a "tests pass / committed" CLAIM with no matching tool
+    # call. Right for coding; story prose can false-positive, so it stays opt-in.
+    if "claim" in picked:
+        updates.setdefault("cycle", {})["claim_trace_max_blocks"] = 2
+    elif claim_on:
+        updates.setdefault("cycle", {})["claim_trace_max_blocks"] = 0
+
+    path = write_config(config_path, updates)
+    model = section.get("model") or "the server's model"
+    ctx = report.get("p4_ctx", {}).get("value")
+    print_fn(f"\nSaved {path}: {model}" + (f", context {ctx:,}" if ctx else "")
+             + ". Change it any time with /setup.")
+
+    if "agent" in picked:
+        try:
+            import agent_scaffold
+            agent_scaffold.run_agent_wizard(cwd=Path(config_path).parent.parent,
+                                            input_fn=ui.input_fn, print_fn=print_fn)
+        except (KeyboardInterrupt, EOFError):
+            print_fn("\nagent scaffold aborted — setup result kept")
+    return updates
+
+
 def run_wizard(config_path, effective_cfg=None, jump_to=None,
                input_fn=None, print_fn=None, http=None):
     """Interactive setup. Returns the updates dict written (or {} if aborted).
 
-    ``jump_to``: None = full run; "main"/"summary"/"advisor" = that section
-    only; "calibrate" = probes + calibration against the current config only
-    (with drift reporting against the _calibrated sidecar).
+    ``jump_to``: None = the full welcome flow (``run_welcome``);
+    "main"/"summary"/"advisor" = that section only; "calibrate" = probes +
+    calibration against the current config only (with drift reporting against
+    the _calibrated sidecar).
 
     Question defaults come from the USER's file at ``config_path`` — NOT
     from ``effective_cfg`` (the defaults-merged runtime config), whose
@@ -1240,27 +1574,14 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
     ``effective_cfg`` is used only where effective values are the right
     baseline: calibration's keep-default rules and the drift sidecar.
     """
+    if jump_to is None:
+        return run_welcome(config_path, effective_cfg, input_fn=input_fn,
+                           print_fn=print_fn, http=http)
     # Call-time I/O resolution (def-time defaults bind a possibly-patched
     # builtins.input at import — see agent_scaffold.run_agent_wizard).
     input_fn = input_fn or input
     print_fn = print_fn or print
     effective_cfg = effective_cfg or {}
-    found_servers = []
-    if jump_to is None:
-        _print_program_header(print_fn)
-        print_fn(_intro_text())
-        print_fn("")
-        do_scan = _ask("scan localhost for running model servers? (y/n)",
-                       "y", input_fn)
-        if do_scan.lower().startswith("y"):
-            print_fn("   scanning common local ports…")
-            found_servers = scan_local_servers(http=http)
-            if found_servers:
-                print_fn(f"   found {len(found_servers)} server(s):")
-                for s in found_servers:
-                    print_fn(f"      • {_fmt_server(s)}")
-            else:
-                print_fn("   none found — you can still type URLs directly.")
     current_cfg = {}
     try:
         loaded = json.loads(Path(config_path).read_text(encoding="utf-8",
@@ -1274,59 +1595,42 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
     main_throughput = None
     main_caps = None
 
-    if jump_to in (None, "main"):
+    if jump_to == "main":
         section, main_report = _role_screen(
-            "main", current_cfg.get("llm", {}), input_fn, print_fn, http,
-            found=found_servers)
+            "main", current_cfg.get("llm", {}), input_fn, print_fn, http)
         updates["llm"] = section
-        # P5/P6 (Phase 3): free on llamacpp; metered-trivial on foundry;
-        # bedrock self-reports UNMEASURED.
-        main_throughput = probe_throughput(section, "main", http=http)
-        if main_throughput.get("status") == OK:
-            pt = main_throughput.get("prompt_tps")
-            print_fn(f"    speed  {main_throughput['gen_tps']} t/s gen"
-                     + (f" · {pt} t/s prompt" if pt else "")
-                     + f"  ({main_throughput['detail']})")
-        main_caps = probe_capabilities(section, "main", http=http,
-                                       throughput=main_throughput)
-        for name in ("timings", "tools_accepted", "tool_roundtrip",
-                     "reasoning_param"):
-            e = main_caps.get(name, {})
-            print_fn(f"    cap    {name:16s} {e.get('status', '?'):10s} "
-                     f"{e.get('detail', '')}")
+        # P5/P6 only where they're free: a local server. On a hosted API they
+        # are billed completions; /setup test and the welcome flow's opt-in
+        # "Check speed and tool calling" cover that case.
+        if _free_to_probe(section):
+            main_throughput = probe_throughput(section, "main", http=http)
+            if main_throughput.get("status") == OK:
+                pt = main_throughput.get("prompt_tps")
+                print_fn(f"    speed  {main_throughput['gen_tps']} t/s gen"
+                         + (f" · {pt} t/s prompt" if pt else "")
+                         + f"  ({main_throughput['detail']})")
+            main_caps = probe_capabilities(section, "main", http=http,
+                                           throughput=main_throughput)
+            for name in ("timings", "tools_accepted", "tool_roundtrip",
+                         "reasoning_param"):
+                e = main_caps.get(name, {})
+                print_fn(f"    cap    {name:16s} {e.get('status', '?'):10s} "
+                         f"{e.get('detail', '')}")
 
-    if jump_to in (None, "summary"):
-        cur = current_cfg.get("summary", {})
-        if jump_to is None:
-            reuse = _ask("\n" + _role_word("SUMMARY") + ": reuse the main endpoint? (y/n)", "y", input_fn)
-            if reuse.lower().startswith("y"):
-                base = updates.get("llm") or current_cfg.get("llm", {})
-                summary = {"enabled": True}
-                for key in ("kind", "base_url", "api_url", "api_key", "model"):
-                    if base.get(key):
-                        summary[key] = base[key]
-                updates["summary"] = summary
-                print_fn(f"   summary -> "
-                         f"{summary.get('base_url') or summary.get('api_url')} "
-                         f"(shared)")
-            else:
-                section, _ = _role_screen("summary", cur, input_fn,
-                                          print_fn, http, found=found_servers)
-                section["enabled"] = True
-                updates["summary"] = section
-        else:
-            section, _ = _role_screen("summary", cur, input_fn, print_fn, http)
-            section["enabled"] = True
-            updates["summary"] = section
+    if jump_to == "summary":
+        section, _ = _role_screen("summary", current_cfg.get("summary", {}),
+                                  input_fn, print_fn, http)
+        section["enabled"] = True
+        updates["summary"] = section
 
-    if jump_to in (None, "advisor"):
+    if jump_to == "advisor":
         adv = _advisor_screen(current_cfg.get("advisor", {}),
-                              input_fn, print_fn, http, found=found_servers)
+                              input_fn, print_fn, http)
         if adv is not None:
             updates["advisor"] = adv
 
     # Calibration rides on the MAIN endpoint's measurements.
-    if jump_to in (None, "main", "calibrate"):
+    if jump_to in ("main", "calibrate"):
         if main_report is None:
             llm = (updates.get("llm") or current_cfg.get("llm") or {})
             if llm.get("base_url") or llm.get("api_url") or llm.get("kind"):
@@ -1347,11 +1651,10 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
         print_fn(_section("CALIBRATION"))
         for n in notes:
             print_fn(f"    {n}")
-        # Advisor calibration (calibrate-only runs; the full run and
-        # `/setup advisor` calibrate inside the advisor screen). Same
-        # measure-then-derive as the main calibration, against the SLOW tier's
-        # own probe — the generic 64-token/300 s throughput probe would itself
-        # time out on a CPU advisor.
+        # Advisor calibration (calibrate-only runs; `/setup advisor` calibrates
+        # inside the advisor screen). Same measure-then-derive as the main
+        # calibration, against the SLOW tier's own probe — the generic
+        # 64-token/300 s throughput probe would itself time out on a CPU advisor.
         if jump_to == "calibrate":
             adv_cfg = (updates.get("advisor")
                        or current_cfg.get("advisor") or {})
@@ -1376,26 +1679,6 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
             else:
                 print_fn("    calibration skipped — defaults kept")
 
-    # Claim guard (off by default engine-wide): the end-of-response check
-    # that blocks a 'verified/committed' CLAIM with no matching tool call.
-    # Right for coding, wrong for chat/creative — prose false-positives.
-    if jump_to is None:
-        cur_blocks = int((effective_cfg.get("cycle") or {})
-                         .get("claim_trace_max_blocks", 0) or 0)
-        print_fn(_section("CLAIM GUARD"))
-        print_fn(
-            "When a response REPORTS running tests or committing but no such\n"
-            "tool call happened, inject a correction demanding the real\n"
-            "action. Use it for CODING projects; leave it off for chat or\n"
-            "creative use — story prose can false-positive as a claim.")
-        cg = _ask("enable the claim guard? (y/n)",
-                  "y" if cur_blocks > 0 else "n", input_fn)
-        if cg.lower().startswith("y"):
-            updates.setdefault("cycle", {})["claim_trace_max_blocks"] = 2
-        elif cur_blocks > 0:
-            updates.setdefault("cycle", {})["claim_trace_max_blocks"] = 0
-            print_fn("    claim guard disabled")
-
     # Recommendations (Phase 3): printed, never silently applied.
     recs = recommend(main_report or {}, throughput=main_throughput,
                      caps=main_caps,
@@ -1412,22 +1695,6 @@ def run_wizard(config_path, effective_cfg=None, jump_to=None,
         return {}
     path = write_config(config_path, updates)
     print_fn(f"\nwrote {path}")
-
-    # Chain into the agent scaffold (full runs only): the config just
-    # written is exactly what the scaffold's dynamic tiers section reads,
-    # so this is the natural moment to mint an agent identity on top of it.
-    if jump_to is None:
-        nxt = _ask("\nWould you like to configure an agent identity here now "
-                   "(git repo, AGENT.md scaffold, the /agent wizard)? (y/n)",
-                   "n", input_fn)
-        if nxt.lower().startswith("y"):
-            try:
-                import agent_scaffold
-                agent_scaffold.run_agent_wizard(
-                    cwd=Path(config_path).parent.parent,
-                    input_fn=input_fn, print_fn=print_fn)
-            except (KeyboardInterrupt, EOFError):
-                print_fn("\nagent scaffold aborted — /setup result kept")
     return updates
 
 
@@ -1451,8 +1718,9 @@ def run_probe_report(current_cfg, print_fn=None, http=None):
         report = probe_backend(section, role=role, http=http,
                                ask_consent=None, allow_empirical=False)
         print_fn(_fmt_probe(report))
-        # P5/P6 only where free (llamacpp) — test mode never spends.
-        if role == "main" and (section.get("kind") or "llamacpp") == "llamacpp":
+        # P5/P6 only where free (a local server) — test mode never spends,
+        # and a hosted OpenAI-compatible API is the llamacpp kind too.
+        if role == "main" and _free_to_probe(section):
             tp = probe_throughput(section, role, http=http)
             if tp.get("status") == OK:
                 print_fn(f"    speed  {tp['gen_tps']} t/s gen ({tp['detail']})")
