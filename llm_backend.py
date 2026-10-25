@@ -2278,10 +2278,12 @@ class AICommonsBackend:
         line = (f"aicommons.session role={self.role} model={self.model} calls={st['calls']} "
                 f"cache_read={st['read']} cache_write={st['write']} uncached={st['uncached']} "
                 f"output={st['output']} hit_pct={hit:.0f}")
-        if self._quota_at_start is not None:
-            q = self.quota(force=True) or {}
+        # From the last poll, not a fresh one: this runs on exit, and a slow
+        # token-usage call (seen at 6-7 s) per backend held the terminal.
+        if self._quota_at_start is not None and self._quota_cache:
+            q = self._quota_cache[1]
             used = int(q.get("total_tokens") or 0) - int(self._quota_at_start.get("total_tokens") or 0)
-            line += (f" quota_used_this_session={max(used, 0)} quota_remaining={q.get('remaining')} "
+            line += (f" quota_used_by_last_poll={max(used, 0)} quota_remaining={q.get('remaining')} "
                      f"quota_limit={q.get('limit')} reset_at={q.get('reset_at')}")
         return line
 

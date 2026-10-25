@@ -336,3 +336,14 @@ def test_quota_is_polled_at_most_every_five_minutes(make):
     list(b.stream_chat(log, json=AGENT_BODY))
     list(b.stream_chat(log, json=AGENT_BODY))
     assert gw.quota_calls == 1
+
+
+def test_session_summary_makes_no_request(make):
+    """It runs on exit; a fresh token-usage call per backend held the terminal for seconds."""
+    gw = Gateway(text_turn(), quota={"total_tokens": 100, "limit": 10_000_000,
+                                     "remaining": 9_999_900, "reset_at": "x"})
+    b = make(gw)
+    list(b.stream_chat(log, json=AGENT_BODY))
+    calls = gw.quota_calls
+    line = b.session_summary()
+    assert gw.quota_calls == calls and "quota_remaining=9999900" in line
