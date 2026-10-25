@@ -89,7 +89,7 @@ The gateway caches at the end of the last message, so a turn reads from cache on
 
 Measured on a real eight-turn coding task: from the second turn on, 94–98% of each request was read from cache, and 83–86% over the whole session.
 
-Every call logs an `aicommons.cache role=… read=… write=… uncached=… hit_pct=…` line. The session ends with an `aicommons.session` line that has the totals and the quota used. `cache_read` and `cache_write` are also recorded as telemetry token kinds.
+Every call logs an `aicommons.cache role=… read=… write=… uncached=… hit_pct=…` line. The session ends with an `aicommons.session` line that has the totals and the quota as of the last poll (no request is made on exit). `cache_read` and `cache_write` are also recorded as telemetry token kinds.
 
 ## Quota
 
