@@ -408,6 +408,7 @@ server-side fix is picked up automatically without a config change.</p>
 <li><strong>Completion</strong> for slash commands (<code>/he&lt;Tab&gt;</code>) and <code>@path</code> file refs (<code>@src/&lt;Tab&gt;</code>)</li>
 <li><strong>Input history</strong> navigable with ↑ / ↓</li>
 <li><strong>Key bindings</strong>: <code>Enter</code> submits, <code>Ctrl-N</code> inserts a literal newline</li>
+<li><strong>Resize reflow</strong>: when the window size settles after a resize, the session so far (the last 5,000 lines) is reprinted for the new width, with tool status rows shortened or restored to fit. This clears the terminal's scrollback, including anything above the agent. Live-input mode only (the default).</li>
 </ul>
 <p>Falls back to plain <code>input()</code> automatically if <code>prompt_toolkit</code> isn't installed.</p>
 <h3 id="slash-commands">Slash commands</h3>
