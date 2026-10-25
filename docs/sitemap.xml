@@ -2,11 +2,11 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://mblakemore.github.io/agent/</loc>
-    <lastmod>2026-10-24</lastmod>
+    <lastmod>2026-10-25</lastmod>
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/install.html</loc>
-    <lastmod>2026-10-24</lastmod>
+    <lastmod>2026-10-25</lastmod>
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/setup.html</loc>
@@ -14,6 +14,7 @@
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/setup-wizard.html</loc>
+    <lastmod>2026-10-25</lastmod>
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/cli.html</loc>
@@ -25,16 +26,19 @@
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/configurations.html</loc>
-    <lastmod>2026-10-23</lastmod>
+    <lastmod>2026-10-25</lastmod>
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/config-reference.html</loc>
+    <lastmod>2026-10-25</lastmod>
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/how-it-works.html</loc>
+    <lastmod>2026-10-25</lastmod>
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/agent-scaffold.html</loc>
+    <lastmod>2026-10-25</lastmod>
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/models.html</loc>

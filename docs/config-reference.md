@@ -164,6 +164,7 @@ Behavioural knobs that don't fit elsewhere.
 
 | Key | Default | Description |
 | --- | --- | --- |
+| `system_prompt` | `""` | Your own instructions, placed first in the system message of every request, ahead of the agent's own lines (for example `"Always answer in French."`). Also settable with `/system`. Subagents run in the same folder, so they get it too. |
 | `nudge` | `false` | Auto-nudge the model when it returns a text-only response. Also settable with `--nudge` CLI flag. |
 | `persist_nudge` | `false` | After a text-only stop, check `git status`; if uncommitted changes exist and no commit happened this session, inject one nudge to commit. Intended for git-native agents. |
 | `tool_selection_hints` | `false` | Prepend a system-prompt directive recommending `file(action='edit')` over heredoc rewrites for existing-file edits. |

@@ -39,6 +39,7 @@ def _cmd_help(ctx: SimpleNamespace, args: str) -> None:
         "  /context       — show current context usage (bar + token counts)",
         "  /model [main|summary] [name] — set+persist the main/summary model",
         "  /setup [main|summary|advisor|test|calibrate] — configure endpoints, probe, calibrate",
+        "  /system [text|clear] — show, set or clear your own system prompt",
         "  /agent         — scaffold an agent identity (AGENT.md + state tree) here",
         "  /alias         — install an `agent` shell alias for this checkout",
         "  /verbose       — toggle compact/full tool output",
@@ -115,6 +116,30 @@ def _cmd_model(ctx: SimpleNamespace, args: str) -> None:
             f"{role} model set to {new_model} "
             f"(persisted to ./.agent/config.json)")
     ctx.log.info("Model changed via /model %s: %s", role, new_model)
+
+
+def _cmd_system(ctx: SimpleNamespace, args: str) -> None:
+    """`/system` shows your system prompt, `/system <text>` sets it,
+    `/system clear` removes it. Persisted to .agent/config.json."""
+    current = (ctx.config.get("preferences", {}).get("system_prompt") or "").strip()
+    if not args:
+        if current:
+            ctx.cb._print(theme.c(theme.SKY, "System prompt:") + "\n" + current)
+        else:
+            safe_cb(ctx.cb, "on_notice", "info",
+                    "No system prompt set. /system <text> sets one.")
+        return
+    if args.lower() in ("clear", "off", "none"):
+        ctx.set_system_prompt("")
+        safe_cb(ctx.cb, "on_notice", "success",
+                "System prompt cleared (persisted to ./.agent/config.json)")
+        ctx.log.info("System prompt cleared via /system")
+        return
+    ctx.set_system_prompt(args)
+    safe_cb(ctx.cb, "on_notice", "success",
+            "System prompt set; it applies from the next request "
+            "(persisted to ./.agent/config.json)")
+    ctx.log.info("System prompt set via /system (%d chars)", len(args))
 
 
 def _cmd_alias(ctx: SimpleNamespace, args: str) -> None:
@@ -297,6 +322,7 @@ _COMMANDS: dict[str, Callable[[SimpleNamespace, str], None]] = {
     "/clear": _cmd_clear,
     "/context": _cmd_context,
     "/model": _cmd_model,
+    "/system": _cmd_system,
     "/alias": _cmd_alias,
     "/verbose": _cmd_verbose,
     "/tools": _cmd_tools,
