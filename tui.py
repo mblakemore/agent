@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import html
 import os
+import sys
 import textwrap
 import threading
 import time
@@ -338,6 +339,8 @@ if _AVAILABLE:
                     self._session.app.ttimeoutlen = 0.2
                 except Exception:
                     pass
+                self._reflow_handle = None
+                self._hook_resize()
             # FOOTER UNDER NO_CPR (field report 2026-08-14: "the footer is
             # gone"): PROMPT_TOOLKIT_NO_CPR=1 — the streaming-redraw fix —
             # leaves renderer._min_available_height at 0 forever, and the
@@ -364,6 +367,60 @@ if _AVAILABLE:
                     1, _renderer._min_available_height)
             except Exception:
                 pass
+
+        # -- resize ----------------------------------------------------
+
+        _REFLOW_SETTLE = 0.3    # seconds without a size change before reprinting
+
+        def _hook_resize(self) -> None:
+            """Reprint the session at the new width once a resize settles.
+
+            prompt_toolkit calls app._on_resize on SIGWINCH, or from its size
+            poll when the app runs off the main thread (live input); it only
+            redraws the prompt. Wrapped on the instance, so both paths see it."""
+            try:
+                app = self._session.app
+                orig = app._on_resize
+            except Exception:
+                return
+
+            def _on_resize():
+                orig()
+                self._schedule_reflow(app)
+            app._on_resize = _on_resize
+
+        def _schedule_reflow(self, app) -> None:
+            if self._reflow_handle is not None:
+                self._reflow_handle.cancel()
+            try:
+                self._reflow_handle = app.loop.call_later(
+                    self._REFLOW_SETTLE, self._start_reflow)
+            except Exception:
+                self._reflow_handle = None
+
+        def _start_reflow(self) -> None:
+            self._reflow_handle = None
+            try:
+                from prompt_toolkit.application import run_in_terminal
+                run_in_terminal(self._reflow)
+            except Exception:
+                pass
+
+        def _reflow(self) -> None:
+            """Clear the screen and scrollback and write the transcript for the
+            current width. Runs inside run_in_terminal: the prompt is erased
+            first and drawn again below the reprint."""
+            import transcript
+            rec = sys.stdout if isinstance(sys.stdout, transcript.Recorder) else None
+            record = transcript.current()
+            if rec is None or record is None:
+                return
+            try:
+                width = self._session.app.output.get_size().columns
+            except Exception:
+                width = 80
+            rec.real.write("\x1b[H\x1b[2J\x1b[3J" + record.render(width))
+            rec.real.flush()
 
         @staticmethod
         def _plain(text: str, limit: int) -> str:

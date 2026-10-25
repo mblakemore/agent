@@ -22,6 +22,7 @@ from collections import deque
 from typing import Any, Optional
 
 import theme
+import transcript
 
 
 # ── Null interface ──────────────────────────────────────────────────────
@@ -200,7 +201,9 @@ class TerminalCallbacks(NullCallbacks):
         if theme._no_color():
             return line
         cols = shutil.get_terminal_size((80, 24)).columns
-        return theme.truncate_middle(line, cols - 1)
+        fitted = theme.truncate_middle(line, cols - 1)
+        transcript.note_fit(fitted, line)     # a resize reprint re-fits it
+        return fitted
 
     def _compact_args(self, args: dict, max_val: int = 50) -> str:
         if not isinstance(args, dict):

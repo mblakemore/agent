@@ -31,6 +31,7 @@ import shutil
 import sys
 
 import theme
+import transcript
 
 # Width of the banner/section rule, matching the engine's session banner.
 RULE_WIDTH = 60
@@ -112,7 +113,9 @@ def fit(line):
     if theme._no_color():
         return line
     cols = shutil.get_terminal_size((80, 24)).columns
-    return theme.truncate_middle(line, cols - 1)
+    fitted = theme.truncate_middle(line, cols - 1)
+    transcript.note_fit(fitted, line)
+    return fitted
 
 
 # ── Prompts (§ 2.5) ─────────────────────────────────────────────────────

@@ -275,6 +275,7 @@ The default TUI (`prompt_toolkit`) provides:
 - **Completion** for slash commands (`/he<Tab>`) and `@path` file refs (`@src/<Tab>`)
 - **Input history** navigable with ↑ / ↓
 - **Key bindings**: `Enter` submits, `Ctrl-N` inserts a literal newline
+- **Resize reflow**: when the window size settles after a resize, the session so far (the last 5,000 lines) is reprinted for the new width, with tool status rows shortened or restored to fit. This clears the terminal's scrollback, including anything above the agent. Live-input mode only (the default).
 
 Falls back to plain `input()` automatically if `prompt_toolkit` isn't installed.
 

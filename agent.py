@@ -4796,6 +4796,15 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     # and before the TuiSession is built so both show the active model name.
     _sync_config_model(_main_backend, _config)
 
+    # Live-input mode reprints what the session showed when the terminal is
+    # resized (TuiSession); recording starts here so the banner is part of it.
+    _recorder = None
+    if tui and not auto:
+        _ivr = _config.get("interactive") if isinstance(_config, dict) else None
+        if not isinstance(_ivr, dict) or _ivr.get("live_input", True):
+            import transcript as _transcript
+            _recorder = _transcript.install()
+
     _emit("on_session_start", {
         "version": __version__,
         "sha": _git_short_sha(),
@@ -5159,12 +5168,20 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         def _live_input_thread():
             try:
                 with _patch_stdout(raw=True):
+                    if _recorder is not None:
+                        # keep recording: forward to the proxy, which prints
+                        # above the prompt
+                        _recorder.target, sys.stdout = sys.stdout, _recorder
                     while not _input_stop.is_set():
                         try:
                             _line = tui_session.prompt_line()
                         except (EOFError, KeyboardInterrupt):
                             monitor_bus.put_user(_EXIT_MARK)
                             return
+                        if _recorder is not None and _line != _BORROW_MARK:
+                            # prompt_toolkit paints the accepted line itself
+                            _recorder.transcript.write(
+                                "\n" + theme.c(theme.MINT, "You: ") + _line + "\n")
                         if _line == _BORROW_MARK:
                             # Main thread borrowed the terminal for an
                             # interactive command — park (don't repaint a
@@ -5191,6 +5208,9 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             except Exception as _e:  # never let the input thread die silently
                 log.error("live-input thread crashed: %s", _e)
                 monitor_bus.put_user(_EXIT_MARK)
+            finally:
+                if _recorder is not None:
+                    _recorder.target = _recorder.real
 
         def _dispatch_slash(_ui):
             nonlocal initial_files, log, log_path
