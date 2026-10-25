@@ -61,16 +61,14 @@ Keys in the shared `aicommons` block apply to every role, and a role's own `aico
 | `effort` | main `high`, summary `low`, advisor `max` | Sent as `output_config.effort`. |
 | `max_context_tokens` | 200000 | Context the agent fills before it summarizes. A cost and latency cap; the models take 1M. |
 | `max_request_bytes` | 5500000 | Requests over this fail locally. The gateway's Lambda limit is 6 MB. |
-| `quota_floor_pct` | 98 | Stop at this share of the monthly allowance. |
 | `quota_poll_seconds` | 300 | How often `/v1/token-usage` is polled. |
-| `daily_cost_cap_usd` | main 60, summary 3, advisor 10 | A number, or `{role: n}`. `AICOMMONS_DAILY_CAP_USD` overrides. |
-| `model_catalog` | none | The gateway's `model_catalog.json`, for prices and limits of models the built-in table lacks. Also `AICOMMONS_MODEL_CATALOG`. |
+| `model_catalog` | none | The gateway's `model_catalog.json`, for the output limit and thinking support of models the built-in table lacks. Also `AICOMMONS_MODEL_CATALOG`. |
 
 `ctx_size` in the `context` block still caps the window when it is set lower.
 
 ## Models and effort
 
-Prices are only built in for some models (Opus 5.5, Opus 5, Sonnet 5, the 4.6 models, Haiku 4.5). For others, point `model_catalog` at the gateway's catalog or dollar spend is not tracked (the agent says so once).
+The agent keeps a small table of what each Claude model on the gateway accepts: its context window, its output limit and whether it takes thinking. A model outside the table is driven with a 128k window, an 8,192-token output limit and no thinking, unless `model_catalog` supplies its limits.
 
 `max_tokens` is sized to what the model can stream inside the agent's 600-second response wall (about 21,600 tokens), never above the model's own limit.
 
@@ -91,16 +89,13 @@ The gateway caches at the end of the last message, so a turn reads from cache on
 
 Measured on a real eight-turn coding task: from the second turn on, 94–98% of each request was read from cache, and 83–86% over the whole session.
 
-Every call logs an `aicommons.cache role=… read=… write=… uncached=… hit_pct=…` line. The session ends with an `aicommons.session` line that has the totals, the dollars and the quota used. `cache_read` and `cache_write` are also recorded as telemetry token kinds.
+Every call logs an `aicommons.cache role=… read=… write=… uncached=… hit_pct=…` line. The session ends with an `aicommons.session` line that has the totals and the quota used. `cache_read` and `cache_write` are also recorded as telemetry token kinds.
 
-## Quota and spend
+## Quota
 
-The monthly allowance is shared by every key in the account. The agent polls `GET /v1/token-usage` at startup and every five minutes:
+The monthly allowance is shared by every key in the account. The agent polls `GET /v1/token-usage` at startup and every five minutes. The gateway reserves the estimated prompt plus `max_tokens` up front and refuses a request whose reservation does not fit what is left, so when that would happen `max_tokens` shrinks to fit. With less than 1,024 tokens of room the agent stops before sending, with the reset time in the message.
 
-- At `quota_floor_pct` it stops before sending, with the reset time in the message.
-- When the gateway's up-front reservation (estimated prompt plus `max_tokens`) would not fit what is left, `max_tokens` shrinks to fit.
-
-Dollar spend is computed from the real usage of each call (uncached, cache read, cache write and output tokens at the model's prices). It is kept per day, role and model in `~/.local/state/agent/aicommons_spend.json` (`AICOMMONS_SPEND_FILE`). The file is locked across processes, so subagents and parallel jobs add up correctly. A role that reaches its daily cap stops before sending.
+The agent does not price calls or cap daily spend.
 
 ## Errors
 

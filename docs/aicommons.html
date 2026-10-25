@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">AI Commons backend</p>
 <h1>AI Commons backend</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/aicommons.md"><code>docs/aicommons.md</code></a> · last changed 2026-10-24 (b4433a4)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/aicommons.md"><code>docs/aicommons.md</code></a> · last changed 2026-10-24 (70da81f)</p>
 <p>The agent can use the UCSB AI Commons gateway for the main model, the summary model, the advisor, or all of them. The gateway serves the Anthropic Messages API (<code>/v1/messages</code>) in front of Bedrock, so this backend gets native tool calling, streaming text, extended thinking and prompt caching. Backend kind: <code>aicommons</code> (aliases <code>ucsb</code>, <code>ai-commons</code>).</p>
 <p>This replaces the legacy <code>bedrock</code> kind, which talks to a published bot's <code>/conversation</code> API and has none of those. The legacy kind still works and is documented in <a href="bedrock.html">Bedrock backend</a>.</p>
 <h2 id="quick-start">Quick start</h2>
@@ -102,30 +102,20 @@ python agent.py aicommons retest --all
 <td>Requests over this fail locally. The gateway's Lambda limit is 6 MB.</td>
 </tr>
 <tr>
-<td><code>quota_floor_pct</code></td>
-<td>98</td>
-<td>Stop at this share of the monthly allowance.</td>
-</tr>
-<tr>
 <td><code>quota_poll_seconds</code></td>
 <td>300</td>
 <td>How often <code>/v1/token-usage</code> is polled.</td>
 </tr>
 <tr>
-<td><code>daily_cost_cap_usd</code></td>
-<td>main 60, summary 3, advisor 10</td>
-<td>A number, or <code>{role: n}</code>. <code>AICOMMONS_DAILY_CAP_USD</code> overrides.</td>
-</tr>
-<tr>
 <td><code>model_catalog</code></td>
 <td>none</td>
-<td>The gateway's <code>model_catalog.json</code>, for prices and limits of models the built-in table lacks. Also <code>AICOMMONS_MODEL_CATALOG</code>.</td>
+<td>The gateway's <code>model_catalog.json</code>, for the output limit and thinking support of models the built-in table lacks. Also <code>AICOMMONS_MODEL_CATALOG</code>.</td>
 </tr>
 </tbody>
 </table></div>
 <p><code>ctx_size</code> in the <code>context</code> block still caps the window when it is set lower.</p>
 <h2 id="models-and-effort">Models and effort</h2>
-<p>Prices are only built in for some models (Opus 5.5, Opus 5, Sonnet 5, the 4.6 models, Haiku 4.5). For others, point <code>model_catalog</code> at the gateway's catalog or dollar spend is not tracked (the agent says so once).</p>
+<p>The agent keeps a small table of what each Claude model on the gateway accepts: its context window, its output limit and whether it takes thinking. A model outside the table is driven with a 128k window, an 8,192-token output limit and no thinking, unless <code>model_catalog</code> supplies its limits.</p>
 <p><code>max_tokens</code> is sized to what the model can stream inside the agent's 600-second response wall (about 21,600 tokens), never above the model's own limit.</p>
 <p>When the escalation policy fires (the success check keeps failing, or the run is stuck or grinding), the main backend first steps its effort up once, for example <code>high</code> to <code>xhigh</code>. It stays on the same model, so the cache and the stored thinking survive. The advisor path still runs after that.</p>
 <p>Subagents inherit the parent's <code>--backend-*</code> choices. <code>subagent.model</code> and <code>subagent.effort</code> give them a cheaper tier, since each one starts with a cold cache anyway.</p>
@@ -139,14 +129,10 @@ python agent.py aicommons retest --all
 <li>The working directory is in the runtime note, not the system prompt, so runs that start within a few minutes of each other share the cached system prompt and tools.</li>
 </ul>
 <p>Measured on a real eight-turn coding task: from the second turn on, 94–98% of each request was read from cache, and 83–86% over the whole session.</p>
-<p>Every call logs an <code>aicommons.cache role=… read=… write=… uncached=… hit_pct=…</code> line. The session ends with an <code>aicommons.session</code> line that has the totals, the dollars and the quota used. <code>cache_read</code> and <code>cache_write</code> are also recorded as telemetry token kinds.</p>
-<h2 id="quota-and-spend">Quota and spend</h2>
-<p>The monthly allowance is shared by every key in the account. The agent polls <code>GET /v1/token-usage</code> at startup and every five minutes:</p>
-<ul>
-<li>At <code>quota_floor_pct</code> it stops before sending, with the reset time in the message.</li>
-<li>When the gateway's up-front reservation (estimated prompt plus <code>max_tokens</code>) would not fit what is left, <code>max_tokens</code> shrinks to fit.</li>
-</ul>
-<p>Dollar spend is computed from the real usage of each call (uncached, cache read, cache write and output tokens at the model's prices). It is kept per day, role and model in <code>~/.local/state/agent/aicommons_spend.json</code> (<code>AICOMMONS_SPEND_FILE</code>). The file is locked across processes, so subagents and parallel jobs add up correctly. A role that reaches its daily cap stops before sending.</p>
+<p>Every call logs an <code>aicommons.cache role=… read=… write=… uncached=… hit_pct=…</code> line. The session ends with an <code>aicommons.session</code> line that has the totals and the quota used. <code>cache_read</code> and <code>cache_write</code> are also recorded as telemetry token kinds.</p>
+<h2 id="quota">Quota</h2>
+<p>The monthly allowance is shared by every key in the account. The agent polls <code>GET /v1/token-usage</code> at startup and every five minutes. The gateway reserves the estimated prompt plus <code>max_tokens</code> up front and refuses a request whose reservation does not fit what is left, so when that would happen <code>max_tokens</code> shrinks to fit. With less than 1,024 tokens of room the agent stops before sending, with the reset time in the message.</p>
+<p>The agent does not price calls or cap daily spend.</p>
 <h2 id="errors">Errors</h2>
 <div class="tbl-wrap" tabindex="0"><table>
 <thead>

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -87,19 +88,19 @@ def test_aicommons_cli_group_defaults_to_messages(store, capsys):
 # ── models ──────────────────────────────────────────────────────────────
 
 
-def test_catalog_supplies_prices_and_limits(tmp_path, monkeypatch):
+def test_catalog_supplies_limits(tmp_path, monkeypatch):
     monkeypatch.setattr(lb, "AICOMMONS_MODELS", dict(lb.AICOMMONS_MODELS))
     monkeypatch.setattr(lb, "_catalog_loaded", set())
     cat = tmp_path / "model_catalog.json"
     cat.write_text(json.dumps({
-        "claude-v5.5-sonnet": {"maxOutputTokens": 128000, "reasoning": True,
-                               "pricing": {"input": 0.0033, "output": 0.0165, "cache_read": 0.00033,
-                                           "cache_write": 0.004125}},
+        "claude-v5.5-sonnet": {"maxOutputTokens": 96000, "reasoning": True,
+                               "pricing": {"input": 0.0033, "output": 0.0165}},
         "retired-model": {"active": False, "maxOutputTokens": 1},
     }))
     assert lb.load_aicommons_catalog(str(cat)) == 1
     row = lb.aicommons_model_info("claude-v5.5-sonnet")
-    assert row["price_in"] == 0.0033 and row["context_tokens"] == 1_000_000
+    assert row["max_output"] == 96000 and row["context_tokens"] == 1_000_000
+    assert not any(k.startswith("price") for k in row)      # prices are not kept
     assert "retired-model" not in lb.AICOMMONS_MODELS
 
 
@@ -323,3 +324,16 @@ def test_switching_model_rederives_its_limits(monkeypatch, store):
     assert b.model == "qwen3-32b" and not b._thinking_kwargs()   # unknown: no thinking sent
     assert b.max_tokens <= lb._AICOMMONS_UNKNOWN_MODEL["max_output"]
     assert live["backends"]["main"]["model"] == "qwen3-32b"
+
+
+def test_console_log_lines_follow_the_current_stdout(monkeypatch, capsys):
+    """patch_stdout swaps sys.stdout while the live prompt runs; the console handler
+    must write to the swapped stream, not the one it was built with."""
+    import io, logging
+    import agent
+    h = agent._CurrentStdoutHandler()
+    h.setFormatter(logging.Formatter("%(message)s"))
+    swapped = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", swapped)
+    h.emit(logging.makeLogRecord({"msg": "hello", "levelno": logging.INFO}))
+    assert swapped.getvalue() == "hello\n"
