@@ -3851,6 +3851,25 @@ def _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, for
 
 # ── Logger setup ──────────────────────────────────────────────────────
 
+class _CurrentStdoutHandler(logging.StreamHandler):
+    """Writes to whatever ``sys.stdout`` is at emit time.
+
+    A plain StreamHandler keeps the stream it was built with. While the live
+    prompt runs, prompt_toolkit's patch_stdout swaps ``sys.stdout`` for a proxy
+    that prints above the prompt area; a line written to the original stream
+    instead lands inside that area, the next redraw erases from the wrong row,
+    and the half-streamed reply line is left behind as a stale copy (seen with
+    the first-call "no prices" warning, which the redraw then painted over)."""
+
+    @property
+    def stream(self):
+        return sys.stdout
+
+    @stream.setter
+    def stream(self, _value):
+        pass
+
+
 class _VerboseConsoleFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         if record.levelno >= logging.WARNING:
@@ -3881,7 +3900,7 @@ def _setup_logger():
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
 
-    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler = _CurrentStdoutHandler()
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(logging.Formatter('%(levelname)s: %(message)s'))
     console_handler.addFilter(_VerboseConsoleFilter())
