@@ -534,6 +534,10 @@ _DEFAULT_CONFIG = {
         "adaptive_max_tokens": True,
     },
     "preferences": {
+        # Your own instructions, placed first in the system message of every
+        # request (before the agent's own lines). Empty = none. Set it with
+        # /system or by hand.
+        "system_prompt": "",
         # T5.14 Option B — when true, the framework prepends a system-prompt
         # directive recommending file(action='edit') over heredoc rewrites
         # for existing-file modifications. Off by default so existing agents
@@ -4511,6 +4515,14 @@ def _set_model_for_role(role, new_model):
     return _persist_config_value(section, "model", new_model)
 
 
+def _set_system_prompt(text):
+    """Set (or, with ``""``, clear) ``preferences.system_prompt`` for this
+    session and persist it to ``./.agent/config.json``. The run loop reads it
+    on every request, so it applies from the next one."""
+    _config.setdefault("preferences", {})["system_prompt"] = text
+    return _persist_config_value("preferences", "system_prompt", text)
+
+
 def _log_bedrock_session_spend(log):
     """Emit an INFO line summarizing today's Bedrock spend per role.
 
@@ -5223,7 +5235,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 base_url=getattr(_main_backend, "base_url", None) or BASE_URL,
                 summary_base_url=getattr(_summary_backend, "base_url", None),
                 setup_logger=_setup_logger, pick_model=_pick_model_interactive,
-                set_model=_set_model_for_role, render_context_bar=_render_context_bar,
+                set_model=_set_model_for_role, set_system_prompt=_set_system_prompt,
+                render_context_bar=_render_context_bar,
                 refresh_cb_log=_refresh_cb_log, apply_setup=_apply_setup_updates)
             with _borrowed_terminal():
                 handled = _commands.handle_command(_ui, ctx)
@@ -5382,6 +5395,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 # in-memory config + live backend object, then persists to
                 # .agent/config.json. Keeps commands.py free of business logic.
                 set_model=_set_model_for_role,
+                set_system_prompt=_set_system_prompt,
                 render_context_bar=_render_context_bar,
                 refresh_cb_log=_refresh_cb_log,
                 apply_setup=_apply_setup_updates,
@@ -6629,6 +6643,11 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # within the cache TTL share the cached system prompt + tools.
                 _static_lines = [ln for ln in _static_lines if not ln.startswith("Working directory:")]
             _dynamic_lines = [ln for ln in _system_lines if ln not in _static_lines]
+            # The user's own system prompt leads. It is fixed within a run unless /system
+            # changes it, so it stays in the cached head of the request.
+            _user_prompt = _config.get("preferences", {}).get("system_prompt")
+            if isinstance(_user_prompt, str) and _user_prompt.strip():
+                _static_lines.insert(0, _user_prompt.strip())
             if _prompt_caching_backend():
                 # P4.1: the note is STORED in history (once per turn), so the next request
                 # extends this one exactly and the server's last-message cache point hits.

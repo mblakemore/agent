@@ -127,6 +127,7 @@ _SLASH_COMMANDS: list[tuple[str, str]] = [
     ("/clear",   "clear conversation history"),
     ("/context", "show current context usage"),
     ("/model",   "pick a different model"),
+    ("/system",  "show, set or clear your own system prompt"),
     ("/verbose", "toggle compact/full tool output"),
     ("/tools",   "show buffered tool calls — /tools N or /tools all"),
 ]
