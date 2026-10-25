@@ -3,7 +3,7 @@
 `config.json` lives in the working directory you run the agent from. Every block is optional — with
 a single model on the default port you need no config file at all.
 
-Full key-by-key reference is in the [overview](../README.md#configuration). This page is the shapes
+Full key-by-key reference is in the [Config reference](config-reference.md). This page is the shapes
 that correspond to real setups, in increasing order of how much hardware they ask for.
 
 ## 1. One model, no config
@@ -80,7 +80,7 @@ timeout smaller than the time the budgets themselves imply just guarantees empty
 **`/setup calibrate`** (or `/setup advisor`) to measure the advisor's real prefill/decode rates into
 `advisor.measured` and write the derived timeout explicitly; uncalibrated setups fall back to
 deliberately conservative rates. The full key reference lives with the other config blocks in the
-[overview](../README.md#advisor).
+[Config reference](config-reference.md#advisor).
 
 The advisor **distills before it asks**: your context is compressed on the fast summary model down to
 `prefill_token_budget` before the slow model sees it, because prefill dominates at these speeds. And

@@ -15,8 +15,8 @@ python agent.py [OPTIONS] [PROMPT...]
 | `--nudge` | When the model returns a text-only response, auto-nudge it to keep going. Off by default. |
 | `--no-tui` | Use a plain `input()` prompt instead of the `prompt_toolkit` TUI. |
 | `--verbose` | Start with full (uncompacted) tool output. Toggle in-session with `/verbose`. |
-| `--backend-main` | Override the main backend kind (`llamacpp` or `bedrock`). |
-| `--backend-summary` | Override the summary backend kind (`llamacpp` or `bedrock`). |
+| `--backend-main` | Override the main backend kind (`llamacpp`, `aicommons`, `foundry` or `bedrock`). |
+| `--backend-summary` | Override the summary backend kind (`llamacpp`, `aicommons`, `foundry` or `bedrock`). |
 | `-cc [HOST:PORT]` | Launch an Anthropic-compatible gateway for **Claude Code** (default `127.0.0.1:8788`) that forwards to the configured main backend, then exit. See [Claude Code gateway](#claude-code-gateway--cc). |
 | `--result-file PATH` | Write the final assistant response to `PATH` (for callers that consume the run's output as a file). |
 | `--role builder\|reviewer\|creature` | Explicit session role; overrides prompt string-matching for the CICD guards. |

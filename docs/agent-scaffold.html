@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent scaffold — /agent — agent</title>
+<meta name="description" content="/agent turns the current folder into an autonomous agent: it writes an instructions file the agent is, plus its state tree. A full /setup run offers it as the last item on its checklist.">
+<link rel="canonical" href="https://mblakemore.github.io/agent/agent-scaffold.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Agent scaffold — /agent">
+<meta property="og:description" content="/agent turns the current folder into an autonomous agent: it writes an instructions file the agent is, plus its state tree. A full /setup run offers it as the last item on its checklist.">
+<meta property="og:url" content="https://mblakemore.github.io/agent/agent-scaffold.html">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/agent-docs.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"Agent scaffold — /agent","url":"https://mblakemore.github.io/agent/agent-scaffold.html","description":"/agent turns the current folder into an autonomous agent: it writes an instructions file the agent is, plus its state tree. A full /setup run offers it as the last item on its checklist."}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><div class="in">
+  <span class="brand"><a href="index.html">agent</a></span>
+  <span class="tag">documentation</span>
+  <nav aria-label="primary">
+    <a href="index.html">Overview</a>
+    <a href="https://github.com/mblakemore/agent">Source</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="setup-wizard.html">Setup wizard — /setup</a></li><li><a href="cli.html">CLI and usage</a></li><li><a href="job-contract.html">The job contract — running agent.py as a verifiable worker</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="config-reference.html">Config reference</a></li><li><a href="how-it-works.html">How it works</a></li><li><a href="agent-scaffold.html" aria-current="page">Agent scaffold — /agent</a></li><li><a href="models.html">Recommended models</a></li><li><a href="aicommons.html">AI Commons backend</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
+  <main id="main">
+    <p class="eyebrow">Agent scaffold — /agent</p>
+<h1>Agent scaffold — <code>/agent</code></h1>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/agent-scaffold.md"><code>docs/agent-scaffold.md</code></a></p>
+<p><code>/agent</code> turns the current folder into an autonomous agent: it writes an instructions file the agent <em>is</em>, plus its state tree. A full <a href="setup-wizard.html"><code>/setup</code></a> run offers it as the last item on its checklist.</p>
+<h2 id="type-then-name">Type, then name</h2>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Type</th>
+<th>What you get</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>six-phase</code></td>
+<td>The full agent: identity, patterns, anchors, creator messages, verification gate.</td>
+</tr>
+<tr>
+<td><code>worker</code></td>
+<td>A 4-phase task agent with a decisions log.</td>
+</tr>
+<tr>
+<td><code>minimal</code></td>
+<td>A bare loop.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The name defaults to the folder's.</p>
+<h2 id="the-identity-file">The identity file</h2>
+<p>The generated <code>AGENT.md</code>/<code>CLAUDE.md</code> carries:</p>
+<ul>
+<li>a first-person identity</li>
+<li>a wrong-repo guard (<code>git remote -v</code>, stop if it isn't yours)</li>
+<li>one-cycle-per-invocation discipline</li>
+<li>a verify-before-decide gate</li>
+</ul>
+<p>Generated from your <strong>live config</strong>, it also has a "My Models" table with the real endpoints and model names, advisor escalation guidance only when an advisor is actually configured, and the measured context window. With no config it points at <code>/setup</code>; nothing is invented.</p>
+<h2 id="git">Git</h2>
+<p><strong>An agent requires a git repo</strong>: the commit is its continuity. In a bare folder the wizard offers three choices:</p>
+<ul>
+<li>a local <code>git init</code></li>
+<li>create a GitHub repo through an authenticated <code>gh</code> CLI and wire it as <code>origin</code></li>
+<li>stop cleanly, so you can clone a blank repo yourself first</li>
+</ul>
+<p>Setup finishes with an init commit (<code>C0: &lt;name&gt; scaffolded — awakening pending</code>) of exactly the scaffolded files. Runtime state and logs stay untracked. It pushes when an origin exists.</p>
+<h2 id="running-it">Running it</h2>
+<p>Both identity filenames load whole when referenced (<code>@AGENT.md</code> / <code>@CLAUDE.md</code>). Start the agent with:</p>
+<pre tabindex="0"><code class="language-bash">agent &quot;@AGENT.md run the loop&quot;
+</code></pre>
+    <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
+  </main>
+</div>
+</body>
+</html>
