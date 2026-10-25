@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Config reference — agent</title>
+<meta name="description" content="Every key the agent reads from its config file, with its default. All sections are optional; omitted keys use the defaults below. You rarely need to write this by hand: the /setup wizard writes and calibrates it for you from live probes of your endpoints. For whole setups rather than single keys, se">
+<link rel="canonical" href="https://mblakemore.github.io/agent/config-reference.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Config reference">
+<meta property="og:description" content="Every key the agent reads from its config file, with its default. All sections are optional; omitted keys use the defaults below. You rarely need to write this by hand: the /setup wizard writes and calibrates it for you from live probes of your endpoints. For whole setups rather than single keys, se">
+<meta property="og:url" content="https://mblakemore.github.io/agent/config-reference.html">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/agent-docs.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"Config reference","url":"https://mblakemore.github.io/agent/config-reference.html","description":"Every key the agent reads from its config file, with its default. All sections are optional; omitted keys use the defaults below. You rarely need to write this by hand: the /setup wizard writes and calibrates it for you from live probes of your endpoints. For whole setups rather than single keys, se"}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><div class="in">
+  <span class="brand"><a href="index.html">agent</a></span>
+  <span class="tag">documentation</span>
+  <nav aria-label="primary">
+    <a href="index.html">Overview</a>
+    <a href="https://github.com/mblakemore/agent">Source</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="setup-wizard.html">Setup wizard — /setup</a></li><li><a href="cli.html">CLI and usage</a></li><li><a href="job-contract.html">The job contract — running agent.py as a verifiable worker</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="config-reference.html" aria-current="page">Config reference</a></li><li><a href="how-it-works.html">How it works</a></li><li><a href="agent-scaffold.html">Agent scaffold — /agent</a></li><li><a href="models.html">Recommended models</a></li><li><a href="aicommons.html">AI Commons backend</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
+  <main id="main">
+    <p class="eyebrow">Config reference</p>
+<h1>Config reference</h1>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/config-reference.md"><code>docs/config-reference.md</code></a></p>
+<p>Every key the agent reads from its config file, with its default. All sections are optional; omitted keys use the defaults below. <strong>You rarely need to write this by hand</strong>: the <a href="setup-wizard.html"><code>/setup</code> wizard</a> writes and calibrates it for you from live probes of your endpoints. For whole setups rather than single keys, see <a href="configurations.html">Configurations</a>.</p>
+<p>The agent looks for <code>.agent/config.json</code> first, then falls back to <code>config.json</code> in the working directory (wherever you run <code>agent.py</code> from). Putting it under <code>.agent/</code> keeps your local, key-bearing config alongside the other runtime files. When you run inside a git repo, the agent best-effort adds <code>.agent/</code> and <code>config.json</code> to <code>.gitignore</code> so your config (which may hold API keys) and runtime state never get committed. Outside a repo it leaves the directory untouched.</p>
+<h2 id="backends"><code>backends</code></h2>
+<p>Preferred shape. Replaces the legacy <code>llm</code> / <code>summary</code> flat blocks (which still work — they are synthesized into <code>backends</code> at load time).</p>
+<pre tabindex="0"><code class="language-json">{
+  &quot;backends&quot;: {
+    &quot;main&quot;: {
+      &quot;kind&quot;:     &quot;llamacpp&quot;,
+      &quot;base_url&quot;: &quot;http://127.0.0.1:8080&quot;,
+      &quot;model&quot;:    &quot;my-model-name&quot;,
+      &quot;api_key&quot;:  &quot;&quot;,
+      &quot;stream&quot;:   true
+    },
+    &quot;summary&quot;: {
+      &quot;kind&quot;:     &quot;llamacpp&quot;,
+      &quot;base_url&quot;: &quot;http://127.0.0.1:8082&quot;,
+      &quot;model&quot;:    &quot;my-summary-model&quot;,
+      &quot;enabled&quot;:  true
+    }
+  }
+}
+</code></pre>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>kind</code></td>
+<td><code>"llamacpp"</code></td>
+<td>Backend type: <code>"llamacpp"</code> (any OpenAI-compatible server), <code>"aicommons"</code>, <code>"foundry"</code>, or <code>"bedrock"</code> (legacy).</td>
+</tr>
+<tr>
+<td><code>base_url</code></td>
+<td><code>"http://127.0.0.1:8080"</code></td>
+<td>OpenAI-compatible endpoint.</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td><code>""</code></td>
+<td>Model name passed to the endpoint. Empty takes the server's own: at startup the agent reads <code>/v1/models</code> and uses the model listed (the first, if several). Selects the model ID for gateway kinds.</td>
+</tr>
+<tr>
+<td><code>api_key</code></td>
+<td><code>""</code></td>
+<td>Bearer token sent as <code>Authorization: Bearer &lt;key&gt;</code>. Keep this file <code>chmod 600</code>.</td>
+</tr>
+<tr>
+<td><code>stream</code></td>
+<td><code>true</code></td>
+<td>Set <code>false</code> to use non-streaming completions (useful for debugging).</td>
+</tr>
+<tr>
+<td><code>enabled</code></td>
+<td><code>true</code> (main) / <code>true</code> (summary)</td>
+<td>Set <code>false</code> to disable the summary backend entirely.</td>
+</tr>
+</tbody>
+</table></div>
+<p>For <strong>AI Commons</strong> keys (credentials, effort, quota) see <a href="aicommons.html">AI Commons</a>. For legacy <strong>Bedrock</strong> keys (<code>api_url</code>, spend caps, keystore) see <a href="bedrock.html">Bedrock</a>.</p>
+<h2 id="generation"><code>generation</code></h2>
+<p>Inference parameters forwarded to the LLM on every request.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>temperature</code></td>
+<td><code>0.6</code></td>
+<td>Sampling temperature.</td>
+</tr>
+<tr>
+<td><code>top_p</code></td>
+<td><code>0.95</code></td>
+<td>Nucleus sampling threshold.</td>
+</tr>
+<tr>
+<td><code>top_k</code></td>
+<td><code>20</code></td>
+<td>Top-K sampling.</td>
+</tr>
+<tr>
+<td><code>min_p</code></td>
+<td><code>0.0</code></td>
+<td>Min-P sampling (0 = disabled).</td>
+</tr>
+<tr>
+<td><code>presence_penalty</code></td>
+<td><code>0.0</code></td>
+<td>Penalise tokens already present in context.</td>
+</tr>
+<tr>
+<td><code>enable_thinking</code></td>
+<td><code>false</code></td>
+<td>Whether the <strong>main loop</strong> may emit thinking. Default <code>false</code>: the design is no-thinking-in-main plus the opt-in <a href="#think"><code>think</code> tool</a>, so the model reasons hard only when it chooses to. Set <code>true</code> to let the main model think on every turn (bounded by <code>max_tokens</code>; the <code>think</code> tool stays available either way). On tasks a capable model handles, <code>true</code> is measurably slower (~2–6×) for no accuracy gain — reach for it on genuinely hard tasks, not as a default. Requires a thinking-capable model/server (e.g. Qwen3 with <code>llama-server --reasoning</code>).</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="think"><code>think</code></h2>
+<p>Budgets for the opt-in <code>think</code> tool — a separate deep-reasoning call the model can invoke on demand. Independent of <code>generation.enable_thinking</code> above: the tool is always available regardless of that flag.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>depths.brief</code></td>
+<td><code>2048</code></td>
+<td><code>max_tokens</code> for a <code>brief</code> think — the default depth, sufficient for most decisions.</td>
+</tr>
+<tr>
+<td><code>depths.normal</code></td>
+<td><code>4096</code></td>
+<td><code>max_tokens</code> for a <code>normal</code> think — complex multi-step reasoning.</td>
+</tr>
+<tr>
+<td><code>depths.deep</code></td>
+<td><code>16384</code></td>
+<td><code>max_tokens</code> for a <code>deep</code> think — rarely needed.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The three preset <strong>names</strong> (<code>brief</code>/<code>normal</code>/<code>deep</code>) are fixed; only their token values are tunable — a fast small model may want smaller ceilings, a slow reasoning model larger. A malformed or non-positive override for any preset is ignored, keeping that preset's built-in default (a bad config can never zero out a budget).</p>
+<h2 id="context"><code>context</code></h2>
+<p>Controls context-window sizing and compaction.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ctx_size</code></td>
+<td><code>114688</code></td>
+<td>Context window size in tokens. Auto-detected from the server's <code>/props</code> endpoint when available; this value is the fallback cap.</td>
+</tr>
+<tr>
+<td><code>max_tokens</code></td>
+<td><code>16384</code></td>
+<td>Maximum tokens in a single completion.</td>
+</tr>
+<tr>
+<td><code>max_full_lines</code></td>
+<td><code>800</code></td>
+<td>Lines of tool output kept verbatim before compaction.</td>
+</tr>
+<tr>
+<td><code>preview_lines</code></td>
+<td><code>200</code></td>
+<td>Lines shown in the compacted preview.</td>
+</tr>
+<tr>
+<td><code>summary_threshold</code></td>
+<td><code>5</code></td>
+<td>Messages beyond which background summarisation fires.</td>
+</tr>
+<tr>
+<td><code>summary_max_chars</code></td>
+<td><code>3000</code></td>
+<td>Maximum characters in a generated summary chunk.</td>
+</tr>
+<tr>
+<td><code>max_context_messages</code></td>
+<td><code>30</code></td>
+<td>Hard cap on messages sent to the LLM per turn.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="cycle"><code>cycle</code></h2>
+<p>Per-session run limits.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>max_turns</code></td>
+<td><code>250</code></td>
+<td>Stop (or wind down) after this many turns.</td>
+</tr>
+<tr>
+<td><code>wind_down_turns</code></td>
+<td><code>10</code></td>
+<td>Turns of grace period after <code>max_turns</code> before a hard stop.</td>
+</tr>
+<tr>
+<td><code>max_text_only</code></td>
+<td><code>3</code></td>
+<td>Consecutive text-only responses that trigger a halt (loop detection).</td>
+</tr>
+<tr>
+<td><code>max_total_nudges</code></td>
+<td><code>6</code></td>
+<td>Total auto-nudges allowed before giving up (requires <code>preferences.nudge</code> or <code>--nudge</code>).</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="retry"><code>retry</code></h2>
+<p>Exponential-backoff settings for failed LLM requests.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>max_retries</code></td>
+<td><code>10</code></td>
+<td>Maximum retry attempts before the request fails.</td>
+</tr>
+<tr>
+<td><code>base_delay_seconds</code></td>
+<td><code>2</code></td>
+<td>Initial retry wait.</td>
+</tr>
+<tr>
+<td><code>max_delay_seconds</code></td>
+<td><code>60</code></td>
+<td>Cap on retry wait.</td>
+</tr>
+<tr>
+<td><code>backoff_multiplier</code></td>
+<td><code>2.0</code></td>
+<td>Multiplier applied to delay each retry.</td>
+</tr>
+<tr>
+<td><code>jitter_factor</code></td>
+<td><code>0.1</code></td>
+<td>Random jitter added to each delay (fraction of current delay).</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="advisor"><code>advisor</code></h2>
+<p>An optional third role alongside <code>main</code> and <code>summary</code>: a <strong>heavyweight model consulted as a tool</strong>,
+never as the driver. A very large model on CPU can be far too slow to run a loop and still be the
+best thing available for the rare hard sub-problem, so the fast model keeps the loop and calls
+<code>consult_advisor</code> when it is stuck.</p>
+<p><code>advisor</code> is a <strong>top-level block</strong>, not one of <code>backends</code>. The tier is off unless you configure it.</p>
+<pre tabindex="0"><code class="language-json">{
+  &quot;advisor&quot;: {
+    &quot;enabled&quot;:              true,
+    &quot;base_url&quot;:             &quot;http://127.0.0.1:8000&quot;,
+    &quot;model&quot;:                &quot;glm-5.2&quot;,
+    &quot;prefill_token_budget&quot;: 1500,
+    &quot;max_tokens&quot;:           512,
+    &quot;max_calls_per_task&quot;:   3,
+    &quot;timeout_s&quot;:            900
+  }
+}
+</code></pre>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>enabled</code></td>
+<td>true when <code>base_url</code> is set</td>
+<td>Tier is off unless an endpoint is configured.</td>
+</tr>
+<tr>
+<td><code>base_url</code></td>
+<td>—</td>
+<td>OpenAI-compatible endpoint for the advisor model.</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td>—</td>
+<td>Model name passed to that endpoint.</td>
+</tr>
+<tr>
+<td><code>api_key</code></td>
+<td><code>""</code></td>
+<td>Bearer token, if the endpoint needs one.</td>
+</tr>
+<tr>
+<td><code>prefill_token_budget</code></td>
+<td><code>1500</code></td>
+<td>Hard ceiling on the brief handed to the advisor (see below).</td>
+</tr>
+<tr>
+<td><code>max_tokens</code></td>
+<td><code>512</code></td>
+<td>Cap on the advisor's answer.</td>
+</tr>
+<tr>
+<td><code>max_calls_per_task</code></td>
+<td><code>3</code></td>
+<td>Consultations per task, so a stuck loop cannot spend the session waiting.</td>
+</tr>
+<tr>
+<td><code>timeout_s</code></td>
+<td><code>900</code></td>
+<td>Per-consultation timeout.</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>It distills before it asks.</strong> A slow model's prefill dominates: feeding a multi-thousand-token
+transcript to a ~3 pos/s prefill costs many minutes before it emits a word. So the caller's context
+is compressed on the fast <strong>summary</strong> model down to <code>prefill_token_budget</code> first — the advisor reads
+the brief, not the transcript. If distillation cannot get under budget, the escalation does <strong>not</strong>
+happen silently.</p>
+<p><strong>It fails open.</strong> Any endpoint error, timeout, or disabled config returns a plain notice and the
+driver proceeds <em>without</em> the advice. An escalation tool must never block the loop it exists to help.</p>
+<p><strong>It is probed at startup.</strong> If the endpoint is unreachable, <code>consult_advisor</code> is removed from the
+tool registry, so the model never sees a tool it cannot use and never wastes turns escalating to a
+server that is not running.</p>
+<p>See <a href="configurations.html">Configurations</a> for the full three-tier setup, and
+<a href="models.html">Recommended models</a> for what to run as the advisor.</p>
+<h2 id="bedrock"><code>bedrock</code></h2>
+<p>Legacy Bedrock tuning (only relevant when <code>backends.main.kind</code> or <code>backends.summary.kind</code> is <code>"bedrock"</code>).</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>adaptive_max_tokens</code></td>
+<td><code>true</code></td>
+<td>Dynamically adjust <code>max_tokens</code> per request based on detected prompt complexity, staying within the model's limit.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="preferences"><code>preferences</code></h2>
+<p>Behavioural knobs that don't fit elsewhere.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>nudge</code></td>
+<td><code>false</code></td>
+<td>Auto-nudge the model when it returns a text-only response. Also settable with <code>--nudge</code> CLI flag.</td>
+</tr>
+<tr>
+<td><code>persist_nudge</code></td>
+<td><code>false</code></td>
+<td>After a text-only stop, check <code>git status</code>; if uncommitted changes exist and no commit happened this session, inject one nudge to commit. Intended for git-native agents.</td>
+</tr>
+<tr>
+<td><code>tool_selection_hints</code></td>
+<td><code>false</code></td>
+<td>Prepend a system-prompt directive recommending <code>file(action='edit')</code> over heredoc rewrites for existing-file edits.</td>
+</tr>
+<tr>
+<td><code>max_text_response_chars</code></td>
+<td><code>24000</code></td>
+<td>Cap on text-only response length per turn (characters). Only enforced when <code>nudge</code> is on. Prevents context-filling monologue spirals.</td>
+</tr>
+<tr>
+<td><code>max_post_tool_text_chars</code></td>
+<td><code>2000</code></td>
+<td>Cap on prose generated after tool calls in the same turn.</td>
+</tr>
+<tr>
+<td><code>extra_allowed_paths</code></td>
+<td><code>[]</code></td>
+<td>List of absolute directory paths the <code>file</code> tool is allowed to read/write outside the working directory.</td>
+</tr>
+<tr>
+<td><code>tools_whitelist</code></td>
+<td><code>null</code></td>
+<td>Restrict the tool schema sent to the LLM to this list of tool names. <code>null</code> = all tools. Example: <code>["file", "exec_command", "search_files", "think", "task_tracker"]</code>.</td>
+</tr>
+<tr>
+<td><code>initial_tasks</code></td>
+<td><code>[]</code></td>
+<td>Task descriptions pre-seeded into <code>task_tracker</code> at session start (only when the task list is empty — does not overwrite an in-progress cycle).</td>
+</tr>
+<tr>
+<td><code>seed_tasks_persistent</code></td>
+<td><code>false</code></td>
+<td>Re-seed <code>initial_tasks</code> at the start of every cycle, not just on a fresh task list.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="command_guards"><code>command_guards</code></h2>
+<p>A list of regex-pattern / message pairs that intercept <code>exec_command</code> calls before the shell sees them. When a command matches a pattern, execution is blocked and the message is returned to the agent as a tool error — the agent can then reason about it and try something else.</p>
+<p>Patterns are case-insensitive regexes matched against the full command string.</p>
+<pre tabindex="0"><code class="language-json">{
+  &quot;command_guards&quot;: [
+    {
+      &quot;pattern&quot;: &quot;\\b8080\\b&quot;,
+      &quot;message&quot;: &quot;BLOCKED: Port 8080 is used by the llama.cpp main inference server. Do not start processes on it or kill processes using it. Use a different port (e.g. 8765) for http.server.&quot;
+    },
+    {
+      &quot;pattern&quot;: &quot;\\b8082\\b&quot;,
+      &quot;message&quot;: &quot;BLOCKED: Port 8082 is used by the llama.cpp summary inference server. Do not use it.&quot;
+    },
+    {
+      &quot;pattern&quot;: &quot;rm\\s+-rf\\s+/&quot;,
+      &quot;message&quot;: &quot;BLOCKED: Refusing to run recursive delete from filesystem root.&quot;
+    }
+  ]
+}
+</code></pre>
+<p>Guards fire after the built-in hallucination guards (<code>/home/user</code>, <code>python</code>→<code>python3</code>) but before the command runs.</p>
+<h2 id="full-example">Full example</h2>
+<pre tabindex="0"><code class="language-json">{
+  &quot;backends&quot;: {
+    &quot;main&quot;:    { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8080&quot; },
+    &quot;summary&quot;: { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8082&quot;, &quot;enabled&quot;: true }
+  },
+  &quot;generation&quot;: { &quot;temperature&quot;: 0.8, &quot;enable_thinking&quot;: false },
+  &quot;think&quot;:      { &quot;depths&quot;: { &quot;brief&quot;: 2048, &quot;normal&quot;: 4096, &quot;deep&quot;: 16384 },
+                  &quot;system_prompt&quot;: null },
+  &quot;context&quot;:    { &quot;ctx_size&quot;: 32768 },
+  &quot;cycle&quot;:      { &quot;max_turns&quot;: 50 },
+  &quot;preferences&quot;: {
+    &quot;nudge&quot;: true,
+    &quot;tools_whitelist&quot;: [&quot;file&quot;, &quot;exec_command&quot;, &quot;search_files&quot;, &quot;think&quot;, &quot;task_tracker&quot;]
+  },
+  &quot;command_guards&quot;: [
+    {
+      &quot;pattern&quot;: &quot;\\b8080\\b&quot;,
+      &quot;message&quot;: &quot;BLOCKED: Port 8080 is reserved for the llama.cpp server.&quot;
+    }
+  ]
+}
+</code></pre>
+<p><code>think.system_prompt</code> is sent as the system turn of every <code>think</code> call; leave it unset unless
+your model's chat template needs a trigger token there to start thinking. By default thinking is
+switched on through the template (<code>enable_thinking</code>), and nothing model-specific is sent.</p>
+    <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
+  </main>
+</div>
+</body>
+</html>

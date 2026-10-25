@@ -28,7 +28,7 @@
   </nav>
 </div></header>
 <div class="wrap">
-  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html" aria-current="page">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="cli.html">CLI and usage</a></li><li><a href="job-contract.html">The job contract — running agent.py as a verifiable worker</a></li><li><a href="models.html">Recommended models</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="aicommons.html">AI Commons backend</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html" aria-current="page">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="setup-wizard.html">Setup wizard — /setup</a></li><li><a href="cli.html">CLI and usage</a></li><li><a href="job-contract.html">The job contract — running agent.py as a verifiable worker</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="config-reference.html">Config reference</a></li><li><a href="how-it-works.html">How it works</a></li><li><a href="agent-scaffold.html">Agent scaffold — /agent</a></li><li><a href="models.html">Recommended models</a></li><li><a href="aicommons.html">AI Commons backend</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
   <main id="main">
     <p class="eyebrow">Install</p>
 <h1>Install</h1>
@@ -100,6 +100,16 @@ macOS needs nothing else. The pinned packages ship wheels for Intel and Apple Si
 </code></pre>
 <p>On an externally managed Python, the user install needs <code>--break-system-packages</code>. The venv
 doesn't.</p>
+<h2 id="dependencies">Dependencies</h2>
+<ul>
+<li>Python 3.10+</li>
+<li><code>requests</code>: HTTP to the LLM endpoint</li>
+<li><code>transformers</code>: exact token counts (optional). Off unless <code>AGENT_TOKENIZER</code> names the Hugging Face tokenizer matching your model; otherwise a conservative char-based estimate</li>
+<li><code>PyMuPDF</code> (<code>fitz</code>): PDF extraction (<code>tools/read_pdf.py</code>)</li>
+<li><code>markdownify</code>: HTML → Markdown (<code>tools/web_fetch.py</code>)</li>
+<li><code>prompt_toolkit</code>: interactive TUI (optional; falls back to plain <code>input()</code> automatically)</li>
+<li>A running OpenAI-compatible LLM server, or a hosted backend such as <a href="aicommons.html">AI Commons</a></li>
+</ul>
 <h2 id="windows-git-bash-setup">Windows (Git-Bash) setup</h2>
 <p>The runtime is cross-platform Python. The <code>exec_command</code> tool shells out to <code>bash</code> so shell idioms (heredocs, pipes, <code>&amp;&amp;</code>, <code>/tmp/...</code>) run unchanged — on Windows that bash comes from Git-Bash, <strong>not</strong> <code>cmd</code> or PowerShell.</p>
 <ol>

@@ -65,6 +65,16 @@ pip install --user -r requirements.txt
 On an externally managed Python, the user install needs `--break-system-packages`. The venv
 doesn't.
 
+## Dependencies
+
+- Python 3.10+
+- `requests`: HTTP to the LLM endpoint
+- `transformers`: exact token counts (optional). Off unless `AGENT_TOKENIZER` names the Hugging Face tokenizer matching your model; otherwise a conservative char-based estimate
+- `PyMuPDF` (`fitz`): PDF extraction (`tools/read_pdf.py`)
+- `markdownify`: HTML → Markdown (`tools/web_fetch.py`)
+- `prompt_toolkit`: interactive TUI (optional; falls back to plain `input()` automatically)
+- A running OpenAI-compatible LLM server, or a hosted backend such as [AI Commons](aicommons.md)
+
 ## Windows (Git-Bash) setup
 
 The runtime is cross-platform Python. The `exec_command` tool shells out to `bash` so shell idioms (heredocs, pipes, `&&`, `/tmp/...`) run unchanged — on Windows that bash comes from Git-Bash, **not** `cmd` or PowerShell.
