@@ -1262,3 +1262,28 @@ def test_exec_command_background_string_still_returns_type_error():
     result = fn("echo hi", background="false")
     assert result.startswith("Error:"), f"background='false' must return error: {result!r}"
     assert "'str'" in result, f"Error must name type 'str': {result!r}"
+
+
+def test_command_cannot_leave_the_terminal_changed():
+    """A command that changes the terminal (here through /dev/tty, as a child agent's
+    exit handler did) must not leave the live prompt in line mode: Enter became ^M."""
+    import pty
+    pid, fd = pty.fork()
+    if pid == 0:
+        import termios, tty
+        try:
+            tty.setraw(0)
+            before = termios.tcgetattr(0)
+            from tools.exec_command import fn
+            fn(command="stty icanon echo -icrnl < /dev/tty; cat")   # cat: stdin is not the terminal
+            os._exit(0 if termios.tcgetattr(0) == before else 1)
+        except BaseException:
+            os._exit(2)
+    while True:
+        try:
+            if not os.read(fd, 1024):
+                break
+        except OSError:
+            break
+    _, status = os.waitpid(pid, 0)
+    assert os.WEXITSTATUS(status) == 0

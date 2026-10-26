@@ -43,6 +43,7 @@ _cancel_event = threading.Event()
 _monitor_active = threading.Event()
 _original_termios = None
 _tui_mode = False
+_tui_used = False   # this process ran the prompt_toolkit TUI at some point
 
 # Self-pipe for waking the escape-monitor thread out of a pending select() when
 # monitoring is disabled (end of a cancellable region, or a TUI host taking
@@ -104,9 +105,10 @@ def set_tui_mode(enabled):
     the background escape monitor — a prompt_toolkit host (or equivalent)
     is expected to own the keyboard and call request_cancel() itself.
     """
-    global _tui_mode
+    global _tui_mode, _tui_used
     _tui_mode = bool(enabled)
     if _tui_mode:
+        _tui_used = True
         _monitor_active.clear()
         _wake_monitor()
 
@@ -278,10 +280,13 @@ def _restore_terminal():
             # Use a try-except here as well because we might be in a weird state
         except Exception:
             pass
-    else:
+    elif _tui_used:
         # Fallback: save current settings (canonical + echo), then restore them.
         # This handles the case where cbreak was never applied but prompt_toolkit
         # or another library left the terminal in a non-canonical state on exit.
+        # Only for a process that ran the TUI: any other process that imports this
+        # module (a subagent, a test run) shares the terminal with a live prompt,
+        # and forcing line mode on it left that prompt unable to read Enter.
         # Non-tty stdin (pytest, pipes): nothing to restore — without this guard
         # every test run ended with an ignored 'Inappropriate ioctl' traceback.
         try:
@@ -292,6 +297,7 @@ def _restore_terminal():
         cur = termios.tcgetattr(sys.stdin)
         # Force canonical mode (ICANON) and echo (ECHO | ECHOCTL | ECHOKE)
         cur[3] = cur[3] | termios.ICANON | termios.ECHO | termios.ECHOCTL | termios.ECHOKE
+        cur[0] = cur[0] | termios.ICRNL    # Enter ends the line again
         try:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, cur)
         except Exception:

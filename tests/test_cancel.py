@@ -359,3 +359,16 @@ class FinalCoverageTests(unittest.TestCase):
             importlib.reload(cancel)
             self.assertIsNone(cancel._wake_r)
             self.assertIsNone(cancel._wake_w)
+
+
+def test_exit_handler_leaves_a_shared_terminal_alone(monkeypatch):
+    """A process that never ran the TUI (a subagent, a test run) shares the terminal
+    with a live prompt; forcing line mode on exit broke that prompt's Enter key."""
+    import cancel
+    monkeypatch.setattr(cancel, "_original_termios", None)
+    monkeypatch.setattr(cancel, "_tui_used", False)
+    calls = []
+    monkeypatch.setattr(cancel.termios, "tcsetattr", lambda *a: calls.append(a))
+    monkeypatch.setattr(cancel.sys.stdin, "isatty", lambda: True, raising=False)
+    cancel._restore_terminal()
+    assert calls == []

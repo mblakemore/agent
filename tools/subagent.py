@@ -70,6 +70,8 @@ def subagent(
         try:
             process = subprocess.run(
                 cmd,
+                # not the terminal: the child agent's exit handler would reset its modes
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 check=False,
