@@ -21,6 +21,35 @@ from pathlib import Path
 
 from .file import _accessed_files
 
+try:
+    import termios
+except ImportError:  # Windows
+    termios = None
+
+
+def _terminal_modes():
+    """The terminal's modes when stdin is one, else None."""
+    if termios is None:
+        return None
+    try:
+        return termios.tcgetattr(0) if os.isatty(0) else None
+    except (OSError, termios.error):
+        return None
+
+
+def _restore_terminal_modes(saved):
+    """Put the terminal back the way it was before a command ran. A program can
+    still reach the terminal through /dev/tty and leave it changed on exit; the
+    interactive prompt keeps reading in the mode it set, and a terminal left in
+    line mode without CR translation turns Enter into a literal ^M."""
+    if saved is None:
+        return
+    try:
+        if termios.tcgetattr(0) != saved:
+            termios.tcsetattr(0, termios.TCSADRAIN, saved)
+    except (OSError, termios.error):
+        pass
+
 
 # Sentinel: distinguishes "not resolved yet" from "resolved to None" (no bash
 # found on Windows), so a None result is cached and not re-resolved every call.
@@ -723,6 +752,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
             proc = subprocess.Popen(
                 [_bash, '-c', f'exec 2>&1; {command}'],
                 cwd=run_cwd,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 encoding='utf-8',
@@ -750,10 +780,12 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
 
     import time as _time
 
+    _saved_modes = _terminal_modes()
     try:
         proc = subprocess.Popen(
             [_bash, '-c', f'exec 2>&1; {command}'],
             cwd=run_cwd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             encoding='utf-8',
@@ -814,6 +846,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     finally:
         # Ensure the reader thread always finishes before we proceed.
         reader_thread.join(timeout=2.0)
+        _restore_terminal_modes(_saved_modes)
 
     if timed_out:
         partial = "".join(output_parts).rstrip('\n')
