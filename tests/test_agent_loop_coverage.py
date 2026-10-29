@@ -39,6 +39,7 @@ def test_grace_period_exhaustion(mock_config, mock_llm, mock_emit):
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
         "context": {"max_tokens": 4096, "ctx_size": 32768}
     }.get(k)
+    mock_config.get.side_effect = lambda k, d=None: d  # real config .get() returns defaults; bare MagicMock made the text cap int(MagicMock)==1
     
     push_tool = {"index": 0, "id": "tc1", "function": {
         "name": "exec_command",
@@ -55,6 +56,7 @@ def test_grace_period_exhaustion(mock_config, mock_llm, mock_emit):
     
     mock_log = MagicMock()
     with patch('agent._NUDGE_ENABLED', True), \
+         patch('agent._AUTO_MODE', True), \
          patch('agent._MAX_TEXT_ONLY', 20), \
          patch('agent._MAX_TOTAL_NUDGES', 20), \
          patch.dict('agent.MAP_FN', {"exec_command": lambda **kwargs: "exit=0\nPushed."}):
@@ -78,6 +80,7 @@ def test_consecutive_text_only_cap(mock_config, mock_llm, mock_emit):
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
         "context": {"max_tokens": 4096, "ctx_size": 32768}
     }.get(k)
+    mock_config.get.side_effect = lambda k, d=None: d  # real config .get() returns defaults; bare MagicMock made the text cap int(MagicMock)==1
     
     # Use distinct content each call to avoid _TEXT_LOOP_THRESHOLD=3 firing before
     # the consecutive cap. The cap fires at turn 3 (_consecutive=3 >= _MAX_TEXT_ONLY=3).

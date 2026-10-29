@@ -34,7 +34,7 @@ def test_grace_period_exhaustion():
     
     # We need to override these to prevent the agent from stopping 
     # due to nudge budgets before the grace period is exhausted.
-    with patch("agent._NUDGE_ENABLED", True), \
+    with patch("agent._NUDGE_ENABLED", True), patch("agent._AUTO_MODE", True), \
          patch("agent._MAX_TEXT_ONLY", 20), \
          patch("agent._MAX_TOTAL_NUDGES", 20), \
          patch("agent._llm_request") as mock_llm, \
