@@ -18,7 +18,7 @@ class TestFileEdgeCases(unittest.TestCase):
         with patch('tools.file.Path.cwd') as mock_cwd:
             mock_cwd.return_value = Path("/path/to/project/e2")
             # Path is not absolute, starts with prefix (without leading slash)
-            path = "mnt/path/to/project/e2/file.txt"
+            path = "path/to/project/e2/file.txt"
             resolved = file_tool._resolve_path(path)
             # Expected: Path("/path/to/project/e2/file.txt")
             self.assertEqual(str(resolved), "/path/to/project/e2/file.txt")
