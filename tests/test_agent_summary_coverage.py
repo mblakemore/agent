@@ -61,7 +61,9 @@ class TestAgentSummaryCoverage(unittest.TestCase):
     
         mock_summary_request.side_effect = requests.ConnectionError("Conn Error")
     
-        with patch.object(agent._main_backend, "complete", return_value="Fallback Result") as mock_main:
+        # Force the failover path: whether _trigger_failover is available depends on the local config.
+        with patch('agent._trigger_failover', return_value=True), \
+                patch.object(agent._main_backend, "complete", return_value="Fallback Result") as mock_main:
             result = agent._generate_summary("old_summary", [], agent.log)
     
         self.assertEqual(result, "Fallback Result")
@@ -78,7 +80,8 @@ class TestAgentSummaryCoverage(unittest.TestCase):
     
         mock_summary_request.side_effect = requests.ConnectionError("Primary Fail")
     
-        with patch.object(
+        # Force the failover path: whether _trigger_failover is available depends on the local config.
+        with patch('agent._trigger_failover', return_value=True), patch.object(
             agent._main_backend,
             "complete",
             side_effect=requests.ConnectionError("Fallback Fail"),

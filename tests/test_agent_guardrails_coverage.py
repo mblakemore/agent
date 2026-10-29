@@ -74,7 +74,9 @@ def test_tool_validation_missing_path_v2(mock_config, mock_llm, mock_emit):
     messages = get_messages_from_call(mock_llm.call_args_list[1])
     # History should be: 1 per-turn system message + 1 user message (initial prompt).
     # No assistant tool-call or tool-result messages from the failed turn.
-    non_system = [m for m in messages if m.get("role") != "system"]
+    # The per-request "[Runtime note ...]" user message (dynamic clock/cwd context) is not history.
+    non_system = [m for m in messages if m.get("role") != "system"
+                  and not str(m.get("content")).startswith("[Runtime note")]
     assert len(non_system) == 1, f"Expected only the initial prompt on retry, but found {len(non_system)} non-system messages"
     has_tool_call = any(m.get("role") == "assistant" and m.get("tool_calls") for m in messages)
     assert not has_tool_call, "Garbled tool call should have been removed from history on retry"
