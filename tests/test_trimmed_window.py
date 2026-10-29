@@ -198,13 +198,70 @@ def test_cache_misses_are_logged_with_a_reason(agent_loop_mocks, monkeypatch):
     agent_loop_mocks.stub_tool("read_file", "contents")
     agent_loop_mocks.script(_tool_turn_with_usage("t1", 0, 900, 2),      # first request: nothing to hit
                             _tool_turn_with_usage("t2", 900, 30, 2),     # hit
-                            _tool_turn_with_usage("t3", 0, 950, 2))      # miss with no known cause
+                            _tool_turn_with_usage("t3", 0, 950, 2))      # miss on an unchanged prefix
     lg = MagicMock()
     agent.run_agent_single([{"role": "user", "content": "go"}], {"text": "", "up_to": 0}, [], lg)
     misses = [c.args[0] % c.args[1:] for c in lg.info.call_args_list
               if c.args and str(c.args[0]).startswith("cache.miss")]
     assert len(misses) == 2, misses
-    assert "reason=first" in misses[0] and "reason=unknown" in misses[1]
+    # the third request resends the second one byte for byte: the miss is the server's
+    assert "reason=first" in misses[0] and "reason=provider" in misses[1]
+
+
+def test_a_miss_on_a_prefix_we_changed_stays_unknown(agent_loop_mocks, monkeypatch):
+    from tools import MAP_FN
+    monkeypatch.setattr(agent, "_main_backend",
+                        MagicMock(kind="aicommons", model="m", honours_system=True, base_url="http://x"))
+    history = [{"role": "user", "content": "go"}]
+
+    def tool(**kw):
+        history[0]["content"] = "go (edited in place)"   # a rewrite no flag reports
+        return "contents"
+    monkeypatch.setitem(MAP_FN, "read_file", tool)
+    agent_loop_mocks.script(_tool_turn_with_usage("t1", 0, 900, 2),
+                            _tool_turn_with_usage("t2", 0, 950, 2))
+    lg = MagicMock()
+    agent.run_agent_single(history, {"text": "", "up_to": 0}, [], lg)
+    misses = [c.args[0] % c.args[1:] for c in lg.info.call_args_list
+              if c.args and str(c.args[0]).startswith("cache.miss")]
+    assert len(misses) == 2 and "reason=unknown" in misses[1], misses
+
+
+class TestRequestSignature:
+    def test_appending_keeps_the_prefix(self):
+        tools = [{"type": "function", "function": {"name": "f"}}]
+        a = agent._request_signature([{"role": "user", "content": "x"}], tools)
+        b = agent._request_signature([{"role": "user", "content": "x"},
+                                      {"role": "assistant", "content": "y"}], tools)
+        assert agent._prefix_unchanged(a, b)
+        assert agent._prefix_unchanged(a, a), "the same request twice is a cached prefix"
+        assert not agent._prefix_unchanged(b, a), "a shorter request drops cached messages"
+
+    def test_an_edit_a_removal_or_a_tool_change_breaks_it(self):
+        tools = [{"type": "function", "function": {"name": "f"}}]
+        msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "x"}]
+        a = agent._request_signature(msgs, tools)
+        edited = [dict(msgs[0], content="s2"), msgs[1]]
+        assert not agent._prefix_unchanged(a, agent._request_signature(edited, tools))
+        assert not agent._prefix_unchanged(a, agent._request_signature(msgs[1:], tools))
+        assert not agent._prefix_unchanged(a, agent._request_signature(msgs, tools + [{"x": 1}]))
+        assert not agent._prefix_unchanged(None, a) and not agent._prefix_unchanged(a, None)
+
+    def test_private_bookkeeping_keys_are_not_part_of_the_prefix(self):
+        # `_tokens` (estimate cache) and `_note_turn` are stamped on stored messages after
+        # they were first sent; they never reach the wire, so they must not look like an edit
+        a = agent._request_signature([{"role": "user", "content": "x"}], [])
+        b = agent._request_signature([{"role": "user", "content": "x", "_tokens": 9, "_note_turn": 1}], [])
+        assert agent._prefix_unchanged(a, b) and agent._prefix_unchanged(b, a)
+
+    def test_old_thinking_is_not_part_of_the_prefix(self):
+        # the wire layer never resends thinking from earlier assistant turns, so its
+        # pruning between two requests must not look like a prefix change
+        base = [{"role": "user", "content": "x"},
+                {"role": "assistant", "content": "y", "reasoning_content": "long think"}]
+        pruned = [base[0], {"role": "assistant", "content": "y"}]
+        assert agent._prefix_unchanged(agent._request_signature(base, []),
+                                       agent._request_signature(pruned, []))
 
 
 # ── a harvested summary is attributed wherever it was harvested ─────────────

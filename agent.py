@@ -2096,6 +2096,35 @@ def _prompt_caching_backend():
     return getattr(globals().get("_main_backend"), "kind", None) == "aicommons"
 
 
+# Keys the wire layer strips or replays on its own (old thinking is never resent),
+# so they are not part of the text the server cached and must not change the signature.
+_PREFIX_SIG_SKIP = frozenset({"thinking", "reasoning_content", "reasoning"})
+
+
+def _request_signature(messages, tools):
+    """What the server could have cached for this request: a hash of the tool
+    schemas and one hash per outgoing message. Pure. Thinking keys and the private
+    `_`-prefixed bookkeeping (`_tokens`, `_note_turn`) never reach the wire, so they
+    are left out."""
+    def _h(obj):
+        return hashlib.sha1(json.dumps(obj, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+    return (_h(tools), [_h({k: v for k, v in m.items()
+                            if k not in _PREFIX_SIG_SKIP and not str(k).startswith("_")})
+                        for m in (messages or [])])
+
+
+def _prefix_unchanged(prev_sig, cur_sig):
+    """True when the request `cur_sig` resends every message of `prev_sig`, in
+    place, with the same tools: the server's cache for `prev_sig` fully applies, so a
+    miss on it is the provider's (cold replica, evicted or unreported cache), not ours.
+    Measured 2026-10-29 on Kimi K3 via AI Commons: 7 of 180 requests read 0 cached
+    tokens with the neighbours at 99-100% and no eviction, harvest or rewrite between."""
+    if not prev_sig or not cur_sig or prev_sig[0] != cur_sig[0]:
+        return False
+    prev_msgs, cur_msgs = prev_sig[1], cur_sig[1]
+    return len(cur_msgs) >= len(prev_msgs) and cur_msgs[:len(prev_msgs)] == prev_msgs
+
+
 # P4.2 — on a prompt-caching backend, evict down to this fraction of the window
 # in one step, then grow append-only again: one cache miss per eviction instead
 # of one per turn.
@@ -6404,6 +6433,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
     _read_only_turns = 0
     _READ_ONLY_NUDGE_THRESHOLD = 5
     _cache_req_n = 0          # requests this run that reported cache usage (0 = nothing to hit yet)
+    _prev_req_sig = None      # _request_signature of the last request that reported usage
+    _cur_req_sig = None
     _READ_ONLY_NUDGE_THRESHOLD = 5
     # F7 — repeat-read stall signature (one nudge per unique call key, latched)
     try:
@@ -6830,6 +6861,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # unconditionally.
                 "stream_options": {"include_usage": True},
             }
+            # Fingerprint what is sent, so a miss can be told apart from a prefix we changed.
+            _cur_req_sig = (_request_signature(_outgoing_messages, _session_tools)
+                            if _prompt_caching_backend() else None)
 
             if (
                 getattr(_main_backend, "kind", None) == "bedrock"
@@ -7159,14 +7193,20 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             _rewrote = bool(summary_state.pop("_rewrote_window", False))
                             _harvested_this_turn = _harvested_this_turn or bool(summary_state.pop("_lead_changed", False))
                             _c_total = _c_read + _c_write + _c_unc
+                            _prefix_same = _prefix_unchanged(_prev_req_sig, _cur_req_sig)
                             if _c_total and _c_read * 2 < _c_total:
+                                # `provider`: the previous request is resent byte for byte as
+                                # the head of this one, so nothing on our side explains the
+                                # miss. `unknown` now means the prefix changed and no flag says why.
                                 _reason = ("first" if _cache_req_n == 0 else
                                            "eviction" if _head_moved else
                                            "summary-harvest" if _harvested_this_turn else
-                                           "history-rewrite" if _rewrote else "unknown")
+                                           "history-rewrite" if _rewrote else
+                                           "provider" if _prefix_same else "unknown")
                                 log.info("cache.miss turn=%d reason=%s read=%d write=%d uncached=%d",
                                          turn, _reason, _c_read, _c_write, _c_unc)
                             _cache_req_n += 1
+                            _prev_req_sig = _cur_req_sig
                     if isinstance(chunk, dict) and chunk.get(_THINKING_KEY):
                         _turn_thinking = chunk[_THINKING_KEY]
                     choices = chunk.get("choices")
