@@ -8538,8 +8538,11 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         if _cmd_has(_cmd, "git push") and "exit=0" in result_str:  # Cycle 35+36 anchoring; WS8.1: heredoc/quote-blind (a doc line `&& git push` must not fake-persist the cycle)
                             if not _cycle_persisted:
                                 log.info("Cycle persist detected (git push exit=0) — auto-nudge disabled")
-                            _cycle_persisted = True
-                            _cycle_persisted_turn = _cycle_persisted_turn or turn
+                            # Interactive sessions keep working after a push: the
+                            # grace/hard-stop gates are for -a cycles only.
+                            if _AUTO_MODE:
+                                _cycle_persisted = True
+                                _cycle_persisted_turn = _cycle_persisted_turn or turn
                             _cicd_phase_state["verify"] = True
                             if _phase_engine is not None:
                                 _phase_engine.mark_persisted("git push")
