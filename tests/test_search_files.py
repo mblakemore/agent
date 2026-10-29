@@ -1484,12 +1484,15 @@ class TestSearchFilesPatternTypeValidation(unittest.TestCase):
         self.assertIn("int", result, f"Error must name the bad type: {result!r}")
 
     def test_none_pattern_returns_type_error(self):
-        """fn(None) must say 'must be a string' not 'cannot be empty' (#901)."""
+        """fn(None) must say the pattern was not provided, not 'cannot be empty' (#901).
+
+        None means the model omitted `pattern`, so the error explains that pattern is the
+        required content regex (rather than naming NoneType, which tells a model nothing).
+        """
         result = search_files.fn(None)
         self.assertTrue(result.startswith("Error:"), f"Expected error: {result!r}")
-        self.assertIn("string", result, f"Error must mention 'string': {result!r}")
+        self.assertIn("not provided", result, f"Error must say pattern was not provided: {result!r}")
         self.assertNotIn("empty", result, f"Error must NOT say 'empty': {result!r}")
-        self.assertIn("NoneType", result, f"Error must name the bad type: {result!r}")
 
     def test_list_pattern_returns_type_error(self):
         """fn(['test']) must return a type-specific error (#901)."""
