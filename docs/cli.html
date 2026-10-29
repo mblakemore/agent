@@ -520,6 +520,10 @@ server-side fix is picked up automatically without a config change.</p>
 <td>Prompt-processing rate, in tokens per second, the backend is known to beat (default <code>500</code>). The stall budget becomes <code>max(base, estimated_prompt_tokens / floor)</code>; a 39k-token prompt at 500 t/s gets 78 s. Lower it for a slow CPU backend.</td>
 </tr>
 <tr>
+<td><code>AGENT_PRUNE_OLD_THINKING</code></td>
+<td><code>0</code> replays and checkpoints every assistant turn's stored thinking blocks (the behaviour before 2026-10-29). By default only the newest assistant turn's thinking is sent and saved: the API needs that one ahead of its tool calls and strips, without billing, thinking from earlier turns, which was half of a 1.25 MB checkpoint written every turn on one measured session.</td>
+</tr>
+<tr>
 <td><code>AGENT_COMPRESS_PRESSURE_FRAC</code></td>
 <td>Fraction of the context window (estimated prompt tokens / <code>ctx_size</code>) above which older repeated tool results are compressed in place (default <code>0.70</code>). Below it nothing in the history is rewritten: an in-place rewrite invalidates a prompt-caching server's key-value cache from that point on, and costs a full prefill on the next turn.</td>
 </tr>

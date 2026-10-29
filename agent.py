@@ -4113,6 +4113,23 @@ def _strip_checkpoint_reads(conversation_history):
     return cleaned
 
 
+def _prune_old_thinking(conversation_history):
+    """A copy of the history in which only the newest assistant message keeps its stored
+    thinking blocks (see anthropic_wire.openai_to_anthropic: earlier turns' thinking is
+    never replayed). The live list is untouched. Off with AGENT_PRUNE_OLD_THINKING=0."""
+    from anthropic_wire import THINKING_KEY, prune_old_thinking_enabled
+    if not prune_old_thinking_enabled():
+        return conversation_history
+    last = max((i for i, m in enumerate(conversation_history) if m.get("role") == "assistant"),
+               default=None)
+    out = []
+    for i, msg in enumerate(conversation_history):
+        if msg.get("role") == "assistant" and i != last and THINKING_KEY in msg:
+            msg = {k: v for k, v in msg.items() if k != THINKING_KEY}
+        out.append(msg)
+    return out
+
+
 def _save_checkpoint(conversation_history, summary_state, turn, initial_files,
                      clean_exit=False):
     """Save conversation state so the session can be resumed with -c.
@@ -4123,7 +4140,7 @@ def _save_checkpoint(conversation_history, summary_state, turn, initial_files,
     """
     try:
         checkpoint = {
-            "conversation_history": _strip_checkpoint_reads(conversation_history),
+            "conversation_history": _prune_old_thinking(_strip_checkpoint_reads(conversation_history)),
             "summary_state": summary_state,
             "turn": turn,
             "initial_files": initial_files,
