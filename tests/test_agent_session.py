@@ -168,7 +168,9 @@ class TestAgentInteractive(unittest.TestCase):
     @patch('builtins.input')
     def test_run_agent_tui_flow(self, mock_input, mock_run_single):
         """Test TUI path: Mock TuiSession to avoid prompt_toolkit dependency."""
+        # Live (concurrent) input is the default now; this test drives the blocking prompt loop.
         with patch('tui._AVAILABLE', True), \
+             patch.dict(agent._config, {"interactive": {"live_input": False}}), \
              patch('tui.TuiSession') as mock_session_cls:
             
             mock_session = MagicMock()
