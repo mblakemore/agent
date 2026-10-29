@@ -2125,6 +2125,23 @@ def _prefix_unchanged(prev_sig, cur_sig):
     return len(cur_msgs) >= len(prev_msgs) and cur_msgs[:len(prev_msgs)] == prev_msgs
 
 
+def _prefix_diff(prev_sig, cur_sig):
+    """Where the request `cur_sig` first stops resending `prev_sig`: "tools", "msg I/N"
+    (the first differing message, 0-based, of N previous), "shorter" (messages
+    dropped) or "same". Pure; names the culprit on an unexplained miss."""
+    if not prev_sig or not cur_sig:
+        return "none"
+    if prev_sig[0] != cur_sig[0]:
+        return "tools"
+    prev_msgs, cur_msgs = prev_sig[1], cur_sig[1]
+    for i, h in enumerate(prev_msgs):
+        if i >= len(cur_msgs):
+            return "shorter"
+        if cur_msgs[i] != h:
+            return f"msg {i}/{len(prev_msgs)}"
+    return "same"
+
+
 # P4.2 — on a prompt-caching backend, evict down to this fraction of the window
 # in one step, then grow append-only again: one cache miss per eviction instead
 # of one per turn.
@@ -3557,7 +3574,30 @@ class AsyncSummarizer:
 
 # ── Context window management ─────────────────────────────────────────
 
-def _build_context_footnote(summary_text, initial_files):
+def _cicd_checkpoint_text():
+    """The CICD phase checkpoint as one block of text, or "" when no phase is set.
+    Changes whenever a phase flips, a PR/issue/branch is learned or a file is edited."""
+    if not (_cicd_phase_state and any(_cicd_phase_state.values())):
+        return ""
+    phases = " | ".join(
+        f"{k.upper()} {'✓' if v else '✗'}"
+        for k, v in _cicd_phase_state.items()
+    )
+    phase_line = f"PHASE CHECKPOINT: {phases}"
+    if _cicd_issue_number:
+        phase_line += f"\nIssue: #{_cicd_issue_number}"
+    if _cicd_pr_number:
+        phase_line += f"  PR: #{_cicd_pr_number}"
+    if _cicd_branch:
+        phase_line += f"  Branch: {_cicd_branch}"
+    if _cicd_worktree_path:
+        phase_line += f"\nWorktree path: {_cicd_worktree_path} (ALL file edits and commands MUST target this path, not the repo clone)"
+    if _cicd_edited_files:
+        phase_line += f"\nFiles already edited (DO NOT re-verify — move to commit/push): {', '.join(sorted(_cicd_edited_files))}"
+    return phase_line
+
+
+def _build_context_footnote(summary_text, initial_files, volatile=None):
     """Build the synthetic context-restoration user message.
 
     Returns a dict suitable for insertion at the start of the messages list
@@ -3568,7 +3608,15 @@ def _build_context_footnote(summary_text, initial_files):
     Args:
         summary_text: The current progress-summary string (non-empty).
         initial_files: Optional string of initial file content to prepend.
+        volatile: whether per-turn state (the CICD phase checkpoint) may ride in
+            this message. Default: only on backends without prompt caching. On a
+            caching backend this message leads every request, so it must be
+            byte-stable between evictions; the checkpoint rides in the trailing
+            runtime note instead (measured 2026-10-29: every commit flipped a
+            phase flag here and re-wrote a 66k-token prefix).
     """
+    if volatile is None:
+        volatile = not _prompt_caching_backend()
     parts = []
     if initial_files:
         parts.append(initial_files)
@@ -3584,23 +3632,10 @@ def _build_context_footnote(summary_text, initial_files):
     if _pinned_instructions:
         parts.append(f"PINNED INSTRUCTIONS (always follow these):\n{_pinned_instructions}")
     # CICD phase checkpoint — injected here so it survives summary compression
-    if _cicd_phase_state and any(_cicd_phase_state.values()):
-        phases = " | ".join(
-            f"{k.upper()} {'✓' if v else '✗'}"
-            for k, v in _cicd_phase_state.items()
-        )
-        phase_line = f"PHASE CHECKPOINT: {phases}"
-        if _cicd_issue_number:
-            phase_line += f"\nIssue: #{_cicd_issue_number}"
-        if _cicd_pr_number:
-            phase_line += f"  PR: #{_cicd_pr_number}"
-        if _cicd_branch:
-            phase_line += f"  Branch: {_cicd_branch}"
-        if _cicd_worktree_path:
-            phase_line += f"\nWorktree path: {_cicd_worktree_path} (ALL file edits and commands MUST target this path, not the repo clone)"
-        if _cicd_edited_files:
-            phase_line += f"\nFiles already edited (DO NOT re-verify — move to commit/push): {', '.join(sorted(_cicd_edited_files))}"
-        parts.append(phase_line)
+    if volatile:
+        phase_line = _cicd_checkpoint_text()
+        if phase_line:
+            parts.append(phase_line)
     return {"role": "user", "content": "\n\n".join(parts)}
 
 
@@ -6740,6 +6775,12 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # summarization the same way the CICD footnote line does.
             if _phase_engine is not None:
                 _system_lines.append(_phase_engine.checkpoint_line())
+            # On a caching backend the CICD checkpoint is kept out of the lead message
+            # (see _build_context_footnote) and rides here, in the per-turn note.
+            if _prompt_caching_backend():
+                _cp_line = _cicd_checkpoint_text()
+                if _cp_line:
+                    _system_lines.append(_cp_line)
 
             # T5.14 Option B — opt-in tool-selection guidance. When the agent's
             # config has `preferences.tool_selection_hints: true`, prepend a
@@ -7203,8 +7244,21 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                            "summary-harvest" if _harvested_this_turn else
                                            "history-rewrite" if _rewrote else
                                            "provider" if _prefix_same else "unknown")
-                                log.info("cache.miss turn=%d reason=%s read=%d write=%d uncached=%d",
-                                         turn, _reason, _c_read, _c_write, _c_unc)
+                                _changed = ""
+                                if _reason in ("unknown", "history-rewrite"):
+                                    # Name the message that broke the prefix: index, role and
+                                    # the head of its current content.
+                                    _where = _prefix_diff(_prev_req_sig, _cur_req_sig)
+                                    _changed = " changed=" + _where
+                                    if _where.startswith("msg "):
+                                        try:
+                                            _cm = _outgoing_messages[int(_where.split()[1].split("/")[0])]
+                                            _head = str(_cm.get("content") or _cm.get("tool_calls") or "")
+                                            _changed += " role=%s head=%r" % (_cm.get("role"), _head[:80])
+                                        except Exception:
+                                            pass
+                                log.info("cache.miss turn=%d reason=%s read=%d write=%d uncached=%d%s",
+                                         turn, _reason, _c_read, _c_write, _c_unc, _changed)
                             _cache_req_n += 1
                             _prev_req_sig = _cur_req_sig
                     if isinstance(chunk, dict) and chunk.get(_THINKING_KEY):

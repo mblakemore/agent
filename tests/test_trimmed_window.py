@@ -225,6 +225,7 @@ def test_a_miss_on_a_prefix_we_changed_stays_unknown(agent_loop_mocks, monkeypat
     misses = [c.args[0] % c.args[1:] for c in lg.info.call_args_list
               if c.args and str(c.args[0]).startswith("cache.miss")]
     assert len(misses) == 2 and "reason=unknown" in misses[1], misses
+    assert "changed=msg 0/" in misses[1] and "role=user" in misses[1], misses
 
 
 class TestRequestSignature:
@@ -295,3 +296,66 @@ def test_a_miss_after_a_harvest_on_any_site_is_attributed(agent_loop_mocks, monk
     assert len(misses) == 2 and "reason=first" in misses[0]
     assert "reason=summary-harvest" in misses[1], misses
     assert "_lead_changed" not in state, "the flag is consumed by the request it explains"
+
+
+class TestPrefixDiff:
+    def test_names_the_first_message_that_changed(self):
+        tools = [{"f": 1}]
+        msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "x"}]
+        a = agent._request_signature(msgs, tools)
+        assert agent._prefix_diff(a, a) == "same"
+        assert agent._prefix_diff(a, agent._request_signature(msgs + [{"role": "assistant", "content": "y"}], tools)) == "same"
+        edited = [msgs[0], {"role": "user", "content": "x2"}]
+        assert agent._prefix_diff(a, agent._request_signature(edited, tools)) == "msg 1/2"
+        assert agent._prefix_diff(a, agent._request_signature(msgs[:1], tools)) == "shorter"
+        assert agent._prefix_diff(a, agent._request_signature(msgs, tools + [{"g": 2}])) == "tools"
+        assert agent._prefix_diff(None, a) == "none"
+
+
+# ── the lead message is byte-stable on a caching backend ────────────────────
+# Measured 2026-10-29 on claude-v5.5-sonnet: three of three unexplained misses came
+# right after a `git commit`; the commit flipped a CICD phase flag, the flag was
+# rendered into the lead message, and a 66k-token prefix was re-written each time.
+
+class TestLeadMessageIsStable:
+    def _cicd(self, monkeypatch):
+        monkeypatch.setattr(agent, "_cicd_phase_state", {"implement": True, "verify": False})
+        monkeypatch.setattr(agent, "_cicd_edited_files", {"a.py"})
+        monkeypatch.setattr(agent, "_cicd_branch", "fix/x")
+
+    def test_phase_state_rides_in_the_lead_only_on_a_sliding_window_backend(self, monkeypatch):
+        self._cicd(monkeypatch)
+        monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="llamacpp"))
+        assert "PHASE CHECKPOINT" in agent._build_context_footnote("s", "ID")["content"]
+        monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="aicommons"))
+        assert "PHASE CHECKPOINT" not in agent._build_context_footnote("s", "ID")["content"]
+        assert "PHASE CHECKPOINT" in agent._build_context_footnote("s", "ID", volatile=True)["content"]
+
+    def test_lead_does_not_change_when_a_phase_flips_or_a_file_is_edited(self, monkeypatch):
+        self._cicd(monkeypatch)
+        monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="aicommons"))
+        before = agent._build_context_footnote("s", "ID")
+        agent._cicd_phase_state["verify"] = True
+        agent._cicd_edited_files.add("b.py")
+        agent._cicd_pr_number = "77"
+        assert agent._build_context_footnote("s", "ID") == before
+
+    def test_the_checkpoint_rides_in_the_runtime_note_instead(self, agent_loop_mocks, monkeypatch):
+        from tools import MAP_FN
+        monkeypatch.setattr(agent, "_main_backend",
+                            MagicMock(kind="aicommons", model="m", honours_system=True, base_url="http://x"))
+
+        def tool(**kw):
+            agent._cicd_phase_state["implement"] = True     # what commit detection does
+            return "contents"
+        monkeypatch.setitem(MAP_FN, "read_file", tool)
+        agent_loop_mocks.script(_tool_turn_with_usage("t1", 0, 900, 2),
+                                _tool_turn_with_usage("t2", 900, 30, 2))
+        history = [{"role": "user", "content": "go"}]
+        lg = MagicMock()
+        agent.run_agent_single(history, {"text": "", "up_to": 0}, [], lg)
+        noted = [m for m in history if "PHASE CHECKPOINT:" in str(m.get("content"))]
+        assert noted and "IMPLEMENT ✓" in noted[-1]["content"], [m.get("content") for m in history]
+        misses = [c.args[0] % c.args[1:] for c in lg.info.call_args_list
+                  if c.args and str(c.args[0]).startswith("cache.miss")]
+        assert len(misses) == 1 and "reason=first" in misses[0], misses
