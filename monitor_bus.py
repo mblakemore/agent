@@ -357,3 +357,8 @@ def drain():
 
 def stop_all():
     return _BUS.stop_all()
+
+
+def inject(text):
+    """Queue raw text for the agent loop, as a monitor ping (used by schedule_bus)."""
+    _BUS._put(text)

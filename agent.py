@@ -93,6 +93,7 @@ from spinner import StreamStatus
 from token_utils import count_tokens_from_message, count_tools_tokens
 from tools import MAP_FN, tools, load_extra_tools
 import monitor_bus
+import schedule_bus
 import tools.end_cycle as _end_cycle_tool
 from tools.exec_command import cleanup_temp_sessions
 # Import CycleFrequencyTracker for cycle timestamp tracking
@@ -4998,6 +4999,9 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         _restored = monitor_bus.restore_persisted()
         if _restored:
             log.info("re-armed persistent monitors: %s", ", ".join(_restored))
+        _sched = schedule_bus.restore()
+        if _sched:
+            log.info("schedules active: %s", ", ".join(_sched))
     except Exception:
         log.debug("restore_persisted failed", exc_info=True)
 
