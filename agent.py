@@ -1497,9 +1497,30 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
         _summary_backend = _build_backend(
             _cfg_with_role(_config["backends"], "summary")
         )
+def _sane_summary_threshold(ctx_cfg, log=None):
+    """The summary threshold as a MESSAGE count. Setup wizards before 2026-10-29 wrote it
+    in characters (ctx_chars * 0.6, e.g. 432000), which the run loop compares to the
+    number of messages that have fallen out of the window — no calibrated session ever
+    summarised. A value above the message cap cannot be meant as messages, so it is
+    replaced by a fifth of the cap and the replacement is logged with the config key."""
+    cap = int(ctx_cfg.get("max_context_messages") or 30)
+    try:
+        value = int(ctx_cfg.get("summary_threshold", 5))
+    except (TypeError, ValueError):
+        value = 5
+    if value <= cap:
+        return value
+    fixed = max(5, cap // 5)
+    (log or logging.getLogger("agent")).warning(
+        "context.summary_threshold=%d is larger than max_context_messages=%d (a chars value "
+        "from an older /setup calibrate); using %d messages. Re-run /setup calibrate to fix the config.",
+        value, cap, fixed)
+    return fixed
+
+
 _MAX_FULL_LINES = _config["context"]["max_full_lines"]
 _PREVIEW_LINES = _config["context"]["preview_lines"]
-_SUMMARY_THRESHOLD = _config["context"]["summary_threshold"]
+_SUMMARY_THRESHOLD = _sane_summary_threshold(_config["context"])
 _SUMMARY_MAX_CHARS = _config["context"]["summary_max_chars"]
 _MAX_CONTEXT_MESSAGES = _config["context"]["max_context_messages"]
 
@@ -3258,20 +3279,28 @@ def _summarize_for_compression(content: str, func_name: str, log) -> str:
 _TOOL_RESULT_COMPRESS_PRESSURE = float(os.environ.get("AGENT_COMPRESS_PRESSURE_FRAC", "0.70") or 0.70)
 
 
-def _history_pressure(conversation_history):
+def _history_pressure(conversation_history, start=0):
     """Estimated prompt tokens / context size, using the calibrated estimator (F3b). 0 when the
-    context size is unknown, which reads as 'not under pressure' — the rewrite is the risky side."""
+    context size is unknown, which reads as 'not under pressure' — the rewrite is the risky side.
+
+    `start` is the index the SENT window begins at (the cache head on a caching backend).
+    Measured without it: a 1,061-message stored history read as 3.4× the context against a
+    0.70 gate, so the compression pass ran — and broke the cache — on nearly every turn,
+    although the window actually sent was a third of the context."""
     try:
         ctx = float((_config.get("context") or {}).get("ctx_size") or 0)
     except Exception:  # noqa: BLE001
         ctx = 0.0
     if ctx <= 0:
         return 0.0
-    est = sum(_estimate_tokens(m) for m in conversation_history) * float(_TOKEN_CAL.get("ratio", 1.0) or 1.0)
+    window = conversation_history[start:] if start else conversation_history
+    est = ((_TOOLS_TOKENS or 0) + sum(_estimate_tokens(m) for m in window)) \
+        * float(_TOKEN_CAL.get("ratio", 1.0) or 1.0)
     return est / ctx
 
 
-def _compress_repeated_tool_results(conversation_history: list, func_name: str, log, pressure=None) -> None:
+def _compress_repeated_tool_results(conversation_history: list, func_name: str, log, pressure=None,
+                                    protect_from=None, local_only=False) -> list:
     """When the same tool appears _TOOL_RESULT_COMPRESS_AFTER+ times in history,
     compress all but the most recent occurrence.  Targets polling patterns
     (e.g. exec_command(cat log) × N turns) that would otherwise fill the context
@@ -3280,17 +3309,25 @@ def _compress_repeated_tool_results(conversation_history: list, func_name: str, 
     `pressure` (estimated prompt tokens / ctx_size) gates the pass: below
     _TOOL_RESULT_COMPRESS_PRESSURE nothing is rewritten, because a rewrite costs a full
     prefill on a prompt-caching server (see the note above). None = ungated (legacy callers).
-    """
+
+    `protect_from`: messages at or after this index are never rewritten — on a caching
+    backend that is the sent window, whose bytes must stay a prefix of the next request.
+    `local_only`: head+tail compression only, no blocking model round trip (for messages
+    below the head, which are never sent again, a model summary buys nothing).
+
+    Returns the indices that were rewritten (empty when nothing changed)."""
     if pressure is not None and pressure < _TOOL_RESULT_COMPRESS_PRESSURE:
-        return
+        return []
     indices = [
         i for i, m in enumerate(conversation_history)
         if m.get("role") == "tool" and m.get("name") == func_name
     ]
     if len(indices) < _TOOL_RESULT_COMPRESS_AFTER:
-        return
-    changed = 0
+        return []
+    changed = []
     for idx in reversed(indices[:-1]):  # keep the most recent entry intact; newest first
+        if protect_from is not None and idx >= protect_from:
+            continue
         content = conversation_history[idx].get("content", "")
         if len(content) < _TOOL_RESULT_COMPRESS_MIN:
             continue
@@ -3298,11 +3335,13 @@ def _compress_repeated_tool_results(conversation_history: list, func_name: str, 
             continue
         conversation_history[idx]["content"] = (
             _summarize_for_compression(content, func_name, log)
-            if changed < _TOOL_RESULT_COMPRESS_MODEL_MAX else _local_compress(content))
+            if (not local_only and len(changed) < _TOOL_RESULT_COMPRESS_MODEL_MAX)
+            else _local_compress(content))
         conversation_history[idx].pop("_tokens", None)   # token_utils caches per message
-        changed += 1
+        changed.append(idx)
     if changed:
-        log.info("history compression: %d older %s result(s) compressed", changed, func_name)
+        log.info("history compression: %d older %s result(s) compressed", len(changed), func_name)
+    return changed
 
 
 def _generate_summary(old_summary, new_messages, log):
@@ -3732,6 +3771,16 @@ def _spill_oversized_tool_results(conversation_history, log, threshold):
     return spilled
 
 
+_TRIMMED_LEAD = "\n\n[Earlier conversation trimmed. Continue.]"
+
+
+def _build_initial_files_msg(initial_files):
+    """The lead message of a trimmed window when there is no summary yet: the identity
+    file(s) the run started with (@AGENT.md / @CLAUDE.md). Byte-stable between calls —
+    it heads the request, so any per-turn text here would re-bill the whole history."""
+    return {"role": "user", "content": initial_files + _TRIMMED_LEAD}
+
+
 def _build_context(conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                     max_messages_override=None):
     """Build the context window dynamically based on token budget.
@@ -3776,6 +3825,14 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
             context_msg = _build_context_footnote(summary_state["text"], initial_files)
             context_tokens = _estimate_tokens(context_msg)
             log.info("Condensed summary, context now %d tokens", context_tokens)
+    elif initial_files:
+        # No summary yet (or none ever, on a backend whose window evicts in chunks):
+        # the identity file still leads any window that no longer starts at message 0.
+        # Measured before this: the first eviction dropped CLAUDE.md six minutes into a
+        # 2.5 h run and the agent re-read fragments of it from the shell 18 times.
+        context_msg = _build_initial_files_msg(initial_files)
+        context_tokens = _estimate_tokens(context_msg)
+    if context_msg:
         if context_tokens > budget * 0.5:
             # Summary is large — reduce message count to make room
             remaining_budget = budget - context_tokens
@@ -3823,12 +3880,15 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
             if summary_state.get("_cache_head") not in (None, oldest_idx):
                 log.info("cache-friendly eviction: window head %s -> %d (%d messages, ~%d tokens)",
                          summary_state.get("_cache_head"), oldest_idx, len(selected), used)
+                summary_state["_head_moved"] = True   # read by the cache.miss log, then cleared
             summary_state["_cache_head"] = oldest_idx
 
     if oldest_idx > 0 and context_msg:
         selected.insert(0, context_msg)
         used += context_tokens
-    elif not any(m["role"] == "user" for m in selected):
+    else:
+        context_msg = None   # nothing leads an untrimmed window (the log line reports what was sent)
+    if context_msg is None and not any(m["role"] == "user" for m in selected):
         if initial_files:
             selected.insert(0, {"role": "user", "content": initial_files + "\n\nContinue."})
         else:
@@ -4496,6 +4556,8 @@ def _apply_setup_updates(updates):
                            ("_MAX_CONTEXT_MESSAGES", "max_context_messages")):
             if key in c:
                 globals()[gname] = c[key]
+        if "summary_threshold" in c or "max_context_messages" in c:
+            globals()["_SUMMARY_THRESHOLD"] = _sane_summary_threshold(c)
         rebuilt.append("context knobs (ctx_size budget: next start)")
     if "preferences" in updates:
         rebuilt.append("preferences")
@@ -6319,6 +6381,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
     # nudge to commit to the fix rather than reading more files.
     _read_only_turns = 0
     _READ_ONLY_NUDGE_THRESHOLD = 5
+    _cache_req_n = 0          # requests this run that reported cache usage (0 = nothing to hit yet)
+    _READ_ONLY_NUDGE_THRESHOLD = 5
     # F7 — repeat-read stall signature (one nudge per unique call key, latched)
     try:
         _rr_cfg = (_config.get("cycle") or {}).get("repeat_read_nudge") or {}
@@ -6389,6 +6453,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         _turn_t0 = time.monotonic()
         _turn_in_tokens = 0
         _turn_out_tokens = 0
+        _harvested_this_turn = False   # a harvested summary rewrites the lead message: one expected miss
 
         # ── Memory pressure management (tiers 2 + 3) ──
         # Tier 2: force gc + glibc malloc_trim so pymalloc arenas freed during
@@ -6540,6 +6605,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         # Harvest any completed async summary before building context
         if _async_summarizer and _async_summarizer.harvest(summary_state):
             log.info("Harvested async summary")
+            _harvested_this_turn = True
             _emit("on_summary_ready")
 
         # Build context window, with overflow reduction loop
@@ -6565,9 +6631,15 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 _summary_util_threshold = float(os.environ.get(
                     "AGENT_SUMMARY_UTIL_THRESHOLD", "0.6"))
                 _ctx_tokens_used = sum(_estimate_tokens(m) for m in messages_to_send)
-                _ctx_utilization = _ctx_tokens_used / ctx_size if ctx_size else 0.0
+                _ctx_utilization = ((_ctx_tokens_used * float(_TOKEN_CAL.get("ratio", 1.0) or 1.0))
+                                    / ctx_size if ctx_size else 0.0)
                 _msg_threshold_met = unsummarized >= _SUMMARY_THRESHOLD
-                _util_threshold_met = _ctx_utilization >= _summary_util_threshold
+                # On a prompt-caching backend messages leave the window only by chunk
+                # eviction (P4.2), which already means the window was full — and right
+                # after one the window sits at ~20% of ctx, so a utilization gate would
+                # block every summary (measured: 0 summaries in a 2.5 h session).
+                _util_threshold_met = (_prompt_caching_backend()
+                                       or _ctx_utilization >= _summary_util_threshold)
                 if (
                     _msg_threshold_met
                     and _util_threshold_met
@@ -6919,7 +6991,10 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         # least cover the prefill a prompt of THIS size needs at a floor rate the backend is
         # known to beat (AGENT_PREFILL_TPS_FLOOR, default 500 t/s). Base still 0 = disabled.
         _STALL_BASE_S = float(os.environ.get("AGENT_STALL_TIMEOUT_S", "60"))
-        _est_prompt_tokens = sum(_estimate_tokens(m) for m in conversation_history) * float(_TOKEN_CAL.get("ratio", 1.0) or 1.0)
+        # Over the window actually sent, not the stored history (which is unbounded on a
+        # caching backend: measured 264k estimated vs 95k real at turn 300).
+        _est_prompt_tokens = ((_TOOLS_TOKENS or 0) + sum(_estimate_tokens(m) for m in messages_to_send)) \
+            * float(_TOKEN_CAL.get("ratio", 1.0) or 1.0)
         _STALL_TIMEOUT_S = _stall_budget_s(_STALL_BASE_S, _est_prompt_tokens, _PREFILL_TPS_FLOOR)
         if _STALL_TIMEOUT_S > _STALL_BASE_S:
             log.info("stall budget widened %.0fs -> %.0fs for ~%d prompt tokens (prefill floor %.0f t/s)",
@@ -7050,6 +7125,25 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                            ("cache_creation_input_tokens", "cache_write")):
                             if _usage.get(_ck):   # E5: hit rate chartable from the token counter
                                 telemetry.record_tokens(_u_model, _kind, int(_usage[_ck]), backend=_u_backend)
+                        if _prompt_caching_backend():
+                            # Every miss must have a known cause. Measured before this line
+                            # existed: 225 of 310 requests missed for 2.5 hours (18M tokens
+                            # re-written) and nothing said why. Flags are cleared on every
+                            # request so a stale one cannot explain a later miss.
+                            _c_read = int(_usage.get("cache_read_input_tokens") or 0)
+                            _c_write = int(_usage.get("cache_creation_input_tokens") or 0)
+                            _c_unc = int(_usage.get("input_tokens") or 0)
+                            _head_moved = bool(summary_state.pop("_head_moved", False))
+                            _rewrote = bool(summary_state.pop("_rewrote_window", False))
+                            _c_total = _c_read + _c_write + _c_unc
+                            if _c_total and _c_read * 2 < _c_total:
+                                _reason = ("first" if _cache_req_n == 0 else
+                                           "eviction" if _head_moved else
+                                           "summary-harvest" if _harvested_this_turn else
+                                           "history-rewrite" if _rewrote else "unknown")
+                                log.info("cache.miss turn=%d reason=%s read=%d write=%d uncached=%d",
+                                         turn, _reason, _c_read, _c_write, _c_unc)
+                            _cache_req_n += 1
                     if isinstance(chunk, dict) and chunk.get(_THINKING_KEY):
                         _turn_thinking = chunk[_THINKING_KEY]
                     choices = chunk.get("choices")
@@ -8495,8 +8589,20 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         "name": func_name,
                         "content": result_str,
                     })
-                    _compress_repeated_tool_results(conversation_history, func_name, log,
-                                                    pressure=_history_pressure(conversation_history))
+                    if _prompt_caching_backend():
+                        # The sent window (from the cache head) must stay byte-identical:
+                        # gate on ITS pressure and never rewrite inside it. Below the head
+                        # nothing is sent again, so head+tail only — no model round trip.
+                        _head = summary_state.get("_cache_head") or 0
+                        _rewritten = _compress_repeated_tool_results(
+                            conversation_history, func_name, log,
+                            pressure=_history_pressure(conversation_history, start=_head),
+                            protect_from=_head, local_only=True)
+                        if any(i >= _head for i in _rewritten):
+                            summary_state["_rewrote_window"] = True   # alarm for the cache.miss log
+                    else:
+                        _compress_repeated_tool_results(conversation_history, func_name, log,
+                                                        pressure=_history_pressure(conversation_history))
 
                     # Consecutive edit_file failure guard: after 2 consecutive
                     # old_string-not-found failures on the same file, inject a

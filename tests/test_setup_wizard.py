@@ -147,6 +147,11 @@ class TestCalibrate(unittest.TestCase):
         self.assertEqual(up["context"]["ctx_size"], int(196608 * 0.9))
         self.assertEqual(up["context"]["max_context_messages"],
                          min(500, int(196608 * 0.9) // 480))
+        # a MESSAGE count (a fifth of the cap), never chars: the run loop compares it
+        # to the number of messages that have fallen out of the window
+        self.assertEqual(up["context"]["summary_threshold"], up["context"]["max_context_messages"] // 5)
+        self.assertLessEqual(up["context"]["summary_threshold"], up["context"]["max_context_messages"])
+        self.assertTrue(any("summary_threshold" in n and "messages" in n for n in notes), notes)
         self.assertIn("_calibrated", up)
         self.assertEqual(up["_calibrated"]["measured_ctx_tokens"], 196608)
         # large ctx: line knobs untouched

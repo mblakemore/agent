@@ -66,7 +66,7 @@ Anything else? (all optional)
 <li><strong>Separate summary model</strong>, <strong>advisor</strong>, and <strong>set up this folder as an agent</strong> (see <a href="agent-scaffold.html">Agent scaffold</a>) each run their own short screen.</li>
 </ul>
 <h2 id="calibration">Calibration</h2>
-<p>Calibration derives the engine's context budget from the measured or reported context — <code>ctx_size</code> (measured − 10%), summary threshold, message caps — and records the derivation in a <code>_calibrated</code> sidecar so later runs can report <strong>drift</strong>. Nothing unmeasured is ever written: shipped defaults stay.</p>
+<p>Calibration derives the engine's context budget from the measured or reported context — <code>ctx_size</code> (measured − 10%), <code>max_context_messages</code> (about one per 480 tokens), <code>summary_threshold</code> (a fifth of the message cap, as a message count) — and records the derivation in a <code>_calibrated</code> sidecar so later runs can report <strong>drift</strong>. Nothing unmeasured is ever written: shipped defaults stay. Configs calibrated before 2026-10-29 carry a <code>summary_threshold</code> in characters; the engine replaces it at startup and says so, and a <code>/setup calibrate</code> rewrites it.</p>
 <h2 id="forms">Forms</h2>
 <div class="tbl-wrap" tabindex="0"><table>
 <thead>

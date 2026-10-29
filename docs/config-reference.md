@@ -73,7 +73,7 @@ Controls context-window sizing and compaction.
 | `max_tokens` | `16384` | Maximum tokens in a single completion. |
 | `max_full_lines` | `800` | Lines of tool output kept verbatim before compaction. |
 | `preview_lines` | `200` | Lines shown in the compacted preview. |
-| `summary_threshold` | `5` | Messages beyond which background summarisation fires. |
+| `summary_threshold` | `5` | A message count: how many messages must have fallen out of the window before a summary of them is generated. A value above `max_context_messages` (older `/setup` runs wrote this key in characters) is replaced at startup by a fifth of the cap, with a warning. |
 | `summary_max_chars` | `3000` | Maximum characters in a generated summary chunk. |
 | `max_context_messages` | `30` | Hard cap on messages sent to the LLM per turn. |
 
