@@ -39,6 +39,7 @@ def create_mock_response(content=None, tool_calls=None, side_effect=None):
 @patch('agent._config')
 def test_text_loop_detection(mock_config, mock_llm, mock_emit):
     """Test that the agent detects a degenerate text loop (repeating the same output)."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -65,6 +66,7 @@ def test_text_loop_detection(mock_config, mock_llm, mock_emit):
 @patch('agent._config')
 def test_hallucinated_file_read_detection(mock_config, mock_llm, mock_emit):
     """Test that the agent detects when the model claims to have read a file without calling the tool."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -102,6 +104,7 @@ def test_hallucinated_file_read_detection(mock_config, mock_llm, mock_emit):
 @patch('agent._config')
 def test_text_only_stop(mock_config, mock_llm, mock_emit):
     """Test that agent stops on text-only response when nudging is disabled."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},

@@ -44,6 +44,7 @@ def get_messages_from_call(call):
 @patch('agent._config')
 def test_tool_validation_missing_path_v2(mock_config, mock_llm, mock_emit):
     """Test that a 'file' tool call without a 'path' argument triggers a retry (resetting history)."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -83,6 +84,7 @@ def test_tool_validation_missing_path_v2(mock_config, mock_llm, mock_emit):
 @patch('agent._config')
 def test_cicd_pr_capture_and_trailer_warning(mock_config, mock_llm, mock_emit):
     """Test capture of PR number and warning for missing 'Closes #N' trailer."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -129,6 +131,7 @@ def test_cicd_pr_capture_and_trailer_warning(mock_config, mock_llm, mock_emit):
 @patch('agent._config')
 def test_cicd_pr_capture_success(mock_config, mock_llm, mock_emit):
     """Test successful PR number capture with trailer present (no warning)."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},

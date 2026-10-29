@@ -46,6 +46,7 @@ def test_run_agent_single_consumes_legacy_response_shape(
     mock_config, mock_llm, mock_emit
 ):
     """LlamacppBackend-style Response with iter_lines → still works."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {
@@ -82,6 +83,7 @@ def test_run_agent_single_consumes_iterator_of_dicts_shape(
     mock_config, mock_llm, mock_emit
 ):
     """BedrockBackend-style generator of dicts → also works (the Phase 2.5 gap)."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {
@@ -115,6 +117,7 @@ def test_run_agent_single_tool_call_via_iterator_shape(
     mock_config, mock_llm, mock_emit
 ):
     """Generator-of-dicts shape carries a tool_call delta end-to-end."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {

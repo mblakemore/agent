@@ -16,6 +16,7 @@ log = logging.getLogger("test_agent_coverage")
 @patch('requests.get')
 def test_async_summarizer_init_success(mock_get, mock_config, mock_llm, mock_emit):
     """Test the path where AsyncSummarizer is successfully initialized."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -48,6 +49,7 @@ def test_async_summarizer_init_success(mock_get, mock_config, mock_llm, mock_emi
 @patch('requests.get')
 def test_async_summarizer_init_fail_connection(mock_get, mock_config, mock_llm, mock_emit):
     """Test the path where AsyncSummarizer initialization fails (Connection Error)."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -78,6 +80,7 @@ def test_async_summarizer_init_fail_connection(mock_get, mock_config, mock_llm, 
 @patch('requests.get')
 def test_async_summarizer_init_fail_status(mock_get, mock_config, mock_llm, mock_emit):
     """Test the path where AsyncSummarizer initialization fails (Non-200 Status)."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -110,6 +113,7 @@ def test_async_summarizer_init_fail_status(mock_get, mock_config, mock_llm, mock
 @patch('agent._config')
 def test_continue_mode_resume(mock_config, mock_llm, mock_emit, mock_load):
     """Test that continue_mode resumes from a checkpoint."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_load.return_value = (
         [{"role": "user", "content": "Prev message"}],
         {"text": "Previous summary", "up_to": 1},
@@ -145,6 +149,7 @@ def test_continue_mode_resume(mock_config, mock_llm, mock_emit, mock_load):
 @patch('agent._config')
 def test_continue_mode_no_checkpoint(mock_config, mock_llm, mock_emit, mock_load):
     """Test that continue_mode handles missing checkpoints."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_load.return_value = None
 
     mock_config.__getitem__.side_effect = lambda k: {
@@ -174,6 +179,7 @@ def test_continue_mode_no_checkpoint(mock_config, mock_llm, mock_emit, mock_load
 @patch('agent._config')
 def test_hallucination_guard_text_only(mock_config, mock_llm, mock_emit):
     """Test that the hallucination guard detects and nudges text-only responses."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -212,6 +218,7 @@ def test_hallucination_guard_text_only(mock_config, mock_llm, mock_emit):
 @patch('agent._config')
 def test_cicd_phase_detection_perceive(mock_config, mock_llm, mock_emit):
     """Test that running gh issue list triggers the PERCEIVE phase."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -236,6 +243,7 @@ def test_cicd_phase_detection_perceive(mock_config, mock_llm, mock_emit):
 @patch('agent._config')
 def test_cicd_phase_detection_implement(mock_config, mock_llm, mock_emit):
     """Test that running git worktree add and gh pr create trigger the IMPLEMENT phase and capture details."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "continue_mode": False, "tui": False, "verbose": False}
@@ -260,6 +268,7 @@ def test_cicd_phase_detection_implement(mock_config, mock_llm, mock_emit):
 @patch('builtins.input')
 def test_auto_mode_operator_no_guidance(mock_input, mock_config, mock_run_single, mock_emit):
     """Test that operator pressing Enter (no guidance) in auto mode triggers a resume message (lines 2111-2113)."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -288,6 +297,7 @@ def test_auto_mode_operator_no_guidance(mock_input, mock_config, mock_run_single
 @patch('builtins.input')
 def test_auto_mode_operator_cancel(mock_input, mock_config, mock_run_single, mock_emit):
     """Test that operator cancelling via EOFError in auto mode ends the session (lines 2096-2100)."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -315,6 +325,7 @@ def test_auto_mode_operator_cancel(mock_input, mock_config, mock_run_single, moc
 @patch('builtins.input')
 def test_auto_mode_operator_interrupt(mock_input, mock_config, mock_run_single, mock_emit):
     """Test that operator cancelling via KeyboardInterrupt in auto mode ends the session (lines 2096-2100)."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},

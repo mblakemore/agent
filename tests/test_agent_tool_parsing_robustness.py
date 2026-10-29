@@ -58,6 +58,7 @@ class ToolFunction:
 @patch('agent._config')
 def test_tool_call_dict_fallback(mock_config, mock_llm, mock_emit):
     """Test dictionary fallback path."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -80,6 +81,7 @@ def test_tool_call_dict_fallback(mock_config, mock_llm, mock_emit):
 @patch('agent._config')
 def test_unsalvageable_tool_args_mixed(mock_config, mock_llm, mock_emit):
     """Test mixed valid/invalid tool calls to hit the recovery error message."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -102,6 +104,7 @@ def test_unsalvageable_tool_args_mixed(mock_config, mock_llm, mock_emit):
 @patch('agent._config')
 def test_tool_call_parsing_exception(mock_config, mock_llm, mock_emit):
     """Targets lines 2832-2835 by providing a malformed tool call (missing 'function' key)."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -136,6 +139,7 @@ def test_tool_call_object_path(mock_config, mock_llm, mock_emit):
     Actually, the easiest way to test lines 2807-2809 is to mock the response
     processing logic.
     """
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},

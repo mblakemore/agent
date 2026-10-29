@@ -72,6 +72,7 @@ def _setup_mock_config(mock_config, overrides=None):
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_run_agent_single_direct_answer(mock_config, mock_llm, mock_emit):
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -113,6 +114,7 @@ def test_run_agent_single_error_handling(mock_llm, mock_emit):
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_streaming_cancelled(mock_config, mock_llm, mock_emit):
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -129,6 +131,7 @@ def test_streaming_cancelled(mock_config, mock_llm, mock_emit):
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_streaming_request_exception(mock_config, mock_llm, mock_emit):
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -144,6 +147,7 @@ def test_streaming_request_exception(mock_config, mock_llm, mock_emit):
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_streaming_unexpected_exception(mock_config, mock_llm, mock_emit):
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -205,6 +209,7 @@ _think_tool_nudge = {"index": 0, "id": "tc1", "function": {
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_nudge_budget_exhausted(mock_config, mock_llm, mock_emit):
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = _mock_cfg_nudge
     mock_llm.return_value = create_mock_response(content="Working on it.")
     with patch('agent._NUDGE_ENABLED', True), patch('agent._MAX_TOTAL_NUDGES', 0):
@@ -216,6 +221,7 @@ def test_nudge_budget_exhausted(mock_config, mock_llm, mock_emit):
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_consecutive_text_only_limit(mock_config, mock_llm, mock_emit):
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = _mock_cfg_nudge
     mock_llm.return_value = create_mock_response(content="Working on it.")
     with patch('agent._NUDGE_ENABLED', True), patch('agent._MAX_TEXT_ONLY', 3):
@@ -227,6 +233,7 @@ def test_consecutive_text_only_limit(mock_config, mock_llm, mock_emit):
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_completion_signal_with_persisted_work(mock_config, mock_llm, mock_emit):
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = _mock_cfg_nudge
     commit_tool = {"index": 0, "id": "tc1", "function": {
         "name": "exec_command",
@@ -246,6 +253,7 @@ def test_completion_signal_with_persisted_work(mock_config, mock_llm, mock_emit)
     @patch('agent._llm_request')
     @patch('agent._config')
     def test_overtime_text_only_stop(mock_config, mock_llm, mock_emit):
+        mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
         mock_config.__getitem__.side_effect = _mock_cfg_nudge
         mock_llm.side_effect = [
             create_mock_response(tool_calls=[_think_tool_nudge]),
@@ -263,6 +271,7 @@ def test_completion_signal_with_persisted_work(mock_config, mock_llm, mock_emit)
 @patch('agent._llm_request')
 @patch('agent._config')
 def test_completion_signal_ignored_no_work(mock_config, mock_llm, mock_emit):
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = _mock_cfg_nudge
     mock_llm.return_value = create_mock_response(content="Improvement cycle is complete.")
     with patch('agent._NUDGE_ENABLED', True):
@@ -375,6 +384,7 @@ def test_tool_execution_cancelled(mock_config, mock_llm, mock_emit):
     Tests that a CancelledError raised during tool execution is correctly 
     propagated and handled by the agent's main loop.
     """
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -465,6 +475,7 @@ def test_context_overflow_recovery_success(mock_config, mock_llm, mock_emit):
 @patch('agent._config')
 def test_context_overflow_max_retries_failure(mock_config, mock_llm, mock_emit):
     """Tests that the agent returns 'error' after exceeding _CTX_REDUCE_MAX attempts."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -522,6 +533,7 @@ def test_context_overflow_summary_truncation(mock_config, mock_llm, mock_emit):
 @patch('agent._config')
 def test_coverage_gap_tool_parsing_exception(mock_config, mock_llm, mock_emit):
     """Targets lines 3206-3209: Exception handler for tool call parsing."""
+    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
     mock_config.__getitem__.side_effect = lambda k: {
         "llm": {"model": "test-model"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
