@@ -111,15 +111,18 @@ def test_exec_command_non_dict_args_no_crash(mock_log, raw_args):
             # Must not raise — any exception here is the bug
             agent.run_agent_single(conversation_history, summary_state, None, mock_log)
 
-    # The tool call should have produced an error message, not a crash
-    tool_results = [
-        m for m in conversation_history if m.get("role") == "tool"
-    ]
-    assert tool_results, "Expected at least one tool result in conversation history"
-    result_content = tool_results[0]["content"]
-    assert "Error" in result_content, (
-        f"Expected 'Error' in tool result for non-dict args {raw_args!r}, got: {result_content!r}"
-    )
+    # Non-dict args are coerced to {}; exec_command then has no command. Since G.01-exec the
+    # dispatcher treats that as a garbled call: it logs it and retries the turn without adding a
+    # tool message. An explicit Error tool result would also be fine; a crash is not.
+    assert mock_llm.call_count == 2, "Expected the garbled call to be retried (2 LLM calls)"
+    assert any(
+        m.get("role") == "assistant" and "Done" in str(m.get("content")) for m in conversation_history
+    ), "Expected the final 'Done' response after the retry"
+    for m in conversation_history:
+        if m.get("role") == "tool":
+            assert "Error" in m["content"], (
+                f"Expected 'Error' in tool result for non-dict args {raw_args!r}, got: {m['content']!r}"
+            )
 
 
 def test_file_null_args_does_not_mark_has_edited(mock_log):
