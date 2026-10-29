@@ -37,6 +37,32 @@ def _terminal_modes():
         return None
 
 
+def _prompt_live():
+    """True while a prompt_toolkit prompt owns the keyboard (always, in live-input mode)."""
+    try:
+        import cancel
+        return bool(cancel.tui_mode())
+    except Exception:  # noqa: BLE001 — no cancel module (standalone tool use)
+        return False
+
+
+def _should_restore(saved, current, prompt_live):
+    """Pure: whether the modes snapshotted before a command may be put back.
+
+    A live prompt reads in raw mode but leaves it for a moment every time it prints
+    above the prompt (prompt_toolkit's run_in_terminal goes through cooked mode), so
+    a snapshot taken at command start can be that cooked moment. Restoring it under
+    the prompt forces line mode and echo onto a raw-mode reader: Esc shows as ^[ in
+    the input box and nothing reaches the key bindings until Enter (seen live,
+    2026-10-29). Under a live prompt only a raw snapshot (ICANON off) is trusted;
+    the prompt re-applies its own mode after its next print anyway."""
+    if saved is None or current is None or current == saved:
+        return False
+    if prompt_live and termios is not None and (saved[3] & termios.ICANON):
+        return False
+    return True
+
+
 def _restore_terminal_modes(saved):
     """Put the terminal back the way it was before a command ran. A program can
     still reach the terminal through /dev/tty and leave it changed on exit; the
@@ -45,7 +71,7 @@ def _restore_terminal_modes(saved):
     if saved is None:
         return
     try:
-        if termios.tcgetattr(0) != saved:
+        if _should_restore(saved, termios.tcgetattr(0), _prompt_live()):
             termios.tcsetattr(0, termios.TCSADRAIN, saved)
     except (OSError, termios.error):
         pass
