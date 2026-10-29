@@ -33,7 +33,8 @@ def test_hard_overtime_cap(mock_env):
 
 def test_edit_deadline_nudge(mock_env):
     """Test that the edit nudge is sent when the deadline is reached without edits."""
-    conversation_history = [{"role": "user", "content": "Start work"}]
+    # The edit-deadline nudge only applies to CICD builder sessions (issue #425).
+    conversation_history = [{"role": "user", "content": "CICD Improvement Loop: start work"}]
     summary_state = {"text": "", "up_to": 0}
     
     mock_env.return_value = create_mock_response("cycle is complete")
