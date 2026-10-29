@@ -3,6 +3,7 @@ import select
 
 import os
 import sys
+import threading
 import unittest
 from unittest.mock import MagicMock, patch, call
 
@@ -82,6 +83,29 @@ class CancelLowLevelTests(unittest.TestCase):
     def setUp(self):
         cancel.set_tui_mode(False)
         cancel.reset()
+
+    def _isolated_monitor_event(self):
+        """Give the direct ``_monitor_loop`` tests a private active-event.
+
+        The module starts a daemon ``_monitor_loop`` thread at import. These
+        tests call ``_monitor_loop`` *in the test thread* with a patched
+        ``_read_byte``; if the real ``_monitor_active`` event is set, the
+        daemon wakes too and races the test for the scripted bytes — with its
+        own local ``last_esc_time``. When the daemon consumes part of the
+        sequence (and dies on the script's sentinel exception), the test
+        thread sees a shifted sequence and never detects the double-esc —
+        flaky ``test_monitor_loop_double_escape`` /
+        ``test_monitor_loop_single_escape_timeout`` failures in full-suite
+        runs. Swapping in a fresh Event leaves the daemon parked on the
+        original event (stale reference), exactly as the stdin-race tests
+        do in their fixture.
+        """
+        import threading
+        fresh = threading.Event()
+        patcher = patch.object(cancel, "_monitor_active", fresh)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return fresh
 
     @patch('sys.stdin')
     @patch('termios.tcgetattr')
@@ -166,7 +190,8 @@ class CancelLowLevelTests(unittest.TestCase):
         count = 0
         mock_read.side_effect = side_effect
 
-        cancel._monitor_active.set()
+        active = self._isolated_monitor_event()
+        active.set()
         cancel.reset()
 
         try:
@@ -190,15 +215,16 @@ class CancelLowLevelTests(unittest.TestCase):
 
         count = 0
         mock_read.side_effect = side_effect
-        
-        cancel._monitor_active.set()
+
+        active = self._isolated_monitor_event()
+        active.set()
         cancel.reset()
-        
+
         try:
             cancel._monitor_loop()
         except BreakLoop:
             pass
-            
+
         self.assertFalse(cancel.is_cancelled())
 
     @patch('cancel._read_byte')
@@ -220,14 +246,15 @@ class CancelLowLevelTests(unittest.TestCase):
             # First call: 0.0, Second call: 0.5 ( > 0.4)
             mock_time.side_effect = [0.0, 0.5]
             
-            cancel._monitor_active.set()
+            active = self._isolated_monitor_event()
+            active.set()
             cancel.reset()
-            
+
             try:
                 cancel._monitor_loop()
             except BreakLoop:
                 pass
-                
+
             self.assertFalse(cancel.is_cancelled())
 
     @patch('termios.tcsetattr')
@@ -282,11 +309,13 @@ class CoverageEdgeCaseTests(unittest.TestCase):
             raise BreakLoop()
         count = 0
         mock_read.side_effect = side_effect
-        cancel._monitor_active.set()
-        try:
-            cancel._monitor_loop()
-        except BreakLoop:
-            pass
+        fresh = threading.Event()
+        with patch.object(cancel, "_monitor_active", fresh):
+            fresh.set()
+            try:
+                cancel._monitor_loop()
+            except BreakLoop:
+                pass
 
     @patch('cancel._read_byte')
     def test_monitor_loop_non_escape(self, mock_read):
@@ -300,11 +329,13 @@ class CoverageEdgeCaseTests(unittest.TestCase):
             raise BreakLoop()
         count = 0
         mock_read.side_effect = side_effect
-        cancel._monitor_active.set()
-        try:
-            cancel._monitor_loop()
-        except BreakLoop:
-            pass
+        fresh = threading.Event()
+        with patch.object(cancel, "_monitor_active", fresh):
+            fresh.set()
+            try:
+                cancel._monitor_loop()
+            except BreakLoop:
+                pass
 
     @patch('cancel._read_byte')
     def test_consume_ansi_internals(self, mock_read):
