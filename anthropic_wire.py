@@ -122,6 +122,13 @@ def _tool_result_block(msg: dict) -> dict:
     return block
 
 
+def prune_old_thinking_enabled() -> bool:
+    """AGENT_PRUNE_OLD_THINKING=0 replays (and checkpoints) every turn's stored thinking,
+    the pre-2026-10-29 behaviour; the default keeps only the newest assistant turn's."""
+    import os
+    return os.environ.get("AGENT_PRUNE_OLD_THINKING", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
 def _thinking_blocks(msg: dict, model: str | None) -> list[dict]:
     """Stored thinking for this assistant turn, only if the SAME model produced it —
     another model's signatures are rejected (§7 M1)."""
@@ -238,8 +245,15 @@ def openai_to_anthropic(
     """
     system_parts: list[str] = []
     raw: list[dict] = []
+    messages = list(messages)
+    # Only the newest assistant turn's thinking matters: the API needs it ahead of that
+    # turn's tool_use when the next message is a tool result, and strips (and does not
+    # bill) thinking from every earlier turn. Replaying all of it was half of a 1.25 MB
+    # checkpoint and of every request body (333 blocks, 595k chars, on one measured run).
+    last_assistant = max((i for i, m in enumerate(messages) if m.get("role") == "assistant"), default=None)
+    replay_all = not prune_old_thinking_enabled()
 
-    for msg in messages:
+    for i, msg in enumerate(messages):
         role = msg.get("role")
         if role in _SYSTEM_ROLES:
             txt = _text_of(msg.get("content")).strip()
@@ -250,7 +264,8 @@ def openai_to_anthropic(
             raw.append({"role": "user", "content": [_tool_result_block(msg)]})
             continue
         if role == "assistant":
-            blocks = _thinking_blocks(msg, model) + _content_blocks(msg.get("content"))
+            thinking = _thinking_blocks(msg, model) if (replay_all or i == last_assistant) else []
+            blocks = thinking + _content_blocks(msg.get("content"))
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function") or {}
                 args, ok = _parse_args(fn.get("arguments"))

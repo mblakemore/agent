@@ -44,7 +44,7 @@ Everything after connecting is optional:
 
 ## Calibration
 
-Calibration derives the engine's context budget from the measured or reported context — `ctx_size` (measured − 10%), summary threshold, message caps — and records the derivation in a `_calibrated` sidecar so later runs can report **drift**. Nothing unmeasured is ever written: shipped defaults stay.
+Calibration derives the engine's context budget from the measured or reported context — `ctx_size` (measured − 10%), `max_context_messages` (about one per 480 tokens), `summary_threshold` (a fifth of the message cap, as a message count) — and records the derivation in a `_calibrated` sidecar so later runs can report **drift**. Nothing unmeasured is ever written: shipped defaults stay. Configs calibrated before 2026-10-29 carry a `summary_threshold` in characters; the engine replaces it at startup and says so, and a `/setup calibrate` rewrites it.
 
 ## Forms
 

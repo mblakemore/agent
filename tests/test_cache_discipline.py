@@ -151,6 +151,33 @@ def test_window_head_moves_in_chunks(monkeypatch):
     assert len(set(heads)) == moves + 1
 
 
+def test_compression_under_pressure_never_breaks_the_window_prefix(caching, monkeypatch):
+    """Measured on a live run: the compression pass, gated on the pressure of the whole
+    stored history, rewrote a result inside the sent window on 221 of 263 turns and every
+    one of them missed the cache. Here the pass runs on EVERY turn (gate at 0) and the
+    only requests allowed to break the prefix are the chunk evictions."""
+    mocks, sent = caching
+    monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 12)
+    monkeypatch.setattr(agent, "_TOOL_RESULT_COMPRESS_PRESSURE", 0.0)
+    monkeypatch.setattr(agent, "_summarize_for_compression",
+                        MagicMock(side_effect=AssertionError("model compression on a caching backend")))
+    mocks.script(*[_tool_turn(f"t{i}") for i in range(30)])
+    lg = MagicMock()
+    hist = [{"role": "user", "content": "inspect the repo"}]
+    agent.run_agent_single(hist, {"text": "", "up_to": 0}, "IDENTITY FILE", lg)
+    evictions = sum(1 for c in lg.info.call_args_list
+                    if c.args and str(c.args[0]).startswith("cache-friendly eviction"))
+    reqs = [_wire(b) for b in sent]
+    breaks = sum(1 for a, b in zip(reqs, reqs[1:])
+                 if _blocks(b["messages"])[:len(_blocks(a["messages"]))] != _blocks(a["messages"]))
+    assert evictions >= 2, "the run must evict at least twice to prove anything"
+    assert breaks <= evictions, (breaks, evictions)
+    assert any(m.get("role") == "tool" and m["content"].startswith("[compressed") for m in hist), \
+        "the pass did run, below the head"
+    first_user = next(m for m in sent[-1]["messages"] if m["role"] == "user")
+    assert first_user["content"].startswith("IDENTITY FILE"), "the identity file leads the trimmed window"
+
+
 def test_other_backends_keep_the_sliding_window(monkeypatch):
     monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="llamacpp"))
     monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 30)

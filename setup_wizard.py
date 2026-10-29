@@ -682,14 +682,19 @@ def calibrate(report, defaults, chars_per_token=_CHARS_PER_TOKEN):
     c["ctx_size"] = budget
     notes.append(f"context.ctx_size = {budget} (measured {ctx_tokens} − 10%)")
 
-    c["summary_threshold"] = int(ctx_chars * 0.6)
-    notes.append(f"context.summary_threshold = {c['summary_threshold']} chars (~60% of budget)")
-
     # Scale message-count cap with ctx: ~20 msgs at 8k … ~400 at 192k, i.e.
     # ~1 message per 480 tokens, clamped to a sane band.
     msgs = max(20, min(500, budget // 480))
     c["max_context_messages"] = msgs
     notes.append(f"context.max_context_messages = {msgs} (~1 per 480 tokens)")
+
+    # summary_threshold is a MESSAGE count: how many messages must have fallen
+    # out of the window before a summary of them is generated. About a fifth of
+    # the cap, so the first chunk eviction (40% of the cap) always fires one. It
+    # used to be written in chars (ctx_chars * 0.6 = 432000 at 180k ctx), which
+    # the engine compared to a message count — no calibrated config ever summarised.
+    c["summary_threshold"] = max(5, msgs // 5)
+    notes.append(f"context.summary_threshold = {c['summary_threshold']} messages (~1/5 of the message cap)")
 
     if ctx_tokens < 16384:
         d = defaults.get("context", {})

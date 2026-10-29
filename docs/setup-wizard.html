@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">Setup wizard — /setup</p>
 <h1>Setup wizard — <code>/setup</code></h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/setup-wizard.md"><code>docs/setup-wizard.md</code></a> · last changed 2026-10-25 (2028584)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/setup-wizard.md"><code>docs/setup-wizard.md</code></a> · last changed 2026-10-29 (3edd61a)</p>
 <p>The wizard connects the agent to a model and writes <code>.agent/config.json</code> for you. Getting a model server running in the first place is <a href="setup.html">Setup</a>; the shapes the wizard writes are on <a href="configurations.html">Configurations</a>.</p>
 <h2 id="when-it-runs">When it runs</h2>
 <p>Running <code>agent.py</code> interactively in a folder with no config (no <code>.agent/config.json</code>, no legacy <code>config.json</code>) launches the wizard before the first prompt. That happens only in a real terminal: <code>-a</code>, piped and scripted runs never block on it. The same wizard is available any time as <code>/setup</code>, or at startup with <code>--setup</code>.</p>
@@ -66,7 +66,7 @@ Anything else? (all optional)
 <li><strong>Separate summary model</strong>, <strong>advisor</strong>, and <strong>set up this folder as an agent</strong> (see <a href="agent-scaffold.html">Agent scaffold</a>) each run their own short screen.</li>
 </ul>
 <h2 id="calibration">Calibration</h2>
-<p>Calibration derives the engine's context budget from the measured or reported context — <code>ctx_size</code> (measured − 10%), summary threshold, message caps — and records the derivation in a <code>_calibrated</code> sidecar so later runs can report <strong>drift</strong>. Nothing unmeasured is ever written: shipped defaults stay.</p>
+<p>Calibration derives the engine's context budget from the measured or reported context — <code>ctx_size</code> (measured − 10%), <code>max_context_messages</code> (about one per 480 tokens), <code>summary_threshold</code> (a fifth of the message cap, as a message count) — and records the derivation in a <code>_calibrated</code> sidecar so later runs can report <strong>drift</strong>. Nothing unmeasured is ever written: shipped defaults stay. Configs calibrated before 2026-10-29 carry a <code>summary_threshold</code> in characters; the engine replaces it at startup and says so, and a <code>/setup calibrate</code> rewrites it.</p>
 <h2 id="forms">Forms</h2>
 <div class="tbl-wrap" tabindex="0"><table>
 <thead>

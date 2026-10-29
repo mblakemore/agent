@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">Config reference</p>
 <h1>Config reference</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/config-reference.md"><code>docs/config-reference.md</code></a> · last changed 2026-10-25 (2028584)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/config-reference.md"><code>docs/config-reference.md</code></a> · last changed 2026-10-29 (3edd61a)</p>
 <p>Every key the agent reads from its config file, with its default. All sections are optional; omitted keys use the defaults below. <strong>You rarely need to write this by hand</strong>: the <a href="setup-wizard.html"><code>/setup</code> wizard</a> writes and calibrates it for you from live probes of your endpoints. For whole setups rather than single keys, see <a href="configurations.html">Configurations</a>.</p>
 <p>The agent looks for <code>.agent/config.json</code> first, then falls back to <code>config.json</code> in the working directory (wherever you run <code>agent.py</code> from). Putting it under <code>.agent/</code> keeps your local, key-bearing config alongside the other runtime files. When you run inside a git repo, the agent best-effort adds <code>.agent/</code> and <code>config.json</code> to <code>.gitignore</code> so your config (which may hold API keys) and runtime state never get committed. Outside a repo it leaves the directory untouched.</p>
 <h2 id="backends"><code>backends</code></h2>
@@ -203,7 +203,7 @@
 <tr>
 <td><code>summary_threshold</code></td>
 <td><code>5</code></td>
-<td>Messages beyond which background summarisation fires.</td>
+<td>A message count: how many messages must have fallen out of the window before a summary of them is generated. A value above <code>max_context_messages</code> (older <code>/setup</code> runs wrote this key in characters) is replaced at startup by a fifth of the cap, with a warning.</td>
 </tr>
 <tr>
 <td><code>summary_max_chars</code></td>
