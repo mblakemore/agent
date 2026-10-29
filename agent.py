@@ -3213,6 +3213,20 @@ def _build_summary_prompt(old_summary, new_messages):
 _TOOL_RESULT_COMPRESS_AFTER = 3
 # Don't compress results shorter than this — short results are cheap to keep.
 _TOOL_RESULT_COMPRESS_MIN   = 200
+# Each model summary is a blocking round trip inside the tool loop. After a resume the whole
+# backlog of old results qualifies at once, and one summary call per result froze the session
+# for minutes after its first command. Beyond this many per pass, use the local head+tail.
+_TOOL_RESULT_COMPRESS_MODEL_MAX = 2
+
+
+def _local_compress(content: str) -> str:
+    """Head+tail compression with no model call."""
+    lines = content.strip().split("\n")
+    if len(lines) <= 4:
+        return f"[compressed: {content[:300]}]"
+    head = "\n".join(lines[:2])
+    tail = "\n".join(lines[-2:])
+    return f"[compressed: {head}\n... ({len(lines)} lines) ...\n{tail}]"
 
 
 def _summarize_for_compression(content: str, func_name: str, log) -> str:
@@ -3227,12 +3241,7 @@ def _summarize_for_compression(content: str, func_name: str, log) -> str:
         return f"[compressed by summary: {summary}]"
     except Exception as e:
         log.debug("summary compression unavailable (%s) — using head+tail", e)
-        lines = content.strip().split("\n")
-        if len(lines) <= 4:
-            return f"[compressed: {content[:300]}]"
-        head = "\n".join(lines[:2])
-        tail = "\n".join(lines[-2:])
-        return f"[compressed: {head}\n... ({len(lines)} lines) ...\n{tail}]"
+        return _local_compress(content)
 
 
 # History rewrites are PROMPT-CACHE KILLERS. A server that caches the key-value state of the
@@ -3280,13 +3289,15 @@ def _compress_repeated_tool_results(conversation_history: list, func_name: str, 
     if len(indices) < _TOOL_RESULT_COMPRESS_AFTER:
         return
     changed = 0
-    for idx in indices[:-1]:          # keep the most recent entry intact
+    for idx in reversed(indices[:-1]):  # keep the most recent entry intact; newest first
         content = conversation_history[idx].get("content", "")
         if len(content) < _TOOL_RESULT_COMPRESS_MIN:
             continue
         if content.startswith("[compressed"):
             continue
-        conversation_history[idx]["content"] = _summarize_for_compression(content, func_name, log)
+        conversation_history[idx]["content"] = (
+            _summarize_for_compression(content, func_name, log)
+            if changed < _TOOL_RESULT_COMPRESS_MODEL_MAX else _local_compress(content))
         conversation_history[idx].pop("_tokens", None)   # token_utils caches per message
         changed += 1
     if changed:
