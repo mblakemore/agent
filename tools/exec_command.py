@@ -271,10 +271,97 @@ _MAX_OUTPUT_BYTES = 32_768
 # session_id) instead of blocking the loop. Pass background=false to opt out.
 _DETACH_AFTER_S = 10.0
 
-# Background sessions: {session_id: {"bg_proc": Popen|None, "bg_output": str}}
+# Background sessions: {session_id: {"bg_proc": Popen|None, "bg_output": str,
+#   "log_path": str|None, "last_rc": int|None}}. bg_output and last_rc survive
+# until the next command in that session, so a result whose first return was
+# compressed away in the conversation can be read again.
 _sessions = {}
 _main_session_id = None
 _temp_session_ids = []
+
+# Every command that runs in the background (background=true, or detached
+# after _DETACH_AFTER_S) streams its complete output to a file as well, so a
+# long run can be grepped after its tool result has been compressed or
+# truncated. Files live under <agent home>/.agent/exec/; the newest
+# _EXEC_LOG_KEEP are kept.
+_EXEC_LOG_DIR = os.path.join(".agent", "exec")
+_EXEC_LOG_KEEP = 30
+
+
+class _LogSink:
+    """A file receiving a background command's output as it arrives.
+
+    Opened at the moment a command goes to the background (so a short
+    foreground `ls` never touches the disk); the output already collected is
+    written first. All writes are serialised by the session's reader thread
+    and the attach site under one lock, so lines never interleave."""
+
+    def __init__(self, path):
+        self.path = path
+        self._fh = open(path, "a", encoding="utf-8", errors="replace")
+
+    def write(self, text):
+        try:
+            self._fh.write(text)
+            self._fh.flush()
+        except (OSError, ValueError):
+            pass
+
+    def close(self):
+        try:
+            self._fh.close()
+        except (OSError, ValueError):
+            pass
+
+
+def _open_log_sink(sid, home_cwd):
+    """A sink under home_cwd/.agent/exec for session sid, or None when the
+    directory cannot be made (read-only home, odd permissions): the command
+    still runs, only the file is missing. Prunes to _EXEC_LOG_KEEP files."""
+    try:
+        d = os.path.join(home_cwd, _EXEC_LOG_DIR)
+        os.makedirs(d, exist_ok=True)
+        gi = os.path.join(d, ".gitignore")
+        if not os.path.exists(gi):
+            with open(gi, "w") as fh:
+                fh.write("*\n")
+        logs = sorted(
+            (p for p in Path(d).glob("*.log")),
+            key=lambda p: p.stat().st_mtime,
+        )
+        for old in logs[: max(0, len(logs) - (_EXEC_LOG_KEEP - 1))]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+        import time as _t
+        name = f"{sid}-{_t.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}.log"
+        return _LogSink(os.path.join(d, name))
+    except OSError:
+        return None
+
+
+def _wait_for_exit(proc, seconds):
+    """Block until proc exits or seconds pass; a double-Escape cancels the
+    wait (not the process). Returns True when the process has exited."""
+    import time as _t
+    try:
+        import cancel as _c
+    except ImportError:
+        _c = None
+    deadline = _t.monotonic() + seconds
+    while proc.poll() is None:
+        if _c is not None and _c.is_cancelled():
+            raise _c.CancelledError()
+        if _t.monotonic() >= deadline:
+            return False
+        _t.sleep(0.05)
+    return True
+
+
+def _log_note(session):
+    p = session.get("log_path")
+    return f"; full output: {p}" if p else ""
 
 # Config-based command guards — loaded once from config.json on first use.
 _command_guards: list | None = None
@@ -432,17 +519,23 @@ def _get_or_create_session(session_id=None, new_session=False):
     return sid, None
 
 
-def _read_bg_output(proc, session):
-    """Background thread: read process output incrementally."""
+def _read_bg_output(proc, session, sink=None):
+    """Background thread: read process output incrementally, mirroring every
+    line to the session's log file when there is one."""
     parts = []
     try:
         for line in proc.stdout:
             parts.append(line)
             session["bg_output"] = "".join(parts)
+            if sink is not None:
+                sink.write(line)
         proc.wait()
     except Exception as e:
         parts.append(f"\nError reading output: {e}\n")
     session["bg_output"] = "".join(parts)
+    session["last_rc"] = proc.returncode
+    if sink is not None:
+        sink.close()
 
 
 def cleanup_temp_sessions():
@@ -463,11 +556,13 @@ atexit.register(cleanup_temp_sessions)
 
 def fn(command: str = "", session_id: str = "", timeout: float = 120,
        background: bool | None = None, new_session: bool = False,
-       cwd: str = "", env: dict | None = None) -> str:
+       cwd: str = "", env: dict | None = None, wait: float = 0) -> str:
     """Execute a shell command in the agent's working directory.
 
     Args:
         command: Shell command to execute. If empty, checks on a background session.
+        wait: With no command: block up to this many seconds for the session's
+             background process to finish before answering (0 = answer at once).
         session_id: Existing session to reuse (only for background process polling).
         timeout: Max seconds to wait (default 120). LLM-calling scripts may need 300+.
         background: If true, start the command and return immediately. If omitted,
@@ -503,6 +598,12 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         return f"Error: timeout must be a number, got {type(timeout).__name__!r}"
     if not math.isfinite(timeout) or timeout <= 0:
         return "Error: timeout must be a finite positive number"
+    if wait is None:
+        wait = 0
+    if not isinstance(wait, (int, float)) or isinstance(wait, bool):
+        return f"Error: wait must be a number, got {type(wait).__name__!r}"
+    if not math.isfinite(wait) or wait < 0:
+        return "Error: wait must be a finite non-negative number"
 
     # background and new_session must be actual booleans (or 0/1 integers).
     # Strings like "false" are non-empty and therefore truthy — an LLM passing
@@ -576,16 +677,40 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     if not command:
         bg = session.get("bg_proc")
         if bg:
-            output = session.get("bg_output", "")
+            if wait > 0 and bg.poll() is None:
+                _wait_for_exit(bg, wait)
             if bg.poll() is not None:
+                # The reader thread publishes the last lines a moment after
+                # the process exits; give it that moment.
+                _wait_for_exit(bg, 0)
+                for _ in range(20):
+                    if session.get("last_rc") is not None:
+                        break
+                    __import__("time").sleep(0.05)
+                output = session.get("bg_output", "")
                 rc = bg.returncode
                 session["bg_proc"] = None
-                return f"[session: {sid}] exit={rc} (background process finished)\n{output}"
-            else:
-                # Show tail of output so far
-                tail = output[-4000:] if len(output) > 4000 else output
-                return f"[session: {sid}] (still running)\n{tail}"
+                session["last_rc"] = rc
+                return (f"[session: {sid}] exit={rc} (background process finished"
+                        f"{_log_note(session)})\n{output}")
+            output = session.get("bg_output", "")
+            tail = output[-4000:] if len(output) > 4000 else output
+            return (f"[session: {sid}] (still running) wait=N blocks up to N s for it "
+                    f"to finish{_log_note(session)}\n{tail}")
+        if session.get("last_rc") is not None:
+            # Finished on an earlier poll: the result stays readable (a tool
+            # result compressed away in the conversation is not lost).
+            output = session.get("bg_output", "")
+            tail = output[-4000:] if len(output) > 4000 else output
+            return (f"[session: {sid}] exit={session['last_rc']} (finished earlier"
+                    f"{_log_note(session)})\n{tail}")
         return f"[session: {sid}] (idle)"
+
+    if session.get("bg_proc") is None:
+        # A new command in this session supersedes the kept result.
+        session["last_rc"] = None
+        session["log_path"] = None
+        session["bg_output"] = ""
 
     # ── Guards ────────────────────────────────────────────────────────
 
@@ -795,11 +920,16 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
             )
         except Exception as e:
             return f"Error: starting background command: {e}"
+        sink = _open_log_sink(sid, home_cwd)
         session["bg_proc"] = proc
         session["bg_output"] = ""
-        t = threading.Thread(target=_read_bg_output, args=(proc, session), daemon=True)
+        session["last_rc"] = None
+        session["log_path"] = sink.path if sink else None
+        t = threading.Thread(target=_read_bg_output, args=(proc, session, sink), daemon=True)
         t.start()
-        return f"[session: {sid}]\nCommand started in background. Poll with session_id to check output."
+        return (f"[session: {sid}]\nCommand started in background. Poll with session_id "
+                f"to check output (wait=N blocks up to N s for it to finish)"
+                f"{_log_note(session)}.")
 
     # ── Foreground execution ──────────────────────────────────────────
     # Collect stdout in a background reader thread so the main thread
@@ -839,23 +969,33 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     # that produce many megabytes of output (e.g. `yes`, `python -c "print('x'*10_000_000)"`).
     _COLLECT_CAP = _MAX_OUTPUT_BYTES * 4  # 128 KB hard read limit
 
+    # The log sink is attached only if the command is detached; the reader
+    # and the attach site share this lock so the backlog and later lines
+    # land in the file in order.
+    _sink_lock = threading.Lock()
+    _sink_box: list = [None]
+    _capped = [False]
+
     def _collect_stdout():
         bytes_collected = 0
         try:
             for chunk in iter(proc.stdout.readline, ''):
-                output_parts.append(chunk)
+                with _sink_lock:
+                    if not _capped[0]:
+                        output_parts.append(chunk)
+                    if _sink_box[0] is not None:
+                        _sink_box[0].write(chunk)
+                if _capped[0]:
+                    continue  # past the in-memory cap: file only, pipe kept drained
                 bytes_collected += len(chunk.encode('utf-8', errors='replace'))
                 if bytes_collected > _COLLECT_CAP:
-                    # Drain the pipe to prevent the child process from blocking
-                    # on a full pipe buffer, then stop collecting.
-                    try:
-                        proc.stdout.read()
-                    except Exception:
-                        pass
-                    break
+                    _capped[0] = True
         except Exception:
             pass
         finally:
+            with _sink_lock:
+                if _sink_box[0] is not None:
+                    _sink_box[0].close()
             _reader_done.set()
 
     reader_thread = threading.Thread(target=_collect_stdout, daemon=True)
@@ -890,8 +1030,17 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         _restore_terminal_modes(_saved_modes)
 
     if detached:
+        with _sink_lock:
+            sink = _open_log_sink(sid, home_cwd)
+            if sink is not None:
+                sink.write("".join(output_parts))
+                if _capped[0]:
+                    sink.write("\n[output between the 128 KB cap and detaching was not kept]\n")
+                _sink_box[0] = sink
         session["bg_proc"] = proc
         session["bg_output"] = "".join(output_parts)
+        session["last_rc"] = None
+        session["log_path"] = sink.path if sink else None
 
         def _mirror():
             while reader_thread.is_alive():
@@ -899,12 +1048,13 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
                 reader_thread.join(timeout=0.1)
             proc.wait()
             session["bg_output"] = "".join(output_parts)
+            session["last_rc"] = proc.returncode
 
         threading.Thread(target=_mirror, daemon=True).start()
         tail = session["bg_output"][-4000:]
         return (
             f"[session: {sid}] (still running after {_DETACH_AFTER_S:g}s — continuing in background; "
-            f"poll with session_id)\n{tail}"
+            f"poll with session_id, wait=N to block until it finishes{_log_note(session)})\n{tail}"
         )
 
     if timed_out:
@@ -990,8 +1140,13 @@ definition = {
             "(e.g., running a server). "
             "Temp sessions are cleaned up at end of cycle. "
             "Commands that call the LLM or do heavy computation may take minutes — "
-            "the default timeout is 120s. For long-running commands, use "
-            "background=true and poll with session_id to check output. "
+            "the default timeout is 120s. For long-running commands (a full test suite, a build), "
+            "use background=true, then call again with only session_id and wait=<seconds>: that one "
+            "call blocks until the command finishes and returns its exit code and output, instead of "
+            "a sleep/poll loop. Every background or detached command also streams its complete output "
+            "to a file under .agent/exec/ (the path is in the result), so it can be grepped after the "
+            "tool result has been compressed; the finished result stays readable from a later poll of "
+            "the same session. "
             "To write a file, use `file(action=\"write\", ...)` instead of echo redirects or heredocs — it handles special characters correctly. "
             "You can write files via shell (cat >, heredocs). "
               "For existing files, you must read them first (cat or file tool) in this session. "
@@ -1026,6 +1181,11 @@ definition = {
                 "background": {
                     "type": "boolean",
                     "description": "If true, start the command and return immediately. If omitted, waits up to 10s then continues in the background (poll with session_id). If false, waits for the full timeout.",
+                },
+                "wait": {
+                    "type": "number",
+                    "description": "With no command: block up to this many seconds for the session's background process to finish, then return its exit code and output. One call replaces a sleep/poll loop. Default 0 (answer at once).",
+                    "default": 0,
                 },
                 "new_session": {
                     "type": "boolean",

@@ -7,6 +7,14 @@ Single escapes and ANSI sequences (arrow keys, etc.) are ignored.
 When a richer TUI host owns the keyboard (see set_tui_mode), the cbreak
 capture + monitor are suppressed; the host is expected to call
 request_cancel() on its own keybinding.
+
+The escape-monitor thread starts on the first cancellable() region that
+arms it, not at import. Importing this module in a test run therefore
+starts no thread: a test that patches _read_byte and sets _monitor_active
+drives _monitor_loop alone, with nobody racing it for the scripted bytes
+(the flaky test_monitor_loop_double_escape of 2026-10-29). A test that does
+enter cancellable() on a tty-like stdin can still isolate itself by swapping
+_monitor_active for a fresh Event, as tests/test_tui_stdin_race.py does.
 """
 
 import atexit
@@ -229,9 +237,19 @@ def _monitor_loop():
         else:
             # Non-escape keypress — consume it (prevent buffer leakage)
             last_esc_time = None
-# Start the monitor thread as a daemon
-_monitor_thread = threading.Thread(target=_monitor_loop, daemon=True)
-_monitor_thread.start()
+# The monitor thread is a daemon started on first use (see module docstring).
+_monitor_thread = None
+_monitor_thread_lock = threading.Lock()
+
+
+def _ensure_monitor_thread():
+    """Start the escape-monitor daemon if this process has none running."""
+    global _monitor_thread
+    with _monitor_thread_lock:
+        if _monitor_thread is None or not _monitor_thread.is_alive():
+            _monitor_thread = threading.Thread(
+                target=_monitor_loop, daemon=True, name="esc-monitor")
+            _monitor_thread.start()
 
 
 class cancellable:
@@ -257,6 +275,7 @@ class cancellable:
         if _POSIX_TTY and sys.stdin.isatty():
             self._cbreak = cbreak_mode()
             self._cbreak.__enter__()
+            _ensure_monitor_thread()
             _monitor_active.set()
         return self
 
