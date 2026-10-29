@@ -84,8 +84,11 @@ class TestSuccessCheckGate:
             _tool_resp("end_cycle", {"summary": "4"}, "d"),
             _text("ok"),
         ])
-        hist = "".join(str(m) for m in history)
-        assert 2 <= hist.count("end_cycle blocked") <= 3
+        # Count real block results (tool messages). The forced-reflection prompt that fires on
+        # the 3rd identical result also quotes "end_cycle blocked" in a non-tool message.
+        blocks = sum(str(m.get("content")).count("end_cycle blocked")
+                     for m in history if m.get("role") == "tool")
+        assert 2 <= blocks <= 3
 
     def test_no_config_no_gate(self, monkeypatch):
         history = _run(monkeypatch, None, [
