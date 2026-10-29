@@ -42,6 +42,7 @@ def test_auto_increment_focus_write_exception():
 
 def test_run_agent_single_async_summarizer_kick():
     # Target lines 1874-1878: _async_summarizer.kick() called when unsummarized >= threshold
+    # (and, since T5.13, context utilization >= AGENT_SUMMARY_UTIL_THRESHOLD; zeroed here)
     history = [{"role": "user", "content": f"msg{i}"} for i in range(10)]
     summary_state = {"text": "old summary", "up_to": 0}
     
@@ -57,6 +58,7 @@ def test_run_agent_single_async_summarizer_kick():
          patch('agent._emit'), \
          patch('agent._save_checkpoint'), \
          patch('agent._NUDGE_ENABLED', False), \
+         patch.dict('os.environ', {'AGENT_SUMMARY_UTIL_THRESHOLD': '0'}), \
          patch('agent._SUMMARY_THRESHOLD', 1):
         
         with patch('agent._build_context', return_value=([{"role":"user", "content":"test"}], 5)):
