@@ -39,6 +39,8 @@ _mock_config_side_effect = lambda k: {
 def test_cicd_auto_nudge_missing_pr(mock_config, mock_llm, mock_emit):
     """CICD nudge fires with 'PR open' when edits done, no PR, no push yet."""
     mock_config.__getitem__.side_effect = _mock_config_side_effect
+    # .get() must return its default; a bare MagicMock made the text-response cap int(MagicMock) == 1
+    mock_config.get.side_effect = lambda k, d=None: d
 
     import agent as agent_module
     call_count = [0]
@@ -66,6 +68,8 @@ def test_cicd_auto_nudge_missing_pr(mock_config, mock_llm, mock_emit):
 def test_cicd_auto_nudge_missing_commit(mock_config, mock_llm, mock_emit):
     """CICD nudge fires with 'commit + push + PR open' when edits done but nothing pushed."""
     mock_config.__getitem__.side_effect = _mock_config_side_effect
+    # .get() must return its default; a bare MagicMock made the text-response cap int(MagicMock) == 1
+    mock_config.get.side_effect = lambda k, d=None: d
 
     import agent as agent_module
     call_count = [0]
@@ -93,6 +97,8 @@ def test_cicd_auto_nudge_missing_commit(mock_config, mock_llm, mock_emit):
 def test_cicd_auto_nudge_persisted_pr_only(mock_config, mock_llm, mock_emit):
     """CICD nudge fires 'PR open' only when push done (_cycle_persisted=True) but no PR yet."""
     mock_config.__getitem__.side_effect = _mock_config_side_effect
+    # .get() must return its default; a bare MagicMock made the text-response cap int(MagicMock) == 1
+    mock_config.get.side_effect = lambda k, d=None: d
 
     import agent as agent_module
     call_count = [0]
