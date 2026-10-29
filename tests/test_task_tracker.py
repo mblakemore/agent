@@ -572,8 +572,8 @@ def test_done_on_already_done_task_returns_error():
     fn(action="add", description="Task to complete")
     fn(action="done", task_id=1)
     res = fn(action="done", task_id=1)
-    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
-    assert "already done" in res
+    # Since d211287 a repeat is an idempotent notice, not an Error.
+    assert "already completed" in res, f"Expected already-completed notice, got: {res!r}"
 
 
 def test_done_on_already_done_task_does_not_overwrite_timestamp():
@@ -606,8 +606,8 @@ def test_update_on_done_task_returns_error():
     fn(action="add", description="Task to complete")
     fn(action="done", task_id=1)
     res = fn(action="update", task_id=1, status="in_progress")
-    assert res.startswith("Error:"), f"Expected Error, got: {res!r}"
-    assert "already done" in res
+    # Since d211287 a repeat is an idempotent notice, not an Error.
+    assert "already completed" in res, f"Expected already-completed notice, got: {res!r}"
 
 
 def test_update_on_done_task_does_not_change_status():
@@ -635,8 +635,7 @@ def test_update_on_done_task_cannot_be_done_again():
     fn(action="update", task_id=1, status="in_progress")  # rejected
     # done a second time must also be rejected (not silently succeed)
     res2 = fn(action="done", task_id=1)
-    assert res2.startswith("Error:"), f"Expected Error on second done, got: {res2!r}"
-    assert "already done" in res2
+    assert "already completed" in res2, f"Expected already-completed notice on second done, got: {res2!r}"
 
 
 def test_update_on_open_task_still_works_after_706_fix():
@@ -2287,12 +2286,12 @@ def test_concurrent_done_no_double_complete():
 
     # Exactly one thread should succeed; the other should see "already done"
     success = [r for r in results if r.startswith("Completed")]
-    already_done = [r for r in results if "already done" in r]
+    already_done = [r for r in results if "already completed" in r]
     assert len(success) == 1, (
         f"Expected exactly one success, got: {results}"
     )
     assert len(already_done) == 1, (
-        f"Expected exactly one 'already done' error, got: {results}"
+        f"Expected exactly one 'already completed' notice, got: {results}"
     )
 
     # Task must appear exactly once in done state
