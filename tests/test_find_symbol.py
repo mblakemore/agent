@@ -991,7 +991,7 @@ class TestFindSymbolPathConfinement(unittest.TestCase):
         result = find_symbol("foo", path="/etc")
         error = result[0]["error"]
         # The error should name the working directory
-        self.assertIn("<repo>", error)
+        self.assertIn(os.getcwd(), error)
 
     def test_confinement_not_confused_with_not_found(self):
         """Confinement error dict must be distinguishable from 'symbol not found' []."""
