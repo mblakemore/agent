@@ -118,7 +118,8 @@ def test_continue_mode_resume(mock_config, mock_llm, mock_emit, mock_load):
         [{"role": "user", "content": "Prev message"}],
         {"text": "Previous summary", "up_to": 1},
         1,
-        ["file1.txt"]
+        ["file1.txt"],
+        True,  # clean_exit
     )
 
     mock_config.__getitem__.side_effect = lambda k: {

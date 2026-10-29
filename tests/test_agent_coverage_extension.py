@@ -17,7 +17,7 @@ def test_run_agent_interactive_auto_continue_end():
         
         agent.run_agent_interactive(continue_mode=True, auto=True)
         mock_cleanup.assert_called_once()
-        mock_del_cp.assert_called_once()
+        mock_del_cp.assert_not_called()  # 35dd636: checkpoints survive session end for -c resume
 
 def test_run_agent_interactive_auto_cancelled_guidance():
     """Target lines 1608-1640: auto mode cancelled guidance."""
