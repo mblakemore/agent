@@ -12,6 +12,17 @@ import agent
 
 # ── _in_git_repo ────────────────────────────────────────────────────────────
 
+@pytest.fixture
+def no_foreign_git(tmp_path, monkeypatch):
+    """Hide any `.git` outside tmp_path (e.g. a stray /tmp/.git) so "outside a repo" tests are hermetic."""
+    real_exists, real_isdir = os.path.exists, os.path.isdir
+    def foreign_git(path):
+        p = os.path.abspath(str(path))
+        return os.path.basename(p) == ".git" and not p.startswith(str(tmp_path) + os.sep)
+    monkeypatch.setattr(os.path, "exists", lambda p: False if foreign_git(p) else real_exists(p))
+    monkeypatch.setattr(os.path, "isdir", lambda p: False if foreign_git(p) else real_isdir(p))
+
+
 def test_in_git_repo_detects_dot_git_in_ancestor(tmp_path):
     (tmp_path / ".git").mkdir()
     sub = tmp_path / "a" / "b"
@@ -19,7 +30,7 @@ def test_in_git_repo_detects_dot_git_in_ancestor(tmp_path):
     assert agent._in_git_repo(str(sub)) is True
 
 
-def test_in_git_repo_false_outside(tmp_path):
+def test_in_git_repo_false_outside(tmp_path, no_foreign_git):
     assert agent._in_git_repo(str(tmp_path)) is False
 
 
@@ -43,7 +54,7 @@ def test_ensure_gitignored_idempotent(tmp_path, monkeypatch):
     assert text.count(".agent/") == 1
 
 
-def test_ensure_gitignored_noop_outside_repo(tmp_path, monkeypatch):
+def test_ensure_gitignored_noop_outside_repo(tmp_path, monkeypatch, no_foreign_git):
     monkeypatch.chdir(tmp_path)  # no .git here
     agent._ensure_gitignored((".agent/", "config.json"))
     assert not (tmp_path / ".gitignore").exists()
