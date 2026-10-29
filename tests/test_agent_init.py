@@ -51,7 +51,9 @@ def test_run_agent_interactive_continue_mode():
         # Mock a valid checkpoint: (conversation_history, summary_state, start_turn, initial_files)
         mock_load.return_value = ([{"role": "user", "content": "hi"}], {"text": "some summary", "up_to": 0}, 1, [], True)
         
-        with patch('builtins.input', side_effect=['exit']):
+        # Non-auto continue restores the checkpoint and falls through to the interactive loop,
+        # so run_agent_single only fires once the user sends something.
+        with patch('builtins.input', side_effect=['carry on', 'exit']):
             agent.run_agent_interactive(tui=False, auto=False, continue_mode=True)
         
         mock_run.assert_called()
@@ -79,7 +81,8 @@ def test_run_agent_interactive_continue_auto():
         agent.run_agent_interactive(tui=False, auto=True, continue_mode=True)
         
         mock_run.assert_called()
-        agent._delete_checkpoint.assert_called()
+        # 35dd636: checkpoints now survive session end (clean_exit) so -c can resume them
+        agent._delete_checkpoint.assert_not_called()
 
 def test_initial_prompt_flow():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
@@ -142,7 +145,8 @@ def test_initial_prompt_auto_cleanup():
         agent.run_agent_interactive(initial_prompt="Auto task", tui=False, auto=True)
         
         mock_run.assert_called()
-        agent._delete_checkpoint.assert_called()
+        # 35dd636: checkpoints now survive session end (clean_exit) so -c can resume them
+        agent._delete_checkpoint.assert_not_called()
 
 def test_interactive_loop_commands():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
