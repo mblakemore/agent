@@ -76,7 +76,8 @@ def test_run_agent_interactive_continue_mode():
         [{"role": "user", "content": "past message"}], # history
         {"text": "past summary", "up_to": 1},           # summary_state
         1,                                             # start_turn
-        None                                            # initial_files
+        None,                                           # initial_files
+        True,                                           # clean_exit
     )
     
     with patch("agent._load_checkpoint", return_value=mock_cp), \

@@ -9,7 +9,7 @@ def test_run_agent_interactive_auto_continue_end():
     with patch("agent._setup_logger", return_value=(MagicMock(), "log", "err")), \
          patch("agent._check_api_health", return_value=(True, "")), \
          patch("agent._detect_ctx_size", return_value=None), \
-         patch("agent._load_checkpoint", return_value=([], {"text": ""}, 0, None)), \
+         patch("agent._load_checkpoint", return_value=([], {"text": ""}, 0, None, True)), \
          patch("agent.run_agent_single", return_value="done"), \
          patch("agent.cleanup_temp_sessions") as mock_cleanup, \
          patch("agent._delete_checkpoint") as mock_del_cp, \

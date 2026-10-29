@@ -49,7 +49,7 @@ def test_run_agent_interactive_continue_mode():
         mock_summary.detect_ctx_size.return_value = 32768
         
         # Mock a valid checkpoint: (conversation_history, summary_state, start_turn, initial_files)
-        mock_load.return_value = ([{"role": "user", "content": "hi"}], {"text": "some summary", "up_to": 0}, 1, [])
+        mock_load.return_value = ([{"role": "user", "content": "hi"}], {"text": "some summary", "up_to": 0}, 1, [], True)
         
         with patch('builtins.input', side_effect=['exit']):
             agent.run_agent_interactive(tui=False, auto=False, continue_mode=True)
@@ -74,7 +74,7 @@ def test_run_agent_interactive_continue_auto():
         mock_main.detect_ctx_size.return_value = 32768
         mock_summary.health.return_value = (True, "OK")
         mock_summary.detect_ctx_size.return_value = 32768
-        mock_load.return_value = ([{"role": "user", "content": "hi"}], {"text": "some summary", "up_to": 0}, 1, [])
+        mock_load.return_value = ([{"role": "user", "content": "hi"}], {"text": "some summary", "up_to": 0}, 1, [], True)
         
         agent.run_agent_interactive(tui=False, auto=True, continue_mode=True)
         

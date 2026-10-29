@@ -165,7 +165,7 @@ def test_save_and_load_checkpoint():
             _save_checkpoint(history, summary, turn=3, initial_files="some files")
             result = _load_checkpoint()
     assert result is not None
-    loaded_history, loaded_summary, loaded_turn, loaded_files = result
+    loaded_history, loaded_summary, loaded_turn, loaded_files, _clean_exit = result
     assert loaded_history == history
     assert loaded_summary == summary
     assert loaded_turn == 3

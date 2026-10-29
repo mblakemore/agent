@@ -59,7 +59,7 @@ def test_continue_mode_session_end_records_cycle(
     mock_log.return_value = _logger_tuple()
     mock_run.return_value = "finished"
     # Provide a checkpoint tuple: (history, summary_state, start_turn, initial_files)
-    mock_load_cp.return_value = ([], {"text": ""}, 0, [])
+    mock_load_cp.return_value = ([], {"text": ""}, 0, [], True)
 
     agent.run_agent_interactive(auto=True, continue_mode=True, tui=False)
 

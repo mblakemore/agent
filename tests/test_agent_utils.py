@@ -148,12 +148,12 @@ def test_render_context_bar():
     ([{"role": "assistant", "content": "a1"}], 100, "", None, "assistant"),
 ])
 def test_build_context_logic(history, budget_size, summary_text, initial_files, expected_first_msg_role):
-    with patch("agent._estimate_tokens", return_value=10):
+    # _TOOLS_TOKENS=0: the real tool schemas now cost ~9k tokens, which would swallow this tiny budget
+    with patch("agent._estimate_tokens", return_value=10), patch("agent._TOOLS_TOKENS", 0):
         summary_state = {"text": summary_text}
         ctx_size = budget_size + 10000 
-        # Use a mock for the logger
-        mock_log = patch("logging.Logger").start()
-        selected, oldest_idx = _build_context(history, summary_state, initial_files, ctx_size, 2048, mock_log)
+        # Use a mock for the logger (context manager, so a failed assert cannot leak the patch)
+        with patch("logging.Logger") as mock_log:
+            selected, oldest_idx = _build_context(history, summary_state, initial_files, ctx_size, 2048, mock_log)
         assert selected[0]["role"] == expected_first_msg_role
-        patch.stopall()
 
