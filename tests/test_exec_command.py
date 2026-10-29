@@ -1287,3 +1287,74 @@ def test_command_cannot_leave_the_terminal_changed():
             break
     _, status = os.waitpid(pid, 0)
     assert os.WEXITSTATUS(status) == 0
+
+
+# ── a stale cooked snapshot must not be restored under a live prompt ────────
+
+def _attrs(canonical):
+    import termios
+    lflag = termios.ICANON | termios.ECHO if canonical else 0
+    return [0, 0, 0, lflag, 0, 0, []]
+
+
+def test_cooked_snapshot_is_not_restored_under_a_live_prompt():
+    """Printing above the live prompt passes through cooked mode for a moment; a
+    snapshot taken then is stale, and putting it back turned Esc into ^[ in the
+    input box (live-input session, 2026-10-29)."""
+    from tools.exec_command import _should_restore
+    assert _should_restore(_attrs(True), _attrs(False), prompt_live=True) is False
+
+
+def test_raw_snapshot_is_restored_when_a_child_left_line_mode_under_a_live_prompt():
+    from tools.exec_command import _should_restore
+    assert _should_restore(_attrs(False), _attrs(True), prompt_live=True) is True
+
+
+def test_blocking_prompt_keeps_restoring_the_cooked_snapshot():
+    """Between prompts the terminal IS cooked; a child that left it changed is put back."""
+    from tools.exec_command import _should_restore
+    changed = _attrs(True)
+    changed[0] = 1   # e.g. ICRNL flipped by the child
+    assert _should_restore(_attrs(True), changed, prompt_live=False) is True
+
+
+def test_nothing_to_restore_when_unchanged_or_unknown():
+    from tools.exec_command import _should_restore
+    assert _should_restore(_attrs(True), _attrs(True), prompt_live=False) is False
+    assert _should_restore(None, _attrs(True), prompt_live=False) is False
+    assert _should_restore(_attrs(True), None, prompt_live=False) is False
+
+
+def test_live_prompt_terminal_survives_a_stale_snapshot():
+    """End to end on a pty: the prompt is in raw mode, the snapshot says cooked
+    (taken during a print), the command changes nothing — the terminal stays raw."""
+    import pty
+    pid, fd = pty.fork()
+    if pid == 0:
+        import termios, tty
+        try:
+            import cancel
+            from tools import exec_command as ec
+            tty.setraw(0)
+            raw = termios.tcgetattr(0)
+            cooked = list(raw)
+            cooked[3] = raw[3] | termios.ICANON | termios.ECHO
+            cooked[0] = raw[0] | termios.ICRNL
+            ec._terminal_modes = lambda: cooked        # the stale snapshot
+            cancel.set_tui_mode(True)                  # a live prompt owns the keyboard
+            ec.fn(command="true")
+            still_raw = termios.tcgetattr(0) == raw
+            cancel.set_tui_mode(False)                 # blocking mode: the snapshot is trusted
+            ec.fn(command="true")
+            restored_cooked = termios.tcgetattr(0)[3] & termios.ICANON
+            os._exit(0 if (still_raw and restored_cooked) else 1)
+        except BaseException:
+            os._exit(2)
+    while True:
+        try:
+            if not os.read(fd, 1024):
+                break
+        except OSError:
+            break
+    _, status = os.waitpid(pid, 0)
+    assert os.WEXITSTATUS(status) == 0
