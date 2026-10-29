@@ -240,6 +240,11 @@ _MAX_TEMP_SESSIONS = 4
 # truncated and a notice is appended so the model knows the cap was hit.
 _MAX_OUTPUT_BYTES = 32_768
 
+# Commands run in the foreground unless they are still going after this many
+# seconds; then they are detached into a background session (poll with
+# session_id) instead of blocking the loop. Pass background=false to opt out.
+_DETACH_AFTER_S = 10.0
+
 # Background sessions: {session_id: {"bg_proc": Popen|None, "bg_output": str}}
 _sessions = {}
 _main_session_id = None
@@ -431,7 +436,7 @@ atexit.register(cleanup_temp_sessions)
 
 
 def fn(command: str = "", session_id: str = "", timeout: float = 120,
-       background: bool = False, new_session: bool = False,
+       background: bool | None = None, new_session: bool = False,
        cwd: str = "", env: dict | None = None) -> str:
     """Execute a shell command in the agent's working directory.
 
@@ -439,7 +444,9 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         command: Shell command to execute. If empty, checks on a background session.
         session_id: Existing session to reuse (only for background process polling).
         timeout: Max seconds to wait (default 120). LLM-calling scripts may need 300+.
-        background: If true, start the command and return immediately.
+        background: If true, start the command and return immediately. If omitted,
+             the command is waited on for up to 10 seconds and then continues in the
+             background (poll with session_id). If false, wait for the full timeout.
         new_session: If true, create a new temporary session for parallel work.
         cwd: Working directory for this invocation. If empty, uses the agent's home
              directory. Must be an existing directory. This is the clean alternative
@@ -474,6 +481,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     # background and new_session must be actual booleans (or 0/1 integers).
     # Strings like "false" are non-empty and therefore truthy — an LLM passing
     # background="false" would silently start a background process (#885).
+    _auto_detach = background is None
     if background is None:
         background = False
     if new_session is None:
@@ -828,7 +836,9 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
     reader_thread.start()
 
     timed_out = False
+    detached = False
     _POLL_INTERVAL = 0.05  # 50 ms — responsive to double-Escape
+    _detach_at = _time.monotonic() + _DETACH_AFTER_S if (_auto_detach and timeout > _DETACH_AFTER_S) else None
 
     try:
         while not _reader_done.wait(timeout=_POLL_INTERVAL):
@@ -837,6 +847,10 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
                 proc.wait()
                 reader_thread.join(timeout=1.0)
                 raise _cancel_mod.CancelledError()
+            if _detach_at is not None and _time.monotonic() > _detach_at:
+                # Still running: hand the process to the session and return.
+                detached = True
+                break
             if _time.monotonic() > deadline:
                 proc.kill()
                 proc.wait()
@@ -845,8 +859,27 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
                 break
     finally:
         # Ensure the reader thread always finishes before we proceed.
-        reader_thread.join(timeout=2.0)
+        if not detached:
+            reader_thread.join(timeout=2.0)
         _restore_terminal_modes(_saved_modes)
+
+    if detached:
+        session["bg_proc"] = proc
+        session["bg_output"] = "".join(output_parts)
+
+        def _mirror():
+            while reader_thread.is_alive():
+                session["bg_output"] = "".join(output_parts)
+                reader_thread.join(timeout=0.1)
+            proc.wait()
+            session["bg_output"] = "".join(output_parts)
+
+        threading.Thread(target=_mirror, daemon=True).start()
+        tail = session["bg_output"][-4000:]
+        return (
+            f"[session: {sid}] (still running after {_DETACH_AFTER_S:g}s — continuing in background; "
+            f"poll with session_id)\n{tail}"
+        )
 
     if timed_out:
         partial = "".join(output_parts).rstrip('\n')
@@ -966,8 +999,7 @@ definition = {
                 },
                 "background": {
                     "type": "boolean",
-                    "description": "If true, start the command and return immediately without waiting. Poll with session_id later.",
-                    "default": False,
+                    "description": "If true, start the command and return immediately. If omitted, waits up to 10s then continues in the background (poll with session_id). If false, waits for the full timeout.",
                 },
                 "new_session": {
                     "type": "boolean",
