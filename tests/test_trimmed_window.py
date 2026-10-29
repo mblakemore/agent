@@ -205,3 +205,36 @@ def test_cache_misses_are_logged_with_a_reason(agent_loop_mocks, monkeypatch):
               if c.args and str(c.args[0]).startswith("cache.miss")]
     assert len(misses) == 2, misses
     assert "reason=first" in misses[0] and "reason=unknown" in misses[1]
+
+
+# ── a harvested summary is attributed wherever it was harvested ─────────────
+
+def test_every_harvest_site_marks_the_lead_change(monkeypatch):
+    s = agent.AsyncSummarizer({"summary": {"max_wait_on_save": 1}}, MagicMock())
+    s._pending_result, s._pending_up_to = "new summary", 7
+    state = {"text": "", "up_to": 0}
+    with patch("agent._condense_summary", lambda t, lg: t):
+        assert s.harvest(state) is True
+    assert state["_lead_changed"] is True and state["up_to"] == 7
+    assert s.harvest(state) is False, "nothing pending: no second harvest"
+
+
+def test_a_miss_after_a_harvest_on_any_site_is_attributed(agent_loop_mocks, monkeypatch):
+    from tools import MAP_FN
+    monkeypatch.setattr(agent, "_main_backend",
+                        MagicMock(kind="aicommons", model="m", honours_system=True, base_url="http://x"))
+    state = {"text": "", "up_to": 0}
+
+    def tool(**kw):
+        state["_lead_changed"] = True     # what a harvest leaves, on whichever site it ran
+        return "contents"
+    monkeypatch.setitem(MAP_FN, "read_file", tool)
+    agent_loop_mocks.script(_tool_turn_with_usage("t1", 0, 900, 2),
+                            _tool_turn_with_usage("t2", 0, 950, 2))
+    lg = MagicMock()
+    agent.run_agent_single([{"role": "user", "content": "go"}], state, [], lg)
+    misses = [c.args[0] % c.args[1:] for c in lg.info.call_args_list
+              if c.args and str(c.args[0]).startswith("cache.miss")]
+    assert len(misses) == 2 and "reason=first" in misses[0]
+    assert "reason=summary-harvest" in misses[1], misses
+    assert "_lead_changed" not in state, "the flag is consumed by the request it explains"

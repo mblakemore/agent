@@ -3499,6 +3499,10 @@ class AsyncSummarizer:
                 return False
             summary_state["text"] = _condense_summary(self._pending_result, self._log)
             summary_state["up_to"] = self._pending_up_to
+            # A new summary rewrites the lead message of the next request, i.e. one
+            # expected cache miss. Harvests happen at several sites (turn start, the
+            # stop paths), so the flag lives on the state and the cache.miss log pops it.
+            summary_state["_lead_changed"] = True
             self._pending_result = None
             self._pending_up_to = None
             return True
@@ -3921,6 +3925,7 @@ def _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, for
     summary = _generate_summary(summary_state["text"], new_messages, log)
     summary_state["text"] = _condense_summary(summary, log)
     summary_state["up_to"] = oldest_idx
+    summary_state["_lead_changed"] = True   # see AsyncSummarizer.harvest
     _emit("on_summary_done")
     return True
 
@@ -7152,6 +7157,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             _c_unc = int(_usage.get("input_tokens") or 0)
                             _head_moved = bool(summary_state.pop("_head_moved", False))
                             _rewrote = bool(summary_state.pop("_rewrote_window", False))
+                            _harvested_this_turn = _harvested_this_turn or bool(summary_state.pop("_lead_changed", False))
                             _c_total = _c_read + _c_write + _c_unc
                             if _c_total and _c_read * 2 < _c_total:
                                 _reason = ("first" if _cache_req_n == 0 else
