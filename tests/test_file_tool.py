@@ -1255,6 +1255,21 @@ class TestEditFuzzyTrailingWhitespace(unittest.TestCase):
         content = self._target.read_text(encoding="utf-8")
         self.assertIn("x = 2", content)
 
+    def test_trailing_newline_in_old_string_keeps_next_line_indent(self):
+        """A fuzzy match that ends at a newline must not swallow the next line's indentation."""
+        result = file_tool.fn(
+            action="edit",
+            path=str(self._target),
+            old_string="    x = 1\n\n",           # clean blank line; file has '    \\n'
+            new_string="    x = 2\n\n",
+        )
+        self.assertFalse(result.startswith("Error:"),
+                         msg=f"Fuzzy edit must succeed, got: {result!r}")
+        self.assertEqual(
+            self._target.read_text(encoding="utf-8"),
+            "def foo():\n    x = 2\n\n    return x\n",
+        )
+
     def test_exact_match_still_works(self):
         """Exact old_string (with trailing spaces) still matches as before."""
         result = file_tool.fn(
