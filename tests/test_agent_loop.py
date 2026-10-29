@@ -747,7 +747,7 @@ def test_pick_model_interactive_no_models(mock_list, mock_emit):
     mock_list.return_value = []
     result = _pick_model_interactive("model-1", "http://api.test")
     assert result is None
-    assert any(args[0] == "on_notice" and "Could not list models from http://api.test/v1/models" in args[2] 
+    assert any(args[0] == "on_notice" and "Could not list models from the configured backend" in args[2] 
                for args, kwargs in mock_emit.call_args_list)
 
 def test_validate_tool_call_blocks_pr_with_syntax_errors(monkeypatch):
