@@ -19,6 +19,14 @@ Each cycle is a turn loop:
 - **Tool recovery**: recoverable tool errors (e.g. bad line numbers) are retried with corrected parameters via a lightweight LLM call.
 - **Context overflow handling**: three consecutive HTTP 500s are treated as context overflow; the agent trims history and retries.
 
+## Long-running commands
+
+`exec_command` runs a command in the foreground for 10 seconds; one still going after that is detached into a background session (pass `background=true` to detach at once, `background=false` to wait out the timeout). Three things make a long run (a full test suite, a build) cheap to supervise:
+
+- **One call waits for it.** Calling `exec_command` with only the `session_id` and `wait=<seconds>` blocks until the process exits (or the wait runs out) and returns its exit code and output, so a three-minute run costs one call rather than a sleep-and-poll loop. A double-Escape interrupts the wait, not the process.
+- **Its complete output is on disk.** Every background or detached command streams everything it prints to `.agent/exec/<session>-<time>.log` in the agent's home; the result names the path. When the tool result has since been compressed or truncated in the conversation, the file is still there to grep. The newest 30 logs are kept.
+- **The result stays readable.** The exit code and output of a finished command remain available from later polls of the same session until the next command runs in it.
+
 ## Escalation: when the advisor is consulted
 
 When an [`advisor`](config-reference.md#advisor) endpoint is configured, three signals can route to it, all through one policy:

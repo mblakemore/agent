@@ -51,6 +51,13 @@
 <li><strong>Tool recovery</strong>: recoverable tool errors (e.g. bad line numbers) are retried with corrected parameters via a lightweight LLM call.</li>
 <li><strong>Context overflow handling</strong>: three consecutive HTTP 500s are treated as context overflow; the agent trims history and retries.</li>
 </ul>
+<h2 id="long-running-commands">Long-running commands</h2>
+<p><code>exec_command</code> runs a command in the foreground for 10 seconds; one still going after that is detached into a background session (pass <code>background=true</code> to detach at once, <code>background=false</code> to wait out the timeout). Three things make a long run (a full test suite, a build) cheap to supervise:</p>
+<ul>
+<li><strong>One call waits for it.</strong> Calling <code>exec_command</code> with only the <code>session_id</code> and <code>wait=&lt;seconds&gt;</code> blocks until the process exits (or the wait runs out) and returns its exit code and output, so a three-minute run costs one call rather than a sleep-and-poll loop. A double-Escape interrupts the wait, not the process.</li>
+<li><strong>Its complete output is on disk.</strong> Every background or detached command streams everything it prints to <code>.agent/exec/&lt;session&gt;-&lt;time&gt;.log</code> in the agent's home; the result names the path. When the tool result has since been compressed or truncated in the conversation, the file is still there to grep. The newest 30 logs are kept.</li>
+<li><strong>The result stays readable.</strong> The exit code and output of a finished command remain available from later polls of the same session until the next command runs in it.</li>
+</ul>
 <h2 id="escalation-when-the-advisor-is-consulted">Escalation: when the advisor is consulted</h2>
 <p>When an <a href="config-reference.html#advisor"><code>advisor</code></a> endpoint is configured, three signals can route to it, all through one policy:</p>
 <ul>

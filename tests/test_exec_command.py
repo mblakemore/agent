@@ -1358,3 +1358,110 @@ def test_live_prompt_terminal_survives_a_stale_snapshot():
             break
     _, status = os.waitpid(pid, 0)
     assert os.WEXITSTATUS(status) == 0
+
+
+# ── background runs: wait=, the output file, and a result that stays readable ──
+
+from pathlib import Path
+
+
+def _sid(res):
+    return re.search(r'\[session: ([^\]]+)\]', res).group(1)
+
+
+def test_wait_blocks_until_the_background_command_finishes(tmp_path, monkeypatch):
+    """One call with wait= replaces a sleep/poll loop: it returns the exit code
+    and the output as soon as the process ends."""
+    monkeypatch.chdir(tmp_path)
+    res = fn(command="sleep 0.4; echo finished; exit 3", background=True, new_session=True)
+    sid = _sid(res)
+    t0 = time.monotonic()
+    out = fn(session_id=sid, wait=10)
+    assert time.monotonic() - t0 < 5
+    assert "exit=3" in out and "finished" in out
+
+
+def test_wait_gives_up_at_its_deadline_and_reports_still_running(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    res = fn(command="sleep 5", background=True, new_session=True)
+    sid = _sid(res)
+    t0 = time.monotonic()
+    out = fn(session_id=sid, wait=0.3)
+    assert 0.25 < time.monotonic() - t0 < 2
+    assert "(still running" in out
+    fn.__globals__["_sessions"][sid]["bg_proc"].kill()
+
+
+def test_wait_is_validated():
+    assert fn(session_id="x", wait="5").startswith("Error: wait")
+    assert fn(session_id="x", wait=-1).startswith("Error: wait")
+    assert fn(session_id="x", wait=float("nan")).startswith("Error: wait")
+
+
+def test_background_output_is_streamed_to_a_file_named_in_the_result(tmp_path, monkeypatch):
+    """A long run's full output survives the conversation compressing the tool
+    result: it is in .agent/exec/<session>-<time>.log, and the result says so."""
+    monkeypatch.chdir(tmp_path)
+    res = fn(command="echo one; echo two", background=True, new_session=True)
+    m = re.search(r"full output: (\S+\.log)", res)
+    assert m, res
+    path = Path(m.group(1))
+    assert path.parent == tmp_path / ".agent" / "exec"
+    assert (path.parent / ".gitignore").read_text() == "*\n"
+    fn(session_id=_sid(res), wait=10)
+    assert path.read_text() == "one\ntwo\n"
+
+
+def test_detached_command_output_is_streamed_to_a_file(tmp_path, monkeypatch):
+    """A command detached after the foreground grace period gets the file too,
+    including what was printed before it detached."""
+    monkeypatch.chdir(tmp_path)
+    from tools import exec_command as ec
+    monkeypatch.setattr(ec, "_DETACH_AFTER_S", 0.2)
+    res = fn(command="echo early; sleep 0.6; echo late", new_session=True)
+    assert "continuing in background" in res
+    m = re.search(r"full output: (\S+\.log)", res)
+    assert m, res
+    out = fn(session_id=_sid(res), wait=10)
+    assert "exit=0" in out and "late" in out
+    assert Path(m.group(1)).read_text() == "early\nlate\n"
+
+
+def test_a_finished_result_stays_readable_on_a_later_poll(tmp_path, monkeypatch):
+    """The first poll that sees the exit used to be the only one: a second poll
+    said '(idle)' and the output was gone if the first was compressed away."""
+    monkeypatch.chdir(tmp_path)
+    res = fn(command="echo kept; exit 7", background=True, new_session=True)
+    sid = _sid(res)
+    first = fn(session_id=sid, wait=10)
+    assert "exit=7" in first
+    again = fn(session_id=sid)
+    assert "exit=7" in again and "kept" in again and "finished earlier" in again
+    fn(command="echo new", session_id=sid)
+    assert "(idle)" in fn(session_id=sid)
+
+
+def test_exec_logs_are_pruned_to_the_newest(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from tools import exec_command as ec
+    monkeypatch.setattr(ec, "_EXEC_LOG_KEEP", 3)
+    d = tmp_path / ".agent" / "exec"
+    d.mkdir(parents=True)
+    for i in range(5):
+        p = d / f"old-{i}.log"
+        p.write_text("x")
+        os.utime(p, (1000 + i, 1000 + i))
+    sink = ec._open_log_sink("s", str(tmp_path))
+    sink.close()
+    names = sorted(p.name for p in d.glob("*.log"))
+    assert len(names) == 3 and "old-3.log" in names and "old-4.log" in names
+
+
+def test_no_log_file_when_the_home_is_not_writable(tmp_path, monkeypatch):
+    """The command still runs; only the file is missing."""
+    monkeypatch.chdir(tmp_path)
+    from tools import exec_command as ec
+    monkeypatch.setattr(ec, "_EXEC_LOG_DIR", "/proc/no-such-dir/exec")
+    res = fn(command="echo ok", background=True, new_session=True)
+    assert "full output" not in res
+    assert "ok" in fn(session_id=_sid(res), wait=10)

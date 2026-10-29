@@ -403,3 +403,44 @@ def test_exit_handler_leaves_a_shared_terminal_alone(monkeypatch):
     monkeypatch.setattr(cancel.sys.stdin, "isatty", lambda: True, raising=False)
     cancel._restore_terminal()
     assert calls == []
+
+
+# ── the escape monitor starts on first use, not at import ────────────────────
+
+def test_import_starts_no_monitor_thread():
+    """Importing cancel in a test run must not start the escape-monitor
+    daemon: a test that patches _read_byte and sets _monitor_active drives
+    _monitor_loop alone (the flaky double-escape test of 2026-10-29)."""
+    import subprocess, sys as _sys, os as _os
+    root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    code = ("import cancel, threading; "
+            "print(sorted(t.name for t in threading.enumerate()))")
+    out = subprocess.run([_sys.executable, "-c", code], cwd=root,
+                         capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0, out.stderr
+    assert "esc-monitor" not in out.stdout, out.stdout
+
+
+def test_cancellable_on_a_tty_starts_the_monitor_once(monkeypatch):
+    import threading as _th
+    started = []
+    monkeypatch.setattr(cancel, "_monitor_thread", None)
+    monkeypatch.setattr(cancel, "_monitor_active", _th.Event())
+    monkeypatch.setattr(cancel.sys.stdin, "isatty", lambda: True, raising=False)
+
+    class _NoCbreak:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(cancel, "cbreak_mode", _NoCbreak)
+    real = _th.Thread
+
+    class _Spy(real):
+        def start(self):
+            started.append(self.name)
+            super().start()
+    monkeypatch.setattr(cancel.threading, "Thread", _Spy)
+    with cancel.cancellable():
+        pass
+    with cancel.cancellable():
+        pass
+    assert started == ["esc-monitor"]
