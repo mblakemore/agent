@@ -8,7 +8,7 @@ class TestAgentInitCoverage(unittest.TestCase):
     def setUp(self):
         # Setup basic config to avoid KeyErrors
         self.mock_config = {
-            "context": {"ctx_size": 4096, "max_tokens": 1024},
+            "context": {"ctx_size": agent._DEFAULT_CTX_SIZE, "max_tokens": 1024},
             "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
             "llm": {"model": "test-model"},
             "summary": {"enabled": True, "ctx_size": 4096},
