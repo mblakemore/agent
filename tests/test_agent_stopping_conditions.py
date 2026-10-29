@@ -67,7 +67,7 @@ def test_hard_stop_drift():
     initial_files = {}
     mock_log = MagicMock()
     
-    with patch("agent._llm_request") as mock_llm:
+    with patch("agent._llm_request") as mock_llm, patch("agent._AUTO_MODE", True):  # post-persist gates are -a only
         # Turn 0: git push
         tc_push = [{"id": "t0", "type": "function", "function": {"name": "exec_command", "arguments": json.dumps({"command": "git push origin cicd/branch"})}}]
         responses = [make_stream(tool_calls=tc_push)]
