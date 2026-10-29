@@ -247,11 +247,12 @@ def test_tui_prompt_line_and_cancel_binding_build():
     assert hasattr(s, "prompt_line") and callable(s.prompt_line)
 
 
-def test_monitor_arm_notice_mentions_session_end():
+def test_monitor_arm_notice_explains_lifetime():
     out = monitor_fn(action="arm", label="j", command="true", interval_seconds=5)
     monitor_fn(action="stop", label="j")
     low = out.lower()
-    assert "stops when the session ends" in low
+    assert "as this process does" in low          # lives with the process, not the turn
+    assert "no need to re-arm" in low             # interactive sessions keep it
     assert "-a" in low or "automated" in low  # tells -a agents the limit
 
 

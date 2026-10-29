@@ -12,7 +12,7 @@ _MAX_LABEL = 40
 
 
 def fn(action="arm", label=None, command=None, interval_seconds=15,
-       prefix=None, dedup=True):
+       prefix=None, dedup=True, persist=False):
     """Manage background monitors.
 
     Args:
@@ -23,6 +23,7 @@ def fn(action="arm", label=None, command=None, interval_seconds=15,
         interval_seconds: seconds between runs (min 2). Default 15.
         prefix: text prefixed to each injection. Default "[monitor:<label>] ".
         dedup: skip identical consecutive output (default true).
+        persist: save the monitor so it is re-armed when agent.py restarts.
     """
     action = str(action or "arm").strip().lower()
 
@@ -49,18 +50,21 @@ def fn(action="arm", label=None, command=None, interval_seconds=15,
                     "(a shell command to run each interval).")
         px = prefix if isinstance(prefix, str) else f"[monitor:{label.strip()}] "
         r = monitor_bus.arm(label.strip(), command.strip(),
-                            interval=interval_seconds, prefix=px, dedup=bool(dedup))
+                            interval=interval_seconds, prefix=px, dedup=bool(dedup),
+                            persist=bool(persist))
         if not r.get("ok"):
             return f"Error: {r.get('error')}"
         verb = "replaced" if r.get("replaced") else "armed"
         return (f"Monitor '{label.strip()}' {verb} — running "
                 f"`{command.strip()}` every {r['interval']:g}s; its output will "
                 f"pop into the conversation as it arrives, at your next natural "
-                f"tool-result boundary. NOTE: this monitor stops when the "
-                f"session ends and the process exits — in automated (-a) mode "
-                f"that is when the cycle completes, so it will NOT catch events "
-                f"that land after the cycle ends. For something that may fire "
-                f"hours later, run in a persistent interactive session.")
+                f"tool-result boundary. "
+                + ("It is saved and will be re-armed when agent.py restarts. "
+                   if r.get("persisted") else "")
+                + "It keeps running for as long as this process does: in an "
+                  "interactive session that is across many turns, with no need "
+                  "to re-arm. In automated (-a) mode the process exits when the "
+                  "cycle completes and the monitor goes with it.")
 
     return f"Error: unknown action '{action}' (use arm|stop|list)."
 
@@ -74,8 +78,10 @@ definition = {
             "and pops its output into the conversation as new input while you "
             "keep working. Generic — monitor anything (an inbox poll, a log "
             "tail, a file or API check); the command decides what is watched. "
-            "The monitor is a daemon: it stops automatically when the cycle "
-            "ends and the process exits (it never keeps the process alive). "
+            "The monitor is a daemon: it runs while the agent process runs "
+            "(an interactive session keeps it across turns; an -a cycle ends "
+            "it) and never keeps the process alive. Set persist=true to have "
+            "it re-armed after agent.py restarts. "
             "Arm it at the start of your work with a label + command to listen "
             "while you proceed; use action='stop'/'list' to manage. Prefer a "
             "command that consumes/advances its own cursor so repeat runs "
@@ -103,6 +109,10 @@ definition = {
                 "prefix": {
                     "type": "string",
                     "description": "Text prefixed to each injection. Default '[monitor:<label>] '.",
+                },
+                "persist": {
+                    "type": "boolean",
+                    "description": "Save this monitor and re-arm it when agent.py restarts. Default false.",
                 },
                 "dedup": {
                     "type": "boolean",

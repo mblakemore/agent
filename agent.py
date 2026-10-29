@@ -4983,6 +4983,13 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                   "prompt_toolkit not installed — using plain prompt. "
                   "`pip install prompt_toolkit` (or pass --no-tui to silence).")
 
+    try:
+        _restored = monitor_bus.restore_persisted()
+        if _restored:
+            log.info("re-armed persistent monitors: %s", ", ".join(_restored))
+    except Exception:
+        log.debug("restore_persisted failed", exc_info=True)
+
     if initial_prompt and not (continue_mode and start_turn > 0):
         _emit("on_user_message", initial_prompt)
         try:
@@ -8188,6 +8195,16 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             log.info("end_cycle called — exiting cleanly: %s",
                                      _summary or "(no summary)")
                             telemetry.record_patch_event("end_cycle", kind="fired")
+                            # Answer the tool_call before leaving: an interactive
+                            # session keeps this history, and an assistant
+                            # tool_call with no tool message is rejected by
+                            # strict APIs on the next turn.
+                            conversation_history.append({
+                                "role": "tool",
+                                "tool_call_id": tool_id,
+                                "name": func_name,
+                                "content": "Cycle ended.",
+                            })
                             return "done"
                         # Conversational tool recovery: on error, try to fix params
                         if result_str.startswith("Error"):

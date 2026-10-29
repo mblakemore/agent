@@ -17,6 +17,7 @@ Design guarantees:
 Armed via the `monitor` tool (tools/monitor.py); drained by agent.py.
 """
 
+import json
 import logging
 import os
 import queue as _queue
@@ -136,6 +137,33 @@ class _Monitor:
             self._stop.wait(self.interval)
 
 
+def _persist_path():
+    """Where persistent monitors are saved: AGENT_MONITORS_FILE, else
+    .agent/monitors.json under the working directory."""
+    return os.environ.get("AGENT_MONITORS_FILE") or os.path.join(".agent", "monitors.json")
+
+
+def _load_persisted():
+    try:
+        with open(_persist_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_persisted(specs):
+    path = _persist_path()
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(specs, f, indent=2)
+        os.replace(tmp, path)
+    except OSError as e:
+        _log.warning("could not save persistent monitors to %s: %s", path, e)
+
+
 class _Bus:
     def __init__(self):
         self._q = _queue.Queue()
@@ -143,7 +171,7 @@ class _Bus:
         self._lock = threading.Lock()
 
     def arm(self, label, command, interval=_DEFAULT_INTERVAL, cmd_timeout=None,
-            prefix="", dedup=True):
+            prefix="", dedup=True, persist=False):
         label = str(label or "").strip()
         command = str(command or "").strip()
         if not label:
@@ -170,8 +198,30 @@ class _Bus:
             m = _Monitor(label, command, interval, cmd_timeout, prefix, bool(dedup))
             self._monitors[label] = m
             m.start()
+        # persist=True saves the spec so restore_persisted() re-arms it after a
+        # restart; persist=False on an existing persistent label un-persists it.
+        specs = _load_persisted()
+        if persist:
+            specs[label] = {"command": command, "interval": interval,
+                            "prefix": prefix, "dedup": bool(dedup)}
+            _save_persisted(specs)
+        elif label in specs:
+            specs.pop(label)
+            _save_persisted(specs)
         return {"ok": True, "label": label, "interval": interval,
-                "replaced": existing is not None}
+                "replaced": existing is not None, "persisted": bool(persist)}
+
+    def restore_persisted(self):
+        """Re-arm every saved persistent monitor. Returns the labels armed."""
+        armed = []
+        for label, sp in _load_persisted().items():
+            if not isinstance(sp, dict) or label in self._monitors:
+                continue
+            r = self.arm(label, sp.get("command"), interval=sp.get("interval", _DEFAULT_INTERVAL),
+                         prefix=sp.get("prefix", ""), dedup=sp.get("dedup", True), persist=True)
+            if r.get("ok"):
+                armed.append(label)
+        return armed
 
     def disarm(self, label):
         label = str(label or "").strip()
@@ -180,6 +230,9 @@ class _Bus:
         if m is None:
             return {"ok": False, "error": f"no monitor '{label}'"}
         m.stop()
+        specs = _load_persisted()
+        if specs.pop(label, None) is not None:
+            _save_persisted(specs)
         return {"ok": True, "label": label}
 
     def list_active(self):
@@ -288,6 +341,10 @@ def arm(label, command, **kw):
 
 def disarm(label):
     return _BUS.disarm(label)
+
+
+def restore_persisted():
+    return _BUS.restore_persisted()
 
 
 def list_active():
