@@ -86,13 +86,18 @@ class TestLiveGuard:
 
     @pytest.mark.live
     def test_marked_live_reaches_the_socket_layer(self):
-        # Marked: the guard steps aside. We point at a closed model-class port variant on the
-        # loopback (8788 with nothing listening) — refusal proves the connect was attempted.
+        # Marked: the guard steps aside. We point at a model-class port variant on the loopback
+        # (8788). Whether the connect is refused (nothing listening) or succeeds (a local service
+        # happens to hold the port) it reached the socket layer; the only failure is the guard
+        # raising LiveEndpointGuardError.
         s = socket.socket()
         s.settimeout(0.5)
         try:
-            with pytest.raises((ConnectionRefusedError, OSError, socket.timeout)) as ei:
+            try:
                 s.connect(("127.0.0.1", 8788))
-            assert not isinstance(ei.value, LiveEndpointGuardError)
+            except LiveEndpointGuardError:
+                pytest.fail("guard blocked a connect that was marked live")
+            except (ConnectionRefusedError, OSError, socket.timeout):
+                pass
         finally:
             s.close()
