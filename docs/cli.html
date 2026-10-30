@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">CLI and usage</p>
 <h1>CLI and usage</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-10-25 (570adb7)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-10-29 (053ba50)</p>
 <p>Command-line arguments, the interactive TUI, slash commands and environment variables.</p>
 <pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
 </code></pre>
@@ -521,7 +521,7 @@ server-side fix is picked up automatically without a config change.</p>
 </tr>
 <tr>
 <td><code>AGENT_PRUNE_OLD_THINKING</code></td>
-<td><code>0</code> replays and checkpoints every assistant turn's stored thinking blocks (the behaviour before 2026-10-29). By default only the newest assistant turn's thinking is sent and saved: the API needs that one ahead of its tool calls and strips, without billing, thinking from earlier turns, which was half of a 1.25 MB checkpoint written every turn on one measured session.</td>
+<td><code>0</code> keeps every assistant turn's stored thinking blocks in the checkpoint file; by default only the newest turn's are saved (the rest was half of a 1.25 MB checkpoint written every turn). This concerns the checkpoint only: within a run every stored block is sent back on every request, because Opus 4.5+, Sonnet 4.6+ and Haiku 5.5 keep prior turns' thinking in the cached prefix and a turn sent without a block it had before is a cache miss from there on. After a <code>-c</code> resume the pruned turns simply have no thinking, consistently.</td>
 </tr>
 <tr>
 <td><code>AGENT_COMPRESS_PRESSURE_FRAC</code></td>

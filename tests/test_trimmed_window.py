@@ -255,14 +255,25 @@ class TestRequestSignature:
         b = agent._request_signature([{"role": "user", "content": "x", "_tokens": 9, "_note_turn": 1}], [])
         assert agent._prefix_unchanged(a, b) and agent._prefix_unchanged(b, a)
 
-    def test_old_thinking_is_not_part_of_the_prefix(self):
-        # the wire layer never resends thinking from earlier assistant turns, so its
-        # pruning between two requests must not look like a prefix change
+    def test_local_reasoning_keys_are_not_part_of_the_prefix(self):
+        # llama.cpp reasoning_content is never sent back, so dropping it is not a change
         base = [{"role": "user", "content": "x"},
                 {"role": "assistant", "content": "y", "reasoning_content": "long think"}]
         pruned = [base[0], {"role": "assistant", "content": "y"}]
         assert agent._prefix_unchanged(agent._request_signature(base, []),
                                        agent._request_signature(pruned, []))
+
+    def test_stored_anthropic_thinking_is_part_of_the_prefix(self):
+        # the wire replays it every turn and preserving models cache it: a turn sent with
+        # its thinking and then without is a rewrite, and must be attributed as one
+        from anthropic_wire import THINKING_KEY
+        think = {"model": "m", "blocks": [{"type": "thinking", "thinking": "t", "signature": "s"}]}
+        with_t = [{"role": "user", "content": "x"}, {"role": "assistant", "content": "y", THINKING_KEY: think}]
+        without = [with_t[0], {"role": "assistant", "content": "y"}]
+        assert not agent._prefix_unchanged(agent._request_signature(with_t, []),
+                                           agent._request_signature(without, []))
+        assert agent._prefix_diff(agent._request_signature(with_t, []),
+                                  agent._request_signature(without, [])) == "msg 1/2"
 
 
 # ── a harvested summary is attributed wherever it was harvested ─────────────

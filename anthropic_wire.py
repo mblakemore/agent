@@ -123,8 +123,9 @@ def _tool_result_block(msg: dict) -> dict:
 
 
 def prune_old_thinking_enabled() -> bool:
-    """AGENT_PRUNE_OLD_THINKING=0 replays (and checkpoints) every turn's stored thinking,
-    the pre-2026-10-29 behaviour; the default keeps only the newest assistant turn's."""
+    """Whether the CHECKPOINT copy keeps only the newest assistant turn's thinking
+    (default) or every turn's (AGENT_PRUNE_OLD_THINKING=0). The wire is not affected:
+    every stored block in the window is always sent back, see openai_to_anthropic."""
     import os
     return os.environ.get("AGENT_PRUNE_OLD_THINKING", "1").strip().lower() not in ("0", "false", "no", "off")
 
@@ -246,14 +247,17 @@ def openai_to_anthropic(
     system_parts: list[str] = []
     raw: list[dict] = []
     messages = list(messages)
-    # Only the newest assistant turn's thinking matters: the API needs it ahead of that
-    # turn's tool_use when the next message is a tool result, and strips (and does not
-    # bill) thinking from every earlier turn. Replaying all of it was half of a 1.25 MB
-    # checkpoint and of every request body (333 blocks, 595k chars, on one measured run).
-    last_assistant = max((i for i, m in enumerate(messages) if m.get("role") == "assistant"), default=None)
-    replay_all = not prune_old_thinking_enabled()
+    # Every stored thinking block in the window is sent back, unchanged. Opus 4.5+,
+    # Sonnet 4.6+ and Haiku 5.5 keep prior turns' thinking in context as part of the
+    # cached prefix (the API docs' "thinking block preservation"), so a turn sent WITH
+    # its thinking on one request and WITHOUT it on the next rewrites that message and
+    # misses the cache from there on. Measured 2026-10-29 on claude-v5.5-sonnet with
+    # newest-turn-only replay: every request re-wrote 1-8k tokens, and after any full
+    # miss a streak of read=0 requests followed until a turn happened to think nothing.
+    # Older models strip earlier turns' thinking themselves, so sending it costs nothing
+    # there. Checkpoint size is handled by _prune_old_thinking in agent.py instead.
 
-    for i, msg in enumerate(messages):
+    for msg in messages:
         role = msg.get("role")
         if role in _SYSTEM_ROLES:
             txt = _text_of(msg.get("content")).strip()
@@ -264,8 +268,7 @@ def openai_to_anthropic(
             raw.append({"role": "user", "content": [_tool_result_block(msg)]})
             continue
         if role == "assistant":
-            thinking = _thinking_blocks(msg, model) if (replay_all or i == last_assistant) else []
-            blocks = thinking + _content_blocks(msg.get("content"))
+            blocks = _thinking_blocks(msg, model) + _content_blocks(msg.get("content"))
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function") or {}
                 args, ok = _parse_args(fn.get("arguments"))

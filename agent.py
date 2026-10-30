@@ -2096,20 +2096,22 @@ def _prompt_caching_backend():
     return getattr(globals().get("_main_backend"), "kind", None) == "aicommons"
 
 
-# Keys the wire layer strips or replays on its own (old thinking is never resent),
-# so they are not part of the text the server cached and must not change the signature.
+# Local-model reasoning keys that never go back on the wire; they must not change the
+# signature. Stored Anthropic thinking (_THINKING_KEY) DOES go back, every turn, so it
+# is hashed like any content: a turn sent with it once and without it later is a rewrite.
 _PREFIX_SIG_SKIP = frozenset({"thinking", "reasoning_content", "reasoning"})
 
 
 def _request_signature(messages, tools):
     """What the server could have cached for this request: a hash of the tool
-    schemas and one hash per outgoing message. Pure. Thinking keys and the private
-    `_`-prefixed bookkeeping (`_tokens`, `_note_turn`) never reach the wire, so they
-    are left out."""
+    schemas and one hash per outgoing message. Pure. Local reasoning keys and the
+    private `_`-prefixed bookkeeping (`_tokens`, `_note_turn`) never reach the wire,
+    so they are left out; the stored Anthropic thinking blocks are kept in."""
     def _h(obj):
         return hashlib.sha1(json.dumps(obj, sort_keys=True, default=str).encode("utf-8")).hexdigest()
     return (_h(tools), [_h({k: v for k, v in m.items()
-                            if k not in _PREFIX_SIG_SKIP and not str(k).startswith("_")})
+                            if k == _THINKING_KEY
+                            or (k not in _PREFIX_SIG_SKIP and not str(k).startswith("_"))})
                         for m in (messages or [])])
 
 
@@ -4184,8 +4186,10 @@ def _strip_checkpoint_reads(conversation_history):
 
 def _prune_old_thinking(conversation_history):
     """A copy of the history in which only the newest assistant message keeps its stored
-    thinking blocks (see anthropic_wire.openai_to_anthropic: earlier turns' thinking is
-    never replayed). The live list is untouched. Off with AGENT_PRUNE_OLD_THINKING=0."""
+    thinking blocks, for the checkpoint file. The live list is untouched and the wire
+    replays every block it still has (anthropic_wire.openai_to_anthropic), so within a
+    run the prefix is stable; after a `-c` resume the older turns simply have no
+    thinking, consistently from the first request on. Off with AGENT_PRUNE_OLD_THINKING=0."""
     from anthropic_wire import THINKING_KEY, prune_old_thinking_enabled
     if not prune_old_thinking_enabled():
         return conversation_history

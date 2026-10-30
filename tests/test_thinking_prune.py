@@ -1,9 +1,11 @@
-"""Only the newest assistant turn's thinking is replayed and checkpointed.
+"""Thinking replay and checkpointing.
 
-The API needs that turn's thinking ahead of its tool_use when a tool result follows,
-and strips (without billing) thinking from every earlier turn. Replaying all of it
-was 595k of a 1,217k-character checkpoint on one measured run, written to disk every
-turn and sent with every request. AGENT_PRUNE_OLD_THINKING=0 restores the old behaviour.
+The wire sends back every stored thinking block in the window, every request: Opus
+4.5+, Sonnet 4.6+ and Haiku 5.5 keep prior turns' thinking in the cached prefix, so a
+turn sent with its thinking once and without it the next time is a rewrite that misses
+the cache from there on (measured 2026-10-29: 1-8k tokens re-written per request, and
+read=0 streaks after every eviction). Only the CHECKPOINT copy is pruned to the newest
+turn, which was 595k of a 1,217k-character file; AGENT_PRUNE_OLD_THINKING=0 keeps all.
 """
 
 import copy
@@ -37,16 +39,26 @@ def _assistants(out):
     return [m for m in out if m["role"] == "assistant"]
 
 
-def test_wire_replays_thinking_for_the_newest_assistant_turn_only(monkeypatch):
+def test_wire_replays_every_stored_thinking_block(monkeypatch):
     monkeypatch.delenv("AGENT_PRUNE_OLD_THINKING", raising=False)
     _, out, _ = openai_to_anthropic(_history(), None, model=M)
     first, second = _assistants(out)
-    assert first["content"][0]["type"] == "tool_use"
+    assert first["content"][0] == {"type": "thinking", "thinking": "A", "signature": "sig-A"}
+    assert first["content"][1]["type"] == "tool_use"
     assert second["content"][0] == {"type": "thinking", "thinking": "B", "signature": "sig-B"}
     assert second["content"][1]["type"] == "tool_use"
 
 
-def test_env_flag_restores_full_replay(monkeypatch):
+def test_the_wire_is_byte_stable_as_the_conversation_grows(monkeypatch):
+    # what the cache sees: request N's assistant turns reappear unchanged in request N+1
+    monkeypatch.delenv("AGENT_PRUNE_OLD_THINKING", raising=False)
+    h = _history()
+    _, before, _ = openai_to_anthropic(h[:3], None, model=M)
+    _, after, _ = openai_to_anthropic(h, None, model=M)
+    assert after[:len(before)] == before
+
+
+def test_the_env_flag_only_concerns_the_checkpoint(monkeypatch):
     monkeypatch.setenv("AGENT_PRUNE_OLD_THINKING", "0")
     _, out, _ = openai_to_anthropic(_history(), None, model=M)
     first, second = _assistants(out)
