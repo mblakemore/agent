@@ -2876,6 +2876,13 @@ def _estimate_tokens(msg):
 # between the estimator and the served model shows up here as a ratio far from 1.0.
 _TOKEN_CAL = {"ratio": 1.0, "n": 0, "last_logged": 1.0}
 _PREFILL_TPS_FLOOR = float(os.environ.get("AGENT_PREFILL_TPS_FLOOR", "500") or 500)
+# Cache-miss attribution state, for the PROCESS, not the run: the server's cache does
+# not know that a new user prompt started a new run_agent_single, so neither may the
+# log (measured 2026-10-30: a harvest right before a new prompt was logged as `first`).
+# n = requests that reported cache usage; prev_sig = _request_signature of the last
+# one; last_at = when it was sent, for the `idle` reason (the cache lives five minutes).
+_CACHE_REQ = {"n": 0, "prev_sig": None, "last_at": 0.0}
+_CACHE_IDLE_SECONDS = 300.0
 
 
 def _stall_budget_s(base_s, est_prompt_tokens, prefill_tps_floor):
@@ -6498,9 +6505,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
     # nudge to commit to the fix rather than reading more files.
     _read_only_turns = 0
     _READ_ONLY_NUDGE_THRESHOLD = 5
-    _cache_req_n = 0          # requests this run that reported cache usage (0 = nothing to hit yet)
-    _prev_req_sig = None      # _request_signature of the last request that reported usage
-    _cur_req_sig = None
+    _cur_req_sig = None       # _request_signature of the request being sent (see _CACHE_REQ)
     _READ_ONLY_NUDGE_THRESHOLD = 5
     # F7 — repeat-read stall signature (one nudge per unique call key, latched)
     try:
@@ -6752,11 +6757,16 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 _ctx_tokens_used = sum(_estimate_tokens(m) for m in messages_to_send)
                 _ctx_utilization = ((_ctx_tokens_used * float(_TOKEN_CAL.get("ratio", 1.0) or 1.0))
                                     / ctx_size if ctx_size else 0.0)
-                _msg_threshold_met = unsummarized >= _SUMMARY_THRESHOLD
                 # On a prompt-caching backend messages leave the window only by chunk
                 # eviction (P4.2), which already means the window was full — and right
                 # after one the window sits at ~20% of ctx, so a utilization gate would
-                # block every summary (measured: 0 summaries in a 2.5 h session).
+                # block every summary (measured: 0 summaries in a 2.5 h session). The
+                # message threshold is waived on the eviction turn for the same reason:
+                # an eviction of 73 messages under a threshold of 75 kicked nothing and
+                # the next 14 minutes ran without a summary (measured 2026-10-30).
+                _msg_threshold_met = unsummarized >= _SUMMARY_THRESHOLD or (
+                    _prompt_caching_backend() and unsummarized > 0
+                    and bool(summary_state.get("_head_moved")))
                 _util_threshold_met = (_prompt_caching_backend()
                                        or _ctx_utilization >= _summary_util_threshold)
                 if (
@@ -7271,16 +7281,21 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             _rewrote = bool(summary_state.pop("_rewrote_window", False))
                             _harvested_this_turn = _harvested_this_turn or bool(summary_state.pop("_lead_changed", False))
                             _c_total = _c_read + _c_write + _c_unc
+                            _prev_req_sig = _CACHE_REQ["prev_sig"]
                             _prefix_same = _prefix_unchanged(_prev_req_sig, _cur_req_sig)
+                            _idle = (_CACHE_REQ["last_at"] > 0
+                                     and time.time() - _CACHE_REQ["last_at"] > _CACHE_IDLE_SECONDS)
                             if _c_total and _c_read * 2 < _c_total:
-                                # `provider`: the previous request is resent byte for byte as
-                                # the head of this one, so nothing on our side explains the
-                                # miss. `unknown` now means the prefix changed and no flag says why.
-                                _reason = ("first" if _cache_req_n == 0 else
+                                # `idle`/`provider`: the previous request is resent byte for byte
+                                # as the head of this one, so nothing on our side explains the
+                                # miss: the cache expired (idle) or the server lost it. `unknown`
+                                # means the prefix changed and no flag says why.
+                                _reason = ("first" if _CACHE_REQ["n"] == 0 else
                                            "eviction" if _head_moved else
                                            "summary-harvest" if _harvested_this_turn else
                                            "history-rewrite" if _rewrote else
-                                           "provider" if _prefix_same else "unknown")
+                                           ("idle" if _idle else "provider") if _prefix_same
+                                           else "unknown")
                                 _changed = ""
                                 if _reason in ("unknown", "history-rewrite"):
                                     # Name the message that broke the prefix: index, role and
@@ -7296,8 +7311,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                             pass
                                 log.info("cache.miss turn=%d reason=%s read=%d write=%d uncached=%d%s",
                                          turn, _reason, _c_read, _c_write, _c_unc, _changed)
-                            _cache_req_n += 1
-                            _prev_req_sig = _cur_req_sig
+                            _CACHE_REQ["n"] += 1
+                            _CACHE_REQ["prev_sig"] = _cur_req_sig
+                            _CACHE_REQ["last_at"] = time.time()
                     if isinstance(chunk, dict) and chunk.get(_THINKING_KEY):
                         _turn_thinking = chunk[_THINKING_KEY]
                     choices = chunk.get("choices")

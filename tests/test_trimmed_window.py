@@ -370,3 +370,74 @@ class TestLeadMessageIsStable:
         misses = [c.args[0] % c.args[1:] for c in lg.info.call_args_list
                   if c.args and str(c.args[0]).startswith("cache.miss")]
         assert len(misses) == 1 and "reason=first" in misses[0], misses
+
+
+# ── a summary is kicked on every eviction, whatever the message threshold ────
+# Measured 2026-10-30: an eviction of 73 messages under summary_threshold=75 kicked
+# nothing, and the window ran 14 minutes to the next eviction without a summary.
+
+def _kick_after(monkeypatch, kind, head_moved, threshold=100):
+    history = [{"role": "user", "content": f"msg{i}"} for i in range(10)]
+    state = {"text": "old summary", "up_to": 0}
+    if head_moved:
+        state["_head_moved"] = True
+    summarizer = MagicMock()
+    summarizer.is_running = False
+    resp = MagicMock()
+    resp.iter_lines.return_value = [b"data: [DONE]"]
+    monkeypatch.setattr(agent, "_TOOLS_TOKENS", None)
+    monkeypatch.setattr(agent, "_main_backend",
+                        MagicMock(kind=kind, model="m", honours_system=True, base_url="http://x"))
+    with patch("agent._llm_request", return_value=resp), patch("agent._emit"), \
+         patch("agent._save_checkpoint"), patch("agent._NUDGE_ENABLED", False), \
+         patch("agent._SUMMARY_THRESHOLD", threshold), \
+         patch("agent._build_context", return_value=([{"role": "user", "content": "test"}], 5)):
+        agent.run_agent_single(history, state, [], MagicMock(), async_summarizer=summarizer)
+    return summarizer.kick.called
+
+
+class TestEvictionKicksASummary:
+    def test_an_eviction_kicks_below_the_message_threshold_on_a_caching_backend(self, monkeypatch):
+        assert _kick_after(monkeypatch, "aicommons", head_moved=True)
+
+    def test_no_eviction_no_kick_below_the_threshold(self, monkeypatch):
+        assert not _kick_after(monkeypatch, "aicommons", head_moved=False)
+
+    def test_a_sliding_window_backend_keeps_the_message_threshold(self, monkeypatch):
+        assert not _kick_after(monkeypatch, "llamacpp", head_moved=True)
+
+
+# ── attribution state outlives a run ─────────────────────────────────────────
+# Measured 2026-10-30: a harvest right before a new user prompt was logged as
+# reason=first because the counters were re-created per run.
+
+def test_the_first_request_of_a_later_run_is_not_first(agent_loop_mocks, monkeypatch):
+    monkeypatch.setattr(agent, "_main_backend",
+                        MagicMock(kind="aicommons", model="m", honours_system=True, base_url="http://x"))
+    agent_loop_mocks.stub_tool("read_file", "contents")
+    history = [{"role": "user", "content": "go"}]
+    agent_loop_mocks.script(_tool_turn_with_usage("t1", 0, 900, 2))
+    agent.run_agent_single(history, {"text": "", "up_to": 0}, [], MagicMock())
+    history.append({"role": "user", "content": "and again"})
+    agent_loop_mocks.script(_tool_turn_with_usage("t2", 0, 950, 2))     # a miss on an unchanged prefix
+    lg = MagicMock()
+    agent.run_agent_single(history, {"text": "", "up_to": 0}, [], lg)
+    misses = [c.args[0] % c.args[1:] for c in lg.info.call_args_list
+              if c.args and str(c.args[0]).startswith("cache.miss")]
+    assert len(misses) == 1 and "reason=provider" in misses[0], misses
+
+
+def test_a_miss_after_a_long_idle_gap_is_reported_as_idle(agent_loop_mocks, monkeypatch):
+    import time
+    monkeypatch.setattr(agent, "_main_backend",
+                        MagicMock(kind="aicommons", model="m", honours_system=True, base_url="http://x"))
+    monkeypatch.setattr(agent, "_prefix_unchanged", lambda a, b: True)
+    agent_loop_mocks.stub_tool("read_file", "contents")
+    for gap, expected in ((agent._CACHE_IDLE_SECONDS + 1, "reason=idle"), (30, "reason=provider")):
+        monkeypatch.setattr(agent, "_CACHE_REQ", {"n": 5, "prev_sig": None, "last_at": time.time() - gap})
+        agent_loop_mocks.script(_tool_turn_with_usage("t1", 0, 900, 2))
+        lg = MagicMock()
+        agent.run_agent_single([{"role": "user", "content": "go"}], {"text": "", "up_to": 0}, [], lg)
+        misses = [c.args[0] % c.args[1:] for c in lg.info.call_args_list
+                  if c.args and str(c.args[0]).startswith("cache.miss")]
+        assert misses and expected in misses[0], (gap, misses)

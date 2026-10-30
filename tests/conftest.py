@@ -382,6 +382,8 @@ def agent_loop_mocks(monkeypatch):
     monkeypatch.setattr(_agent, "_llm_request", mocks._fake_llm_request)
     monkeypatch.setattr(_agent, "_NUDGE_ENABLED", False)
     monkeypatch.setattr(_agent, "_emit", lambda *a, **kw: None)
+    # cache-miss attribution state lives for the process; each test starts fresh
+    monkeypatch.setattr(_agent, "_CACHE_REQ", {"n": 0, "prev_sig": None, "last_at": 0.0})
     return mocks
 
 
