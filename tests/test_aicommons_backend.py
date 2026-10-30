@@ -347,3 +347,45 @@ def test_session_summary_makes_no_request(make):
     calls = gw.quota_calls
     line = b.session_summary()
     assert gw.quota_calls == calls and "quota_remaining=9999900" in line
+
+
+# ── the allowance refusal is a notice a person can act on ───────────────────
+
+_GATEWAY_REFUSAL = ("This request reserves up to 73726 weighted tokens (its estimated prompt plus "
+                    "max_tokens, times the model's multipliers), more than the 24450 left of this "
+                    "user's monthly allowance. Lower max_tokens, or wait until the allowance resets.")
+
+
+class TestAllowanceNotice:
+    def test_numbers_are_quoted_and_the_raw_dict_is_gone(self):
+        raw = "{'type': 'error', 'error': {'type': 'rate_limit_error', 'message': \"%s\"}}" % _GATEWAY_REFUSAL
+        n = lb.allowance_notice(raw, max_tokens=16384, reset_at="2026-11-01T00:00:00Z")
+        assert "24,450 weighted tokens are left" in n and "73,726" in n
+        assert "{'type'" not in n and "rate_limit_error" not in n
+        assert "2026-11-01" in n and "/model" in n
+
+    def test_says_when_lowering_max_tokens_cannot_help(self):
+        # 73,726 reserved with max_tokens 16,384: the conversation alone (~57k) exceeds 24,450
+        n = lb.allowance_notice(_GATEWAY_REFUSAL, max_tokens=16384)
+        assert "would not be enough" in n and "conversation alone" in n
+
+    def test_says_how_far_to_lower_max_tokens_when_that_fits(self):
+        # 73,726 reserved with max_tokens 60,000: the conversation is ~13.7k, room is ~10.7k
+        n = lb.allowance_notice(_GATEWAY_REFUSAL, max_tokens=60000)
+        assert "Lowering max_tokens below about 10,724" in n
+
+    def test_without_numbers_the_gateway_sentence_is_kept(self):
+        n = lb.allowance_notice("Monthly token allowance exhausted for this user.")
+        assert n.startswith("AI Commons monthly allowance is used up. Monthly token allowance exhausted")
+        assert "wait for the monthly allowance to reset" in n
+
+
+def test_allowance_refusal_reaches_the_caller_as_the_notice(make):
+    gw = Gateway(status(429, "rate_limit_error", _GATEWAY_REFUSAL, {"x-should-retry": "false"}),
+                 quota={"total_tokens": 1, "limit": 10_000_000, "remaining": 9_000_000,
+                        "reset_at": "2026-11-01T00:00:00Z"})
+    with pytest.raises(lb.BudgetExceeded) as ei:
+        make(gw).stream_chat(log, json=AGENT_BODY)
+    s = str(ei.value)
+    assert s.startswith("AI Commons monthly allowance nearly used up: 24,450 weighted tokens are left")
+    assert "2026-11-01" in s and "rate_limit_error" not in s

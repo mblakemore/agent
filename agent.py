@@ -1987,9 +1987,9 @@ def _trigger_failover(log, backend_type, cause=None):
             and (fallback_cfg.get("base_url") or getattr(failing, "base_url", ""))
             == getattr(failing, "base_url", ""))
         if isinstance(cause, BedrockBudgetExceeded) and same_quota:
-            log.error(
-                "Failover skipped: %s budget/quota tripped and the fallback "
-                "draws on the same one — swapping would re-trip (or evade) it",
+            log.warning(
+                "Fallback not tried for %s: it draws on the same allowance that was just "
+                "refused, so it would be refused too",
                 backend_type,
             )
             return False
@@ -7028,9 +7028,15 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # Not retryable within this run (failover already declined or failed):
                 # a spent quota or a rejected key. End as a backend error so --job
                 # still writes its result file and AGENT-EXIT line (exit 15).
-                log.error("Backend refused the request: %s: %s", type(e).__name__, e)
                 telemetry.record_error(kind=type(e).__name__)
-                _emit("on_error", f"Error calling server: {e}")
+                if isinstance(e, BedrockBudgetExceeded):
+                    # The message is already the notice (llm_backend.allowance_notice):
+                    # one readable line for the person, the same line in the log.
+                    log.error("Stopped: %s", e)
+                    _emit("on_error", f"Stopped: {e}")
+                else:
+                    log.error("Backend refused the request: %s: %s", type(e).__name__, e)
+                    _emit("on_error", f"Error calling server: {e}")
                 _note_error_kind("backend")
                 return "error"
             except requests.exceptions.RequestException as e:
