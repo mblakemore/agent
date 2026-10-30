@@ -5710,10 +5710,35 @@ def _write_cycle_status(phase, result=None, turn=None, committed=None):
         pass
 
 
+def _run_turn_hooks(event):
+    """Run the shell commands configured under preferences.turn_hooks[event].
+
+    event is "start" or "end". A harness that shows status (Iris's status dots
+    call a script that tells the avatar server whether she is thinking) used to
+    hang this on Claude Code's UserPromptSubmit and Stop hooks; this is the
+    same thing for agent.py. Each command gets 5 s, output is discarded, and
+    nothing here may raise into the loop: a broken indicator must never stop a
+    turn. Commands run in the working directory, like the agent's own tools."""
+    try:
+        commands = (_config.get("preferences", {}).get("turn_hooks") or {}).get(event) or []
+        if isinstance(commands, str):
+            commands = [commands]
+        for command in commands:
+            try:
+                subprocess.run(command, shell=True, timeout=5, capture_output=True,
+                               stdin=subprocess.DEVNULL)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def run_agent_single(*args, **kwargs):
     """Thin wrapper: stamp cycle_status.json running->terminal around the real
-    loop so a harness has a done-signal independent of terminal scrollback."""
+    loop so a harness has a done-signal independent of terminal scrollback.
+    Also fires the configured turn_hooks (see _run_turn_hooks)."""
     _write_cycle_status("running")
+    _run_turn_hooks("start")
     try:
         result = _run_agent_single_impl(*args, **kwargs)
         _write_cycle_status("complete", result=result)
@@ -5721,6 +5746,8 @@ def run_agent_single(*args, **kwargs):
     except BaseException as e:
         _write_cycle_status("complete", result=f"exception:{type(e).__name__}")
         raise
+    finally:
+        _run_turn_hooks("end")
 
 
 def _run_agent_single_impl(conversation_history: list, summary_state: dict, initial_files,

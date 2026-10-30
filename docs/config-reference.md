@@ -171,6 +171,7 @@ Behavioural knobs that don't fit elsewhere.
 | `max_text_response_chars` | `24000` | Cap on text-only response length per turn (characters). Only enforced when `nudge` is on. Prevents context-filling monologue spirals. |
 | `max_post_tool_text_chars` | `2000` | Cap on prose generated after tool calls in the same turn. |
 | `extra_allowed_paths` | `[]` | List of absolute directory paths the `file` tool is allowed to read/write outside the working directory. |
+| `turn_hooks` | `{}` | Shell commands run around each turn: `{"start": "cmd" or ["cmd", ...], "end": ...}`. `start` runs before the turn, `end` after it, even if it raised. Each command gets 5 s and its output is discarded; a failing hook never stops the turn. For status indicators (the same job as Claude Code's UserPromptSubmit and Stop hooks). |
 | `tools_whitelist` | `null` | Restrict the tool schema sent to the LLM to this list of tool names. `null` = all tools. Example: `["file", "exec_command", "search_files", "think", "task_tracker"]`. |
 | `initial_tasks` | `[]` | Task descriptions pre-seeded into `task_tracker` at session start (only when the task list is empty — does not overwrite an in-progress cycle). |
 | `seed_tasks_persistent` | `false` | Re-seed `initial_tasks` at the start of every cycle, not just on a fresh task list. |
