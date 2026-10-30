@@ -39,6 +39,7 @@ backends via ``build_backend(cfg)`` and pass them in.
 from __future__ import annotations
 
 import json
+import re
 import logging
 import os
 import random
@@ -1983,7 +1984,48 @@ def _sdk_error_details(e) -> tuple[int | None, str, str, dict]:
     return status, etype, msg, headers
 
 
-def translate_aicommons_error(e: BaseException) -> BaseException:
+_ALLOWANCE_NEED_RE = re.compile(r"reserves up to ([\d,]+) weighted tokens", re.I)
+_ALLOWANCE_LEFT_RE = re.compile(r"([\d,]+) left of", re.I)
+
+
+def allowance_notice(msg: str, *, max_tokens: int | None = None, reset_at: str | None = None) -> str:
+    """Turn the gateway's monthly-allowance refusal into advice a person can act on.
+
+    The gateway's text (often wrapped in the raw error dict) reads like "This request
+    reserves up to 73726 weighted tokens (...), more than the 24450 left of this user's
+    monthly allowance." Pure: the numbers are parsed out of ``msg``; ``max_tokens`` (the
+    request's) decides whether lowering it can help at all; ``reset_at`` is quoted when
+    known. Falls back to the gateway's own sentence when the numbers are not there."""
+    need_m, left_m = _ALLOWANCE_NEED_RE.search(msg or ""), _ALLOWANCE_LEFT_RE.search(msg or "")
+    when = f" on {reset_at}" if reset_at else ""
+    tail = ("wait for the monthly allowance to reset" + when +
+            ", switch to a model with a lower multiplier (/model), or start a new session so "
+            "the conversation is shorter.")
+    if not (need_m and left_m):
+        inner = re.search(r"['\"]message['\"]:\s*['\"](.+?)['\"]\s*}", msg or "")
+        text = (inner.group(1) if inner else (msg or "")).strip()
+        return (f"AI Commons monthly allowance is used up. {text} "
+                f"What helps: {tail}").strip()
+    need, left = int(need_m.group(1).replace(",", "")), int(left_m.group(1).replace(",", ""))
+    head = (f"AI Commons monthly allowance nearly used up: {left:,} weighted tokens are left this "
+            f"month and this request would reserve up to {need:,} (the conversation plus "
+            f"max_tokens, weighted by the model's multiplier).")
+    if max_tokens is not None:
+        prompt_part = need - int(max_tokens)
+        if prompt_part < left:
+            fit = max(left - prompt_part, 0)
+            advice = (f"Lowering max_tokens below about {fit:,} would let it through "
+                      f"(generation.max_tokens in the config, or /setup); otherwise {tail}")
+        else:
+            advice = ("Lowering max_tokens would not be enough: the conversation alone is more "
+                      f"than what is left. What helps: {tail}")
+    else:
+        advice = f"Lower max_tokens if the conversation itself fits; otherwise {tail}"
+    return f"{head} {advice}"
+
+
+def translate_aicommons_error(e: BaseException, *, max_tokens: int | None = None,
+                              reset_at: str | None = None) -> BaseException:
     """Map an Anthropic-SDK (or httpx) error to the exception types agent.py recovers from.
 
     | gateway error                                    | becomes                    |
@@ -2016,7 +2058,7 @@ def translate_aicommons_error(e: BaseException) -> BaseException:
             "group, not a published-bot key; it may also have been revoked.")
     if status == 429 or etype == "rate_limit_error":
         if headers.get("x-should-retry") == "false" or any(m in low for m in _AICOMMONS_CAP_MARKERS):
-            return BudgetExceeded(f"AI Commons quota: {msg}")
+            return BudgetExceeded(allowance_notice(msg, max_tokens=max_tokens, reset_at=reset_at))
         return BackendUnavailableError(f"AI Commons throttled ({where}): {msg}")
     if status == 504 or etype == "timeout_error" or "request_ceiling" in low:
         return GatewayTimeoutError(f"504 Gateway Timeout from AI Commons: {msg}")
@@ -2296,7 +2338,7 @@ class AICommonsBackend:
         try:
             raw = self.client.messages.with_raw_response.create(**kw, stream=True)
         except Exception as e:  # noqa: BLE001
-            raise translate_aicommons_error(e) from e
+            raise self._translate(e, kw) from e
         rid = self._note_headers(raw.headers, log)
         stream = raw.parse()
         events = iter(stream)
@@ -2304,8 +2346,15 @@ class AICommonsBackend:
             first = next(events, None)
         except Exception as e:  # noqa: BLE001
             _safe_close_stream(stream)
-            raise translate_aicommons_error(e) from e
+            raise self._translate(e, kw) from e
         return stream, events, first, rid
+
+    def _translate(self, e: BaseException, kw: dict) -> BaseException:
+        """translate_aicommons_error with what this backend knows: the request's
+        max_tokens and the allowance reset time from the last quota poll."""
+        q = self._quota_cache[1] if self._quota_cache else {}
+        return translate_aicommons_error(e, max_tokens=kw.get("max_tokens"),
+                                         reset_at=q.get("reset_at") if isinstance(q, dict) else None)
 
     def stream_chat(self, log, *, json=None, stream=True, timeout=(30, 300), **extra):
         log = log or logging.getLogger("llm_backend")
@@ -2378,7 +2427,7 @@ class AICommonsBackend:
             resp = self.client.messages.create(**kw, timeout=float(timeout))
             ok = True
         except Exception as e:  # noqa: BLE001
-            raise translate_aicommons_error(e) from e
+            raise self._translate(e, kw) from e
         finally:
             log.info("backend.complete.latency_ms backend=%s model=%s role=%s latency_ms=%d ok=%s",
                      self.kind, self.model, self.role, int((time.monotonic() - t0) * 1000), ok)

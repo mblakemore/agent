@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">AI Commons backend</p>
 <h1>AI Commons backend</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/aicommons.md"><code>docs/aicommons.md</code></a> · last changed 2026-10-29 (3edd61a)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/aicommons.md"><code>docs/aicommons.md</code></a> · last changed 2026-10-29 (0a631b8)</p>
 <p>The agent can use the UCSB AI Commons gateway for the main model, the summary model, the advisor, or all of them. The gateway serves the Anthropic Messages API (<code>/v1/messages</code>) in front of Bedrock, so this backend gets native tool calling, streaming text, extended thinking and prompt caching. Backend kind: <code>aicommons</code> (aliases <code>ucsb</code>, <code>ai-commons</code>).</p>
 <p>This replaces the legacy <code>bedrock</code> kind, which talks to a published bot's <code>/conversation</code> API and has none of those. The legacy kind still works and is documented in <a href="bedrock.html">Bedrock backend</a>.</p>
 <h2 id="quick-start">Quick start</h2>
@@ -131,9 +131,9 @@ python agent.py aicommons retest --all
 <li>A trimmed window always starts with the files the run was given (<code>@AGENT.md</code> / <code>@CLAUDE.md</code>), with the summary once one exists. That lead message changes only when a summary is harvested, which is one further miss per eviction.</li>
 </ul>
 <p>Measured on a real eight-turn coding task: from the second turn on, 94–98% of each request was read from cache, and 83–86% over the whole session. A 2.5-hour session on an earlier build missed on 225 of 310 requests because the compression pass rewrote the window; that is what the two rules above pin.</p>
-<p>Every call logs an <code>aicommons.cache role=… read=… write=… uncached=… hit_pct=…</code> line. A request that reads less than half of its prompt from cache also logs <code>cache.miss turn=… reason=…</code>, where the reason is <code>first</code> (nothing to hit yet), <code>eviction</code>, <code>summary-harvest</code>, <code>history-rewrite</code> or <code>unknown</code>; the last two should not appear. The session ends with an <code>aicommons.session</code> line that has the totals and the quota as of the last poll (no request is made on exit). <code>cache_read</code> and <code>cache_write</code> are also recorded as telemetry token kinds.</p>
+<p>Every call logs an <code>aicommons.cache role=… read=… write=… uncached=… hit_pct=…</code> line. A request that reads less than half of its prompt from cache also logs <code>cache.miss turn=… reason=…</code>, where the reason is <code>first</code> (nothing to hit yet), <code>eviction</code>, <code>summary-harvest</code>, <code>provider</code>, <code>history-rewrite</code> or <code>unknown</code>. <code>provider</code> means the previous request was resent unchanged as the head of this one, so the miss happened on the server side (a cold replica, an evicted cache or a usage report without the cached count); it is not the agent's doing. <code>history-rewrite</code> and <code>unknown</code> should not appear: both mean the prefix changed, and the line then adds <code>changed=msg I/N role=… head=…</code> (or <code>changed=tools</code>) naming the first message that differs from the previous request. The lead message of a trimmed window (identity file plus progress summary) is byte-stable between evictions on a caching backend: the CICD phase checkpoint, which changes on every commit and file edit, rides in the per-turn runtime note instead. The session ends with an <code>aicommons.session</code> line that has the totals and the quota as of the last poll (no request is made on exit). <code>cache_read</code> and <code>cache_write</code> are also recorded as telemetry token kinds.</p>
 <h2 id="quota">Quota</h2>
-<p>The monthly allowance is shared by every key in the account. The agent polls <code>GET /v1/token-usage</code> at startup and every five minutes. The gateway reserves the estimated prompt plus <code>max_tokens</code> up front and refuses a request whose reservation does not fit what is left, so when that would happen <code>max_tokens</code> shrinks to fit. With less than 1,024 tokens of room the agent stops before sending, with the reset time in the message.</p>
+<p>The monthly allowance is shared by every key in the account. The agent polls <code>GET /v1/token-usage</code> at startup and every five minutes. The gateway reserves the estimated prompt plus <code>max_tokens</code> up front and refuses a request whose reservation does not fit what is left, so when that would happen <code>max_tokens</code> shrinks to fit. With less than 1,024 tokens of room the agent stops before sending, with the reset time in the message. When the gateway refuses anyway (its own estimate is weighted by the model's multiplier), the agent stops with a notice that says how much is left this month, how much the request would reserve, whether lowering <code>max_tokens</code> can help at all (it cannot when the conversation alone exceeds what is left), and the ways out: wait for the reset, switch to a model with a lower multiplier with <code>/model</code>, or start a new session. A fallback backend on the same allowance is not tried.</p>
 <p>The agent does not price calls or cap daily spend.</p>
 <h2 id="errors">Errors</h2>
 <div class="tbl-wrap" tabindex="0"><table>
@@ -154,7 +154,7 @@ python agent.py aicommons retest --all
 </tr>
 <tr>
 <td>429 with the allowance exhausted or <code>x-should-retry: false</code></td>
-<td>Budget exceeded: fail over if another backend is configured, else exit 15.</td>
+<td>Budget exceeded: fail over if another backend on a different allowance is configured, else stop with the allowance notice (exit 15).</td>
 </tr>
 <tr>
 <td>Other 429, 5xx, 529, connection errors</td>

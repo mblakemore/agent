@@ -104,3 +104,17 @@ def test_refusal_ends_the_run_without_storing_or_nudging(agent_loop_mocks, monke
     assert not any(m["role"] == "assistant" for m in history)
     code, detail = agent._classify_auto_result("error", "refusal")
     assert code == agent.EXIT_BACKEND and detail.startswith("refusal")
+
+
+def test_a_spent_allowance_is_reported_as_a_notice_not_a_server_error(agent_loop_mocks, monkeypatch):
+    """The person sees the backend's notice (what is left, what helps), not a raw error dict."""
+    notice = "AI Commons monthly allowance nearly used up: 24,450 weighted tokens are left this month ..."
+    events = []
+    monkeypatch.setattr(agent, "_emit", lambda ev, *a, **kw: events.append((ev, a)))
+
+    def boom(log, **kw):
+        raise BudgetExceeded(notice)
+    monkeypatch.setattr(agent, "_llm_request", boom)
+    assert _run([{"role": "user", "content": "go"}]) == "error"
+    errors = [a[0] for ev, a in events if ev == "on_error"]
+    assert errors == [f"Stopped: {notice}"], events

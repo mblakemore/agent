@@ -95,7 +95,7 @@ Every call logs an `aicommons.cache role=… read=… write=… uncached=… hit
 
 ## Quota
 
-The monthly allowance is shared by every key in the account. The agent polls `GET /v1/token-usage` at startup and every five minutes. The gateway reserves the estimated prompt plus `max_tokens` up front and refuses a request whose reservation does not fit what is left, so when that would happen `max_tokens` shrinks to fit. With less than 1,024 tokens of room the agent stops before sending, with the reset time in the message.
+The monthly allowance is shared by every key in the account. The agent polls `GET /v1/token-usage` at startup and every five minutes. The gateway reserves the estimated prompt plus `max_tokens` up front and refuses a request whose reservation does not fit what is left, so when that would happen `max_tokens` shrinks to fit. With less than 1,024 tokens of room the agent stops before sending, with the reset time in the message. When the gateway refuses anyway (its own estimate is weighted by the model's multiplier), the agent stops with a notice that says how much is left this month, how much the request would reserve, whether lowering `max_tokens` can help at all (it cannot when the conversation alone exceeds what is left), and the ways out: wait for the reset, switch to a model with a lower multiplier with `/model`, or start a new session. A fallback backend on the same allowance is not tried.
 
 The agent does not price calls or cap daily spend.
 
@@ -105,7 +105,7 @@ The agent does not price calls or cap daily spend.
 | --- | --- |
 | Input too long, 413 | Context overflow: summarize and retry with less. |
 | 401, 403 | Configuration error: exit 15. |
-| 429 with the allowance exhausted or `x-should-retry: false` | Budget exceeded: fail over if another backend is configured, else exit 15. |
+| 429 with the allowance exhausted or `x-should-retry: false` | Budget exceeded: fail over if another backend on a different allowance is configured, else stop with the allowance notice (exit 15). |
 | Other 429, 5xx, 529, connection errors | Retried by the SDK, then failover. |
 | 504 | The existing gateway-timeout recovery: ask the model for smaller steps. |
 | `refusal` | Not nudged and not stored: exit 15 with `refusal` in the detail. |
