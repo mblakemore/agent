@@ -457,6 +457,17 @@ _DEFAULT_CONFIG = {
         "max_context_messages": 30,
         "ctx_size": 114688,   # _DEFAULT_CTX_SIZE
         "max_tokens": 16384,
+        # Prompt-caching backends only (aicommons). When the next request follows an
+        # idle gap longer than the cache's recorded lifetime, the window is rebuilt to
+        # this fraction of the budget behind a fresh summary instead of re-sending the
+        # whole dead prefix (0 disables). The keepalive re-sends the last request with
+        # a one-token output limit at a fraction of the recorded lifetime while the
+        # agent waits for input, for at most max_idle_s; every probe_every-th keepalive
+        # waits a little longer to learn the real lifetime (0 never probes).
+        "cache_collapse_frac": 0.15,
+        "cache_keepalive": True,
+        "cache_keepalive_max_idle_s": 3600,
+        "cache_keepalive_probe_every": 4,
     },
     "cycle": {
         "max_turns": 250,
@@ -2150,6 +2161,27 @@ def _prefix_diff(prev_sig, cur_sig):
 _CACHE_EVICT_TO_FRAC = 0.6
 
 
+def _cache_collapse_frac():
+    """The fraction of the budget a collapsed window is rebuilt to; 0 when off."""
+    try:
+        return max(0.0, min(1.0, float(_config.get("context", {}).get("cache_collapse_frac", 0) or 0)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _cache_collapse_due(gap_s, alive_s, frac, window_tokens, budget):
+    """Pure: whether the next request should be rebuilt small. The prefix is dead
+    when the gap since the last request outlives what the record has proven, and
+    everything sent then is billed uncached (measured 2026-10-31 on AI Commons: 21x
+    the cached rate), so the window is worth rebuilding only when it would shrink:
+    a window already under one and a half times the collapsed size is sent as is."""
+    if not frac or gap_s is None or alive_s is None:
+        return False
+    if gap_s <= alive_s:
+        return False
+    return window_tokens > budget * frac * 1.5
+
+
 class _CompletionResponse:
     """Just enough of a chat-completions response (``.json()``) for tool_recovery."""
 
@@ -2883,6 +2915,254 @@ _PREFILL_TPS_FLOOR = float(os.environ.get("AGENT_PREFILL_TPS_FLOOR", "500") or 5
 # one; last_at = when it was sent, for the `idle` reason (the cache lives five minutes).
 _CACHE_REQ = {"n": 0, "prev_sig": None, "last_at": 0.0}
 _CACHE_IDLE_SECONDS = 300.0
+
+# ── Prompt-cache lifetime record ─────────────────────────────────────────────
+# How long a service keeps a cached prefix is not published for every model family
+# and is not what the documentation says for some: Anthropic documents five minutes;
+# the AI Commons kimi gateway held a prefix across 25-minute pauses and lost it by 44
+# (measured 2026-10-31). The record learns from traffic, per backend kind and model:
+# the longest idle gap after which a byte-identical prefix still hit (`hit_max_s`)
+# and the shortest after which it missed (`miss_min_s`). It lives in .agent/state so
+# a restart keeps it. The seeds below apply until a family has its own evidence.
+_CACHE_LIFETIME_SEEDS = (("claude", 300.0), ("kimi", 1500.0))
+_CACHE_LIFETIME_FILE = "cache_lifetimes.json"
+_CACHE_LIFETIME_MIN_GAP_S = 60.0     # shorter gaps say nothing about the lifetime
+_CACHE_LIFETIMES = None              # loaded on first use: {key: {hit_max_s, miss_min_s, hits, misses, updated}}
+
+
+def _cache_lifetime_key(backend=None):
+    """`kind:model` of the backend whose cache is being tracked."""
+    b = backend if backend is not None else globals().get("_main_backend")
+    return "%s:%s" % (getattr(b, "kind", None) or "?", getattr(b, "model", None) or "")
+
+
+def _cache_lifetime_seed(key):
+    """The lifetime to assume for a family with no evidence of its own."""
+    model = key.split(":", 1)[-1].lower()
+    for needle, seconds in _CACHE_LIFETIME_SEEDS:
+        if needle in model:
+            return seconds
+    return _CACHE_IDLE_SECONDS
+
+
+def _cache_lifetime_estimate(record, key):
+    """Pure: seconds a cached prefix of `key` is known to survive (`alive_s`) and the
+    gap after which it is known to be gone (`dead_s`, None when no miss has been seen
+    beyond `alive_s`). A hit at a longer gap than the seed raises `alive_s`; a miss
+    seen below the seed lowers it, since the seed was only a guess."""
+    entry = (record or {}).get(key) or {}
+    hit_max = float(entry.get("hit_max_s") or 0.0)
+    miss_min = entry.get("miss_min_s")
+    alive = max(hit_max, _cache_lifetime_seed(key))
+    if miss_min is not None and float(miss_min) < alive:
+        alive = max(hit_max, float(miss_min) * 0.9)
+    return alive, (float(miss_min) if miss_min is not None else None)
+
+
+def _cache_lifetime_observe(record, key, gap_s, hit, now=None):
+    """Pure on `record` (mutated in place and returned): fold one observation in. A hit
+    after `gap_s` proves the cache lived that long. A miss counts only when the gap is
+    longer than every hit seen, because a miss inside the proven lifetime is the
+    provider's (cold replica, lost cache), not an expiry; and a later hit beyond a
+    recorded miss retires that miss the same way."""
+    if record is None:
+        record = {}
+    if gap_s is None or gap_s < _CACHE_LIFETIME_MIN_GAP_S:
+        return record
+    entry = record.setdefault(key, {"hit_max_s": 0.0, "miss_min_s": None, "hits": 0, "misses": 0})
+    gap_s = float(gap_s)
+    if hit:
+        entry["hits"] = int(entry.get("hits") or 0) + 1
+        if gap_s > float(entry.get("hit_max_s") or 0.0):
+            entry["hit_max_s"] = round(gap_s, 1)
+        if entry.get("miss_min_s") is not None and gap_s >= float(entry["miss_min_s"]):
+            entry["miss_min_s"] = None
+    else:
+        if gap_s <= float(entry.get("hit_max_s") or 0.0):
+            return record
+        entry["misses"] = int(entry.get("misses") or 0) + 1
+        if entry.get("miss_min_s") is None or gap_s < float(entry["miss_min_s"]):
+            entry["miss_min_s"] = round(gap_s, 1)
+    stamp = time.time() if now is None else now
+    entry["updated"] = datetime.fromtimestamp(stamp, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return record
+
+
+def _cache_lifetimes_load(path=None):
+    """The record from disk (an empty one when there is none or it is unreadable)."""
+    path = path or _state_path(_CACHE_LIFETIME_FILE)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _cache_lifetimes_save(record, path=None):
+    """Best effort: the record is a cost optimisation, never a reason to fail a turn."""
+    path = path or _state_path(_CACHE_LIFETIME_FILE)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(record, f, indent=1, sort_keys=True)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _cache_lifetimes():
+    """The process's record, loaded from .agent/state on first use."""
+    global _CACHE_LIFETIMES
+    if _CACHE_LIFETIMES is None:
+        _CACHE_LIFETIMES = _cache_lifetimes_load()
+    return _CACHE_LIFETIMES
+
+
+def _cache_lifetime_record_request(gap_s, hit, log=None, key=None):
+    """Fold the outcome of a request whose prefix was resent unchanged into the record
+    and persist it. Returns (alive_s, dead_s) for the key afterwards."""
+    key = key or _cache_lifetime_key()
+    record = _cache_lifetimes()
+    before = dict(record.get(key) or {})
+    _cache_lifetime_observe(record, key, gap_s, hit)
+    after = record.get(key) or {}
+    if after != before:
+        _cache_lifetimes_save(record)
+        if log is not None:
+            alive, dead = _cache_lifetime_estimate(record, key)
+            log.info("cache.lifetime %s gap=%ds %s alive>=%ds dead%s", key, int(gap_s or 0),
+                     "hit" if hit else "miss", int(alive), ("=%ds" % int(dead)) if dead else " unknown")
+    return _cache_lifetime_estimate(record, key)
+
+
+# ── Prompt-cache keepalive ───────────────────────────────────────────────────
+# While the agent waits for input on a caching backend, the last request is re-sent
+# unchanged with a one-token output limit before the cached prefix expires, so the
+# next real request extends it instead of re-sending it uncached. Measured
+# 2026-10-31 on AI Commons: cached input is billed at a twentieth of uncached, so a
+# keepalive costs a twentieth of the miss it prevents, as long as the pause stays
+# under context.cache_keepalive_max_idle_s; beyond that the collapse is cheaper.
+_LAST_REQUEST = {"body": None}      # the last request body sent on a caching backend, as JSON
+_KEEPALIVE = {"stop": None, "thread": None}
+_KEEPALIVE_MIN_INTERVAL_S = 60.0
+_KEEPALIVE_FRAC = 0.8               # of the proven lifetime, so a late reply still lands inside it
+_KEEPALIVE_STRETCH = 1.2            # a probe waits this much longer than proven, to learn more
+_KEEPALIVE_RETRY_BEYOND_MISS = 10   # only every tenth probe reaches past a recorded miss
+
+
+def _cache_keepalive_plan(alive_s, dead_s, n, probe_every):
+    """Pure: seconds the `n`-th keepalive (from 1) waits. Normally a fraction of the
+    proven lifetime; every `probe_every`-th one stretches past it to learn whether the
+    cache lives longer, bounded by a recorded death except now and then, so that a
+    single provider miss cannot pin the lifetime for good."""
+    interval = max(_KEEPALIVE_MIN_INTERVAL_S, float(alive_s) * _KEEPALIVE_FRAC)
+    if not probe_every or n % int(probe_every):
+        return interval
+    probe_n = n // int(probe_every)
+    target = max(interval, float(alive_s) * _KEEPALIVE_STRETCH)
+    if dead_s is not None and target >= float(dead_s) and probe_n % _KEEPALIVE_RETRY_BEYOND_MISS:
+        return max(interval, float(dead_s) * 0.85)
+    return target
+
+
+def _cache_keepalive_loop(stop, send, log, key, max_idle_s, probe_every, now=time.time):
+    """Run keepalives until the run resumes (`stop` is set), the idle cap passes, the
+    model changes under us, two keepalives miss (the server is not caching this
+    prefix) or one fails. `send()` re-sends the last request and returns its usage.
+    Returns why it stopped, for the log and the tests."""
+    started = now()
+    n = 0
+    misses = 0
+    while True:
+        n += 1
+        alive_s, dead_s = _cache_lifetime_estimate(_cache_lifetimes(), key)
+        wait_s = _cache_keepalive_plan(alive_s, dead_s, n, probe_every)
+        if now() + wait_s - started > float(max_idle_s):
+            log.info("cache.keepalive off after %d: the next would pass the %ds idle cap", n - 1, int(max_idle_s))
+            return "cap"
+        if stop.wait(wait_s):
+            return "run"
+        if _cache_lifetime_key() != key:
+            return "model"
+        gap_s = (now() - _CACHE_REQ["last_at"]) if _CACHE_REQ["last_at"] > 0 else None
+        try:
+            usage = send() or {}
+        except Exception as e:  # noqa: BLE001
+            log.warning("cache.keepalive %d failed, stopping: %s", n, e)
+            return "error"
+        read = int(usage.get("cache_read_input_tokens") or 0)
+        write = int(usage.get("cache_creation_input_tokens") or 0)
+        unc = int(usage.get("input_tokens") or 0)
+        total = read + write + unc
+        hit = bool(total) and read * 2 >= total
+        log.info("cache.keepalive %d gap=%ds read=%d write=%d uncached=%d %s", n,
+                 int(gap_s or 0), read, write, unc, "hit" if hit else "MISS")
+        try:
+            _cache_lifetime_record_request(gap_s, hit, log, key=key)
+        except Exception as e:  # noqa: BLE001
+            log.debug("cache.lifetime record skipped: %s", e)
+        _CACHE_REQ["last_at"] = now()    # the server holds the prefix again either way
+        if not hit:
+            misses += 1
+            if misses >= 2:
+                log.info("cache.keepalive off: two misses, the server is not keeping this prefix")
+                return "miss"
+
+
+def _cache_keepalive_enabled():
+    c = _config.get("context", {})
+    return bool(c.get("cache_keepalive", False)) and _prompt_caching_backend()
+
+
+def _cache_keepalive_disarm():
+    """Stop the keepalive thread (a run is starting); never blocks on a request in flight."""
+    stop = _KEEPALIVE.get("stop")
+    if stop is not None:
+        stop.set()
+    _KEEPALIVE["stop"] = None
+    _KEEPALIVE["thread"] = None
+
+
+def _cache_keepalive_arm(log):
+    """Start keepalives for the last request sent, if there is one and the backend
+    caches. Called when a run ends and the agent goes back to waiting for input."""
+    _cache_keepalive_disarm()
+    if not _cache_keepalive_enabled() or not _LAST_REQUEST.get("body"):
+        return False
+    c = _config.get("context", {})
+    try:
+        max_idle_s = float(c.get("cache_keepalive_max_idle_s", 3600) or 0)
+        probe_every = int(c.get("cache_keepalive_probe_every", 4) or 0)
+    except (TypeError, ValueError):
+        max_idle_s, probe_every = 3600.0, 4
+    if max_idle_s <= 0:
+        return False
+    key = _cache_lifetime_key()
+    body_json = _LAST_REQUEST["body"]
+    stop = threading.Event()
+
+    def _send():
+        body = json.loads(body_json)
+        body["_cache_keepalive"] = True
+        usage = {}
+        for chunk in _iter_stream_chunks(_llm_request(log, json=body, stream=True, timeout=(30, 120))):
+            if isinstance(chunk, dict) and chunk.get("usage"):
+                usage = chunk["usage"]
+        return usage
+
+    def _worker():
+        try:
+            why = _cache_keepalive_loop(stop, _send, log, key, max_idle_s, probe_every)
+            log.debug("cache.keepalive thread done: %s", why)
+        except Exception as e:  # noqa: BLE001
+            log.debug("cache.keepalive thread error: %s", e)
+
+    t = threading.Thread(target=_worker, name="cache-keepalive", daemon=True)
+    _KEEPALIVE["stop"], _KEEPALIVE["thread"] = stop, t
+    t.start()
+    return True
 
 
 def _stall_budget_s(base_s, est_prompt_tokens, prefill_tps_floor):
@@ -3924,20 +4204,35 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
     selected = []
     oldest_idx = len(conversation_history)
     head = summary_state.get("_cache_head") if _prompt_caching_backend() and not max_messages_override else None
+    fill_frac = None
     if head is not None and 0 <= head < len(conversation_history):
         # P4.2: keep the window's head where it is while everything from it still
         # fits, so this request extends the previous one byte for byte.
         window = conversation_history[head:]
         used = sum(_estimate_tokens(m) for m in window)
         extra = context_tokens if (context_msg and head > 0) else 0
-        if len(window) <= effective_max and used + extra <= budget:
+        gap_s = (time.time() - _CACHE_REQ["last_at"]) if _CACHE_REQ["last_at"] > 0 else None
+        alive_s, _ = _cache_lifetime_estimate(_cache_lifetimes(), _cache_lifetime_key())
+        collapse_frac = _cache_collapse_frac()
+        if _cache_collapse_due(gap_s, alive_s, collapse_frac, used + extra, budget):
+            # The cached prefix outlived its recorded lifetime while the agent was
+            # idle, so this request is billed uncached whatever it holds: rebuild it
+            # small, behind a summary of what leaves (folded in by the run loop).
+            log.info("cache collapse: idle %ds > lifetime %ds; window of %d messages (~%d tokens) "
+                     "rebuilt to %d%% of the budget", int(gap_s), int(alive_s), len(window),
+                     used + extra, int(collapse_frac * 100))
+            summary_state["_collapsed"] = True            # read by the cache.miss log
+            summary_state["_collapse_summarize"] = True   # read by the run loop
+            fill_frac = collapse_frac
+            used = 0
+        elif len(window) <= effective_max and used + extra <= budget:
             selected, oldest_idx = list(window), head
         else:
             used = 0
     if not selected:
         # Greedy fill from the newest message back. On a caching backend, fill only
         # to a fraction of the limits, so the new head then holds for many turns.
-        frac = _CACHE_EVICT_TO_FRAC if (_prompt_caching_backend() and not max_messages_override) else 1.0
+        frac = fill_frac or (_CACHE_EVICT_TO_FRAC if (_prompt_caching_backend() and not max_messages_override) else 1.0)
         fill_budget = int(budget * frac) if frac < 1.0 else budget
         fill_max = max(2, int(effective_max * frac)) if frac < 1.0 else effective_max
         for i in range(len(conversation_history) - 1, -1, -1):
@@ -5750,6 +6045,7 @@ def run_agent_single(*args, **kwargs):
     Also fires the configured turn_hooks (see _run_turn_hooks)."""
     _write_cycle_status("running")
     _run_turn_hooks("start")
+    _cache_keepalive_disarm()
     try:
         result = _run_agent_single_impl(*args, **kwargs)
         _write_cycle_status("complete", result=result)
@@ -5759,6 +6055,12 @@ def run_agent_single(*args, **kwargs):
         raise
     finally:
         _run_turn_hooks("end")
+        try:
+            _log = args[3] if len(args) > 3 else kwargs.get("log")
+            if _log is not None:
+                _cache_keepalive_arm(_log)
+        except Exception:  # the keepalive is a saving, never a failure
+            pass
 
 
 def _run_agent_single_impl(conversation_history: list, summary_state: dict, initial_files,
@@ -6744,6 +7046,19 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                 max_messages_override=_ctx_max_messages)
 
+            if summary_state.pop("_collapse_summarize", False):
+                # The prefix is dead anyway, so the lead message may change on this very
+                # request at no extra cost: summarise everything the collapse evicted now,
+                # synchronously, instead of harvesting it a turn later (a second miss).
+                if _async_summarizer is not None and _async_summarizer.is_running:
+                    log.info("cache collapse: a summary is already running; the next turn harvests it")
+                elif _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True):
+                    log.info("cache collapse: summary of the history up to message %d folded into this request",
+                             oldest_idx)
+                    messages_to_send, oldest_idx = _build_context(
+                        conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
+                        max_messages_override=_ctx_max_messages)
+
             # Summarize dropped messages: async (background) or sync (blocking).
             # T5.13 — gate the message-count trigger on actual context utilization
             # so summaries don't fire on half-empty windows (a field audit: 17%
@@ -6981,6 +7296,13 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # Strip internal-tracking keys before sending
                 request_body.pop("_escalation_level", None)
 
+            if _prompt_caching_backend():
+                # What the keepalive re-sends while the agent waits for input: a snapshot,
+                # since the history's messages may be compressed in place later.
+                try:
+                    _LAST_REQUEST["body"] = json.dumps(request_body, default=str)
+                except (TypeError, ValueError):
+                    _LAST_REQUEST["body"] = None
             try:
                 response = _llm_request(log, json=request_body, stream=True, timeout=(30, 300))
                 # Only the legacy Response shape exposes ``status_code``;
@@ -7278,19 +7600,33 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             _c_write = int(_usage.get("cache_creation_input_tokens") or 0)
                             _c_unc = int(_usage.get("input_tokens") or 0)
                             _head_moved = bool(summary_state.pop("_head_moved", False))
+                            _collapsed = bool(summary_state.pop("_collapsed", False))
                             _rewrote = bool(summary_state.pop("_rewrote_window", False))
                             _harvested_this_turn = _harvested_this_turn or bool(summary_state.pop("_lead_changed", False))
                             _c_total = _c_read + _c_write + _c_unc
                             _prev_req_sig = _CACHE_REQ["prev_sig"]
                             _prefix_same = _prefix_unchanged(_prev_req_sig, _cur_req_sig)
-                            _idle = (_CACHE_REQ["last_at"] > 0
-                                     and time.time() - _CACHE_REQ["last_at"] > _CACHE_IDLE_SECONDS)
+                            _gap_s = ((time.time() - _CACHE_REQ["last_at"])
+                                      if _CACHE_REQ["last_at"] > 0 else None)
+                            # `idle` is judged against what the lifetime record knows of
+                            # this backend and model, not a fixed five minutes: a miss
+                            # inside the proven lifetime is the provider's.
+                            _alive_s, _ = _cache_lifetime_estimate(_cache_lifetimes(), _cache_lifetime_key())
+                            _idle = _gap_s is not None and _gap_s > _alive_s
+                            if _prefix_same and _c_total and _gap_s is not None:
+                                # An unchanged prefix after a known gap is evidence about
+                                # the lifetime either way; the record decides what counts.
+                                try:
+                                    _cache_lifetime_record_request(_gap_s, _c_read * 2 >= _c_total, log)
+                                except Exception as _lt_e:   # the record never breaks a turn
+                                    log.debug("cache.lifetime record skipped: %s", _lt_e)
                             if _c_total and _c_read * 2 < _c_total:
                                 # `idle`/`provider`: the previous request is resent byte for byte
                                 # as the head of this one, so nothing on our side explains the
                                 # miss: the cache expired (idle) or the server lost it. `unknown`
                                 # means the prefix changed and no flag says why.
                                 _reason = ("first" if _CACHE_REQ["n"] == 0 else
+                                           "collapse" if _collapsed else
                                            "eviction" if _head_moved else
                                            "summary-harvest" if _harvested_this_turn else
                                            "history-rewrite" if _rewrote else
