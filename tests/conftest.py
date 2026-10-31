@@ -70,6 +70,17 @@ def pytest_configure(config):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_cache_lifetimes(monkeypatch, tmp_path_factory):
+    """The prompt-cache lifetime record lives in .agent/state and learns from every
+    request: tests start from an empty one and write a throwaway file (an absolute
+    file name wins over the state directory in _state_path)."""
+    import agent as _agent
+    monkeypatch.setattr(_agent, "_CACHE_LIFETIMES", {})
+    monkeypatch.setattr(_agent, "_CACHE_LIFETIME_FILE",
+                        str(tmp_path_factory.mktemp("lifetimes") / "cache_lifetimes.json"))
+
+
+@pytest.fixture(autouse=True)
 def _no_live_model_connect(request):
     """Fail any unmarked test that opens a socket to a model port. Marked @live → untouched."""
     if request.node.get_closest_marker("live"):
