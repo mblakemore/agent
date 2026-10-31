@@ -2211,6 +2211,13 @@ class AICommonsBackend:
         system, messages, tools = anthropic_wire.openai_to_anthropic(
             body.get("messages") or [], body.get("tools"), model=self.model, end_with_user=True)
         kw: dict = {"model": self.model, "max_tokens": self.max_tokens, "messages": messages}
+        if body.get("_cache_keepalive"):
+            # agent.py re-sends the last request, unchanged, to keep its cached prefix
+            # alive while it waits for input: one output token is all that needs. The
+            # thinking keys stay as they are, since changing them invalidates the
+            # message cache on Anthropic models (probed 2026-10-31: both kimi and haiku
+            # with adaptive thinking accept max_tokens=1).
+            kw["max_tokens"] = 1
         if system:
             kw["system"] = system
         if tools:

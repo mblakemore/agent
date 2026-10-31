@@ -23,7 +23,7 @@ CLAUDE = "aicommons:claude-v5.5-sonnet"
 class TestSeeds:
     def test_documented_and_measured_families(self):
         assert agent._cache_lifetime_seed(CLAUDE) == 300.0
-        assert agent._cache_lifetime_seed(KIMI) == 1200.0
+        assert agent._cache_lifetime_seed(KIMI) == 1500.0
 
     def test_an_unknown_family_gets_the_default(self):
         assert agent._cache_lifetime_seed("aicommons:gpt-x") == agent._CACHE_IDLE_SECONDS
@@ -66,7 +66,7 @@ class TestObserve:
 
 class TestEstimate:
     def test_the_seed_until_there_is_evidence(self):
-        assert agent._cache_lifetime_estimate({}, KIMI) == (1200.0, None)
+        assert agent._cache_lifetime_estimate({}, KIMI) == (1500.0, None)
         assert agent._cache_lifetime_estimate({}, CLAUDE) == (300.0, None)
 
     def test_a_longer_hit_raises_alive(self):
@@ -74,13 +74,13 @@ class TestEstimate:
         assert agent._cache_lifetime_estimate(r, CLAUDE) == (540.0, None)
 
     def test_a_miss_reports_the_death(self):
-        r = agent._cache_lifetime_observe({}, KIMI, 1300, True)
+        r = agent._cache_lifetime_observe({}, KIMI, 1600, True)
         agent._cache_lifetime_observe(r, KIMI, 2640, False)
-        assert agent._cache_lifetime_estimate(r, KIMI) == (1300.0, 2640.0)
+        assert agent._cache_lifetime_estimate(r, KIMI) == (1600.0, 2640.0)
 
     def test_a_miss_below_the_seed_lowers_alive(self):
-        """The seed is a guess; a miss at 600 s on a family seeded at 1200 s means the
-        cache is not known to live 1200 s after all."""
+        """The seed is a guess; a miss at 600 s on a family seeded at 1500 s means the
+        cache is not known to live 1500 s after all."""
         r = agent._cache_lifetime_observe({}, KIMI, 600, False)
         alive, dead = agent._cache_lifetime_estimate(r, KIMI)
         assert alive == pytest.approx(540.0) and dead == 600.0
@@ -138,7 +138,7 @@ def test_a_hit_after_a_gap_is_recorded_as_proof_of_life(agent_loop_mocks, monkey
 
 
 def test_idle_is_judged_against_the_record_not_five_minutes(agent_loop_mocks, monkeypatch):
-    # kimi is seeded at 20 minutes: a miss after 12 minutes is the provider's
+    # kimi is seeded at 25 minutes: a miss after 12 minutes is the provider's
     lines = _run(agent_loop_mocks, monkeypatch, "moonshotai-kimi-k3", 700, 0, 950)
     assert any("reason=provider" in l for l in lines), lines
     # but it is recorded: no hit has proven anything yet, so it is the shortest miss

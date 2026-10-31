@@ -67,7 +67,7 @@ class TestWindowBuilder:
         return h, state
 
     def test_a_dead_prefix_rebuilds_the_window_small(self, monkeypatch, uncalibrated):
-        h, state = self._setup(monkeypatch, gap=3000)       # kimi is seeded at 1200 s
+        h, state = self._setup(monkeypatch, gap=3000)       # kimi is seeded at 1500 s
         lg = MagicMock()
         sel, oldest = agent._build_context(h, state, "", 1000, 100, lg)
         assert oldest > 20 and len(sel) <= 6, (oldest, len(sel))

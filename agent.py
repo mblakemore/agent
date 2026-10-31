@@ -2919,12 +2919,12 @@ _CACHE_IDLE_SECONDS = 300.0
 # ── Prompt-cache lifetime record ─────────────────────────────────────────────
 # How long a service keeps a cached prefix is not published for every model family
 # and is not what the documentation says for some: Anthropic documents five minutes;
-# the AI Commons kimi gateway held a prefix across 20-minute pauses and lost it by 44
+# the AI Commons kimi gateway held a prefix across 25-minute pauses and lost it by 44
 # (measured 2026-10-31). The record learns from traffic, per backend kind and model:
 # the longest idle gap after which a byte-identical prefix still hit (`hit_max_s`)
 # and the shortest after which it missed (`miss_min_s`). It lives in .agent/state so
 # a restart keeps it. The seeds below apply until a family has its own evidence.
-_CACHE_LIFETIME_SEEDS = (("claude", 300.0), ("kimi", 1200.0))
+_CACHE_LIFETIME_SEEDS = (("claude", 300.0), ("kimi", 1500.0))
 _CACHE_LIFETIME_FILE = "cache_lifetimes.json"
 _CACHE_LIFETIME_MIN_GAP_S = 60.0     # shorter gaps say nothing about the lifetime
 _CACHE_LIFETIMES = None              # loaded on first use: {key: {hit_max_s, miss_min_s, hits, misses, updated}}
@@ -3035,6 +3035,134 @@ def _cache_lifetime_record_request(gap_s, hit, log=None, key=None):
             log.info("cache.lifetime %s gap=%ds %s alive>=%ds dead%s", key, int(gap_s or 0),
                      "hit" if hit else "miss", int(alive), ("=%ds" % int(dead)) if dead else " unknown")
     return _cache_lifetime_estimate(record, key)
+
+
+# ── Prompt-cache keepalive ───────────────────────────────────────────────────
+# While the agent waits for input on a caching backend, the last request is re-sent
+# unchanged with a one-token output limit before the cached prefix expires, so the
+# next real request extends it instead of re-sending it uncached. Measured
+# 2026-10-31 on AI Commons: cached input is billed at a twentieth of uncached, so a
+# keepalive costs a twentieth of the miss it prevents, as long as the pause stays
+# under context.cache_keepalive_max_idle_s; beyond that the collapse is cheaper.
+_LAST_REQUEST = {"body": None}      # the last request body sent on a caching backend, as JSON
+_KEEPALIVE = {"stop": None, "thread": None}
+_KEEPALIVE_MIN_INTERVAL_S = 60.0
+_KEEPALIVE_FRAC = 0.8               # of the proven lifetime, so a late reply still lands inside it
+_KEEPALIVE_STRETCH = 1.2            # a probe waits this much longer than proven, to learn more
+_KEEPALIVE_RETRY_BEYOND_MISS = 10   # only every tenth probe reaches past a recorded miss
+
+
+def _cache_keepalive_plan(alive_s, dead_s, n, probe_every):
+    """Pure: seconds the `n`-th keepalive (from 1) waits. Normally a fraction of the
+    proven lifetime; every `probe_every`-th one stretches past it to learn whether the
+    cache lives longer, bounded by a recorded death except now and then, so that a
+    single provider miss cannot pin the lifetime for good."""
+    interval = max(_KEEPALIVE_MIN_INTERVAL_S, float(alive_s) * _KEEPALIVE_FRAC)
+    if not probe_every or n % int(probe_every):
+        return interval
+    probe_n = n // int(probe_every)
+    target = max(interval, float(alive_s) * _KEEPALIVE_STRETCH)
+    if dead_s is not None and target >= float(dead_s) and probe_n % _KEEPALIVE_RETRY_BEYOND_MISS:
+        return max(interval, float(dead_s) * 0.85)
+    return target
+
+
+def _cache_keepalive_loop(stop, send, log, key, max_idle_s, probe_every, now=time.time):
+    """Run keepalives until the run resumes (`stop` is set), the idle cap passes, the
+    model changes under us, two keepalives miss (the server is not caching this
+    prefix) or one fails. `send()` re-sends the last request and returns its usage.
+    Returns why it stopped, for the log and the tests."""
+    started = now()
+    n = 0
+    misses = 0
+    while True:
+        n += 1
+        alive_s, dead_s = _cache_lifetime_estimate(_cache_lifetimes(), key)
+        wait_s = _cache_keepalive_plan(alive_s, dead_s, n, probe_every)
+        if now() + wait_s - started > float(max_idle_s):
+            log.info("cache.keepalive off after %d: the next would pass the %ds idle cap", n - 1, int(max_idle_s))
+            return "cap"
+        if stop.wait(wait_s):
+            return "run"
+        if _cache_lifetime_key() != key:
+            return "model"
+        gap_s = (now() - _CACHE_REQ["last_at"]) if _CACHE_REQ["last_at"] > 0 else None
+        try:
+            usage = send() or {}
+        except Exception as e:  # noqa: BLE001
+            log.warning("cache.keepalive %d failed, stopping: %s", n, e)
+            return "error"
+        read = int(usage.get("cache_read_input_tokens") or 0)
+        write = int(usage.get("cache_creation_input_tokens") or 0)
+        unc = int(usage.get("input_tokens") or 0)
+        total = read + write + unc
+        hit = bool(total) and read * 2 >= total
+        log.info("cache.keepalive %d gap=%ds read=%d write=%d uncached=%d %s", n,
+                 int(gap_s or 0), read, write, unc, "hit" if hit else "MISS")
+        try:
+            _cache_lifetime_record_request(gap_s, hit, log, key=key)
+        except Exception as e:  # noqa: BLE001
+            log.debug("cache.lifetime record skipped: %s", e)
+        _CACHE_REQ["last_at"] = now()    # the server holds the prefix again either way
+        if not hit:
+            misses += 1
+            if misses >= 2:
+                log.info("cache.keepalive off: two misses, the server is not keeping this prefix")
+                return "miss"
+
+
+def _cache_keepalive_enabled():
+    c = _config.get("context", {})
+    return bool(c.get("cache_keepalive", False)) and _prompt_caching_backend()
+
+
+def _cache_keepalive_disarm():
+    """Stop the keepalive thread (a run is starting); never blocks on a request in flight."""
+    stop = _KEEPALIVE.get("stop")
+    if stop is not None:
+        stop.set()
+    _KEEPALIVE["stop"] = None
+    _KEEPALIVE["thread"] = None
+
+
+def _cache_keepalive_arm(log):
+    """Start keepalives for the last request sent, if there is one and the backend
+    caches. Called when a run ends and the agent goes back to waiting for input."""
+    _cache_keepalive_disarm()
+    if not _cache_keepalive_enabled() or not _LAST_REQUEST.get("body"):
+        return False
+    c = _config.get("context", {})
+    try:
+        max_idle_s = float(c.get("cache_keepalive_max_idle_s", 3600) or 0)
+        probe_every = int(c.get("cache_keepalive_probe_every", 4) or 0)
+    except (TypeError, ValueError):
+        max_idle_s, probe_every = 3600.0, 4
+    if max_idle_s <= 0:
+        return False
+    key = _cache_lifetime_key()
+    body_json = _LAST_REQUEST["body"]
+    stop = threading.Event()
+
+    def _send():
+        body = json.loads(body_json)
+        body["_cache_keepalive"] = True
+        usage = {}
+        for chunk in _iter_stream_chunks(_llm_request(log, json=body, stream=True, timeout=(30, 120))):
+            if isinstance(chunk, dict) and chunk.get("usage"):
+                usage = chunk["usage"]
+        return usage
+
+    def _worker():
+        try:
+            why = _cache_keepalive_loop(stop, _send, log, key, max_idle_s, probe_every)
+            log.debug("cache.keepalive thread done: %s", why)
+        except Exception as e:  # noqa: BLE001
+            log.debug("cache.keepalive thread error: %s", e)
+
+    t = threading.Thread(target=_worker, name="cache-keepalive", daemon=True)
+    _KEEPALIVE["stop"], _KEEPALIVE["thread"] = stop, t
+    t.start()
+    return True
 
 
 def _stall_budget_s(base_s, est_prompt_tokens, prefill_tps_floor):
@@ -5917,6 +6045,7 @@ def run_agent_single(*args, **kwargs):
     Also fires the configured turn_hooks (see _run_turn_hooks)."""
     _write_cycle_status("running")
     _run_turn_hooks("start")
+    _cache_keepalive_disarm()
     try:
         result = _run_agent_single_impl(*args, **kwargs)
         _write_cycle_status("complete", result=result)
@@ -5926,6 +6055,12 @@ def run_agent_single(*args, **kwargs):
         raise
     finally:
         _run_turn_hooks("end")
+        try:
+            _log = args[3] if len(args) > 3 else kwargs.get("log")
+            if _log is not None:
+                _cache_keepalive_arm(_log)
+        except Exception:  # the keepalive is a saving, never a failure
+            pass
 
 
 def _run_agent_single_impl(conversation_history: list, summary_state: dict, initial_files,
@@ -7161,6 +7296,13 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # Strip internal-tracking keys before sending
                 request_body.pop("_escalation_level", None)
 
+            if _prompt_caching_backend():
+                # What the keepalive re-sends while the agent waits for input: a snapshot,
+                # since the history's messages may be compressed in place later.
+                try:
+                    _LAST_REQUEST["body"] = json.dumps(request_body, default=str)
+                except (TypeError, ValueError):
+                    _LAST_REQUEST["body"] = None
             try:
                 response = _llm_request(log, json=request_body, stream=True, timeout=(30, 300))
                 # Only the legacy Response shape exposes ``status_code``;

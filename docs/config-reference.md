@@ -76,6 +76,10 @@ Controls context-window sizing and compaction.
 | `summary_threshold` | `5` | A message count: how many messages must have fallen out of the window before a summary of them is generated. A value above `max_context_messages` (older `/setup` runs wrote this key in characters) is replaced at startup by a fifth of the cap, with a warning. |
 | `summary_max_chars` | `3000` | Maximum characters in a generated summary chunk. |
 | `max_context_messages` | `30` | Hard cap on messages sent to the LLM per turn. |
+| `cache_collapse_frac` | `0.15` | Prompt-caching backends only. When a request follows an idle gap longer than the cache's recorded lifetime, the window is rebuilt to this fraction of the budget behind a fresh summary instead of re-sending the whole expired prefix uncached. `0` disables. See the AI Commons page, Idle gaps. |
+| `cache_keepalive` | `true` | Prompt-caching backends only. While the agent waits for input, re-send the last request with a one-token output limit before the cached prefix expires. |
+| `cache_keepalive_max_idle_s` | `3600` | Stop keepalives after this long idle; beyond it the collapse is the cheaper path. |
+| `cache_keepalive_probe_every` | `4` | Every n-th keepalive waits a fifth longer than the proven lifetime to learn whether the cache lives longer. `0` never probes. |
 
 ## `cycle`
 

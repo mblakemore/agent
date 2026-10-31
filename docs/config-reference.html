@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">Config reference</p>
 <h1>Config reference</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/config-reference.md"><code>docs/config-reference.md</code></a> · last changed 2026-10-29 (3edd61a)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/config-reference.md"><code>docs/config-reference.md</code></a> · last changed 2026-10-30 (f195de6)</p>
 <p>Every key the agent reads from its config file, with its default. All sections are optional; omitted keys use the defaults below. <strong>You rarely need to write this by hand</strong>: the <a href="setup-wizard.html"><code>/setup</code> wizard</a> writes and calibrates it for you from live probes of your endpoints. For whole setups rather than single keys, see <a href="configurations.html">Configurations</a>.</p>
 <p>The agent looks for <code>.agent/config.json</code> first, then falls back to <code>config.json</code> in the working directory (wherever you run <code>agent.py</code> from). Putting it under <code>.agent/</code> keeps your local, key-bearing config alongside the other runtime files. When you run inside a git repo, the agent best-effort adds <code>.agent/</code> and <code>config.json</code> to <code>.gitignore</code> so your config (which may hold API keys) and runtime state never get committed. Outside a repo it leaves the directory untouched.</p>
 <h2 id="backends"><code>backends</code></h2>
@@ -214,6 +214,26 @@
 <td><code>max_context_messages</code></td>
 <td><code>30</code></td>
 <td>Hard cap on messages sent to the LLM per turn.</td>
+</tr>
+<tr>
+<td><code>cache_collapse_frac</code></td>
+<td><code>0.15</code></td>
+<td>Prompt-caching backends only. When a request follows an idle gap longer than the cache's recorded lifetime, the window is rebuilt to this fraction of the budget behind a fresh summary instead of re-sending the whole expired prefix uncached. <code>0</code> disables. See the AI Commons page, Idle gaps.</td>
+</tr>
+<tr>
+<td><code>cache_keepalive</code></td>
+<td><code>true</code></td>
+<td>Prompt-caching backends only. While the agent waits for input, re-send the last request with a one-token output limit before the cached prefix expires.</td>
+</tr>
+<tr>
+<td><code>cache_keepalive_max_idle_s</code></td>
+<td><code>3600</code></td>
+<td>Stop keepalives after this long idle; beyond it the collapse is the cheaper path.</td>
+</tr>
+<tr>
+<td><code>cache_keepalive_probe_every</code></td>
+<td><code>4</code></td>
+<td>Every n-th keepalive waits a fifth longer than the proven lifetime to learn whether the cache lives longer. <code>0</code> never probes.</td>
 </tr>
 </tbody>
 </table></div>
@@ -432,6 +452,11 @@ server that is not running.</p>
 <td><code>extra_allowed_paths</code></td>
 <td><code>[]</code></td>
 <td>List of absolute directory paths the <code>file</code> tool is allowed to read/write outside the working directory.</td>
+</tr>
+<tr>
+<td><code>turn_hooks</code></td>
+<td><code>{}</code></td>
+<td>Shell commands run around each turn: <code>{"start": "cmd" or ["cmd", ...], "end": ...}</code>. <code>start</code> runs before the turn, <code>end</code> after it, even if it raised. Each command gets 5 s and its output is discarded; a failing hook never stops the turn. For status indicators (the same job as Claude Code's UserPromptSubmit and Stop hooks).</td>
 </tr>
 <tr>
 <td><code>tools_whitelist</code></td>
