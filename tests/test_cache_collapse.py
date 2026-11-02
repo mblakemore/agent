@@ -112,14 +112,14 @@ def _turn_with_usage(tid, read, uncached):
                        "input_tokens": uncached}}]
 
 
-def _collapsed_run(agent_loop_mocks, monkeypatch, summarizer=None):
+def _collapsed_run(agent_loop_mocks, monkeypatch, summarizer=None, gap=3000, n=30):
     monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 100)
     monkeypatch.setattr(agent, "_TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
     monkeypatch.setattr(agent, "_TOOLS_TOKENS", 0)
     monkeypatch.setattr(agent, "_main_backend",
                         MagicMock(kind="aicommons", model="moonshotai-kimi-k3", honours_system=True, base_url="http://x"))
     monkeypatch.setattr(agent, "_estimate_tokens", lambda m: 10)
-    monkeypatch.setattr(agent, "_CACHE_REQ", {"n": 5, "prev_sig": None, "last_at": time.time() - 3000})
+    monkeypatch.setattr(agent, "_CACHE_REQ", {"n": 5, "prev_sig": None, "last_at": time.time() - gap})
     agent_loop_mocks.stub_tool("read_file", "contents")
     sent = []
     real = agent_loop_mocks._fake_llm_request
@@ -129,7 +129,7 @@ def _collapsed_run(agent_loop_mocks, monkeypatch, summarizer=None):
         return real(log, **kw)
     monkeypatch.setattr(agent, "_llm_request", capture)
     agent_loop_mocks.script(_turn_with_usage("t1", 0, 100))
-    h = _hist(30)
+    h = _hist(n)
     h.append({"role": "user", "content": "wake up"})
     state = {"text": "old summary", "up_to": 0, "_cache_head": 1}
     lg = MagicMock()
@@ -160,3 +160,52 @@ def test_a_running_async_summary_is_left_to_the_next_harvest(agent_loop_mocks, m
     assert not gen.called
     assert state["text"] == "old summary"
     assert any("already running" in l for l in lines), lines
+
+
+# ── an eviction folds its summary into the same request (one miss, not two) ──
+#
+# Measured 2026-11-02 on kimi before this: every eviction (read 10k / uncached 11k)
+# was followed two turns later by a summary-harvest miss (read 3k / uncached 20k)
+# when the async summary of the evicted messages landed in the lead message:
+# 11 harvest misses, 220k uncached tokens, in 40 minutes of tool-heavy work.
+
+class TestEvictionFoldsItsSummary:
+    def _setup(self, monkeypatch):
+        monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 100)
+        monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="aicommons", model="moonshotai-kimi-k3"))
+        monkeypatch.setattr(agent, "_estimate_tokens", lambda m: 10)
+        monkeypatch.setattr(agent, "_CACHE_REQ", {"n": 5, "prev_sig": None, "last_at": time.time() - 60})
+
+    def test_the_window_builder_asks_for_a_summary_when_the_head_moves(self, monkeypatch, uncalibrated):
+        self._setup(monkeypatch)
+        h, state = _hist(50), {"text": "", "up_to": 0, "_cache_head": 1}
+        _, oldest = agent._build_context(h, state, "", 1000, 100, log)
+        assert oldest > 1 and state["_head_moved"] is True
+        assert state["_evict_summarize"] is True
+        assert "_collapsed" not in state, "a live prefix that overflows is an eviction, not a collapse"
+
+    def test_a_window_that_still_fits_asks_for_nothing(self, monkeypatch, uncalibrated):
+        self._setup(monkeypatch)
+        h, state = _hist(30), {"text": "", "up_to": 0, "_cache_head": 1}
+        _, oldest = agent._build_context(h, state, "", 1000, 100, log)
+        assert oldest == 1 and "_evict_summarize" not in state and "_head_moved" not in state
+
+    def test_the_evicting_request_carries_the_summary_of_what_left(self, agent_loop_mocks, monkeypatch):
+        sent, state, lines, gen = _collapsed_run(agent_loop_mocks, monkeypatch, gap=60, n=50)
+        assert gen.called, "the summary of the evicted messages is generated before sending"
+        first = sent[0]
+        lead = next(m for m in first if m["role"] == "user" and "Progress summary" in str(m["content"]))
+        assert "NEW SUMMARY of the idle gap" in lead["content"]
+        assert state["up_to"] > 1 and state["text"].startswith("NEW SUMMARY")
+        assert any("cache.miss" in l and "reason=eviction" in l for l in lines), lines
+        assert any(l.startswith("eviction: summary of the history up to message") for l in lines), lines
+        assert not any("reason=summary-harvest" in l for l in lines), lines
+        assert "_evict_summarize" not in state and "_lead_changed" not in state, state
+
+    def test_a_running_async_summary_is_left_to_the_next_harvest(self, agent_loop_mocks, monkeypatch):
+        summarizer = MagicMock()
+        summarizer.is_running = True
+        summarizer.harvest.return_value = False
+        sent, state, lines, gen = _collapsed_run(agent_loop_mocks, monkeypatch, summarizer=summarizer, gap=60, n=50)
+        assert not gen.called and state["text"] == "old summary"
+        assert any(l.startswith("eviction: a summary is already running") for l in lines), lines

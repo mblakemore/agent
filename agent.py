@@ -4335,6 +4335,12 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
                 log.info("cache-friendly eviction: window head %s -> %d (%d messages, ~%d tokens)",
                          summary_state.get("_cache_head"), oldest_idx, len(selected), used)
                 summary_state["_head_moved"] = True   # read by the cache.miss log, then cleared
+                # The prefix after the lead is dead on this request anyway, so the lead
+                # may change at no extra cost: the run loop summarises what left the
+                # window before sending, instead of harvesting it two turns later as a
+                # second miss (measured 2026-11-02 on kimi: 11 harvest misses, 220k
+                # uncached tokens, in 40 minutes of tool-heavy work).
+                summary_state["_evict_summarize"] = True
             summary_state["_cache_head"] = oldest_idx
 
     if oldest_idx > 0 and context_msg:
@@ -7140,18 +7146,24 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                 max_messages_override=_ctx_max_messages)
 
-            if summary_state.pop("_collapse_summarize", False):
-                # The prefix is dead anyway, so the lead message may change on this very
-                # request at no extra cost: summarise everything the collapse evicted now,
-                # synchronously, instead of harvesting it a turn later (a second miss).
+            _collapsed_now = summary_state.pop("_collapse_summarize", False)
+            _evicted_now = summary_state.pop("_evict_summarize", False)
+            if _collapsed_now or _evicted_now:
+                # The prefix after the lead is dead on this request anyway (the window
+                # head moved, by collapse or eviction), so the lead message may change
+                # at no extra cost: summarise everything that left the window now,
+                # synchronously, instead of harvesting it a turn or two later as a
+                # second miss. The rebuilt context keeps the new head.
+                _why = "cache collapse" if _collapsed_now else "eviction"
                 if _async_summarizer is not None and _async_summarizer.is_running:
-                    log.info("cache collapse: a summary is already running; the next turn harvests it")
+                    log.info("%s: a summary is already running; the next turn harvests it", _why)
                 elif _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True):
-                    log.info("cache collapse: summary of the history up to message %d folded into this request",
-                             oldest_idx)
+                    log.info("%s: summary of the history up to message %d folded into this request",
+                             _why, oldest_idx)
                     messages_to_send, oldest_idx = _build_context(
                         conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                         max_messages_override=_ctx_max_messages)
+                    summary_state.pop("_evict_summarize", None)   # the rebuild may move the head again
 
             # Summarize dropped messages: async (background) or sync (blocking).
             # T5.13 — gate the message-count trigger on actual context utilization
