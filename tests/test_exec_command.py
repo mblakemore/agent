@@ -1465,3 +1465,43 @@ def test_no_log_file_when_the_home_is_not_writable(tmp_path, monkeypatch):
     res = fn(command="echo ok", background=True, new_session=True)
     assert "full output" not in res
     assert "ok" in fn(session_id=_sid(res), wait=10)
+
+
+# ── polling a detached command by its log file name resolves to its session ──
+#
+# Observed 2026-11-02: the detach note named the session ("[session: agent-demo-ab12cd]")
+# and its log file (…/agent-demo-ab12cd-20261102-102211-43c6.log); the model polled with
+# the log basename and was told the session had expired.
+
+def test_a_log_basename_or_path_resolves_to_its_session():
+    from tools import exec_command as ec
+    ec._sessions["agent-demo-ab12cd"] = {"bg_proc": None, "bg_output": ""}
+    ec._sessions["agent-demo"] = {"bg_proc": None, "bg_output": ""}       # a shorter id must not claim it
+    try:
+        for name in ("agent-demo-ab12cd-20261102-102211-43c6",
+                     "agent-demo-ab12cd-20261102-102211-43c6.log",
+                     "/home/u/proj/.agent/exec/agent-demo-ab12cd-20261102-102211-43c6.log",
+                     "agent-demo-ab12cd"):
+            assert ec._get_or_create_session(name) == ("agent-demo-ab12cd", None), name
+        assert ec._get_or_create_session("agent-demo-20261102-1.log") == ("agent-demo", None)
+        sid, err = ec._get_or_create_session("agent-other-123456-20261102-102211-43c6.log")
+        assert sid is None and "does not exist" in err
+        sid, err = ec._get_or_create_session("agent-demox-97e4fa2")  # not id + "-": a different id
+        assert sid is None and err
+    finally:
+        ec._sessions.pop("agent-demo-ab12cd", None)
+        ec._sessions.pop("agent-demo", None)
+
+
+def test_the_detach_note_spells_out_the_poll_call(monkeypatch):
+    from tools import exec_command as ec
+    monkeypatch.setattr(ec, "_DETACH_AFTER_S", 0.3)
+    out = fn(command="sleep 2; echo finished", timeout=10, new_session=True)
+    m = re.search(r"\[session: (\S+)\] \(still running after", out)
+    assert m, out
+    sid = m.group(1)
+    assert f'poll with session_id="{sid}", wait=N' in out, out
+    log = re.search(r"full output: (\S+\.log)", out)
+    poll_with = log.group(1) if log else sid          # the path, as the model did
+    polled = fn(session_id=poll_with, wait=5)
+    assert "finished" in polled and "does not exist" not in polled, polled

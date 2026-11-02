@@ -482,12 +482,32 @@ def _derive_main_session():
     return f"agent-{agent_name}-{path_hash}"
 
 
+def _session_for_log_name(name):
+    """The live session whose log file (basename, with or without .log, or full path)
+    or id-plus-suffix `name` is; None when it is none of them. The longest id wins so
+    'agent-x' never claims 'agent-x-y-…'."""
+    base = os.path.basename(str(name))
+    if base.endswith(".log"):
+        base = base[:-4]
+    for sid in sorted(_sessions, key=len, reverse=True):
+        if base == sid or base.startswith(sid + "-"):
+            return sid
+    return None
+
+
 def _get_or_create_session(session_id=None, new_session=False):
     """Get an existing session or create a new one. Returns (session_id, error)."""
     global _main_session_id
 
     if session_id:
         if session_id not in _sessions:
+            # The detach note names the session and its log file, whose basename is
+            # the session id plus a timestamp and a suffix; a model that polls with
+            # the basename (or the path) means the session, so resolve it (observed
+            # 2026-11-02: one wasted poll and a session left unread).
+            resolved = _session_for_log_name(session_id)
+            if resolved:
+                return resolved, None
             return None, (
                 f"Error: session '{session_id}' does not exist — it either "
                 f"expired or belongs to a previous agent.py process. "
@@ -1054,7 +1074,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         tail = session["bg_output"][-4000:]
         return (
             f"[session: {sid}] (still running after {_DETACH_AFTER_S:g}s — continuing in background; "
-            f"poll with session_id, wait=N to block until it finishes{_log_note(session)})\n{tail}"
+            f"poll with session_id=\"{sid}\", wait=N to block until it finishes{_log_note(session)})\n{tail}"
         )
 
     if timed_out:
