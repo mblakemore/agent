@@ -9,7 +9,7 @@ python agent.py [OPTIONS] [PROMPT...]
 | Flag | Description |
 | --- | --- |
 | `-a`, `--auto` | Automation mode — run the prompt and exit; no interactive loop. |
-| `-c`, `--continue` | Resume from the last checkpoint. Combine with `-a` for auto-resume-and-exit. |
+| `-c`, `--continue` | Resume from the last checkpoint. Combine with `-a` for auto-resume-and-exit. The files that lead the trimmed window (`@AGENT.md` / `@CLAUDE.md` from the first message) are re-read from disk on resume; a prompt given with `-c` is ignored when a checkpoint exists. |
 | `-r N`, `--repeat N` | Run the prompt `N` times with fresh state each run (`0` = indefinitely). Implies `-a`. |
 | `--setup` | Run the setup wizard at startup even when a config exists (interactive TTY sessions only), then continue into the session. |
 | `--nudge` | When the model returns a text-only response, auto-nudge it to keep going. Off by default. |

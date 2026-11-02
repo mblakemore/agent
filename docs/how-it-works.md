@@ -11,7 +11,7 @@ Each cycle is a turn loop:
 
 ## Guardrails
 
-- **Checkpointing**: history and summary state are written to `.agent/state/conversation_checkpoint.json` every turn. `--continue` resumes from there.
+- **Checkpointing**: history and summary state are written to `.agent/state/conversation_checkpoint.json` every turn. `--continue` resumes from there. The lead files of the trimmed window (the `@file` references of the first message, typically the identity file) are stored by name and re-read from disk on resume, so an identity file edited during the session is current after `-c`; if a file is gone, the checkpoint's copy is used. During a session, `@file` in a later message keeps the lead as it is unless it names a lead file, which re-reads them all.
 - **Async summarization**: a background thread condenses older messages while the main model keeps working.
 - **Cycle limits**: after `cycle.max_turns` turns (default 250) the agent is asked to wrap up; after `cycle.wind_down_turns` more it is forced to stop.
 - **Text-loop detection**: three identical text responses in a row end the cycle.

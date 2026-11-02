@@ -3384,10 +3384,27 @@ def _expand_file_refs(text):
 
     Returns (expanded_text, files_content, error).
     """
+    expanded, files_content, _refs, err = _expand_file_refs_ex(text)
+    return expanded, files_content, err
+
+
+def _expand_file_refs_ex(text):
+    """`_expand_file_refs` that also returns the refs it attached, as typed, so the
+    lead of a trimmed window can be re-read from disk later (`_lead_update`,
+    `_lead_reload`). Returns (expanded_text, files_content, attached_refs, error)."""
     refs = _FILE_REF.findall(text)
     if not refs:
-        return text, None, None
+        return text, None, [], None
+    files_content, attached, err = _attach_file_refs(refs)
+    if err:
+        return None, None, [], err
+    return text + "\n\n" + files_content, files_content, attached, None
 
+
+def _attach_file_refs(refs):
+    """Read the files behind @refs. Returns (files_content, attached_refs, error);
+    files_content carries the working-directory preamble when an identity file is
+    among them, exactly as the lead message of a trimmed window needs it."""
     # Resolve working directory once so every ref can be checked against it.
     # We use Path.cwd().resolve() (not os.getcwd()) to follow any symlinks in
     # the cwd itself, giving a canonical base for confinement checks.
@@ -3396,6 +3413,7 @@ def _expand_file_refs(text):
 
     seen = set()
     attachments = []
+    attached = []
     for ref in refs:
         if ref in seen:
             continue
@@ -3407,7 +3425,7 @@ def _expand_file_refs(text):
             path_is_dir = p.is_dir() if path_exists else False
             resolved_ref = p.resolve()
         except OSError as exc:
-            return None, None, f"Error: '{ref}': {exc.strerror}"
+            return None, [], f"Error: '{ref}': {exc.strerror}"
         if not path_exists:
             # Bare identifiers with no path separator or extension (e.g. @state,
             # @transition) are Python decorators or @-mentions — not file refs.
@@ -3415,9 +3433,9 @@ def _expand_file_refs(text):
             # names don't abort before the first LLM call.
             if '/' not in ref and '.' not in ref:
                 continue
-            return None, None, f"Error: file '{ref}' does not exist"
+            return None, [], f"Error: file '{ref}' does not exist"
         if path_is_dir:
-            return None, None, f"Error: '{ref}' is a directory, not a file"
+            return None, [], f"Error: '{ref}' is a directory, not a file"
 
         # Confinement check: reject any ref that resolves outside the working
         # directory.  This blocks both relative traversals (@../../secret) and
@@ -3425,7 +3443,7 @@ def _expand_file_refs(text):
         if resolved_ref != cwd_resolved and not str(resolved_ref).startswith(cwd_prefix):
             return (
                 None,
-                None,
+                [],
                 f"Error: '{ref}' resolves to '{resolved_ref}' which is outside "
                 f"the working directory '{cwd_resolved}'. "
                 f"Only files inside the current working directory can be referenced with @.",
@@ -3453,6 +3471,7 @@ def _expand_file_refs(text):
                       f"This is YOUR identity file — do not search for it elsewhere. {total} lines]")
 
         attachments.append(f"{header}\n{content}")
+        attached.append(ref)
         _emit("on_file_attached", header)
 
     files_content = "\n\n".join(attachments)
@@ -3471,8 +3490,86 @@ def _expand_file_refs(text):
         )
     else:
         preamble = ""
-    expanded = text + "\n\n" + preamble + files_content
-    return expanded, preamble + files_content if preamble else files_content, None
+    return (preamble + files_content if preamble else files_content), attached, None
+
+
+# The files that lead a trimmed window (`initial_files`), as the refs that named them.
+# Kept so the lead can be re-read from disk instead of carried as the copy taken when
+# the session began: an identity file edited during the session (Iris edits hers
+# several times a day) was stale after every `-c` until the next fresh start.
+_LEAD = {"refs": []}
+_LEAD_HEADER_RE = re.compile(r"^\[(\S+): (?:first \d+ of )?\d+ lines\]$|"
+                             r"^\[AGENT IDENTITY FILE: (\S+) \(loaded from ", re.MULTILINE)
+
+
+def _lead_refs_from_text(initial_files):
+    """The refs behind a lead built before refs were checkpointed, read off its headers."""
+    out = []
+    if not isinstance(initial_files, str):   # tests and old code hand lists through here
+        return out
+    for m in _LEAD_HEADER_RE.finditer(initial_files):
+        ref = m.group(1) or m.group(2)
+        if ref and ref not in out:
+            out.append(ref)
+    return out
+
+
+def _lead_update(initial_files, files, log):
+    """Decide what leads the trimmed window after a message that referenced files
+    (`files` is what `_expand_file_refs` attached; the refs are read off its headers).
+
+    The first message with files sets the lead. A later message that names one of
+    the lead files again re-reads them all from disk (so `@CLAUDE.md` refreshes an
+    edited identity file); one that names other files keeps the lead as it is, and
+    those files stay in their own message. Replacing the lead with whichever file
+    was referenced last made `@notes.md look at this` drop the identity file from
+    every later window."""
+    if not files:
+        return initial_files
+    refs = _lead_refs_from_text(files)
+    if not initial_files or not _LEAD["refs"]:
+        _LEAD["refs"] = list(refs)
+        return files
+
+    def _same(a, b):
+        try:
+            return Path(a).resolve() == Path(b).resolve()
+        except OSError:
+            return a == b
+    if not any(_same(r, lead) for r in refs for lead in _LEAD["refs"]):
+        log.info("lead files kept (%s); %s stays in its message",
+                 ", ".join(_LEAD["refs"]), ", ".join(refs))
+        return initial_files
+    fresh, attached, err = _attach_file_refs(_LEAD["refs"])
+    if err or not fresh:
+        log.warning("lead files not re-read (%s); the earlier copy stays", err or "nothing attached")
+        return initial_files
+    _LEAD["refs"] = list(attached)
+    log.info("lead files re-read from disk: %s%s", ", ".join(attached),
+             "" if fresh == initial_files else " (changed)")
+    return fresh
+
+
+def _lead_reload(initial_files, log):
+    """On `-c`, re-read the lead files from disk; the checkpoint's copy is the fallback."""
+    if not initial_files or not isinstance(initial_files, str):
+        return initial_files
+    refs = _LEAD["refs"] or _lead_refs_from_text(initial_files)
+    if not refs:
+        return initial_files
+    try:
+        fresh, attached, err = _attach_file_refs(refs)
+    except Exception as e:                      # a reload never breaks a resume
+        log.warning("lead files not re-read on resume (%s); the checkpoint's copy is used", e)
+        return initial_files
+    if err or not fresh:
+        log.warning("lead files not re-read on resume (%s); the checkpoint's copy is used",
+                    err or "nothing attached")
+        return initial_files
+    _LEAD["refs"] = list(attached)
+    log.info("lead files re-read from disk on resume: %s%s", ", ".join(attached),
+             "" if fresh == initial_files else " (changed since the checkpoint)")
+    return fresh
 
 
 # ── Summarization ─────────────────────────────────────────────────────
@@ -4607,6 +4704,7 @@ def _save_checkpoint(conversation_history, summary_state, turn, initial_files,
             "summary_state": summary_state,
             "turn": turn,
             "initial_files": initial_files,
+            "initial_file_refs": list(_LEAD["refs"]),
             "clean_exit": clean_exit,
             "loaded_tools": list(_registry.LOADED),
         }
@@ -4626,6 +4724,7 @@ def _load_checkpoint():
         with open(_CHECKPOINT_PATH, encoding="utf-8", errors="replace") as f:
             cp = json.load(f)
         _registry.RESUME_LOADED[:] = [n for n in (cp.get("loaded_tools") or []) if isinstance(n, str)]
+        _LEAD["refs"] = [r for r in (cp.get("initial_file_refs") or []) if isinstance(r, str)]
         return (
             cp["conversation_history"],
             cp["summary_state"],
@@ -5437,6 +5536,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             conversation_history, summary_state, start_turn, initial_files, _clean_exit = cp
             log.info("CONTINUE: resuming from checkpoint (turn %d, %d messages, clean_exit=%s)",
                      start_turn, len(conversation_history), _clean_exit)
+            initial_files = _lead_reload(initial_files, log)
             # Cap summary from old checkpoints that may have bloated summaries
             if summary_state.get("text"):
                 summary_state["text"] = _condense_summary(summary_state["text"], log)
@@ -5560,7 +5660,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             _emit("on_error", f"Unexpected error expanding initial prompt: {e}")
             return
         if files:
-            initial_files = files
+            initial_files = _lead_update(initial_files, files, log)
         # Extract <pinned>...</pinned> blocks — these survive summarization
         global _pinned_instructions
         expanded, pinned = _extract_pinned(expanded)
@@ -5863,7 +5963,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                         _emit("on_error", _err)
                         continue
                     if _files:
-                        initial_files = _files
+                        initial_files = _lead_update(initial_files, _files, log)
                     conversation_history.append({"role": "user", "content": _expanded})
                     log.debug("USER (live): %s", _expanded[:200])
                 else:
@@ -5978,7 +6078,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             _emit("on_error", err)
             continue
         if files:
-            initial_files = files
+            initial_files = _lead_update(initial_files, files, log)
 
         conversation_history.append({"role": "user", "content": expanded})
         log.debug("USER: %s", expanded)
@@ -6032,7 +6132,7 @@ def _handle_auto_guidance(conversation_history, summary_state, initial_files, lo
             _emit("on_error", err_g)
         else:
             if files_g:
-                initial_files = files_g
+                initial_files = _lead_update(initial_files, files_g, log)
             conversation_history.append({"role": "user", "content": expanded_g})
             log.info("OPERATOR: %s", expanded_g)
     else:
