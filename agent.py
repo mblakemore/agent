@@ -592,6 +592,12 @@ _DEFAULT_CONFIG = {
         #           "list_files", "exec_command", "search_files", "find_symbol",
         #           "think", "task_tracker"]
         "tools_whitelist": None,
+        # The end_cycle tool (a clean "I am finished" exit for a cycle). Off by
+        # default: the model never sees it and a call to it is refused, so an
+        # always-on interactive agent cannot end its own session. A cycle runner
+        # that wants the explicit exit opts in with true; the text-only completion
+        # paths end a cycle either way.
+        "end_cycle_tool": False,
     },
 }
 
@@ -1864,6 +1870,11 @@ if _tools_whitelist and isinstance(_tools_whitelist, list):
     _wl_set = set(_tools_whitelist)
     tools[:] = [t for t in tools if t["function"]["name"] in _wl_set]
     # Don't remove from MAP_FN — harness-internal calls (think, etc.) still need them
+
+# end_cycle is opt-in (preferences.end_cycle_tool). It is never in the registry's
+# list (_auto_exclude); when off it is also kept out of the per-session list and
+# refused at dispatch, so a model that calls it from memory gets an error, not an exit.
+_END_CYCLE_ENABLED = bool(_config.get("preferences", {}).get("end_cycle_tool", False))
 
 
 # ── Retry logic ────────────────────────────────────────────────────────
@@ -6657,8 +6668,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
     _session_tools = list(tools)
     # end_cycle is unlocked (appended to _session_tools) after the first nudge
     # fires so the agent can't skip the cycle by calling it before doing work.
-    _end_cycle_unlocked = False
-    if _prompt_caching_backend() and not any(
+    _end_cycle_unlocked = not _END_CYCLE_ENABLED  # off (the default): never offered
+    if _prompt_caching_backend() and not _end_cycle_unlocked and not any(
             (t.get("function") or {}).get("name") == "end_cycle" for t in _session_tools):
         # P4.4: tools render FIRST in the request, so adding one mid-run invalidates the
         # whole cached prompt. Offer end_cycle from turn 1. It is NOT gated on the
@@ -8774,6 +8785,10 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         pass  # result_str already holds the redirect
                     elif _cicd_blocked:
                         result_str = cicd_error
+                    elif func_name == "end_cycle" and not _END_CYCLE_ENABLED:
+                        result_str = ("Error: end_cycle is off for this agent (it is opt-in: "
+                                      "preferences.end_cycle_tool in .agent/config.json). "
+                                      "Stop when you are done; do not try to end the session.")
                     elif func_name not in MAP_FN:
                         result_str = f"Error: Unknown tool '{func_name}'"
                     else:

@@ -190,6 +190,9 @@ def write_run_config(wt_path, turn_cap, backend_config=None, success_check=None,
         "cycle": {"max_turns": turn_cap},
         "generation": {"temperature": 0.0, "top_p": 1.0, "top_k": 1,
                        "presence_penalty": 0.0},
+        # The seed prompt says "call end_cycle" and the success gate hooks it;
+        # the tool is opt-in since 2026-11-02.
+        "preferences": {"end_cycle_tool": True},
     }
     if success_check:
         # WS10.c: the agent cannot end_cycle while the issue's own

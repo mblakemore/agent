@@ -176,7 +176,8 @@ class TestEndCycleLocking(unittest.TestCase):
                 return "exit=0\n[main abc1234] C1: work"
             return "exit=0"
 
-        result, _, log = self._run(responses, exec_side_effect=_exec)
+        with patch("agent._END_CYCLE_ENABLED", True):  # the tool is opt-in
+            result, _, log = self._run(responses, exec_side_effect=_exec)
         self.assertEqual(result, "done")
         end_cycle_logged = any(
             "end_cycle called" in str(call)

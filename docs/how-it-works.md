@@ -81,7 +81,7 @@ tools/
   subagent.py         # Run a task in a child agent
   consult_advisor.py  # Ask the advisor model
   monitor.py          # Arm and stop background monitors
-  end_cycle.py        # Signal a clean end of cycle
+  end_cycle.py        # Signal a clean end of cycle (opt-in: preferences.end_cycle_tool)
   sleep.py            # Pause execution
 .agent/               # Runtime files (created on first run, gitignored)
   config.json         # Written by /setup

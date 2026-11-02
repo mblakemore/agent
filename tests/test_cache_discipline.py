@@ -77,6 +77,7 @@ def test_each_request_extends_the_previous_one(caching):
 def test_nudge_turns_keep_the_prefix_and_end_cycle_is_offered_from_turn_one(caching, monkeypatch):
     mocks, sent = caching
     monkeypatch.setattr(agent, "_NUDGE_ENABLED", True)
+    monkeypatch.setattr(agent, "_END_CYCLE_ENABLED", True)  # opted in (off by default)
     mocks.script(
         _tool_turn("t1"),
         [{"choices": [{"index": 0, "delta": {"content": "I think I am done."}}]}],     # text-only → nudge
@@ -89,10 +90,11 @@ def test_nudge_turns_keep_the_prefix_and_end_cycle_is_offered_from_turn_one(cach
     _assert_prefix_chain(sent)
 
 
-def test_end_cycle_is_accepted_without_a_prior_nudge(caching):
+def test_end_cycle_is_accepted_without_a_prior_nudge(caching, monkeypatch):
     """Found live: a model that finishes cleanly is never nudged, so gating end_cycle on the
     first-nudge unlock refused a correct finish twice."""
     mocks, sent = caching
+    monkeypatch.setattr(agent, "_END_CYCLE_ENABLED", True)  # opted in (off by default)
     ran = []
     mocks.stub_tool("end_cycle", "ended")
     agent.MAP_FN["end_cycle"] = lambda **kw: ran.append(kw) or "ended"
