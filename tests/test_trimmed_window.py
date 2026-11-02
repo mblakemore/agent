@@ -225,7 +225,8 @@ def test_a_miss_on_a_prefix_we_changed_stays_unknown(agent_loop_mocks, monkeypat
     misses = [c.args[0] % c.args[1:] for c in lg.info.call_args_list
               if c.args and str(c.args[0]).startswith("cache.miss")]
     assert len(misses) == 2 and "reason=unknown" in misses[1], misses
-    assert "changed=msg 0/" in misses[1] and "role=user" in misses[1], misses
+    # message 0 is the static system block (the lazy-tool catalog line); the user turn is 1
+    assert "changed=msg 1/" in misses[1] and "role=user" in misses[1], misses
 
 
 class TestRequestSignature:

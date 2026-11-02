@@ -389,3 +389,7 @@ definition = {
         },
     },
 }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_short = 'a separate reasoning call'
+_keywords = ['reason', 'plan', 'analyse', 'analyze']

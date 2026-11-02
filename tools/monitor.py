@@ -123,3 +123,7 @@ definition = {
         },
     },
 }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_short = 'run a command on an interval in the background'
+_keywords = ['watch', 'poll', 'interval', 'background', 'events']

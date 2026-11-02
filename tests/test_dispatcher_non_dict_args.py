@@ -211,11 +211,13 @@ def test_non_dict_args_tool_called_not_skipped(mock_log):
     summary_state = {"text": "", "up_to": 0}
     mock_tool = MagicMock(return_value="called with empty args")
 
-    with patch("agent.MAP_FN", {**agent.MAP_FN, "think": mock_tool}), \
+    # A core tool: a deferred one called with arguments that do not fit (and {} fits
+    # nothing with a required parameter) is answered with its schema instead of run.
+    with patch("agent.MAP_FN", {**agent.MAP_FN, "sleep": mock_tool}), \
          patch("agent._llm_request") as mock_llm, \
          patch("agent._emit"):
         mock_llm.side_effect = [
-            _make_resp_raw_args("think", "null"),
+            _make_resp_raw_args("sleep", "null"),
             _make_resp_text("Done"),
         ]
         with patch("agent._NUDGE_ENABLED", False):

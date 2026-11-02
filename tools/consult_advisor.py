@@ -567,3 +567,8 @@ definition = {
         },
     },
 }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_tier = 'hidden'
+_short = 'one hard sub-problem to the advisor model'
+_keywords = ['advisor', 'escalate', 'hard', 'stuck']

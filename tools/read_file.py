@@ -41,3 +41,7 @@ def fn(path: str, start_line: int = 0, end_line: int = 0) -> str:
         return _read(resolved, start_line, end_line)
     except Exception as e:
         return f"Error: read_file failed: {e}"
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_aliases = ['read', 'cat', 'view', 'Read', 'open_file']
+_short = 'read a file with line numbers'

@@ -64,3 +64,7 @@ definition = {
         },
     },
 }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_short = 'a recurring prompt that wakes this agent'
+_keywords = ['timer', 'cron', 'recurring', 'remind', 'wake']

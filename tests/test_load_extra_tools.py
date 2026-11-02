@@ -87,12 +87,14 @@ class LoadExtraToolsRegistersFromSeparateDir(unittest.TestCase):
                 tools_pkg.load_extra_tools(tmp)
                 self.assertIn(tool_name, tools_pkg.MAP_FN)
                 self.assertEqual(tools_pkg.MAP_FN[tool_name](text="hi"), "echo:hi")
-                registered = [t for t in tools_pkg.tools
-                              if t.get("function", {}).get("name") == tool_name]
-                self.assertEqual(len(registered), 1,
-                                 msg="extra tool was not appended exactly once")
+                # Lazy tools (2026-11-02): an extra tool is registered once, deferred (named
+                # in the catalog, loaded by tool_search), not in the every-request list.
+                self.assertIn(tool_name, tools_pkg.DEFINITIONS)
+                self.assertEqual(tools_pkg.TIERS[tool_name], "deferred")
+                self.assertNotIn(tool_name, [t["function"]["name"] for t in tools_pkg.tools])
+                self.assertIn(f"`{tool_name}`", tools_pkg.catalog_line())
         finally:
-            tools_pkg.MAP_FN.pop(tool_name, None)
+            tools_pkg.remove_tool(tool_name)
             tools_pkg.tools[:] = [t for t in tools_pkg.tools
                                   if t.get("function", {}).get("name") != tool_name]
 

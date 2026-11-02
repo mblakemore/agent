@@ -241,3 +241,7 @@ definition = {
         },
     },
 }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_short = 'durable multi-cycle goals'
+_keywords = ['goal', 'objective', 'long-term']

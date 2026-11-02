@@ -37,3 +37,7 @@ def fn(path: str, content: str = "") -> str:
         return _write(resolved, content, 0, 0)
     except Exception as e:
         return f"Error: write_file failed: {e}"
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_aliases = ['write', 'create_file', 'Write', 'save_file']
+_short = 'create or overwrite a file'

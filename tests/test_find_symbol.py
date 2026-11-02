@@ -761,9 +761,12 @@ class TestFindSymbolRegistered(unittest.TestCase):
         self.assertIn("find_symbol", MAP_FN, "find_symbol must be registered in MAP_FN")
 
     def test_tool_in_tools_list(self):
-        from tools import tools
-        names = [t["function"]["name"] for t in tools]
-        self.assertIn("find_symbol", names, "find_symbol must appear in tools list")
+        # Lazy tools (2026-11-02): find_symbol is registered but deferred, so it is
+        # loadable by tool_search and named in the catalog, not in every request.
+        from tools import DEFINITIONS, TIERS, catalog_line
+        self.assertIn("find_symbol", DEFINITIONS, "find_symbol must be registered")
+        self.assertEqual(TIERS["find_symbol"], "deferred")
+        self.assertIn("`find_symbol`", catalog_line())
 
     def test_definition_structure(self):
         from tools.find_symbol import definition

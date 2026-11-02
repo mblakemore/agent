@@ -45,3 +45,7 @@ def fn(path: str, old_string: str = "", new_string: str = "", replace_all: bool 
         return _edit(resolved, old_string, new_string, replace_all)
     except Exception as e:
         return f"Error: edit_file failed: {e}"
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_aliases = ['edit', 'str_replace', 'replace', 'Edit', 'str_replace_editor']
+_short = 'replace an exact string in a file'

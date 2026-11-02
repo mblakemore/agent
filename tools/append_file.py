@@ -36,3 +36,7 @@ def fn(path: str, content: str = "") -> str:
         return _append(resolved, content)
     except Exception as e:
         return f"Error: append_file failed: {e}"
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_aliases = ['append']
+_short = 'append to a file'

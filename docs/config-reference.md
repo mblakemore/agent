@@ -176,10 +176,35 @@ Behavioural knobs that don't fit elsewhere.
 | `max_post_tool_text_chars` | `2000` | Cap on prose generated after tool calls in the same turn. |
 | `extra_allowed_paths` | `[]` | List of absolute directory paths the `file` tool is allowed to read/write outside the working directory. |
 | `turn_hooks` | `{}` | Shell commands run around each turn: `{"start": "cmd" or ["cmd", ...], "end": ...}`. `start` runs before the turn, `end` after it, even if it raised. Each command gets 5 s and its output is discarded; a failing hook never stops the turn. For status indicators (the same job as Claude Code's UserPromptSubmit and Stop hooks). |
-| `tools_whitelist` | `null` | Restrict the tool schema sent to the LLM to this list of tool names. `null` = all tools. Example: `["file", "exec_command", "search_files", "think", "task_tracker"]`. |
+| `tools_whitelist` | `null` | Only these tools exist for the model and for `tool_search`. `null` = all tools. Applied before the `tools` tiers below; a whitelist with no tier lists makes everything on it core. Example: `["file", "exec_command", "search_files", "think", "task_tracker"]`. |
 | `end_cycle_tool` | `false` | Offer the `end_cycle` tool, a clean "I am finished" exit for a cycle. Off by default: the model never sees it and a call to it is refused with an error, so an always-on interactive agent cannot end its own session. A cycle runner that wants the explicit exit sets `true`; a cycle still ends on the text-only completion paths either way. |
 | `initial_tasks` | `[]` | Task descriptions pre-seeded into `task_tracker` at session start (only when the task list is empty — does not overwrite an in-progress cycle). |
 | `seed_tasks_persistent` | `false` | Re-seed `initial_tasks` at the start of every cycle, not just on a fresh task list. |
+
+## `tools`
+
+Lazy tools. The model's request carries the **core** tools' schemas; the **deferred** tools are named in one line of the system prompt ("More tools, loaded on request with tool_search: …") and the **hidden** ones not at all. The core tool `tool_search` finds and loads the others by keywords or `select:name,name`; a loaded tool stays in the session's list, and the list changes at most once per turn (one cache miss per turn that loaded something). A deferred tool called from memory runs at once when its arguments fit its schema and is loaded; otherwise the answer is its schema and it is loaded for the next call. A name from another harness (`bash`, `grep`, `Read`) is resolved to the tool it means here.
+
+Shipped tiers: core = `exec_command`, `read_file`, `write_file`, `edit_file`, `list_files`, `search_files`, `sleep`, `task_tracker`, `tool_search` (about 3,100 tokens); deferred = everything else (about 160 tokens of catalog); hidden = `consult_advisor` (deferred once an advisor is configured) and `end_cycle` (see `end_cycle_tool`). Agent-written tools in `.agent/tools/` are deferred unless the module sets `_tier`; the old cap of ten is gone (`MAX_EXTRA_TOOLS` still caps when set). A tool module may also export `_short` (the catalog phrase), `_aliases` and `_keywords`.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `core` | `[]` | Tools to move to the core tier (schema in every request). |
+| `deferred` | `[]` | Tools to move to the deferred tier (catalog line, loaded on request). |
+| `hidden` | `[]` | Tools to move to the hidden tier (found only by `tool_search`). |
+| `catalog` | `true` | Put the one-line list of deferred tools in the system prompt. `false` leaves only the `tool_search` description to say that other tools exist. |
+| `preload_from_prompt` | `true` | Before the first request of a session, load the tools the task text names (a tool name or alias) or clearly asks for, so they cost no cache miss later. |
+| `implicit_run` | `true` | A deferred tool called with fitting arguments runs at once (and is loaded). `false`: the call answers with the schema and loads the tool; the next call runs. |
+
+```json
+"tools": {
+  "core": ["monitor"],
+  "deferred": ["list_files", "task_tracker"],
+  "hidden": ["subagent"]
+}
+```
+
+`/tools list` shows the tiers and the schema tokens the model sees; `/tools search WORDS`, `/tools load NAMES`, and `/tools core|defer|hide NAME [--save]` change them from the keyboard.
 
 ## `command_guards`
 

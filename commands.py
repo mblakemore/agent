@@ -44,6 +44,7 @@ def _cmd_help(ctx: SimpleNamespace, args: str) -> None:
         "  /alias         — install an `agent` shell alias for this checkout",
         "  /verbose       — toggle compact/full tool output",
         "  /tools [N|all] — show buffered tool calls (default: all; N = last N only)",
+        "  /tools list|search WORDS|load NAMES|core|defer|hide NAME [--save] — the lazy-tool tiers",
         "  /phase         — show current phase checkpoint",
         "  exit/quit      — end the session",
     ]
@@ -193,7 +194,81 @@ def _cmd_verbose(ctx: SimpleNamespace, args: str) -> None:
         safe_cb(ctx.cb, "on_notice", "info", f"verbose mode {state}")
 
 
+_TOOLS_VERBS = ("list", "search", "load", "core", "defer", "hide")
+
+
+def _tools_registry_cmd(ctx: SimpleNamespace, verb: str, rest: str) -> None:
+    """`/tools list|search WORDS|load NAMES|core NAME|defer NAME|hide NAME [--save]`:
+    the lazy-tool registry (tools/__init__.py). Tier changes apply from the next turn
+    (the session list is rebuilt per turn); --save also writes them to .agent/config.json."""
+    import json
+    import os
+    import tools as registry
+    out = ctx.cb._print
+    if verb == "list":
+        def _tok(n):
+            return len(json.dumps(registry.DEFINITIONS[n])) // 4
+        core = registry.names("core")
+        loaded = [n for n in registry.LOADED if n in registry.DEFINITIONS]
+        deferred = [n for n in registry.names("deferred") if n not in loaded]
+        hidden = registry.names("hidden")
+        lines = [theme.c(theme.SKY, "Tools the model sees:")]
+        lines += [f"  core      {n} ({_tok(n)} tok)" for n in core]
+        lines += [f"  loaded    {n} ({_tok(n)} tok)" for n in loaded]
+        lines.append(f"  total     {sum(_tok(n) for n in core + loaded)} tokens of schema")
+        lines.append(theme.c(theme.SKY, "Loadable with tool_search:"))
+        lines += [f"  deferred  {n} ({registry.META[n]['short']})" for n in deferred]
+        lines.append(f"  hidden    {len(hidden)}: {', '.join(hidden)}" if hidden else "  hidden    none")
+        if registry.PENDING_LOADS:
+            lines.append(f"  pending   {', '.join(registry.PENDING_LOADS)} (join the list next turn)")
+        out("\n".join(lines))
+        return
+    if verb == "search":
+        hits = registry.search(rest, 8) if rest else []
+        out("\n".join(f"  {registry.describe(n)}" + ("  [core]" if registry.is_core(n) else "  [loaded]" if registry.is_loaded(n) else "")
+                      for n in hits) if hits else f"  no tool matches {rest!r}")
+        return
+    if verb == "load":
+        got, bad = [], []
+        for n in [x for x in rest.replace(",", " ").split() if x]:
+            r = registry.resolve(n)
+            (got if r and registry.request_load(r) else bad).append(r or n)
+        out(f"  loading next turn: {', '.join(got) or 'nothing'}" + (f"; not loadable: {', '.join(bad)}" if bad else ""))
+        return
+    # core | defer | hide [--save]
+    tier = {"core": "core", "defer": "deferred", "hide": "hidden"}[verb]
+    words = rest.split()
+    save = "--save" in words
+    names = [w for w in words if w != "--save"]
+    if not names:
+        safe_cb(ctx.cb, "on_notice", "warn", f"usage: /tools {verb} NAME [NAME…] [--save]")
+        return
+    changed = [n for n in names if registry.set_tier(n, tier)]
+    unknown = [n for n in names if n not in changed]
+    msg = f"  {tier}: {', '.join(changed) or 'nothing changed'}" + (f"; unknown: {', '.join(unknown)}" if unknown else "")
+    if save and changed:
+        path = os.path.join(os.getcwd(), ".agent", "config.json")
+        try:
+            cfg = json.load(open(path)) if os.path.exists(path) else {}
+            block = cfg.setdefault("tools", {})
+            for t in ("core", "deferred", "hidden"):
+                block[t] = [n for n in (block.get(t) or []) if n not in changed]
+            block[tier] = list(block.get(tier) or []) + changed
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(cfg, f, indent=2)
+                f.write("\n")
+            msg += f"  (saved to {path})"
+        except Exception as e:
+            msg += f"  (not saved: {e})"
+    out(msg)
+
+
 def _cmd_tools(ctx: SimpleNamespace, args: str) -> None:
+    parts = args.split(None, 1) if args else []
+    if parts and parts[0].lower() in _TOOLS_VERBS:
+        _tools_registry_cmd(ctx, parts[0].lower(), parts[1].strip() if len(parts) > 1 else "")
+        return
     if not hasattr(ctx.cb, "render_tools"):
         return
     limit = None

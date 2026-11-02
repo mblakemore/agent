@@ -410,6 +410,16 @@ def agent_loop_mocks(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _reset_tool_registry_session():
+    """Lazy tools: what one test loaded (tools.LOADED, PENDING_LOADS, RESUME_LOADED) must
+    not be in the next test's session list."""
+    import tools as _registry
+    _registry.reset_session()
+    yield
+    _registry.reset_session()
+
+
+@pytest.fixture(autouse=True)
 def _clear_agent_exported_env():
     """agent.py exports its command-line backend choices into os.environ for in-process
     tools and subagents (AGENT_BACKEND_OVERRIDES, AGENT_SUBAGENT_ARGS). Tests that drive

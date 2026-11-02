@@ -1219,3 +1219,8 @@ definition = {
         },
     },
 }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_aliases = ['bash', 'shell', 'run_command', 'execute', 'run', 'terminal', 'Bash']
+_short = 'run a shell command'
+_keywords = ['shell', 'command', 'terminal', 'background', 'session']

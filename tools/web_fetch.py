@@ -278,3 +278,8 @@ definition = {
         },
     },
 }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_aliases = ['fetch', 'webfetch', 'WebFetch', 'curl', 'http_get', 'fetch_url']
+_short = 'fetch a web page as markdown'
+_keywords = ['url', 'http', 'web', 'page', 'download']

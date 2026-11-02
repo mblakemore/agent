@@ -136,3 +136,8 @@ definition = {
         },
     },
 }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_aliases = ['spawn_agent', 'delegate', 'run_subagent']
+_short = 'run a task in a child agent'
+_keywords = ['delegate', 'child', 'parallel', 'spawn']

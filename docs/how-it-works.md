@@ -83,10 +83,15 @@ tools/
   monitor.py          # Arm and stop background monitors
   end_cycle.py        # Signal a clean end of cycle (opt-in: preferences.end_cycle_tool)
   sleep.py            # Pause execution
+  tool_search.py      # Find and load the deferred and hidden tools (see "Lazy tools")
 .agent/               # Runtime files (created on first run, gitignored)
   config.json         # Written by /setup
   state/              # Checkpoint, tasks, cycle counter, web_fetch cache
   history/            # Per-session logs
 ```
 
-Agent-specific tools in `./tools/` alongside your working directory are auto-discovered and registered on startup.
+Agent-specific tools in `.agent/tools/` under your working directory are auto-discovered and registered on startup.
+
+### Lazy tools
+
+Every tool is registered (`tools.MAP_FN`, `tools.DEFINITIONS`), but the model's request carries only the **core** tier's schemas (`tools.tools`). The **deferred** tools are named in one static line of the system prompt and the **hidden** ones not at all; the core tool `tool_search` finds them by keywords or name and asks for them to be loaded. The agent loop appends the asked-for schemas to the session's tool list once per turn (`_apply_tool_loads`), so a load costs one cache miss, not one per call, and loaded tools stay for the session and survive a `-c` resume through the checkpoint. A tool called from memory that is not in the list runs at once when its arguments fit (and is loaded), otherwise it answers with its schema; a name from another harness (`bash`, `grep`) is resolved to the tool it means. Tiers come from the tool module (`_tier`), the shipped defaults (`tools.DEFAULT_CORE`) and the `tools` block of the config; `docs/config-reference.md` has the keys.

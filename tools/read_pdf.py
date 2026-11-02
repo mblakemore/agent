@@ -227,3 +227,8 @@ definition = {
         },
     },
 }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_aliases = ['pdf', 'pdf_text', 'extract_pdf']
+_short = 'text from a PDF'
+_keywords = ['pdf', 'document', 'book', 'pages']

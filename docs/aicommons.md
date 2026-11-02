@@ -84,7 +84,7 @@ The gateway caches at the end of the last message, so a turn reads from cache on
 
 - The per-turn runtime note (clock, phase checkpoint, nudges, wind-down) is stored in history, not sent as a throwaway trailing message.
 - The context window keeps its oldest message in place while everything fits. When it overflows, it drops to about 60% in one step, so there is one cache miss per eviction instead of one per turn.
-- `end_cycle` (when opted in with `preferences.end_cycle_tool`) is in the tool list from the first turn. Adding a tool mid-run would change the start of every request.
+- `end_cycle` (when opted in with `preferences.end_cycle_tool`) is in the tool list from the first turn. Adding a tool mid-run changes the start of every request, which is why lazy tools (`tool_search`, `docs/config-reference.md` "tools") are added to the list at most once per turn, stay for the session, and are preloaded from the task text before the first request when it names them. A miss from a load shows as `reason=tools` in the cache log.
 - The working directory is in the runtime note, not the system prompt, so runs that start within a few minutes of each other share the cached system prompt and tools.
 - Nothing inside the window is ever rewritten. The compression of repeated tool results only touches messages that have already been evicted, and only with the local head-and-tail form; it is gated on the pressure of the window that is sent, not of the whole stored history.
 - A trimmed window always starts with the files the run was given (`@AGENT.md` / `@CLAUDE.md`), with the summary once one exists. That lead message changes only when a summary is harvested, which is one further miss per eviction.

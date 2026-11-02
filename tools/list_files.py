@@ -31,3 +31,7 @@ def fn(path: str = ".") -> str:
         return _list(resolved)
     except Exception as e:
         return f"Error: list_files failed: {e}"
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_aliases = ['ls', 'list_dir', 'list_directory', 'dir']
+_short = 'list a directory'

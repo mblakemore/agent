@@ -47,7 +47,11 @@ def test_prompt_stays_in_the_cached_head(agent_loop_mocks, monkeypatch):
     backend = MagicMock(kind="aicommons", model="claude-v5.5-opus", honours_system=True,
                         base_url="https://gw/v1")
     sent = _run(agent_loop_mocks, monkeypatch, backend, PROMPT)
-    assert _wire(sent[0])["system"] == PROMPT
+    system = _wire(sent[0])["system"]
+    assert system.startswith(PROMPT)
+    # the only other static line is the lazy-tool catalog (the same bytes every request)
+    import tools as registry
+    assert system == PROMPT + "\n\n" + registry.catalog_line()
     _assert_prefix_chain(sent)
 
 

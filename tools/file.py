@@ -1028,3 +1028,7 @@ definition = {
         },
     },
 }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_short = 'one tool for all file operations'
+_aliases = ['file_ops']

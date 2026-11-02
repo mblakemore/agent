@@ -770,3 +770,7 @@ definition = {
         },
     },
 }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_aliases = ['todo', 'TodoWrite', 'tasks', 'task_list']
+_short = 'the persistent task list'

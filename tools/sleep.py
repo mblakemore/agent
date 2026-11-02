@@ -46,3 +46,7 @@ definition = {
         },
     },
 }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_aliases = ['wait', 'pause', 'delay']
+_short = 'wait some seconds'

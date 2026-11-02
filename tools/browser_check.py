@@ -216,3 +216,8 @@ definition = {
         },
     },
 }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_aliases = ['browser', 'open_url', 'screenshot_page']
+_short = 'render a page in headless Chromium, screenshot, console errors'
+_keywords = ['browser', 'chromium', 'screenshot', 'webgl', 'console', 'render', 'page']

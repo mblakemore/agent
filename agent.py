@@ -92,6 +92,7 @@ except ImportError:
 from spinner import StreamStatus
 from token_utils import count_tokens_from_message, count_tools_tokens
 from tools import MAP_FN, tools, load_extra_tools
+import tools as _registry
 import monitor_bus
 import schedule_bus
 import tools.end_cycle as _end_cycle_tool
@@ -439,6 +440,17 @@ def _extract_pinned(text):
 # ── Configuration ──────────────────────────────────────────────────────
 
 _DEFAULT_CONFIG = {
+    # Lazy tools (tools/__init__.py): which tools the model sees in every request
+    # (core), which it loads with tool_search (deferred, named in one catalog line) and
+    # which only a search finds (hidden). Empty lists keep the shipped tiers.
+    "tools": {
+        "core": [],
+        "deferred": [],
+        "hidden": [],
+        "catalog": True,             # the one-line list of deferred tools in the system prompt
+        "preload_from_prompt": True, # load tools the task text names before the first request
+        "implicit_run": True,        # a deferred tool called with fitting arguments runs at once
+    },
     # No model name ships: an empty model takes the server's own (startup reads
     # /v1/models), and /setup writes the one picked.
     "llm": {"base_url": "http://127.0.0.1:8080", "model": ""},
@@ -1863,20 +1875,77 @@ _agent_tools_dir = os.path.join(os.getcwd(), ".agent", "tools")
 if os.path.isdir(_agent_tools_dir):
     load_extra_tools(_agent_tools_dir)
 
-# Apply tools whitelist from config (preferences.tools_whitelist).
-# Filters both the schema list (tools) and the dispatch map (MAP_FN) so that
-# the LLM only sees the tools the agent actually needs. Reduces schema tokens
-# and context pressure without touching tool implementations.
+# Tool tiers (tools/__init__.py): core tools are in every request, deferred ones are
+# named in one catalog line and loaded by tool_search, hidden ones only by a search.
+# preferences.tools_whitelist is applied first (a tool not on it does not exist to the
+# model or the search; MAP_FN keeps it for harness-internal calls). The `tools` block
+# moves tools between tiers; a whitelist alone makes everything on it core, as before.
+# consult_advisor stays hidden until an advisor backend is configured.
+_TOOLS_DEFAULTS = {"core": [], "deferred": [], "hidden": [], "catalog": True,
+                   "preload_from_prompt": True, "implicit_run": True}
+_TOOLS_CFG = dict(_TOOLS_DEFAULTS)
+if isinstance(_config.get("tools"), dict):
+    _TOOLS_CFG.update(_config["tools"])
 _tools_whitelist = _config.get("preferences", {}).get("tools_whitelist")
-if _tools_whitelist and isinstance(_tools_whitelist, list):
-    _wl_set = set(_tools_whitelist)
-    tools[:] = [t for t in tools if t["function"]["name"] in _wl_set]
-    # Don't remove from MAP_FN — harness-internal calls (think, etc.) still need them
+try:
+    from tools.consult_advisor import advisor_active as _advisor_active_for_tier
+    if _advisor_active_for_tier(_config):
+        _registry.set_tier("consult_advisor", "deferred")
+except Exception:
+    pass
+_TOOL_TIERS = _registry.apply_tiers(
+    _TOOLS_CFG, whitelist=_tools_whitelist if isinstance(_tools_whitelist, list) else None,
+    log=logging.getLogger("agent"))
+
+
+def _session_tool_names(session_tools):
+    return {(t.get("function") or {}).get("name") for t in session_tools}
+
+
+def _apply_tool_loads(session_tools, log, initial=False):
+    """Append the tools asked for since the last turn (tool_search, an implicit call, a
+    resumed checkpoint) to the session's tool list, once, in load order; returns the
+    names added. Called before each request and after each tool batch, so the list
+    changes at most once per turn and a load costs one cache miss. initial=True also
+    brings back what this session loaded before (a resume, or an earlier turn in an
+    interactive session, which builds its list afresh)."""
+    if initial:
+        _registry.resume_pending()
+        for name in list(_registry.LOADED):
+            if _registry.available(name) and name not in _registry.PENDING_LOADS:
+                _registry.PENDING_LOADS.append(name)
+    present = _session_tool_names(session_tools)
+    added = []
+    for name in _registry.take_pending():
+        if name in present:
+            _registry.mark_loaded(name)
+            continue
+        session_tools.append(_registry.DEFINITIONS[name])
+        present.add(name)
+        _registry.mark_loaded(name)
+        added.append(name)
+    if added:
+        log.info("tools.loaded %s (the session list is now %d tools)", ", ".join(added), len(session_tools))
+        for _ in added:
+            telemetry.record_patch_event("tool_loaded", kind="fired")
+    return added
 
 # end_cycle is opt-in (preferences.end_cycle_tool). It is never in the registry's
 # list (_auto_exclude); when off it is also kept out of the per-session list and
 # refused at dispatch, so a model that calls it from memory gets an error, not an exit.
 _END_CYCLE_ENABLED = bool(_config.get("preferences", {}).get("end_cycle_tool", False))
+
+
+def _end_cycle_gate():
+    """The registry's gate for end_cycle. It reads the flag from the module Python knows
+    as `agent`, not from whichever copy of this file defined the function: coverage tests
+    load agent.py a second time under another name, and a plain lambda from that copy
+    would read that copy's (unpatched) flag for every session."""
+    mod = sys.modules.get("agent")
+    return bool(getattr(mod, "_END_CYCLE_ENABLED", _END_CYCLE_ENABLED) if mod is not None else _END_CYCLE_ENABLED)
+
+
+_registry.GATES["end_cycle"] = _end_cycle_gate
 
 
 # ── Retry logic ────────────────────────────────────────────────────────
@@ -4533,6 +4602,7 @@ def _save_checkpoint(conversation_history, summary_state, turn, initial_files,
             "turn": turn,
             "initial_files": initial_files,
             "clean_exit": clean_exit,
+            "loaded_tools": list(_registry.LOADED),
         }
         os.makedirs(os.path.dirname(_CHECKPOINT_PATH), exist_ok=True)
         with open(_CHECKPOINT_PATH, "w", encoding="utf-8") as f:
@@ -4549,6 +4619,7 @@ def _load_checkpoint():
     try:
         with open(_CHECKPOINT_PATH, encoding="utf-8", errors="replace") as f:
             cp = json.load(f)
+        _registry.RESUME_LOADED[:] = [n for n in (cp.get("loaded_tools") or []) if isinstance(n, str)]
         return (
             cp["conversation_history"],
             cp["summary_state"],
@@ -6668,6 +6739,16 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
     # Per-session tools list — starts as a copy of the module-level tools so
     # we can add end_cycle without mutating the shared list across sessions.
     _session_tools = list(tools)
+    # Lazy tools: what this session loaded before (a resume, an earlier turn), then what
+    # the task text asks for by name or a clear match, all before the first request.
+    _apply_tool_loads(_session_tools, log, initial=True)
+    if _TOOLS_CFG.get("preload_from_prompt", True):
+        _preload_text = next((m.get("content") for m in reversed(conversation_history)
+                              if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
+        _preloaded = _registry.preload_from_text(_preload_text)
+        if _preloaded:
+            log.info("tools.preloaded %s", ", ".join(_preloaded))
+        _apply_tool_loads(_session_tools, log)
     # end_cycle is unlocked (appended to _session_tools) after the first nudge
     # fires so the agent can't skip the cycle by calling it before doing work.
     _end_cycle_unlocked = not _END_CYCLE_ENABLED  # off (the default): never offered
@@ -7136,10 +7217,15 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # "2025-05-22T10:00:00Z" anchors — the framework owns the clock,
             # the model owns the work.
             _now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            _apply_tool_loads(_session_tools, log)   # loads asked for last turn join the list here
             _system_lines = [
                 f"Current time (UTC, ISO8601): {_now_iso}",
                 f"Working directory: {os.getcwd()} — use this for all file paths, not /home/user.",
             ]
+            if _TOOLS_CFG.get("catalog", True):
+                _catalog_line = _registry.catalog_line()
+                if _catalog_line:
+                    _system_lines.append(_catalog_line)   # static: the same bytes every request
             # WS1: phase checkpoint every turn — phase state survives
             # summarization the same way the CICD footnote line does.
             if _phase_engine is not None:
@@ -7194,7 +7280,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # a trailing USER-role note (strict chat templates reject a non-leading system
             # message, the c0b2660 lesson), so the whole history remains the cached prefix.
             _static_lines = [ln for ln in _system_lines
-                             if ln.startswith("Working directory:") or ln.startswith("Tool-selection guidance:")]
+                             if ln.startswith("Working directory:") or ln.startswith("Tool-selection guidance:")
+                             or ln.startswith(_registry.CATALOG_PREFIX)]
             if _prompt_caching_backend():
                 # E7: nothing run-specific before the first user turn, so runs that start
                 # within the cache TTL share the cached system prompt + tools.
@@ -8424,6 +8511,15 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             func_name = tool_call["function"]["name"]
                             raw_args = tool_call["function"]["arguments"]
                             tool_id = tool_call["id"]
+                        # A name from another harness (bash, grep, Read) means a tool here.
+                        _alias_note = ""
+                        if func_name not in MAP_FN:
+                            _resolved = _registry.resolve(func_name)
+                            if _resolved and _resolved != func_name:
+                                _alias_note = f"({func_name} is {_resolved} here; use that name.) "
+                                log.info("tool.alias %s->%s", func_name, _resolved)
+                                telemetry.record_patch_event("tool_alias", kind="fired")
+                                func_name = _resolved
                         func_args = json.loads(raw_args)
                         # Coerce non-dict JSON values (null, [], 42, "str") to {}
                         # so that **-unpack never raises TypeError (#859).
@@ -8797,8 +8893,32 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                       "preferences.end_cycle_tool in .agent/config.json). "
                                       "Stop when you are done; do not try to end the session.")
                     elif func_name not in MAP_FN:
-                        result_str = f"Error: Unknown tool '{func_name}'"
+                        _sugg = _registry.suggest(func_name, func_args)
+                        result_str = (f"Error: Unknown tool '{func_name}'."
+                                      + (f" Closest: {_sugg}." if _sugg else "")
+                                      + " Use tool_search to find and load tools.")
+                        telemetry.record_patch_event("tool_unknown", kind="fired")
+                    elif func_name in _registry.DEFINITIONS and not _registry.available(func_name):
+                        result_str = f"Error: {func_name} is not available in this session."
+                        log.info("tool.unavailable name=%s", func_name)
+                    elif (func_name in _registry.DEFINITIONS
+                          and func_name not in _session_tool_names(_session_tools)
+                          and not (_TOOLS_CFG.get("implicit_run", True)
+                                   and _registry.args_fit(func_name, func_args))):
+                        # A deferred or hidden tool called from memory with arguments that do
+                        # not fit (or implicit runs are off): load it, answer with its schema.
+                        _registry.request_load(func_name)
+                        result_str = (f"Error: {func_name} is not loaded and these arguments do not fit it. "
+                                      f"Its schema: {json.dumps(_registry.DEFINITIONS[func_name].get('function'))}. "
+                                      "It is loaded now; call it again with arguments that fit.")
+                        log.info("tool.schema_returned name=%s", func_name)
                     else:
+                        # A MAP_FN entry outside the registry (harness-internal, or a test's
+                        # stand-in) runs as it always did; a registered tool not yet in the
+                        # session's list is loaded for the next turn.
+                        if func_name in _registry.DEFINITIONS and func_name not in _session_tool_names(_session_tools):
+                            _registry.request_load(func_name)
+                            log.info("tool.implicit_load name=%s", func_name)
                         try:
                             # Last check before dispatch: an esc-esc that
                             # landed during argument parsing / gate checks
@@ -8806,6 +8926,10 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             # long tool run.
                             check_cancelled()
                             result_str = str(MAP_FN[func_name](**func_args))
+                            if _alias_note:
+                                result_str = _alias_note + result_str
+                            if func_name == "tool_search":
+                                telemetry.record_patch_event("tool_search", kind="fired")
                         except CircuitBreakerError as e:
                             # Tool temporarily unavailable - return graceful degradation
                             result_str = f"Tool {func_name} temporarily unavailable: {e}"
@@ -9761,6 +9885,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         else:
             run_agent_single._garble_retries = 0
 
+        _apply_tool_loads(_session_tools, log)   # one list change per turn, before the checkpoint
         # Save checkpoint after each turn so -c can resume from here
         if _async_summarizer:
             _async_summarizer.harvest(summary_state)

@@ -366,3 +366,7 @@ definition = {
         },
     },
 }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_short = 'find Python symbols and call sites'
+_keywords = ['python', 'function', 'class', 'definition', 'ast', 'symbol']

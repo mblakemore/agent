@@ -644,3 +644,8 @@ definition = {
             },
         },
     }
+
+# Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
+_aliases = ['grep', 'rg', 'search', 'Grep', 'ripgrep']
+_short = 'search file contents'
+_keywords = ['grep', 'regex', 'find', 'text']
