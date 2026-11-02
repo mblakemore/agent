@@ -1575,6 +1575,8 @@ _READ_ONLY_COMMANDS = ("grep ", "find ", "ls ", "cat ", "head ", "tail ",
 
 def _is_read_only_command(cmd):
     """A command is read-only if it matches a known read pattern or has no write keywords."""
+    if not isinstance(cmd, str):
+        return True  # a poll (no command) or a garbled value: nothing is written by it
     cmd_stripped = cmd.lstrip("# \t\n")
     if any(cmd_stripped.startswith(rc) for rc in _READ_ONLY_COMMANDS):
         return True
@@ -8541,32 +8543,17 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             })
                             continue
 
-                    # R.01 — node runtime used to execute a .py file.
-                    # The model confuses Python CLI tools with the Node-based
-                    # discord/email skills that live nearby.  Intercept before
-                    # dispatch and return a clear correction.
-                    if func_name == "exec_command" and isinstance(func_args, dict):
-                        _r01_cmd = func_args.get("command", "")
-                        if re.match(r'\bnode\b.*\.py\b', _r01_cmd):
-                            _garbled_count += 1
-                            conversation_history.append({
-                                "role": "tool", "tool_call_id": tool_id,
-                                "name": func_name,
-                                "content": (
-                                    f"Error: used 'node' to run a Python file. "
-                                    f"Python scripts must be run with 'python3', not 'node'. "
-                                    f"Replace 'node' with 'python3' and retry."
-                                ),
-                            })
-                            log.warning("R.01: node used on .py file — %r", _r01_cmd[:80])
-                            continue
-
                     # G.01-exec — garbled exec_command args under context pressure.
                     # Model produces {"command=\"...reasoning...\"": <number>} instead
                     # of {"command": "..."}. No reliable salvage — return clear error.
+                    # A poll of a background session (session_id, optional wait, no
+                    # command) is the tool's own documented form, not garbage: it
+                    # passes (found live 2026-11-02: a correct poll was refused).
                     if func_name == "exec_command" and isinstance(func_args, dict):
                         _cmd_val = func_args.get("command")
-                        if _cmd_val is None or not isinstance(_cmd_val, str):
+                        _sid_val = func_args.get("session_id")
+                        _is_poll = (_cmd_val is None and isinstance(_sid_val, str) and _sid_val.strip())
+                        if not _is_poll and (_cmd_val is None or not isinstance(_cmd_val, str)):
                             _garbled_count += 1
                             conversation_history.append({
                                 "role": "tool", "tool_call_id": tool_id,
@@ -8581,6 +8568,26 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             log.warning("G.01-exec: garbled exec_command — keys=%r",
                                         list(func_args.keys())[:3])
                             telemetry.record_patch_event("g01_exec", kind="fired")
+                            continue
+
+                    # R.01 — node runtime used to execute a .py file.
+                    # The model confuses Python CLI tools with the Node-based
+                    # discord/email skills that live nearby.  Intercept before
+                    # dispatch and return a clear correction.
+                    if func_name == "exec_command" and isinstance(func_args, dict):
+                        _r01_cmd = func_args.get("command") or ""
+                        if isinstance(_r01_cmd, str) and re.match(r'\bnode\b.*\.py\b', _r01_cmd):
+                            _garbled_count += 1
+                            conversation_history.append({
+                                "role": "tool", "tool_call_id": tool_id,
+                                "name": func_name,
+                                "content": (
+                                    f"Error: used 'node' to run a Python file. "
+                                    f"Python scripts must be run with 'python3', not 'node'. "
+                                    f"Replace 'node' with 'python3' and retry."
+                                ),
+                            })
+                            log.warning("R.01: node used on .py file — %r", _r01_cmd[:80])
                             continue
 
                     log.debug("TOOL CALL: %s(%s) [id=%s]", func_name, json.dumps(func_args), tool_id)
