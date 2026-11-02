@@ -410,10 +410,24 @@ def request_load(name):
     return True
 
 
+_INJECTED_BLOCKS = re.compile(r"\n?\[(SYSTEM CONTEXT|AGENT IDENTITY FILE):")
+
+
+def own_text(text):
+    """The user's own words in a task message: everything before the blocks the agent
+    appends (the system context, an inlined @identity file), which name every tool."""
+    text = str(text or "")
+    m = _INJECTED_BLOCKS.search(text)
+    return (text[:m.start()] if m else text).rstrip()
+
+
 def preload_from_text(text, limit=5):
-    """Before a session's first request: tools the task names (a tool name or alias as a
-    whole word) or clearly asks for (two or more distinct words matching one tool).
+    """Before a session's first request: tools the task names (the full tool name or an
+    alias as a whole word) or clearly asks for (two or more distinct keywords of one
+    tool). Only the user's own words count (`own_text`); a bare common word that happens
+    to be a tool's name ("file", "goal", "think") is not enough on its own.
     Returns the names requested."""
+    text = own_text(text).lower()
     words = _words(text)
     if not words:
         return []
@@ -421,10 +435,8 @@ def preload_from_text(text, limit=5):
     for name in DEFINITIONS:
         if not available(name) or is_core(name) or is_loaded(name):
             continue
-        # The name itself (every word of it, for read_pdf "read" and "pdf"), an alias,
-        # or two distinct keywords. A single common word ("agent", "task") is not enough.
-        name_words = _words(name)
-        hit = (bool(name_words) and name_words <= words) or any(a in words for a in META[name]["aliases"])
+        hit = (re.search(r"(?<![a-z0-9_])" + re.escape(name.lower()) + r"(?![a-z0-9_])", text) is not None
+               and "_" in name) or any(a.lower() in words for a in META[name]["aliases"])
         if not hit and len(words & set(META[name]["keywords"])) >= 2:
             hit = True
         if hit and request_load(name):

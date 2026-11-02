@@ -130,6 +130,15 @@ def test_preload_from_text_takes_names_aliases_and_clear_matches():
     assert registry.PENDING_LOADS == ["browser_check", "read_pdf"]
     registry.reset_session()
     assert registry.preload_from_text("fix the bug in agent.py") == []
+    # a bare common word is not a request for the tool of that name
+    assert registry.preload_from_text("open the file and set a goal; think about it") == []
+    # the blocks the agent appends to the task name every tool; they do not count
+    inlined = ("@CLAUDE.md run your next cycle!\n\n[SYSTEM CONTEXT: Your working directory is /x.]"
+               "\n\n[AGENT IDENTITY FILE: CLAUDE.md]\n## Capabilities\n`read_pdf`, `browser_check`, "
+               "`find_symbol`, `goal`, `append_file`, `check_file`, `schedule`")
+    assert registry.preload_from_text(inlined) == []
+    assert registry.own_text(inlined) == "@CLAUDE.md run your next cycle!"
+    assert registry.preload_from_text("use find_symbol to map agent.py") == ["find_symbol"]
 
 
 # ── the tool ──────────────────────────────────────────────────────────
