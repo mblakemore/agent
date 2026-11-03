@@ -15,7 +15,7 @@ Each cycle is a turn loop:
 - **Async summarization**: a background thread condenses older messages while the main model keeps working.
 - **Cycle limits**: after `cycle.max_turns` turns (default 250) the agent is asked to wrap up; after `cycle.wind_down_turns` more it is forced to stop.
 - **Text-loop detection**: three identical text responses in a row end the cycle.
-- **Hallucination guards**: fabricated file-read messages are stripped and a correction injected. Malformed tool-call JSON is salvaged heuristically.
+- **Hallucination guards**: fabricated file-read messages are stripped and a correction injected. Malformed tool-call JSON (a truncated string, an unbalanced brace or quote, a trailing comma, single quotes) is repaired with `json-repair` first, then salvaged heuristically for the token-leakage shapes a generic repairer does not know; a repair is logged at WARNING with the head of the raw arguments.
 - **Tool recovery**: recoverable tool errors (e.g. bad line numbers) are retried with corrected parameters via a lightweight LLM call.
 - **Context overflow handling**: three consecutive HTTP 500s are treated as context overflow; the agent trims history and retries.
 
@@ -95,3 +95,5 @@ Agent-specific tools in `.agent/tools/` under your working directory are auto-di
 ### Lazy tools
 
 Every tool is registered (`tools.MAP_FN`, `tools.DEFINITIONS`), but the model's request carries only the **core** tier's schemas (`tools.tools`). The **deferred** tools are named in one static line of the system prompt and the **hidden** ones not at all; the core tool `tool_search` finds them by keywords or name and asks for them to be loaded. The agent loop appends the asked-for schemas to the session's tool list once per turn (`_apply_tool_loads`), so a load costs one cache miss, not one per call, and loaded tools stay for the session and survive a `-c` resume through the checkpoint. A tool called from memory that is not in the list runs at once when its arguments fit (and is loaded), otherwise it answers with its schema; a name from another harness (`bash`, `grep`) is resolved to the tool it means. Tiers come from the tool module (`_tier`), the shipped defaults (`tools.DEFAULT_CORE`) and the `tools` block of the config; `docs/config-reference.md` has the keys.
+
+A tool function receives its arguments and nothing else. The one supported way for a tool to act on the running harness is `tools.RUNTIME`, a small registry agent.py fills at startup: `get_model(role)`, `set_model(role, model)` (what `/model` does, persisted), `models(role)` (the configured switchable models), `get_effort(role)` and `set_effort(role, effort)` (what `/effort` does). The shipped `switch_model` tool is built on it and exists only when `preferences.switchable_models` names models. Under another harness the registry is empty and such a tool answers with an error.

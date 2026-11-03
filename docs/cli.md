@@ -276,6 +276,7 @@ The default TUI (`prompt_toolkit`) provides:
 - **Input history** navigable with ↑ / ↓
 - **Key bindings**: `Enter` submits, `Ctrl-N` inserts a literal newline
 - **Resize reflow**: when the window size settles after a resize, the session so far (the last 5,000 lines) is reprinted for the new width, with tool status rows shortened or restored to fit. This clears the terminal's scrollback, including anything above the agent. Live-input mode only (the default).
+- **Live input**: a line typed while a turn is running is delivered to the model at the next turn boundary. A slash command typed then (`/model main NAME`, `/verbose`) is held and run when the turn's tool burst ends, never handed to the model as text. `esc·esc` cancels the running turn; `exit` quits.
 
 Falls back to plain `input()` automatically if `prompt_toolkit` isn't installed.
 
@@ -287,6 +288,7 @@ Falls back to plain `input()` automatically if `prompt_toolkit` isn't installed.
 | `/clear` | Clear conversation history and start a fresh session log. |
 | `/context` | Show context usage as an Aurora-gradient bar with token counts. |
 | `/model [main\|summary] [name]` | Set the **main** or **summary** model and persist it to `.agent/config.json` (survives restart). Bare `/model` picks the main model interactively; `/model summary` targets the summary backend; append a model id (`/model main gpt-4o`) to set it directly without the picker. |
+| `/effort [main\|summary] [level]` | Show each role's reasoning effort, or set one (`low`, `medium`, `high`, `xhigh`, `max`; main when no role is given) and persist it to `.agent/config.json`. Applies from the next request on backends that take an effort (AI Commons); a model switch keeps it. |
 | `/setup [main\|summary\|advisor\|test\|calibrate]` | Connect a model and calibrate. With no argument: pick OpenAI-compatible (found local servers or a URL), UCSB AI Commons, Azure AI Foundry or legacy Bedrock, then an optional checklist (separate summary model, advisor, speed and tool-call check, context measurement, claim guard, agent scaffold). `main`, `summary` and `advisor` reconfigure one role; `calibrate` re-derives the context knobs with a drift report; `test` probes without changing or spending anything. Auto-launches on first run in an unconfigured folder (TTY sessions only). |
 | `/system [text\|clear]` | Show, set or clear your own system prompt (`preferences.system_prompt`). `/system <text>` puts the text first in the system message of every request, ahead of the agent's own lines, and persists it to `.agent/config.json`; it applies from the next request. `/system clear` removes it. `Ctrl-N` adds a line break for a multi-line prompt. |
 | `/agent` | Scaffold an autonomous-agent identity here: type (six-phase/worker/minimal) then name, an AGENT.md/CLAUDE.md generated from the live config (real model table, advisor guidance, measured context), git provisioning when the folder isn't a repo (init / GitHub via `gh` / clone-it-yourself), and a finalizing `C0` init commit. |

@@ -38,6 +38,7 @@ def _cmd_help(ctx: SimpleNamespace, args: str) -> None:
         "  /clear         — clear conversation history and start a fresh session log",
         "  /context       — show current context usage (bar + token counts)",
         "  /model [main|summary] [name] — set+persist the main/summary model",
+        "  /effort [main|summary] [low|medium|high|xhigh|max] — show or set+persist the reasoning effort",
         "  /setup [main|summary|advisor|test|calibrate] — configure endpoints, probe, calibrate",
         "  /system [text|clear] — show, set or clear your own system prompt",
         "  /agent         — scaffold an agent identity (AGENT.md + state tree) here",
@@ -117,6 +118,36 @@ def _cmd_model(ctx: SimpleNamespace, args: str) -> None:
             f"{role} model set to {new_model} "
             f"(persisted to ./.agent/config.json)")
     ctx.log.info("Model changed via /model %s: %s", role, new_model)
+
+
+_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _cmd_effort(ctx: SimpleNamespace, args: str) -> None:
+    """`/effort` shows each role's reasoning effort; `/effort [main|summary] LEVEL`
+    sets one (main when no role is given) and persists it to .agent/config.json."""
+    parts = args.split()
+    role = "main"
+    if parts and parts[0].lower() in ("main", "summary"):
+        role, parts = parts[0].lower(), parts[1:]
+    level = parts[0].lower() if parts else None
+    if len(parts) > 1 or (level and level not in _EFFORT_LEVELS):
+        safe_cb(ctx.cb, "on_notice", "warn",
+                f"usage: /effort [main|summary] [{'|'.join(_EFFORT_LEVELS)}] — got: {args!r}")
+        return
+    if level is None:
+        get = getattr(ctx, "get_effort", None)
+        shown = ", ".join(f"{r}: {(get(r) if get else '') or '-'}" for r in ("main", "summary"))
+        safe_cb(ctx.cb, "on_notice", "info", f"effort — {shown}")
+        return
+    try:
+        ctx.set_effort(role, level)
+    except ValueError as e:
+        safe_cb(ctx.cb, "on_notice", "warn", str(e))
+        return
+    safe_cb(ctx.cb, "on_notice", "success",
+            f"{role} effort set to {level} (persisted to ./.agent/config.json)")
+    ctx.log.info("Effort changed via /effort %s: %s", role, level)
 
 
 def _cmd_system(ctx: SimpleNamespace, args: str) -> None:
@@ -397,6 +428,7 @@ _COMMANDS: dict[str, Callable[[SimpleNamespace, str], None]] = {
     "/clear": _cmd_clear,
     "/context": _cmd_context,
     "/model": _cmd_model,
+    "/effort": _cmd_effort,
     "/system": _cmd_system,
     "/alias": _cmd_alias,
     "/verbose": _cmd_verbose,

@@ -2197,6 +2197,14 @@ class AICommonsBackend:
             wall_cap = int(0.8 * float(self.opts["wall_seconds"]) * float(self.opts["tokens_per_second"]))
             self.max_tokens = min(self.info["max_output"], wall_cap)
 
+    def set_effort(self, effort: str) -> None:
+        """Change the reasoning effort in place (/effort, tools.RUNTIME). Validated
+        against the ladder; the next request carries it when the model takes thinking."""
+        effort = str(effort or "").strip().lower()
+        if effort not in self._EFFORT_LADDER:
+            raise ValueError(f"effort must be one of {', '.join(self._EFFORT_LADDER)}, not {effort!r}")
+        self.effort = effort
+
     # ── request building ──
 
     def _thinking_kwargs(self) -> dict:

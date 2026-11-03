@@ -266,18 +266,24 @@ class _Bus:
         # before-prompt race).
         return not self._q.empty()
 
-    def drain(self):
-        """Return queued injection TEXTS (FIFO), emptying the queue. Flattens
-        (kind, text) tuples to text — the mid-burst path treats a typed user
-        line and a monitor ping identically. Non-blocking; safe every turn."""
+    def drain_items(self):
+        """Return the queued (kind, text) items (FIFO), emptying the queue. A raw
+        text item counts as a monitor ping. Non-blocking; safe every turn."""
         out = []
         while True:
             try:
                 item = self._q.get_nowait()
             except _queue.Empty:
                 break
-            out.append(item[1] if isinstance(item, tuple) else item)
+            out.append(item if isinstance(item, tuple) else ("monitor", item))
         return out
+
+    def drain(self):
+        """Return queued injection TEXTS (FIFO), emptying the queue. Flattens
+        (kind, text) tuples to text for callers that treat a typed user line
+        and a monitor ping identically (the agent loop's own drain keeps the
+        kind, see `drain_items`). Non-blocking; safe every turn."""
+        return [text for _kind, text in self.drain_items()]
 
     def stop_all(self):
         """Signal every monitor to stop. Does NOT join — daemon threads die
@@ -353,6 +359,11 @@ def list_active():
 
 def drain():
     return _BUS.drain()
+
+
+def drain_items():
+    """The queued (kind, text) items, emptying the queue."""
+    return _BUS.drain_items()
 
 
 def stop_all():

@@ -76,6 +76,10 @@ import sys
 import threading
 import time
 import telemetry
+try:
+    import json_repair as _json_repair   # repairs malformed tool-call JSON before the heuristic salvage
+except ImportError:                      # optional: without it the heuristic salvage is the only fallback
+    _json_repair = None
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -222,6 +226,12 @@ _BTW_FRAMING = (
 # 2026-08-14: input box gone, exit passed to the backend, loop wedged).
 _LIVE_EXIT_MARK = "\x00__LIVE_INPUT_EXIT__"
 
+# True while the live-input consumer (the only reader that dispatches slash commands) is
+# running: then a `/command` typed during a tool burst is held for it instead of being
+# handed to the model as text. Off, the blocking prompt handles its own slash lines and
+# nothing on the bus is a command.
+_SLASH_HOLD = {"active": False}
+
 
 def _drain_monitor_injections(conversation_history, framing=None):
     """Append any queued monitor output to conversation_history as a single
@@ -232,17 +242,26 @@ def _drain_monitor_injections(conversation_history, framing=None):
     through to normal stop logic, so -a still exits at a real cycle end).
     Combines all queued items into ONE user turn to avoid consecutive-user
     sequences. Pure w.r.t. loop-control state; never raises.
+
+    Two kinds of typed line are CONTROL, never model input, and are re-enqueued
+    in order for the interactive main loop, which acts on them at the turn
+    boundary: 'exit' (as `_LIVE_EXIT_MARK`) and, while the live-input consumer
+    runs, a slash command. Before this, `/model NAME` typed during a burst
+    reached the model as conversation text and nothing was switched.
     """
     try:
-        items = monitor_bus.drain()
+        queued = monitor_bus.drain_items()
     except Exception:
         return False
-    if _LIVE_EXIT_MARK in items:
-        # A typed 'exit' is a CONTROL line, never model input. Re-enqueue it
-        # for the interactive main loop (which breaks on it at the turn
-        # boundary) and inject only what remains.
-        items = [i for i in items if i != _LIVE_EXIT_MARK]
-        monitor_bus.put_user(_LIVE_EXIT_MARK)
+    items, held = [], []
+    for kind, text in queued:
+        if text == _LIVE_EXIT_MARK or (
+                kind == "user" and _SLASH_HOLD["active"] and text.lstrip().startswith("/")):
+            held.append(text)
+        else:
+            items.append(text)
+    for text in held:
+        monitor_bus.put_user(text)
     if not items:
         return False
     body = "\n\n".join(items)
@@ -1893,6 +1912,89 @@ try:
         _registry.set_tier("consult_advisor", "deferred")
 except Exception:
     pass
+# ── Runtime controls a tool may call (tools.RUNTIME) ──────────────────────────
+# The one supported way for a tool to act on the running harness. Every entry looks the
+# live globals up when it is called, through the module Python knows as `agent` (see
+# _end_cycle_gate for why), so a backend rebuilt later is still the one acted on and a
+# function defined further down this file is found by then.
+_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def _agent_mod():
+    return sys.modules.get("agent") or sys.modules[__name__]
+
+
+def _runtime_role(role):
+    role = str(role or "main").strip().lower()
+    if role not in ("main", "summary"):
+        raise ValueError(f"unknown role {role!r}: main or summary")
+    return role
+
+
+def _switchable_models(role="main"):
+    """`preferences.switchable_models`: a list (the main role's) or `{role: list}`.
+    Empty when nothing is configured, which keeps `switch_model` out of existence."""
+    role = _runtime_role(role)
+    raw = (_agent_mod()._config.get("preferences") or {}).get("switchable_models")
+    if isinstance(raw, dict):
+        raw = raw.get(role)
+    elif role != "main":
+        raw = None
+    if not isinstance(raw, list):
+        return []
+    return [str(n).strip() for n in raw if str(n).strip()]
+
+
+def _runtime_get_model(role="main"):
+    role = _runtime_role(role)
+    mod = _agent_mod()
+    backend = mod._main_backend if role == "main" else mod._summary_backend
+    section = "llm" if role == "main" else "summary"
+    return str(getattr(backend, "model", None) or (mod._config.get(section) or {}).get("model") or "")
+
+
+def _runtime_set_model(role, model):
+    model = str(model or "").strip()
+    if not model:
+        raise ValueError("a model name is required")
+    return _agent_mod()._set_model_for_role(_runtime_role(role), model)
+
+
+def _runtime_get_effort(role="main"):
+    return _agent_mod()._get_effort_for_role(_runtime_role(role))
+
+
+def _runtime_set_effort(role, effort):
+    return _agent_mod()._set_effort_for_role(_runtime_role(role), effort)
+
+
+_registry.RUNTIME.update({
+    "get_model": _runtime_get_model, "set_model": _runtime_set_model, "models": _switchable_models,
+    "get_effort": _runtime_get_effort, "set_effort": _runtime_set_effort,
+})
+
+
+def _switch_model_gate():
+    """switch_model exists only with a non-empty `preferences.switchable_models`."""
+    try:
+        return bool(_switchable_models("main") or _switchable_models("summary"))
+    except Exception:
+        return False
+
+
+_registry.GATES["switch_model"] = _switch_model_gate
+
+
+def _apply_switch_model_tier():
+    """Shipped hidden; named in the catalog (deferred) once it is enabled. Runs before
+    the config's own tier lists below, which still win."""
+    if "switch_model" in _registry.DEFINITIONS and _switch_model_gate():
+        _registry.TIERS["switch_model"] = "deferred"
+        _registry.rebuild()
+
+
+_apply_switch_model_tier()
+
 _TOOL_TIERS = _registry.apply_tiers(
     _TOOLS_CFG, whitelist=_tools_whitelist if isinstance(_tools_whitelist, list) else None,
     log=logging.getLogger("agent"))
@@ -2912,6 +3014,32 @@ def _sanitize_tool_args(func_name, args, log):
     return fixed
 
 
+def _repair_tool_args(func_name, raw_args, log):
+    """Arguments for a tool call whose JSON did not parse.
+
+    `json_repair` first, for the common malformations (a truncated string, an unbalanced
+    brace or quote, a trailing comma, single quotes, text after the object); then the
+    heuristic salvage below for the token-leakage shapes a generic repairer does not know.
+    A repaired dict goes through the same `_sanitize_tool_args` as a parsed one. None when
+    neither finds a dict. Never raises.
+    """
+    repaired = None
+    if _json_repair is not None and isinstance(raw_args, str) and raw_args.strip():
+        try:
+            repaired = _json_repair.repair_json(raw_args, return_objects=True)
+        except Exception as e:  # noqa: BLE001 — a repairer bug must not cost the turn
+            log.debug("json_repair failed on %s args: %s", func_name, e)
+            repaired = None
+    if isinstance(repaired, dict) and repaired:
+        log.warning("Repaired malformed %s args: %s -> %s", func_name, raw_args[:100], repaired)
+        try:
+            return _sanitize_tool_args(func_name, repaired, log)
+        except Exception as e:  # noqa: BLE001
+            log.debug("sanitize after repair failed on %s args: %s", func_name, e)
+            return repaired
+    return _salvage_tool_args(func_name, raw_args, log)
+
+
 def _salvage_tool_args(func_name, raw_args, log):
     """Try to extract valid arguments from garbled Gemma 4 tool call output.
 
@@ -2995,7 +3123,7 @@ _PREFILL_TPS_FLOOR = float(os.environ.get("AGENT_PREFILL_TPS_FLOOR", "500") or 5
 # log (measured 2026-10-30: a harvest right before a new prompt was logged as `first`).
 # n = requests that reported cache usage; prev_sig = _request_signature of the last
 # one; last_at = when it was sent, for the `idle` reason (the cache lives five minutes).
-_CACHE_REQ = {"n": 0, "prev_sig": None, "last_at": 0.0}
+_CACHE_REQ = {"n": 0, "prev_sig": None, "last_at": 0.0, "prev_model": None}
 _CACHE_IDLE_SECONDS = 300.0
 
 # ── Prompt-cache lifetime record ─────────────────────────────────────────────
@@ -5170,6 +5298,34 @@ def _set_model_for_role(role, new_model):
     return _persist_config_value(section, "model", new_model)
 
 
+def _get_effort_for_role(role):
+    """The role's reasoning effort: the live backend's when it has one, else the config's."""
+    section = "llm" if role == "main" else "summary"
+    backend = _main_backend if role == "main" else _summary_backend
+    return str(getattr(backend, "effort", None) or (_config.get(section) or {}).get("effort") or "")
+
+
+def _set_effort_for_role(role, effort):
+    """Apply a reasoning effort to a role's live backend (when it takes one) and persist
+    ``<section>.effort``, the key the backend reads at construction. ``/effort`` and
+    ``tools.RUNTIME["set_effort"]`` use it. A model switch keeps the backend's effort."""
+    effort = str(effort or "").strip().lower()
+    if effort not in _EFFORT_LEVELS:
+        raise ValueError(f"effort must be one of {', '.join(_EFFORT_LEVELS)}, not {effort!r}")
+    section = "llm" if role == "main" else "summary"
+    _config.setdefault(section, {})["effort"] = effort
+    entry = (_config.get("backends") or {}).get(role)
+    if isinstance(entry, dict):
+        entry["effort"] = effort       # a failover rebuild reads the registry
+    backend = _main_backend if role == "main" else _summary_backend
+    if backend is not None:
+        if hasattr(backend, "set_effort"):
+            backend.set_effort(effort)
+        elif hasattr(backend, "effort"):
+            backend.effort = effort
+    return _persist_config_value(section, "effort", effort)
+
+
 def _set_system_prompt(text):
     """Set (or, with ``""``, clear) ``preferences.system_prompt`` for this
     session and persist it to ``./.agent/config.json``. The run loop reads it
@@ -5902,6 +6058,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 summary_base_url=getattr(_summary_backend, "base_url", None),
                 setup_logger=_setup_logger, pick_model=_pick_model_interactive,
                 set_model=_set_model_for_role, set_system_prompt=_set_system_prompt,
+                get_effort=_get_effort_for_role, set_effort=_set_effort_for_role,
                 render_context_bar=_render_context_bar,
                 refresh_cb_log=_refresh_cb_log, apply_setup=_apply_setup_updates)
             with _borrowed_terminal():
@@ -5914,11 +6071,13 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             return False
 
         set_tui_mode(True)   # input app owns the keyboard continuously
+        _SLASH_HOLD["active"] = True   # the consumer below dispatches slash lines
         _it = threading.Thread(target=_live_input_thread, name="live-input", daemon=True)
         _it.start()
         _emit("on_notice", "info",
               "[live-input] Type anytime — your line is delivered at the next "
-              "boundary. esc·esc cancels a running turn; 'exit' quits.")
+              "boundary (a /command typed during a turn runs when it ends). "
+              "esc·esc cancels a running turn; 'exit' quits.")
         try:
             # Items on this bus are (kind, str). Anything else is a defect in whatever
             # produced it, and the consumer below cannot safely act on one: the exit-marker
@@ -5989,6 +6148,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 _it.join(timeout=1.0)
                 if not _it.is_alive():
                     break
+            _SLASH_HOLD["active"] = False
             set_tui_mode(False)
             if _it.is_alive():
                 # Could not stop the app — best-effort scrub of the painted
@@ -6062,6 +6222,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 # .agent/config.json. Keeps commands.py free of business logic.
                 set_model=_set_model_for_role,
                 set_system_prompt=_set_system_prompt,
+                get_effort=_get_effort_for_role,
+                set_effort=_set_effort_for_role,
                 render_context_bar=_render_context_bar,
                 refresh_cb_log=_refresh_cb_log,
                 apply_setup=_apply_setup_updates,
@@ -7825,7 +7987,11 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             # inside the proven lifetime is the provider's.
                             _alive_s, _ = _cache_lifetime_estimate(_cache_lifetimes(), _cache_lifetime_key())
                             _idle = _gap_s is not None and _gap_s > _alive_s
-                            if _prefix_same and _c_total and _gap_s is not None:
+                            # A switched model (/model, switch_model) has its own cache: the
+                            # same prefix misses once and teaches the new model's record nothing.
+                            _switched = bool(_CACHE_REQ.get("prev_model")) and bool(_u_model) \
+                                and _u_model != _CACHE_REQ.get("prev_model")
+                            if _prefix_same and not _switched and _c_total and _gap_s is not None:
                                 # An unchanged prefix after a known gap is evidence about
                                 # the lifetime either way; the record decides what counts.
                                 try:
@@ -7838,6 +8004,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 # miss: the cache expired (idle) or the server lost it. `unknown`
                                 # means the prefix changed and no flag says why.
                                 _reason = ("first" if _CACHE_REQ["n"] == 0 else
+                                           "model-switch" if _switched else
                                            "collapse" if _collapsed else
                                            "eviction" if _head_moved else
                                            "summary-harvest" if _harvested_this_turn else
@@ -7862,6 +8029,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             _CACHE_REQ["n"] += 1
                             _CACHE_REQ["prev_sig"] = _cur_req_sig
                             _CACHE_REQ["last_at"] = time.time()
+                            _CACHE_REQ["prev_model"] = _u_model
                     if isinstance(chunk, dict) and chunk.get(_THINKING_KEY):
                         _turn_thinking = chunk[_THINKING_KEY]
                     choices = chunk.get("choices")
@@ -8642,9 +8810,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         # e.g. {"action": "write**,content:"} — valid JSON but bogus values
                         func_args = _sanitize_tool_args(func_name, func_args, log)
                     except json.JSONDecodeError:
-                        # Gemma 4 sometimes garbles arguments (e.g. "write**,content:")
-                        # Try to salvage by extracting action from the mess
-                        func_args = _salvage_tool_args(func_name, raw_args, log)
+                        # Repair the JSON (truncation, a trailing comma, single quotes),
+                        # else salvage the garbled shapes (e.g. "write**,content:")
+                        func_args = _repair_tool_args(func_name, raw_args, log)
                         if func_args is None:
                             log.error("Unsalvageable tool args: %s | raw: %s", func_name, raw_args)
                             _garbled_count += 1

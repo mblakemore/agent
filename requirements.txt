@@ -17,6 +17,7 @@ filelock==3.25.2
 h11==0.16.0
 idna==3.11
 iniconfig==2.3.0
+json-repair==0.64.4
 lxml==6.0.4
 markdownify==1.2.2
 packaging==26.0

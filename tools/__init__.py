@@ -38,6 +38,8 @@ DEFINITIONS = {}      # every registered tool, name -> definition, in registrati
 META = {}             # name -> {"short", "aliases", "keywords"}
 TIERS = {}            # name -> "core" | "deferred" | "hidden"
 GATES = {}            # name -> callable() -> bool; closed = not available (not searchable, not loadable)
+RUNTIME = {}          # name -> callable: what a tool may do to the running harness (agent.py fills it:
+                      # get_model / set_model / models / get_effort / set_effort). Empty under another harness.
 PENDING_LOADS = []    # names asked for this turn; agent.py drains them once per turn
 LOADED = []           # names loaded this session, in load order (saved in the checkpoint)
 RESUME_LOADED = []    # names a checkpoint restored; moved into PENDING_LOADS at session start

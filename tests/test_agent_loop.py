@@ -166,16 +166,21 @@ def test_tool_call_json_decode_error(mock_config, mock_llm, mock_emit):
     _setup_mock_config(mock_config)
     tool_calls = [
         {"index": 0, "id": "call_valid", "function": {"name": "search_files", "arguments": '{"pattern": "test"}'}},
-        {"index": 1, "id": "call_garbled", "function": {"name": "search_files", "arguments": '{"pattern": "test"'}},
+        {"index": 1, "id": "call_garbled", "function": {"name": "search_files", "arguments": 'pattern test'}},
+        {"index": 2, "id": "call_truncated", "function": {"name": "search_files", "arguments": '{"pattern": "other"'}},
     ]
     mock_resp = create_mock_response(tool_calls=tool_calls)
     mock_llm.side_effect = [mock_resp, create_mock_response(content="Fixed it!")]
     conversation_history = [{"role": "user", "content": "Search for 'test'"}]
     summary_state = {"text": "", "up_to": 0}
-    with patch.dict('agent.MAP_FN', {"search_files": lambda **kwargs: "No results found."}):
+    seen = []
+    with patch.dict('agent.MAP_FN', {"search_files": lambda **kwargs: seen.append(kwargs) or "No results found."}):
         run_agent_single(conversation_history, summary_state, [], log)
-    assert any("malformed arguments" in msg.get("content", "") 
-                for msg in conversation_history if msg.get("role") == "tool")
+    results = {m["tool_call_id"]: m.get("content", "") for m in conversation_history if m.get("role") == "tool"}
+    assert "malformed arguments" in results["call_garbled"]
+    # Truncated JSON is repaired (json-repair) and the call runs
+    assert "malformed arguments" not in results["call_truncated"]
+    assert seen == [{"pattern": "test"}, {"pattern": "other"}]
 
 @patch('agent._emit')
 @patch('agent._llm_request')

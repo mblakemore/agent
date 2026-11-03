@@ -129,3 +129,70 @@ def test_salvage_tool_args_exec_json_salvage():
     raw = 'command: ls -la'
     result = _salvage_tool_args("exec_command", raw, log)
     assert result == {"command": "ls -la"}
+
+
+# ── json-repair before the heuristic salvage (2026-11-03) ───────────────────
+
+from types import SimpleNamespace
+
+from agent import _repair_tool_args
+import agent as _agent
+
+
+class _RecLog(MockLog):
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, msg, *args):
+        self.warnings.append(msg % args if args else msg)
+
+
+def test_repair_truncated_args_keeps_the_partial_value():
+    assert _repair_tool_args("exec_command", '{"command": "ls -l', MockLog()) == {"command": "ls -l"}
+
+
+def test_repair_trailing_comma_and_single_quotes():
+    assert _repair_tool_args("file", "{'path': 'a.py', 'action': 'read',}", MockLog()) == {
+        "action": "read", "path": "a.py"}
+    assert _repair_tool_args("other", '{"action": "read", "path": "test.txt", ', MockLog()) == {
+        "action": "read", "path": "test.txt"}
+
+
+def test_repair_logs_a_warning_with_the_head_of_the_raw_args():
+    log = _RecLog()
+    _repair_tool_args("exec_command", '{"command": "ls -l', log)
+    assert any("Repaired malformed exec_command args" in w and '{"command": "ls -l' in w for w in log.warnings)
+
+
+def test_token_leakage_still_reaches_the_salvage(monkeypatch):
+    # The repairer must not shadow the heuristic: these shapes are not JSON at all.
+    reached = []
+    real = _agent._salvage_tool_args
+
+    def spy(func_name, raw, log):
+        reached.append(raw)
+        return real(func_name, raw, log)
+    monkeypatch.setattr(_agent, "_salvage_tool_args", spy)
+    assert _repair_tool_args("file", "write,path:test.txt,content:hello", MockLog()) == {
+        "action": "write", "path": "test.txt", "content": "hello"}
+    assert _repair_tool_args("exec_command", "command: ls -la", MockLog()) == {"command": "ls -la"}
+    assert len(reached) == 2
+
+
+def test_garbage_returns_none_without_raising():
+    assert _repair_tool_args("unknown", "completely broken text", MockLog()) is None
+    assert _repair_tool_args("unknown", "", MockLog()) is None
+    assert _repair_tool_args("file", None, MockLog()) is None
+
+
+def test_a_repairer_result_that_is_not_a_dict_falls_through(monkeypatch):
+    monkeypatch.setattr(_agent, "_json_repair", SimpleNamespace(repair_json=lambda raw, return_objects: [1, 2]))
+    assert _repair_tool_args("exec_command", "command: ls -la", MockLog()) == {"command": "ls -la"}
+    monkeypatch.setattr(_agent, "_json_repair", SimpleNamespace(repair_json=lambda raw, return_objects: 1 / 0))
+    assert _repair_tool_args("exec_command", "command: ls -la", MockLog()) == {"command": "ls -la"}
+
+
+def test_without_the_package_the_behaviour_is_the_old_one(monkeypatch):
+    monkeypatch.setattr(_agent, "_json_repair", None)
+    assert _repair_tool_args("other", '{"action": "read", "path": "test.txt", ', MockLog()) is None
+    assert _repair_tool_args("exec_command", "command: ls -la", MockLog()) == {"command": "ls -la"}
