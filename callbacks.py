@@ -458,7 +458,9 @@ class TerminalCallbacks(NullCallbacks):
         self._print(theme.c(theme.ERR, msg))
 
     def on_cancelled(self, where: str) -> None:
-        self._print(theme.c(theme.WARN, f"\n[cancelled — {where}]"))
+        # Two blank lines after the banner so the next prompt is not jammed
+        # up against it (the cancelled turn printed no closing whitespace).
+        self._print(theme.c(theme.WARN, f"\n[cancelled — {where}]") + "\n\n")
 
     # -- /tools viewer --------------------------------------------------
 
