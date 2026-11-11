@@ -132,8 +132,27 @@ The `generation` block sets sampling for the main loop:
 that honor a sampling seed — llama.cpp does; hosted backends without one log a single warning
 and ignore it. The flags `--temperature`, `--top-p` and `--seed` override these per run
 (flag > config > default), which is what k-sample ensembles ("same prompt, k runs, reconcile")
-and failure reproduction want without editing the file. See [CLI: headless runs](cli.md#headless--unattended-runs)
+and failure reproduction want without editing the file. See [Headless runs](headless.md)
 for the exit-code contract that unattended callers rely on.
+
+## Verification gates
+
+Two keys in `cycle` make the harness check the model's word. `success_check` is a command that
+must exit 0 before a cycle may end, and `claim_trace_max_blocks` turns back a final message that
+claims a test run or a commit the tool trace does not show:
+
+```json
+{
+  "cycle": {
+    "success_check": "pytest -q",
+    "claim_trace_max_blocks": 2
+  }
+}
+```
+
+Both are off by default. The [config reference](config-reference.md#verification-gates) has the
+details; [How it works](how-it-works.md#escalation-when-the-advisor-is-consulted) explains how the
+success check feeds advisor escalation.
 
 ## Cycle limits for unattended runs
 
@@ -169,7 +188,8 @@ defaults to half the deadline so a stuck run asks for help while there is still 
 `result_contract` is `false` (raw `--result-file` text), `true` (built-in schema) or a path to
 a JSON schema file; `--result-contract [schema]` overrides it. `result_contract_max_blocks`
 bounds how many times a missing/invalid result block redirects the exit before a synthesized
-`failed` record is written (exit code `11`). See [CLI: headless runs](cli.md#headless--unattended-runs).
+`failed` record is written (exit code `11`). See [Headless runs](headless.md); every key here has a row in the
+[config reference](config-reference.md#cycle).
 
 ## Output limits
 

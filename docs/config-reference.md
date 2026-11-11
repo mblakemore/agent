@@ -1,8 +1,11 @@
 # Config reference
 
-Every key the agent reads from its config file, with its default. All sections are optional; omitted keys use the defaults below. **You rarely need to write this by hand**: the [`/setup` wizard](setup-wizard.md) writes and calibrates it for you from live probes of your endpoints. For whole setups rather than single keys, see [Configurations](configurations.md).
+Every key the agent reads from its config file, with its default. All sections are optional; omitted keys use the defaults below. **You rarely need to write this by hand**: the [`/setup` wizard](setup-wizard.md) writes and calibrates it for you from live probes of your endpoints. For whole setups rather than single keys, see [Configurations](configurations.md); for what a headless run's keys do together, see [Headless runs](headless.md).
 
 The agent looks for `.agent/config.json` first, then falls back to `config.json` in the working directory (wherever you run `agent.py` from). Putting it under `.agent/` keeps your local, key-bearing config alongside the other runtime files. When you run inside a git repo, the agent best-effort adds `.agent/` and `config.json` to `.gitignore` so your config (which may hold API keys) and runtime state never get committed. Outside a repo it leaves the directory untouched.
+
+Sections, in the order a config file usually grows: [`backends`](#backends) · [`generation`](#generation) · [`think`](#think) · [`context`](#context) · [`cycle`](#cycle) · [`limits`](#limits) · [`retry`](#retry) · [`advisor`](#advisor) · [`subagent`](#subagent) · [`bedrock`](#bedrock) · [`preferences`](#preferences) · [`tools`](#tools) · [`command_guards`](#command_guards) · [`allow_catastrophic_commands`](#allow_catastrophic_commands) · [`interactive`](#interactive) · [`log_dir`, `log_prefix`](#log_dir-and-log_prefix) · [`env`](#env) · [`bootstrap`](#bootstrap) · [`llamacpp`](#llamacpp) · [the monitors file](#the-monitors-file) · [full example](#full-example). Environment variables are on the [CLI page](cli.md#environment-variables).
+
 ## `backends`
 
 Preferred shape. Replaces the legacy `llm` / `summary` flat blocks (which still work — they are synthesized into `backends` at load time).
@@ -29,18 +32,21 @@ Preferred shape. Replaces the legacy `llm` / `summary` flat blocks (which still 
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `kind` | `"llamacpp"` | Backend type: `"llamacpp"` (any OpenAI-compatible server), `"aicommons"`, `"foundry"`, or `"bedrock"` (legacy). |
+| `kind` | `"llamacpp"` | Backend type: `"llamacpp"` (any OpenAI-compatible server), `"aicommons"`, `"foundry"`, `"bedrock"` (legacy) or `"fake"` (the in-process test backend, see [Configurations](configurations.md#hosted-backends)). |
 | `base_url` | `"http://127.0.0.1:8080"` | OpenAI-compatible endpoint. |
 | `model` | `""` | Model name passed to the endpoint. Empty takes the server's own: at startup the agent reads `/v1/models` and uses the model listed (the first, if several). Selects the model ID for gateway kinds. |
 | `api_key` | `""` | Bearer token sent as `Authorization: Bearer <key>`. Keep this file `chmod 600`. |
 | `stream` | `true` | Set `false` to use non-streaming completions (useful for debugging). |
 | `enabled` | `true` (main) / `true` (summary) | Set `false` to disable the summary backend entirely. |
+| `effort` | — | Reasoning effort for this role (`low`, `medium`, `high`, `xhigh`, `max`) on backends that take one. `/effort` writes it. |
 
-For **AI Commons** keys (credentials, effort, quota) see [AI Commons](aicommons.md). For legacy **Bedrock** keys (`api_url`, spend caps, keystore) see [Bedrock](bedrock.md).
+**Legacy `llm` and `summary` blocks.** `llm.base_url`, `llm.model`, `summary.base_url`, `summary.model`, `summary.enabled` and `summary.max_wait_on_save` (`10`: seconds the checkpoint waits for a running summary before saving without it) are still read and mapped onto `backends.main` and `backends.summary`. New configs should use `backends`.
+
+For **AI Commons** keys (the top-level `aicommons` block: credentials, effort, thinking, quota, `max_context_tokens`) see [AI Commons](aicommons.md). For legacy **Bedrock** keys (`api_url`, spend caps, keystore) see [Bedrock](bedrock.md).
 
 ## `generation`
 
-Inference parameters forwarded to the LLM on every request.
+Inference parameters forwarded to the LLM on every request. `--temperature`, `--top-p` and `--seed` override them for one run.
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -49,6 +55,7 @@ Inference parameters forwarded to the LLM on every request.
 | `top_k` | `20` | Top-K sampling. |
 | `min_p` | `0.0` | Min-P sampling (0 = disabled). |
 | `presence_penalty` | `0.0` | Penalise tokens already present in context. |
+| `seed` | `null` | Sampling seed for reproducible runs; `null` is the server's own default. Honoured by llama.cpp; a backend without a seed warns once and ignores it. |
 | `enable_thinking` | `false` | Whether the **main loop** may emit thinking. Default `false`: the design is no-thinking-in-main plus the opt-in [`think` tool](#think), so the model reasons hard only when it chooses to. Set `true` to let the main model think on every turn (bounded by `max_tokens`; the `think` tool stays available either way). On tasks a capable model handles, `true` is measurably slower (~2–6×) for no accuracy gain — reach for it on genuinely hard tasks, not as a default. Requires a thinking-capable model/server (e.g. Qwen3 with `llama-server --reasoning`). |
 
 ## `think`
@@ -60,6 +67,7 @@ Budgets for the opt-in `think` tool — a separate deep-reasoning call the model
 | `depths.brief` | `2048` | `max_tokens` for a `brief` think — the default depth, sufficient for most decisions. |
 | `depths.normal` | `4096` | `max_tokens` for a `normal` think — complex multi-step reasoning. |
 | `depths.deep` | `16384` | `max_tokens` for a `deep` think — rarely needed. |
+| `system_prompt` | unset | Sent as the system turn of every `think` call. Leave it unset unless your model's chat template needs a trigger token there to start thinking; by default thinking is switched on through the template and nothing model-specific is sent. |
 
 The three preset **names** (`brief`/`normal`/`deep`) are fixed; only their token values are tunable — a fast small model may want smaller ceilings, a slow reasoning model larger. A malformed or non-positive override for any preset is ignored, keeping that preset's built-in default (a bad config can never zero out a budget).
 
@@ -83,7 +91,9 @@ Controls context-window sizing and compaction.
 
 ## `cycle`
 
-Per-session run limits.
+Per-session run limits, the two verification gates, and the controls a headless run uses. [Headless runs](headless.md) explains how the headless keys work together.
+
+### Turn limits
 
 | Key | Default | Description |
 | --- | --- | --- |
@@ -91,6 +101,39 @@ Per-session run limits.
 | `wind_down_turns` | `10` | Turns of grace period after `max_turns` before a hard stop. |
 | `max_text_only` | `3` | Consecutive text-only responses that trigger a halt (loop detection). |
 | `max_total_nudges` | `6` | Total auto-nudges allowed before giving up (requires `preferences.nudge` or `--nudge`). |
+
+### Verification gates
+
+These are the "success check" and "claim guard" that [How it works](how-it-works.md#guardrails) and the escalation policy refer to. Both are off unless set.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `success_check` | unset | A shell command that must exit `0` before the model may end a cycle (180 s timeout). It is shown to the model in the system prompt. When the model stops with a text-only completion or calls `end_cycle`, the command runs: a non-zero exit turns the stop back with a correction, at most three times per cycle. The gate stands down past the deadline, on a capability-refusal stop, and when the final result block says `blocked`, `failed` or `cannot-tell`, so a run is never asked to fake a pass for a check it has already said it cannot honestly satisfy. A passing check also counts as verification for the claim guard below. |
+| `grind_elapsed_s` | `0` | With a success check set: run it once at this many seconds of wall-clock, as well as at 70% of the turn budget, and if it still fails and nothing has been edited for `grind_no_progress_turns`, suggest the advisor (the *grind* signal). `0` leaves only the turn trigger; a headless run with a deadline defaults this to half the deadline. |
+| `grind_no_progress_turns` | `4` | Turns without a file edit or command that make a failing check count as grinding rather than slow. `0` disables that condition. |
+| `claim_trace_max_blocks` | `0` | The claim guard. A final message that says tests were run or verified while no verification command ran this session, or that a commit was made while none was, is turned back with a correction, up to this many times per cycle. `0` is off; the [`/setup` wizard](setup-wizard.md#the-checklist) writes `2` when you tick the claim guard. Story prose can read as a claim, which is why it is off by default. |
+
+### Headless controls
+
+Each of these has a flag of the same meaning; the flag wins. See [Headless runs](headless.md).
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `deadline_s` | `0` | Wall-clock budget for the run in seconds; `0` is off. `--deadline` overrides it. At the deadline tool calls are refused and the final result is forced (exit `10`). |
+| `deadline_warn_fracs` | `[0.6, 0.8, 0.92]` | Fractions of the deadline at which the model is warned, through the wind-down channel. |
+| `refusal_max_turns` | `5` | Headless only. After a tool result says the run was never granted something it needs (a key, egress, a permission), tool calls are refused this many turns later and the final result is forced, the same way the deadline does. `0` is off. |
+| `result_contract` | `false` | `false` leaves `--result-file` as raw text; `true` requires the final message to end with a fenced JSON block carrying `"contract": 1` that validates against the built-in schema; a path names a JSON schema file. `--result-contract` / `--result-schema` override it. |
+| `result_contract_max_blocks` | `2` | How many times a missing or invalid result block redirects the exit before a synthesized `{"status": "failed"}` record is written (exit `11`). |
+| `goal` | `""` | The run's stated goal, injected as an anchor at `goal_anchor_fracs`. `--goal` overrides it. Derived from a `GOAL:` stanza in the prompt when the result contract is armed. |
+| `deliverables` | `[]` | Paths or globs the run must produce. A final `done` while one is absent draws a correction. `--deliverable` (repeatable) overrides it; derived from a `DELIVERABLE:` stanza when the result contract is armed. |
+| `goal_anchor_fracs` | `[0.5, 0.8]` | Fractions of the deadline (or of the turn budget without one) at which the goal anchor is injected. |
+| `repeat_read_nudge` | `{"n": 3, "window": 6}` | The same read-class call (tool plus arguments) repeated `n` times within `window` turns draws one nudge naming the read, once per unique call. |
+
+## `limits`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `tool_result_max_chars` | `20000` | A tool result, or an initial prompt, over this many characters is written to `.agent/spill/` and replaced in the conversation by a reference with a head/tail excerpt, lossless. `0` keeps the legacy head/tail truncation only. The files attached to a first message (`@AGENT.md`) are never spilled with it. |
 
 ## `retry`
 
@@ -133,10 +176,11 @@ best thing available for the rare hard sub-problem, so the fast model keeps the 
 | `base_url` | — | OpenAI-compatible endpoint for the advisor model. |
 | `model` | — | Model name passed to that endpoint. |
 | `api_key` | `""` | Bearer token, if the endpoint needs one. |
+| `kind` | `"llamacpp"` | Backend type, as for `backends`; `"aicommons"` puts the advisor on the gateway. |
 | `prefill_token_budget` | `1500` | Hard ceiling on the brief handed to the advisor (see below). |
 | `max_tokens` | `512` | Cap on the advisor's answer. |
 | `max_calls_per_task` | `3` | Consultations per task, so a stuck loop cannot spend the session waiting. |
-| `timeout_s` | `900` | Per-consultation timeout. |
+| `timeout_s` | `900` | Per-consultation timeout. Unset, it is derived from the budgets and the measured speed (`/setup calibrate`). |
 
 **It distills before it asks.** A slow model's prefill dominates: feeding a multi-thousand-token
 transcript to a ~3 pos/s prefill costs many minutes before it emits a word. So the caller's context
@@ -153,6 +197,15 @@ server that is not running.
 
 See [Configurations](configurations.md) for the full three-tier setup, and
 [Recommended models](models.md) for what to run as the advisor.
+
+## `subagent`
+
+What a child agent started by the `subagent` tool runs on. A subagent inherits the parent's `--backend-main` / `--backend-summary` choices; these two keys give it a cheaper tier, since each one starts with a cold prompt cache anyway.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `model` | the parent's | Passed to the child as `--model`. |
+| `effort` | the parent's | Passed to the child as `--effort`. |
 
 ## `bedrock`
 
@@ -236,6 +289,55 @@ Patterns are case-insensitive regexes matched against the full command string.
 
 Guards fire after the built-in hallucination guards (`/home/user`, `python`→`python3`) but before the command runs.
 
+## `allow_catastrophic_commands`
+
+A top-level boolean, default `false`. Separate from `command_guards`, an always-on guard in `exec_command` blocks the unambiguous system destroyers even in an unconfigured folder: a recursive delete of `/`, your home directory or a system directory such as `/etc` or `/usr`, a recursive `chmod` or `chown` of `/`, `dd` or `mkfs` on a block device, or a redirect into one. A delete of `./build` or `/tmp/x` is never blocked. `true` (or the environment variable `AGENT_ALLOW_CATASTROPHIC=1`) switches the guard off.
+
+## `interactive`
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `live_input` | `true` | The interactive TUI's live-input mode: a line typed while a turn runs is delivered at the next turn boundary, a slash command typed then is held until the tool burst ends, and the session is reprinted on a terminal resize. `false` gives a plain prompt between turns. No effect under `-a` or `--no-tui`. |
+
+## `log_dir` and `log_prefix`
+
+Two top-level keys for the session logs.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `log_dir` | `.agent/history` | Directory for the per-session logs, relative to the working directory. |
+| `log_prefix` | `"session"` | The log file is `<log_prefix>_<YYYYmmdd_HHMMSS>.log`; `errors.log` sits alongside it. |
+
+## `env`
+
+A top-level object of environment variables to export when the agent starts, for tools and hooks that read their identity or settings from the environment. A variable already set in the environment is never overridden: a launch script, systemd unit or CI job is closer to the operator than a config file is. Values are written as strings; a `null` value is skipped.
+
+```json
+{ "env": { "SOME_TOOL_IDENTITY": "worker-3" } }
+```
+
+## `bootstrap`
+
+For scaffolded agents whose identity file refers to state files that may not exist yet on a fresh clone. On a fresh start (not `-c`) the agent reads `AGENT.md` / `CLAUDE.md` in the working directory and creates, empty, any declared file or directory the identity file mentions that is missing. Nothing is declared by default, so nothing is created.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `placeholder_files` | `[]` | Relative paths to create empty when the identity file names them and they are absent. |
+| `placeholder_dirs` | `[]` | Directories to create under the same rule. |
+
+## `llamacpp`
+
+Extension keys sent only when the main backend's `kind` is `"llamacpp"`. They are llama.cpp sampling extensions the OpenAI-compatible endpoint accepts and a hosted backend would reject.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `generation.repeat_penalty` | `1.1` | Repetition penalty. Unpenalised repetition on a small model can turn into a degeneration loop that eats the streaming deadline. |
+| `generation.repeat_last_n` | `256` | How many recent tokens the penalty considers. |
+
+## The monitors file
+
+Not part of `config.json`, but configuration an always-on agent carries. A monitor armed by the `monitor` tool with `persist=true` is saved to `.agent/monitors.json` (or the path in `AGENT_MONITORS_FILE`) and re-armed when the agent restarts. Each entry holds what the tool call gave it: `label`, `command` or `path`, `interval_seconds` (default 15, minimum 2), `prefix`, `dedup`, and, for the gate, `brief`, `bypass` and `quiet`. The file can be edited by hand between sessions; a brief on a persisted monitor is inert until `preferences.gate.enabled` is true. See [How it works](how-it-works.md#the-event-bus-sources-wait-and-the-gate).
+
 ## Full example
 
 ```json
@@ -245,10 +347,9 @@ Guards fire after the built-in hallucination guards (`/home/user`, `python`→`p
     "summary": { "kind": "llamacpp", "base_url": "http://127.0.0.1:8082", "enabled": true }
   },
   "generation": { "temperature": 0.8, "enable_thinking": false },
-  "think":      { "depths": { "brief": 2048, "normal": 4096, "deep": 16384 },
-                  "system_prompt": null },
+  "think":      { "depths": { "brief": 2048, "normal": 4096, "deep": 16384 } },
   "context":    { "ctx_size": 32768 },
-  "cycle":      { "max_turns": 50 },
+  "cycle":      { "max_turns": 50, "success_check": "pytest -q" },
   "preferences": {
     "nudge": true,
     "tools_whitelist": ["file", "exec_command", "search_files", "think", "task_tracker"]
@@ -261,7 +362,3 @@ Guards fire after the built-in hallucination guards (`/home/user`, `python`→`p
   ]
 }
 ```
-
-`think.system_prompt` is sent as the system turn of every `think` call; leave it unset unless
-your model's chat template needs a trigger token there to start thinking. By default thinking is
-switched on through the template (`enable_thinking`), and nothing model-specific is sent.

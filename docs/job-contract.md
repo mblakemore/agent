@@ -3,7 +3,7 @@
 # The job contract — running `agent.py` as a verifiable worker
 
 **Status: implemented.** `--job` and the runner-verified gate ship today; see
-[the CLI reference](cli.md#declarative-jobs-and-the-acceptance-gate---job) for the flag.
+[Headless runs](headless.md#declarative-jobs---job) for the flag and the other headless controls.
 
 ---
 

@@ -57,6 +57,20 @@ A few things worth knowing on day one:
 - `agent -c` continues where the last session left off.
 - Settings and history live in `.agent/` in your project folder, which is kept out of git for you.
 
+## 4. Adjust it
+
+The wizard writes `.agent/config.json`. Three keys cover most adjustments:
+
+```json
+{
+  "context":     { "ctx_size": 65536 },
+  "cycle":       { "max_turns": 50, "success_check": "pytest -q" },
+  "preferences": { "system_prompt": "Keep answers short. Commit after every change." }
+}
+```
+
+`ctx_size` caps how much of the model's context is used, `max_turns` how long one task may run, and `success_check` names a command that must pass before the agent may say it is done. `/system` sets the system prompt from the keyboard. Every key is in the [Config reference](docs/config-reference.md); whole setups are on [Configurations](docs/configurations.md).
+
 ## What it does
 
 - **Works through your project:** it reads and edits files, searches code and runs shell commands, and keeps going until the task is done.
@@ -64,6 +78,7 @@ A few things worth knowing on day one:
 - **Catches common model mistakes:** broken tool calls are repaired, and invented file contents are caught before they mislead it.
 - **Can ask a bigger model:** an optional advisor model is consulted when the main one gets stuck.
 - **Waits instead of polling:** long commands keep running in the background and report when they finish, `wait` blocks for free until something happens, and an optional gate (`preferences.gate.enabled`) lets a cheap model hold noisy monitor output for a digest instead of waking the main one.
+- **Runs unattended:** `agent -a` takes a deadline, a goal and named deliverables, checks its own result against a schema, and exits with a code a supervisor can act on. `/agent` turns a folder into a long-lived agent with an identity file that leads every session.
 
 ## Learn more
 
@@ -72,7 +87,8 @@ A few things worth knowing on day one:
 | [Install](docs/install.md) | Install options, Windows (Git-Bash), dependencies |
 | [Setup](docs/setup.md) | Getting a local model server running |
 | [Setup wizard](docs/setup-wizard.md) | Everything `/setup` does: the checklist, calibration, testing |
-| [CLI and usage](docs/cli.md) | Flags, slash commands, unattended runs, environment variables |
+| [CLI and usage](docs/cli.md) | Flags, slash commands, the TUI, environment variables |
+| [Headless runs](docs/headless.md) | Deadline, result contract, goals and deliverables, exit codes, jobs |
 | [Configurations](docs/configurations.md) | Common setups: one model, main + summary, adding an advisor |
 | [Config reference](docs/config-reference.md) | Every `config.json` key and its default |
 | [How it works](docs/how-it-works.md) | The turn loop, guardrails, escalation, code layout |
@@ -80,4 +96,5 @@ A few things worth knowing on day one:
 | [The job contract](docs/job-contract.md) | Running the agent as a verifiable worker (`--job`) |
 | [Recommended models](docs/models.md) | Which models work well and why |
 | [AI Commons](docs/aicommons.md) | The UCSB AI Commons gateway |
+| [Claude Code gateway](docs/claude-code-gateway.md) | `-cc`: driving Claude Code with your own model |
 | [Legacy Bedrock](docs/bedrock.md) | The older published-bot Bedrock gateway |

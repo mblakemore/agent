@@ -15,6 +15,8 @@ Each cycle is a turn loop:
 - **Async summarization**: a background thread condenses older messages while the main model keeps working.
 - **Cycle limits**: after `cycle.max_turns` turns (default 250) the agent is asked to wrap up; after `cycle.wind_down_turns` more it is forced to stop.
 - **Text-loop detection**: three identical text responses in a row end the cycle.
+- **The success check**: `cycle.success_check` names a command (a test suite, a build) that must exit 0 before the model may end a cycle. The model sees it in the system prompt; when it stops, the harness runs it, and a failure turns the stop back with a correction, three times at most. It is also the signal the escalation policy below reads. Off unless set; see the [config reference](config-reference.md#verification-gates).
+- **The claim guard**: with `cycle.claim_trace_max_blocks` above 0, a final message that says the tests were run or a commit was made is checked against the session's tool trace, and an unsupported claim is turned back. `/setup` offers it for coding projects.
 - **Hallucination guards**: fabricated file-read messages are stripped and a correction injected. Malformed tool-call JSON (a truncated string, an unbalanced brace or quote, a trailing comma, single quotes) is repaired with `json-repair` first, then salvaged heuristically for the token-leakage shapes a generic repairer does not know; a repair is logged at WARNING with the head of the raw arguments.
 - **Tool recovery**: recoverable tool errors (e.g. bad line numbers) are retried with corrected parameters via a lightweight LLM call.
 - **Context overflow handling**: three consecutive HTTP 500s are treated as context overflow; the agent trims history and retries.
