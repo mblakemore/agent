@@ -6,24 +6,30 @@ conversation as a new user turn while you keep working. Fully generic — the
 check). Daemon-backed: monitors stop when the cycle ends and the process exits.
 """
 
+import os
+
 import monitor_bus
 
 _MAX_LABEL = 40
 
 
 def fn(action="arm", label=None, command=None, interval_seconds=15,
-       prefix=None, dedup=True, persist=False):
+       prefix=None, dedup=True, persist=False, path=None, brief=None, bypass=None,
+       quiet=None):
     """Manage background monitors.
 
     Args:
         action: "arm" (start/replace), "stop", or "list". Default "arm".
         label: short name for the monitor (required to arm/stop).
-        command: shell command run each interval (required to arm); non-empty
-            stdout is injected into the conversation.
+        command: shell command run each interval (required to arm, unless path);
+            non-empty stdout is injected into the conversation.
+        path: a file to watch instead of a command; what is appended to it is the output.
         interval_seconds: seconds between runs (min 2). Default 15.
         prefix: text prefixed to each injection. Default "[monitor:<label>] ".
         dedup: skip identical consecutive output (default true).
         persist: save the monitor so it is re-armed when agent.py restarts.
+        brief: what is worth waking you for; the rest is held for a digest (gate).
+        bypass: regex; matching output always wakes you. quiet: regex; always held.
     """
     action = str(action or "arm").strip().lower()
 
@@ -33,6 +39,7 @@ def fn(action="arm", label=None, command=None, interval_seconds=15,
             return "No active monitors."
         return "Active monitors:\n" + "\n".join(
             f"  - {m['label']}: `{m['command']}` every {m['interval']:g}s"
+            + (" (gated)" if m.get("gated") else "")
             for m in active)
 
     if action == "stop":
@@ -45,20 +52,31 @@ def fn(action="arm", label=None, command=None, interval_seconds=15,
             return "Error: 'label' is required to arm a monitor."
         if len(label) > _MAX_LABEL:
             return f"Error: label too long (max {_MAX_LABEL} chars)."
-        if not (isinstance(command, str) and command.strip()):
-            return ("Error: 'command' is required to arm a monitor "
-                    "(a shell command to run each interval).")
+        has_cmd = isinstance(command, str) and command.strip()
+        has_path = isinstance(path, str) and path.strip()
+        if not has_cmd and not has_path:
+            return ("Error: 'command' (a shell command to run each interval) or 'path' "
+                    "(a file to watch) is required to arm a monitor.")
+        if has_path and not os.path.isfile(path.strip()):
+            return f"Error: path '{path.strip()}' is not a file."
+        gated = bool(monitor_bus.gate_enabled() and (brief or bypass or quiet))
+        if (brief or bypass or quiet) and not monitor_bus.gate_enabled():
+            return "Error: brief/bypass/quiet need the gate (preferences.gate.enabled)."
         px = prefix if isinstance(prefix, str) else f"[monitor:{label.strip()}] "
-        r = monitor_bus.arm(label.strip(), command.strip(),
+        r = monitor_bus.arm(label.strip(), (command or "").strip(),
                             interval=interval_seconds, prefix=px, dedup=bool(dedup),
-                            persist=bool(persist))
+                            persist=bool(persist), path=(path or "").strip() or None,
+                            brief=brief or "", bypass=bypass or "", quiet=quiet or "")
         if not r.get("ok"):
             return f"Error: {r.get('error')}"
         verb = "replaced" if r.get("replaced") else "armed"
-        return (f"Monitor '{label.strip()}' {verb} — running "
-                f"`{command.strip()}` every {r['interval']:g}s; its output will "
-                f"pop into the conversation as it arrives, at your next natural "
-                f"tool-result boundary. "
+        what = (f"watching `{path.strip()}`" if has_path and not has_cmd
+                else f"running `{command.strip()}`")
+        return (f"Monitor '{label.strip()}' {verb} — {what} every {r['interval']:g}s; "
+                f"its output will pop into the conversation as it arrives, at your next "
+                f"natural tool-result boundary. "
+                + ("It is gated: output is judged against your brief first and the rest "
+                   "held for a digest. " if gated else "")
                 + ("It is saved and will be re-armed when agent.py restarts. "
                    if r.get("persisted") else "")
                 + "It keeps running for as long as this process does: in an "
@@ -85,7 +103,10 @@ definition = {
             "Arm it at the start of your work with a label + command to listen "
             "while you proceed; use action='stop'/'list' to manage. Prefer a "
             "command that consumes/advances its own cursor so repeat runs "
-            "return nothing until there is something new."),
+            "return nothing until there is something new. path= watches a file "
+            "instead (new lines are the output). With the gate enabled, brief= "
+            "has the summary model hold what is not worth a wake and digest it later; "
+            "wait() blocks until a monitor (or a background job) has something."),
         "parameters": {
             "type": "object",
             "properties": {
@@ -100,7 +121,23 @@ definition = {
                 },
                 "command": {
                     "type": "string",
-                    "description": "Shell command to run each interval (required to arm). Non-empty stdout is injected.",
+                    "description": "Shell command to run each interval (required to arm, unless path). Non-empty stdout is injected.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "A file to watch instead of a command: what is appended to it is the output (a log of a background job).",
+                },
+                "brief": {
+                    "type": "string",
+                    "description": "Gate: what is worth waking you for, in your own words; the rest is held for a digest. Needs preferences.gate.enabled.",
+                },
+                "bypass": {
+                    "type": "string",
+                    "description": "Gate: regex; matching output always wakes you without a judge call.",
+                },
+                "quiet": {
+                    "type": "string",
+                    "description": "Gate: regex; matching output is always held without a judge call.",
                 },
                 "interval_seconds": {
                     "type": "number",

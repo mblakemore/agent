@@ -22,6 +22,11 @@ from pathlib import Path
 from .file import _accessed_files
 
 try:
+    import monitor_bus as _bus
+except ImportError:  # a harness without the bus: sessions are polled, as before
+    _bus = None
+
+try:
     import termios
 except ImportError:  # Windows
     termios = None
@@ -363,6 +368,35 @@ def _log_note(session):
     p = session.get("log_path")
     return f"; full output: {p}" if p else ""
 
+
+_FINISHED_TAIL = 1500
+
+
+def _track_session(sid, command):
+    """A background session is a bus source from the moment it detaches."""
+    if _bus is None:
+        return
+    try:
+        _bus.source_started(sid, "session", note=command)
+    except Exception:  # noqa: BLE001 — tracking is best effort
+        pass
+
+
+def _session_finished(sid, session, rc):
+    """One bus item when a background process exits, so the agent needs no poll:
+    the exit code and the output tail, with the log pointer for the rest."""
+    if _bus is None or session.get("killed"):
+        return   # killed by cleanup at exit: nobody is waiting for that exit code
+    out = session.get("bg_output", "") or ""
+    tail = out[-_FINISHED_TAIL:]
+    if len(out) > _FINISHED_TAIL:
+        tail = "…" + tail
+    try:
+        _bus.source_finished(sid, f"[session: {sid}] exit={rc} (background process finished"
+                                  f"{_log_note(session)})\n{tail}".rstrip())
+    except Exception:  # noqa: BLE001
+        pass
+
 # Config-based command guards — loaded once from config.json on first use.
 _command_guards: list | None = None
 _command_guards_loaded = False
@@ -539,9 +573,9 @@ def _get_or_create_session(session_id=None, new_session=False):
     return sid, None
 
 
-def _read_bg_output(proc, session, sink=None):
+def _read_bg_output(proc, session, sink=None, sid=None):
     """Background thread: read process output incrementally, mirroring every
-    line to the session's log file when there is one."""
+    line to the session's log file when there is one. Tells the bus at exit."""
     parts = []
     try:
         for line in proc.stdout:
@@ -556,6 +590,8 @@ def _read_bg_output(proc, session, sink=None):
     session["last_rc"] = proc.returncode
     if sink is not None:
         sink.close()
+    if sid:
+        _session_finished(sid, session, proc.returncode)
 
 
 def cleanup_temp_sessions():
@@ -563,6 +599,7 @@ def cleanup_temp_sessions():
     for sid in _temp_session_ids[:]:
         session = _sessions.pop(sid, None)
         if session and session.get("bg_proc"):
+            session["killed"] = True
             try:
                 session["bg_proc"].kill()
             except Exception:
@@ -945,11 +982,12 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         session["bg_output"] = ""
         session["last_rc"] = None
         session["log_path"] = sink.path if sink else None
-        t = threading.Thread(target=_read_bg_output, args=(proc, session, sink), daemon=True)
+        _track_session(sid, command)
+        t = threading.Thread(target=_read_bg_output, args=(proc, session, sink, sid), daemon=True)
         t.start()
-        return (f"[session: {sid}]\nCommand started in background. Poll with session_id "
-                f"to check output (wait=N blocks up to N s for it to finish)"
-                f"{_log_note(session)}.")
+        return (f"[session: {sid}]\nCommand started in background. Its exit arrives by "
+                f"itself; wait() blocks until it (or anything else) does. Poll with "
+                f"session_id to read output meanwhile{_log_note(session)}.")
 
     # ── Foreground execution ──────────────────────────────────────────
     # Collect stdout in a background reader thread so the main thread
@@ -1062,6 +1100,8 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         session["last_rc"] = None
         session["log_path"] = sink.path if sink else None
 
+        _track_session(sid, command)
+
         def _mirror():
             while reader_thread.is_alive():
                 session["bg_output"] = "".join(output_parts)
@@ -1069,12 +1109,14 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
             proc.wait()
             session["bg_output"] = "".join(output_parts)
             session["last_rc"] = proc.returncode
+            _session_finished(sid, session, proc.returncode)
 
         threading.Thread(target=_mirror, daemon=True).start()
         tail = session["bg_output"][-4000:]
         return (
             f"[session: {sid}] (still running after {_DETACH_AFTER_S:g}s — continuing in background; "
-            f"poll with session_id=\"{sid}\", wait=N to block until it finishes{_log_note(session)})\n{tail}"
+            f"its exit arrives by itself, or wait() blocks until it does; poll with "
+            f"session_id=\"{sid}\", wait=N to read output meanwhile{_log_note(session)})\n{tail}"
         )
 
     if timed_out:

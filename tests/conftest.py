@@ -81,6 +81,15 @@ def _fresh_cache_lifetimes(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _empty_event_bus():
+    """A background exec session from an earlier test queues its exit on the event bus
+    when it finishes; a test that compares request sequences must not inherit it."""
+    import monitor_bus
+    monitor_bus.drain()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_cache_keepalive(monkeypatch):
     """A run on a caching backend arms a keepalive thread that re-sends the last request
     a minute or more later, into whatever test is running by then. Off by default; the

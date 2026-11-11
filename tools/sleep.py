@@ -33,7 +33,7 @@ definition = {
     "type": "function",
     "function": {
         "name": "sleep",
-        "description": "Sleep for a specified number of seconds. Useful for waiting between commands or polling for results.",
+        "description": "Sleep for a specified number of seconds. To wait for a background job, subagent or monitor, use wait instead: it returns as soon as something happens.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -48,5 +48,5 @@ definition = {
 }
 
 # Registry hints (tools/__init__.py): catalog phrase, other harnesses' names, search words.
-_aliases = ['wait', 'pause', 'delay']
+_aliases = ['pause', 'delay']
 _short = 'wait some seconds'

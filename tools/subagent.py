@@ -1,8 +1,14 @@
 import math
 import subprocess
 import tempfile
+import threading
 import os
 from typing import Annotated
+
+try:
+    import monitor_bus as _bus
+except ImportError:  # a harness without the bus: subagents block, as before
+    _bus = None
 
 # Default wall-clock timeout for a sub-agent process (seconds).
 # Sub-agents may call LLMs and run multi-step tasks, so they legitimately need
@@ -24,11 +30,14 @@ def _inherited_args() -> list:
 def subagent(
     prompt: Annotated[str, "The task or question to delegate to a sub-agent"],
     timeout: int = _DEFAULT_TIMEOUT,
+    background: bool = False,
 ) -> str:
     """
     Spawns a new autonomous agent process to solve a specific sub-task.
     The sub-agent will work independently and return its final answer.
     Use this to break down complex problems into smaller, manageable pieces.
+    With background=true it returns at once with an id; the answer arrives on
+    the bus when the sub-agent finishes (wait() blocks until then).
     """
     if not isinstance(prompt, str):
         return f"Error: prompt must be a string, got {type(prompt).__name__!r}"
@@ -42,7 +51,26 @@ def subagent(
         return f"Error: timeout must be a number, got {type(timeout).__name__!r}"
     if not math.isfinite(timeout) or timeout <= 0:
         return "Error: timeout must be a finite positive number"
+    if background is True or background == 1:
+        if _bus is None:
+            return "Error: background sub-agents need the monitor bus, which this harness lacks"
+        sid = _bus.new_id("sub")
+        _bus.source_started(sid, "subagent", note=prompt.strip().splitlines()[0][:80])
 
+        def _run_bg():
+            try:
+                result = _run_subagent(prompt, timeout)
+            except Exception as e:  # noqa: BLE001
+                result = f"Error: running sub-agent: {e}"
+            _bus.source_finished(sid, f"[subagent: {sid}] finished\n{result}")
+
+        threading.Thread(target=_run_bg, name=f"subagent:{sid}", daemon=True).start()
+        return (f"[subagent: {sid}] started in the background (timeout {timeout:g}s). Its "
+                f"answer arrives by itself; wait() or wait(any_of=[\"{sid}\"]) blocks until it does.")
+    return _run_subagent(prompt, timeout)
+
+
+def _run_subagent(prompt, timeout):
     # Determine the absolute path to agent.py
     # tools/subagent.py -> ../agent.py
     tool_dir = os.path.dirname(os.path.abspath(__file__))
@@ -115,7 +143,7 @@ definition = {
     "type": "function",
     "function": {
         "name": "subagent",
-        "description": "Spawns a new autonomous agent process to solve a specific sub-task. The sub-agent will work independently and return its final answer.",
+        "description": "Spawns a new autonomous agent process to solve a specific sub-task. The sub-agent will work independently and return its final answer. background=true starts it and returns an id; run several at once and wait() for them.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -130,6 +158,10 @@ definition = {
                         f"(default {_DEFAULT_TIMEOUT}). Increase for very long tasks."
                     ),
                     "default": _DEFAULT_TIMEOUT,
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Return at once with an id; the answer arrives on its own when the sub-agent finishes (wait() blocks until then). Default false.",
                 },
             },
             "required": ["prompt"],

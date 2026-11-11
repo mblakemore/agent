@@ -1995,6 +1995,33 @@ def _apply_switch_model_tier():
 
 _apply_switch_model_tier()
 
+
+# ── The event bus: finished sessions, the gate, wait (monitor_bus.py, gate.py) ────
+_GATE_JUDGE_LOCK = threading.Lock()   # one judge call at a time, from any source thread
+
+
+def _gate_judge(prompt, timeout):
+    """The summary model as the gate's judge: one small deterministic completion. Every
+    backend's complete() builds its request afresh, so a call from a monitor thread is
+    safe beside the main loop; the lock only keeps gated sources from stampeding."""
+    backend = _agent_mod()._summary_backend
+    gen = {"max_tokens": 200, "temperature": 0}
+    with _GATE_JUDGE_LOCK:
+        try:
+            return backend.complete(prompt=prompt, gen_params=gen, timeout=timeout)
+        except TypeError:  # a backend whose complete() takes only the prompt
+            return backend.complete(prompt=prompt)
+
+
+_BUS_PREFS = _config.get("preferences") or {}
+monitor_bus.configure(session_events=_BUS_PREFS.get("session_events", True),
+                      gate=_BUS_PREFS.get("gate") if isinstance(_BUS_PREFS.get("gate"), dict) else {},
+                      judge=_gate_judge)
+_registry.GATES["gate"] = monitor_bus.gate_enabled
+if "gate" in _registry.DEFINITIONS and monitor_bus.gate_enabled():
+    _registry.TIERS["gate"] = "deferred"
+    _registry.rebuild()
+
 _TOOL_TIERS = _registry.apply_tiers(
     _TOOLS_CFG, whitelist=_tools_whitelist if isinstance(_tools_whitelist, list) else None,
     log=logging.getLogger("agent"))
@@ -6126,7 +6153,11 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                     conversation_history.append({"role": "user", "content": _expanded})
                     log.debug("USER (live): %s", _expanded[:200])
                 else:
-                    # A monitor ping consumed while idle IS the task (raw text).
+                    # A monitor ping consumed while idle IS the task (raw text); the
+                    # gate's held digests ride along on this wake.
+                    _digests = monitor_bus.take_held_digests()
+                    if _digests:
+                        _text = _text + "\n\n" + "\n\n".join(_digests)
                     conversation_history.append({"role": "user", "content": _text})
                 # Cancel-flag reset happens at run_agent_single entry (the
                 # turn boundary — single authority for tui_mode flag
