@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">How it works</p>
 <h1>How it works</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/how-it-works.md"><code>docs/how-it-works.md</code></a> · last changed 2026-10-25 (2028584)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/how-it-works.md"><code>docs/how-it-works.md</code></a> · last changed 2026-11-11 (c880f92)</p>
 <h2 id="the-turn-loop">The turn loop</h2>
 <p>Each cycle is a turn loop:</p>
 <ol>
@@ -43,11 +43,11 @@
 </ol>
 <h2 id="guardrails">Guardrails</h2>
 <ul>
-<li><strong>Checkpointing</strong>: history and summary state are written to <code>.agent/state/conversation_checkpoint.json</code> every turn. <code>--continue</code> resumes from there.</li>
+<li><strong>Checkpointing</strong>: history and summary state are written to <code>.agent/state/conversation_checkpoint.json</code> every turn. <code>--continue</code> resumes from there. The lead files of the trimmed window (the <code>@file</code> references of the first message, typically the identity file) are stored by name and re-read from disk on resume, so an identity file edited during the session is current after <code>-c</code>; if a file is gone, the checkpoint's copy is used. During a session, <code>@file</code> in a later message keeps the lead as it is unless it names a lead file, which re-reads them all.</li>
 <li><strong>Async summarization</strong>: a background thread condenses older messages while the main model keeps working.</li>
 <li><strong>Cycle limits</strong>: after <code>cycle.max_turns</code> turns (default 250) the agent is asked to wrap up; after <code>cycle.wind_down_turns</code> more it is forced to stop.</li>
 <li><strong>Text-loop detection</strong>: three identical text responses in a row end the cycle.</li>
-<li><strong>Hallucination guards</strong>: fabricated file-read messages are stripped and a correction injected. Malformed tool-call JSON is salvaged heuristically.</li>
+<li><strong>Hallucination guards</strong>: fabricated file-read messages are stripped and a correction injected. Malformed tool-call JSON (a truncated string, an unbalanced brace or quote, a trailing comma, single quotes) is repaired with <code>json-repair</code> first, then salvaged heuristically for the token-leakage shapes a generic repairer does not know; a repair is logged at WARNING with the head of the raw arguments.</li>
 <li><strong>Tool recovery</strong>: recoverable tool errors (e.g. bad line numbers) are retried with corrected parameters via a lightweight LLM call.</li>
 <li><strong>Context overflow handling</strong>: three consecutive HTTP 500s are treated as context overflow; the agent trims history and retries.</li>
 </ul>
@@ -57,6 +57,15 @@
 <li><strong>One call waits for it.</strong> Calling <code>exec_command</code> with only the <code>session_id</code> and <code>wait=&lt;seconds&gt;</code> blocks until the process exits (or the wait runs out) and returns its exit code and output, so a three-minute run costs one call rather than a sleep-and-poll loop. A double-Escape interrupts the wait, not the process.</li>
 <li><strong>Its complete output is on disk.</strong> Every background or detached command streams everything it prints to <code>.agent/exec/&lt;session&gt;-&lt;time&gt;.log</code> in the agent's home; the result names the path. When the tool result has since been compressed or truncated in the conversation, the file is still there to grep. The newest 30 logs are kept.</li>
 <li><strong>The result stays readable.</strong> The exit code and output of a finished command remain available from later polls of the same session until the next command runs in it.</li>
+<li><strong>A busy session is never overwritten.</strong> A command that goes to the background while its session still runs an earlier one gets a session of its own (the result says so), so both jobs keep their own output, exit code and log; a quick foreground command in a busy session runs as before.</li>
+<li><strong>Its exit arrives by itself.</strong> A detached or background command is a <em>source</em> on the event bus: when it exits, one line with its exit code and output tail is queued for the model, like a monitor's output, so the common case needs no poll at all (<code>preferences.session_events</code>).</li>
+</ul>
+<h2 id="the-event-bus-sources-wait-and-the-gate">The event bus: sources, <code>wait</code> and the gate</h2>
+<p>Every request carries the whole context, so the bill for an always-on agent is set by how many times the model is woken. Two habits drive that number up: a monitor that wakes the model for every line of a noisy stream, and a long job checked by repeated polls that mostly find nothing. The bus (<code>monitor_bus.py</code>) addresses both without making any call blocking that was not before.</p>
+<ul>
+<li><strong>Sources.</strong> Everything the agent is tracking is a source on one bus: a monitor (a command on an interval, or a file watched with <code>monitor path=…</code>), a detached or background <code>exec_command</code> session, a <code>subagent</code> started with <code>background=true</code>. A finished session or subagent queues one item by itself, and a session the model polled to completion takes its item back, so nothing is told twice. A background subagent is killed when this process exits, so a cycle should <code>wait</code> for it before ending.</li>
+<li><strong><code>wait</code>.</strong> Fan-out stays non-blocking; <code>wait</code> is the fan-in. It blocks inside the tool call, so no request is open, until anything tracked produces an item, or the sources in <code>any_of</code> do, or every source in <code>all_of</code> has finished (a barrier). It returns everything that is ready, not just the first thing, and ends with what is still running so the model is reminded of its other threads before it blocks again. Typed input interrupts it (the line is kept for the loop; a pending <code>/command</code> makes it return at once and say so, since that line runs only when the turn ends); esc·esc cancels it. A <code>-a</code> run can wait an hour for one request's worth of tokens.</li>
+<li><strong>The gate</strong> (<code>gate.py</code>, on when <code>preferences.gate.enabled</code> is true). A source may carry a <em>brief</em>, prose the model writes saying what is worth a wake (<code>monitor brief=…</code>, or the <code>gate</code> tool for any source). Output from a gated source is judged by the summary model first: "wake" comes through now; "hold" is kept, with a one-line summary, and never dropped. Held items arrive as one digest when the source next wakes, when the agent wakes for any other reason (the digest rides along), when the oldest passes <code>digest_after_s</code>, or when the held buffer fills; the raw text is in <code>.agent/gate/&lt;source&gt;.log</code>. <code>bypass</code> and <code>quiet</code> are regexes checked before any model call. A judge that fails, times out or answers nonsense wakes: the gate fails open. Each verdict is a <code>gate.verdict</code> log line and a <code>gate</code> telemetry event. <code>preferences.gate.enabled</code> is the master switch, read at startup: off, nothing is judged or held and a saved brief is inert; on, nothing is judged either until a source carries a brief, so the switch itself costs no model calls. Finished-job items and <code>wait</code> do not depend on it.</li>
 </ul>
 <h2 id="escalation-when-the-advisor-is-consulted">Escalation: when the advisor is consulted</h2>
 <p>When an <a href="config-reference.html#advisor"><code>advisor</code></a> endpoint is configured, three signals can route to it, all through one policy:</p>
@@ -87,7 +96,8 @@ theme.py, spinner.py  # Colors and spinner
 cancel.py             # Double-escape cancel handler
 escalation_policy.py  # When to consult the advisor
 phase_engine.py       # Phase machine for scaffolded agents
-monitor_bus.py        # Background monitors that inject into the loop
+monitor_bus.py        # The event bus: monitors, sessions and subagents as sources; wait
+gate.py               # The cheap judge in front of a gated source, and its digests
 token_utils.py        # Token counting (tokenizer or char estimate)
 tool_recovery.py      # Auto-recovery from recoverable tool errors
 telemetry.py          # Opt-in OTLP telemetry
@@ -105,15 +115,21 @@ tools/
   goal.py             # Durable multi-cycle goals
   subagent.py         # Run a task in a child agent
   consult_advisor.py  # Ask the advisor model
-  monitor.py          # Arm and stop background monitors
-  end_cycle.py        # Signal a clean end of cycle
+  monitor.py          # Arm and stop background monitors (command or watched file, brief)
+  wait.py             # Block until a tracked job, subagent or monitor has something
+  gate.py             # Set what a source may wake the model for (preferences.gate)
+  end_cycle.py        # Signal a clean end of cycle (opt-in: preferences.end_cycle_tool)
   sleep.py            # Pause execution
+  tool_search.py      # Find and load the deferred and hidden tools (see &quot;Lazy tools&quot;)
 .agent/               # Runtime files (created on first run, gitignored)
   config.json         # Written by /setup
   state/              # Checkpoint, tasks, cycle counter, web_fetch cache
   history/            # Per-session logs
 </code></pre>
-<p>Agent-specific tools in <code>./tools/</code> alongside your working directory are auto-discovered and registered on startup.</p>
+<p>Agent-specific tools in <code>.agent/tools/</code> under your working directory are auto-discovered and registered on startup.</p>
+<h3 id="lazy-tools">Lazy tools</h3>
+<p>Every tool is registered (<code>tools.MAP_FN</code>, <code>tools.DEFINITIONS</code>), but the model's request carries only the <strong>core</strong> tier's schemas (<code>tools.tools</code>). The <strong>deferred</strong> tools are named in one static line of the system prompt and the <strong>hidden</strong> ones not at all; the core tool <code>tool_search</code> finds them by keywords or name and asks for them to be loaded. The agent loop appends the asked-for schemas to the session's tool list once per turn (<code>_apply_tool_loads</code>), so a load costs one cache miss, not one per call, and loaded tools stay for the session and survive a <code>-c</code> resume through the checkpoint. A tool called from memory that is not in the list runs at once when its arguments fit (and is loaded), otherwise it answers with its schema; a name from another harness (<code>bash</code>, <code>grep</code>) is resolved to the tool it means. Tiers come from the tool module (<code>_tier</code>), the shipped defaults (<code>tools.DEFAULT_CORE</code>) and the <code>tools</code> block of the config; <code>docs/config-reference.md</code> has the keys.</p>
+<p>A tool function receives its arguments and nothing else. The one supported way for a tool to act on the running harness is <code>tools.RUNTIME</code>, a small registry agent.py fills at startup: <code>get_model(role)</code>, <code>set_model(role, model)</code> (what <code>/model</code> does, persisted), <code>models(role)</code> (the configured switchable models), <code>get_effort(role)</code> and <code>set_effort(role, effort)</code> (what <code>/effort</code> does). The shipped <code>switch_model</code> tool is built on it and exists only when <code>preferences.switchable_models</code> names models. Under another harness the registry is empty and such a tool answers with an error.</p>
     <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
   </main>
 </div>

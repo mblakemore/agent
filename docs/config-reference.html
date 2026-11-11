@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">Config reference</p>
 <h1>Config reference</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/config-reference.md"><code>docs/config-reference.md</code></a> · last changed 2026-10-30 (f195de6)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/config-reference.md"><code>docs/config-reference.md</code></a> · last changed 2026-11-11 (c880f92)</p>
 <p>Every key the agent reads from its config file, with its default. All sections are optional; omitted keys use the defaults below. <strong>You rarely need to write this by hand</strong>: the <a href="setup-wizard.html"><code>/setup</code> wizard</a> writes and calibrates it for you from live probes of your endpoints. For whole setups rather than single keys, see <a href="configurations.html">Configurations</a>.</p>
 <p>The agent looks for <code>.agent/config.json</code> first, then falls back to <code>config.json</code> in the working directory (wherever you run <code>agent.py</code> from). Putting it under <code>.agent/</code> keeps your local, key-bearing config alongside the other runtime files. When you run inside a git repo, the agent best-effort adds <code>.agent/</code> and <code>config.json</code> to <code>.gitignore</code> so your config (which may hold API keys) and runtime state never get committed. Outside a repo it leaves the directory untouched.</p>
 <h2 id="backends"><code>backends</code></h2>
@@ -461,7 +461,27 @@ server that is not running.</p>
 <tr>
 <td><code>tools_whitelist</code></td>
 <td><code>null</code></td>
-<td>Restrict the tool schema sent to the LLM to this list of tool names. <code>null</code> = all tools. Example: <code>["file", "exec_command", "search_files", "think", "task_tracker"]</code>.</td>
+<td>Only these tools exist for the model and for <code>tool_search</code>. <code>null</code> = all tools. Applied before the <code>tools</code> tiers below; a whitelist with no tier lists makes everything on it core. Example: <code>["file", "exec_command", "search_files", "think", "task_tracker"]</code>.</td>
+</tr>
+<tr>
+<td><code>end_cycle_tool</code></td>
+<td><code>false</code></td>
+<td>Offer the <code>end_cycle</code> tool, a clean "I am finished" exit for a cycle. Off by default: the model never sees it and a call to it is refused with an error, so an always-on interactive agent cannot end its own session. A cycle runner that wants the explicit exit sets <code>true</code>; a cycle still ends on the text-only completion paths either way.</td>
+</tr>
+<tr>
+<td><code>switchable_models</code></td>
+<td><code>[]</code></td>
+<td>Models the <code>switch_model</code> tool may switch to at runtime: a list (the main role's) or <code>{"main": [...], "summary": [...]}</code>. Empty, the tool does not exist to the model. With a list the tool is deferred (one catalog phrase, loaded with <code>tool_search</code>); a model outside the list is refused; a switch persists like <code>/model</code>, keeps the history and the role's effort, and the next request pays a cold prompt cache once (<code>cache.miss reason=model-switch</code>).</td>
+</tr>
+<tr>
+<td><code>session_events</code></td>
+<td><code>true</code></td>
+<td>A detached or background <code>exec_command</code> session (and a background <code>subagent</code>) queues one item on the event bus when it exits: its exit code and output tail, delivered like a monitor's output. <code>false</code> leaves only polling and <code>wait</code>.</td>
+</tr>
+<tr>
+<td><code>gate</code></td>
+<td><code>{"enabled": false}</code></td>
+<td>The gate in front of event sources (see <a href="how-it-works.html#the-event-bus-sources-wait-and-the-gate">How it works</a>). <code>enabled</code> is the master switch, read at startup, and it does exactly three things: a source with a brief or a <code>bypass</code>/<code>quiet</code> pattern is <em>gated</em> (its output goes through the summary model, which answers wake or hold); the <code>gate</code> tool exists (deferred, found with <code>tool_search</code>); and <code>monitor</code> accepts <code>brief</code>, <code>bypass</code> and <code>quiet</code>. With it <code>false</code>, nothing is judged or held, a brief on a persisted monitor is kept but inert, <code>monitor</code> refuses the three parameters and the <code>gate</code> tool answers with an error. It changes nothing else: finished jobs still arrive (<code>session_events</code>), <code>wait</code> works either way, and the summary model is called only once a source carries a brief, so turning it on costs nothing by itself. The other keys matter only when it is on: <code>timeout_s</code> (<code>20</code>, the judge call), <code>digest_after_s</code> (<code>600</code>, held items flush as a digest after this; <code>0</code> leaves only the other flush paths), <code>max_held_chars</code> (<code>8000</code>, or when the held buffer passes this), <code>digest_raw_chars</code> (<code>0</code>, raw held text included in the digest; summaries only by default), <code>log_dir</code> (<code>.agent/gate</code>, the raw held text).</td>
 </tr>
 <tr>
 <td><code>initial_tasks</code></td>
@@ -475,6 +495,57 @@ server that is not running.</p>
 </tr>
 </tbody>
 </table></div>
+<h2 id="tools"><code>tools</code></h2>
+<p>Lazy tools. The model's request carries the <strong>core</strong> tools' schemas; the <strong>deferred</strong> tools are named in one line of the system prompt ("More tools, loaded on request with tool_search: …") and the <strong>hidden</strong> ones not at all. The core tool <code>tool_search</code> finds and loads the others by keywords or <code>select:name,name</code>; a loaded tool stays in the session's list, and the list changes at most once per turn (one cache miss per turn that loaded something). A deferred tool called from memory runs at once when its arguments fit its schema and is loaded; otherwise the answer is its schema and it is loaded for the next call. A name from another harness (<code>bash</code>, <code>grep</code>, <code>Read</code>) is resolved to the tool it means here.</p>
+<p>Shipped tiers: core = <code>exec_command</code>, <code>read_file</code>, <code>write_file</code>, <code>edit_file</code>, <code>list_files</code>, <code>search_files</code>, <code>sleep</code>, <code>task_tracker</code>, <code>tool_search</code> (about 3,100 tokens); deferred = everything else (about 160 tokens of catalog); hidden = <code>consult_advisor</code> (deferred once an advisor is configured), <code>end_cycle</code> (see <code>end_cycle_tool</code>), <code>switch_model</code> (deferred once <code>preferences.switchable_models</code> is set) and <code>gate</code> (deferred once <code>preferences.gate.enabled</code> is true). <code>wait</code> is deferred; an agent that runs long jobs or monitors wants it core. Agent-written tools in <code>.agent/tools/</code> are deferred unless the module sets <code>_tier</code>; the old cap of ten is gone (<code>MAX_EXTRA_TOOLS</code> still caps when set). A tool module may also export <code>_short</code> (the catalog phrase), <code>_aliases</code> and <code>_keywords</code>.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>core</code></td>
+<td><code>[]</code></td>
+<td>Tools to move to the core tier (schema in every request).</td>
+</tr>
+<tr>
+<td><code>deferred</code></td>
+<td><code>[]</code></td>
+<td>Tools to move to the deferred tier (catalog line, loaded on request).</td>
+</tr>
+<tr>
+<td><code>hidden</code></td>
+<td><code>[]</code></td>
+<td>Tools to move to the hidden tier (found only by <code>tool_search</code>).</td>
+</tr>
+<tr>
+<td><code>catalog</code></td>
+<td><code>true</code></td>
+<td>Put the one-line list of deferred tools in the system prompt. <code>false</code> leaves only the <code>tool_search</code> description to say that other tools exist.</td>
+</tr>
+<tr>
+<td><code>preload_from_prompt</code></td>
+<td><code>true</code></td>
+<td>Before the first request of a session, load the tools the task text names (a tool name or alias) or clearly asks for, so they cost no cache miss later.</td>
+</tr>
+<tr>
+<td><code>implicit_run</code></td>
+<td><code>true</code></td>
+<td>A deferred tool called with fitting arguments runs at once (and is loaded). <code>false</code>: the call answers with the schema and loads the tool; the next call runs.</td>
+</tr>
+</tbody>
+</table></div>
+<pre tabindex="0"><code class="language-json">&quot;tools&quot;: {
+  &quot;core&quot;: [&quot;monitor&quot;],
+  &quot;deferred&quot;: [&quot;list_files&quot;, &quot;task_tracker&quot;],
+  &quot;hidden&quot;: [&quot;subagent&quot;]
+}
+</code></pre>
+<p><code>/tools list</code> shows the tiers and the schema tokens the model sees; <code>/tools search WORDS</code>, <code>/tools load NAMES</code>, and <code>/tools core|defer|hide NAME [--save]</code> change them from the keyboard.</p>
 <h2 id="command_guards"><code>command_guards</code></h2>
 <p>A list of regex-pattern / message pairs that intercept <code>exec_command</code> calls before the shell sees them. When a command matches a pattern, execution is blocked and the message is returned to the agent as a tool error — the agent can then reason about it and try something else.</p>
 <p>Patterns are case-insensitive regexes matched against the full command string.</p>

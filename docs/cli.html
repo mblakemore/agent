@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">CLI and usage</p>
 <h1>CLI and usage</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-10-29 (053ba50)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-11-03 (30b3670)</p>
 <p>Command-line arguments, the interactive TUI, slash commands and environment variables.</p>
 <pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
 </code></pre>
@@ -50,7 +50,7 @@
 </tr>
 <tr>
 <td><code>-c</code>, <code>--continue</code></td>
-<td>Resume from the last checkpoint. Combine with <code>-a</code> for auto-resume-and-exit.</td>
+<td>Resume from the last checkpoint. Combine with <code>-a</code> for auto-resume-and-exit. The files that lead the trimmed window (<code>@AGENT.md</code> / <code>@CLAUDE.md</code> from the first message) are re-read from disk on resume; a prompt given with <code>-c</code> is ignored when a checkpoint exists.</td>
 </tr>
 <tr>
 <td><code>-r N</code>, <code>--repeat N</code></td>
@@ -409,6 +409,7 @@ server-side fix is picked up automatically without a config change.</p>
 <li><strong>Input history</strong> navigable with ↑ / ↓</li>
 <li><strong>Key bindings</strong>: <code>Enter</code> submits, <code>Ctrl-N</code> inserts a literal newline</li>
 <li><strong>Resize reflow</strong>: when the window size settles after a resize, the session so far (the last 5,000 lines) is reprinted for the new width, with tool status rows shortened or restored to fit. This clears the terminal's scrollback, including anything above the agent. Live-input mode only (the default).</li>
+<li><strong>Live input</strong>: a line typed while a turn is running is delivered to the model at the next turn boundary. A slash command typed then (<code>/model main NAME</code>, <code>/verbose</code>) is held and run when the turn's tool burst ends, never handed to the model as text. <code>esc·esc</code> cancels the running turn; <code>exit</code> quits.</li>
 </ul>
 <p>Falls back to plain <code>input()</code> automatically if <code>prompt_toolkit</code> isn't installed.</p>
 <h3 id="slash-commands">Slash commands</h3>
@@ -435,6 +436,10 @@ server-side fix is picked up automatically without a config change.</p>
 <tr>
 <td><code>/model [main\|summary] [name]</code></td>
 <td>Set the <strong>main</strong> or <strong>summary</strong> model and persist it to <code>.agent/config.json</code> (survives restart). Bare <code>/model</code> picks the main model interactively; <code>/model summary</code> targets the summary backend; append a model id (<code>/model main gpt-4o</code>) to set it directly without the picker.</td>
+</tr>
+<tr>
+<td><code>/effort [main\|summary] [level]</code></td>
+<td>Show each role's reasoning effort, or set one (<code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, <code>max</code>; main when no role is given) and persist it to <code>.agent/config.json</code>. Applies from the next request on backends that take an effort (AI Commons); a model switch keeps it.</td>
 </tr>
 <tr>
 <td><code>/setup [main\|summary\|advisor\|test\|calibrate]</code></td>
