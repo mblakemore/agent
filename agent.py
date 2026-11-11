@@ -3569,10 +3569,12 @@ def _expand_file_refs_ex(text):
     return text + "\n\n" + files_content, files_content, attached, None
 
 
-def _attach_file_refs(refs):
+def _attach_file_refs(refs, announce=True):
     """Read the files behind @refs. Returns (files_content, attached_refs, error);
     files_content carries the working-directory preamble when an identity file is
-    among them, exactly as the lead message of a trimmed window needs it."""
+    among them, exactly as the lead message of a trimmed window needs it. `announce`
+    shows each header in the UI; a re-read of files the UI already announced for
+    this message passes False (two banners for one file read as a double load)."""
     # Resolve working directory once so every ref can be checked against it.
     # We use Path.cwd().resolve() (not os.getcwd()) to follow any symlinks in
     # the cwd itself, giving a canonical base for confinement checks.
@@ -3640,7 +3642,8 @@ def _attach_file_refs(refs):
 
         attachments.append(f"{header}\n{content}")
         attached.append(ref)
-        _emit("on_file_attached", header)
+        if announce:
+            _emit("on_file_attached", header)
 
     files_content = "\n\n".join(attachments)
     # Prepend working directory context when agent.md is loaded
@@ -3698,17 +3701,13 @@ def _lead_update(initial_files, files, log):
     if not initial_files or not _LEAD["refs"]:
         _LEAD["refs"] = list(refs)
         return files
-
-    def _same(a, b):
-        try:
-            return Path(a).resolve() == Path(b).resolve()
-        except OSError:
-            return a == b
-    if not any(_same(r, lead) for r in refs for lead in _LEAD["refs"]):
+    if not any(_same_path(r, lead) for r in refs for lead in _LEAD["refs"]):
         log.info("lead files kept (%s); %s stays in its message",
                  ", ".join(_LEAD["refs"]), ", ".join(refs))
         return initial_files
-    fresh, attached, err = _attach_file_refs(_LEAD["refs"])
+    # The UI announced these files when the message was expanded; a second banner
+    # for the same read looked like the file being loaded twice.
+    fresh, attached, err = _attach_file_refs(_LEAD["refs"], announce=False)
     if err or not fresh:
         log.warning("lead files not re-read (%s); the earlier copy stays", err or "nothing attached")
         return initial_files
@@ -3716,6 +3715,112 @@ def _lead_update(initial_files, files, log):
     log.info("lead files re-read from disk: %s%s", ", ".join(attached),
              "" if fresh == initial_files else " (changed)")
     return fresh
+
+
+def _same_path(a, b):
+    try:
+        return Path(a).resolve() == Path(b).resolve()
+    except OSError:
+        return a == b
+
+
+# ── The lead's one place ──────────────────────────────────────────────────────
+# The lead files live in exactly one history message: the one that first attached
+# them. A later message that names a lead file again re-reads it from disk, but the
+# fresh text goes into that place and the new message keeps a one-line note; before
+# this, every re-reference (`@CLAUDE.md run your next cycle`, the usual way an edited
+# identity file was pushed to a running agent) added a second whole copy, and an
+# untrimmed window sent both, one of them stale, for the rest of the session
+# (measured 2026-11-11: 8k of a 33k-token request). `-c` places the disk copy too,
+# so an edit takes effect at the next start without a re-reference.
+_LEAD_PREAMBLE_RE = re.compile(r"\[SYSTEM CONTEXT: Your working directory is [^\n]*\]\n\n\Z")
+
+
+def _lead_header_re(ref):
+    """The header `_attach_file_refs` wrote for `ref`, identity file or plain."""
+    return re.compile(r"^\[(?:AGENT IDENTITY FILE: )?" + re.escape(ref) +
+                      r"(?: \(loaded from |: (?:first \d+ of )?\d+ lines\])", re.MULTILINE)
+
+
+def _lead_block(content, ref):
+    """(start, end) of the attachment block of a message that carries `ref`: from the
+    working-directory preamble (or the first header) to the runtime note or the end.
+    Attachments always close a message (`text + "\\n\\n" + files`), and a runtime note
+    is only ever appended after them."""
+    if not isinstance(content, str):
+        return None
+    m = _lead_header_re(ref).search(content)
+    if not m:
+        return None
+    start = m.start()
+    pm = _LEAD_PREAMBLE_RE.search(content[:start])
+    if pm:
+        start = pm.start()
+    end = content.find("\n\n" + _RUNTIME_NOTE_HEAD, m.start())
+    return start, (end if end != -1 else len(content))
+
+
+def _lead_note():
+    return "[" + ", ".join(_LEAD["refs"]) + ": re-read from disk; the current text leads this conversation]"
+
+
+def _lead_place(conversation_history, fresh, log):
+    """Put `fresh` (the current lead text) in its place: the first user message carrying
+    the lead's first file has its attachment block replaced; any later user message
+    whose attachments are exactly the lead files is reduced to the note. A message
+    already holding `fresh` is left untouched (no cache cost). Returns True when a
+    place was found."""
+    refs = _LEAD["refs"]
+    if not refs or not fresh or not conversation_history:
+        return False
+    placed = False
+    for msg in conversation_history:
+        if msg.get("role") != "user":
+            continue
+        blk = _lead_block(msg.get("content"), refs[0])
+        if not blk:
+            continue
+        s, e = blk
+        content = msg["content"]
+        if not placed:
+            replacement = fresh
+            placed = True
+        else:
+            block_refs = _lead_refs_from_text(content[s:e])
+            if not block_refs or not all(any(_same_path(r, lead) for lead in refs) for r in block_refs):
+                continue                  # carries other files too; not ours to cut
+            replacement = _lead_note()
+        if content[s:e] != replacement:
+            msg["content"] = content[:s] + replacement + content[e:]
+            msg.pop("_tokens", None)     # token_utils caches counts per message
+    return placed
+
+
+def _lead_absorb(conversation_history, initial_files, expanded, files, log):
+    """A message's files and the lead, together. `_lead_update` decides the lead; when
+    the message re-read a lead file, the fresh text goes to the lead's place in the
+    history and the message keeps the note (plus any other files it named), so the
+    lead is never in the window twice. Returns (initial_files, message_content)."""
+    if not files:
+        return initial_files, expanded
+    before = initial_files
+    after = _lead_update(initial_files, files, log)
+    if before is None or after is before:
+        return after, expanded            # first files (this message is the place) or lead kept
+    refs = _lead_refs_from_text(files)
+    others = [r for r in refs if not any(_same_path(r, lead) for lead in _LEAD["refs"])]
+    if not refs or not _lead_place(conversation_history, after, log):
+        log.info("lead place not found in the history; %s stays in its message", ", ".join(refs))
+        return after, expanded
+    typed = expanded[:-len("\n\n" + files)] if expanded.endswith("\n\n" + files) else expanded
+    body = typed + "\n\n" + _lead_note()
+    if others:
+        extra, _, err = _attach_file_refs(others, announce=False)
+        if err or not extra:
+            return after, expanded        # keep everything rather than lose a file
+        body += "\n\n" + extra
+    log.info("lead files re-read into their place: %s", ", ".join(_LEAD["refs"]))
+    return after, body
 
 
 def _lead_reload(initial_files, log):
@@ -5733,6 +5838,11 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             log.info("CONTINUE: resuming from checkpoint (turn %d, %d messages, clean_exit=%s)",
                      start_turn, len(conversation_history), _clean_exit)
             initial_files = _lead_reload(initial_files, log)
+            # The disk copy takes its place in the history too: an untrimmed window
+            # sends the history, not the lead slot, so without this an edit made
+            # between sessions reached the model only once the window trimmed.
+            if _lead_place(conversation_history, initial_files, log):
+                log.info("lead files placed in the history on resume")
             # Cap summary from old checkpoints that may have bloated summaries
             if summary_state.get("text"):
                 summary_state["text"] = _condense_summary(summary_state["text"], log)
@@ -5856,7 +5966,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             _emit("on_error", f"Unexpected error expanding initial prompt: {e}")
             return
         if files:
-            initial_files = _lead_update(initial_files, files, log)
+            initial_files, expanded = _lead_absorb(conversation_history, initial_files,
+                                                  expanded, files, log)
         # Extract <pinned>...</pinned> blocks — these survive summarization
         global _pinned_instructions
         expanded, pinned = _extract_pinned(expanded)
@@ -6162,7 +6273,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                         _emit("on_error", _err)
                         continue
                     if _files:
-                        initial_files = _lead_update(initial_files, _files, log)
+                        initial_files, _expanded = _lead_absorb(
+                            conversation_history, initial_files, _expanded, _files, log)
                     _body = _expanded
                     log.debug("USER (live): %s", _expanded[:200])
                 else:
@@ -6286,7 +6398,8 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             _emit("on_error", err)
             continue
         if files:
-            initial_files = _lead_update(initial_files, files, log)
+            initial_files, expanded = _lead_absorb(conversation_history, initial_files,
+                                                  expanded, files, log)
 
         conversation_history.append({"role": "user", "content": expanded})
         log.debug("USER: %s", expanded)
@@ -6340,7 +6453,8 @@ def _handle_auto_guidance(conversation_history, summary_state, initial_files, lo
             _emit("on_error", err_g)
         else:
             if files_g:
-                initial_files = _lead_update(initial_files, files_g, log)
+                initial_files, expanded_g = _lead_absorb(conversation_history, initial_files,
+                                                        expanded_g, files_g, log)
             conversation_history.append({"role": "user", "content": expanded_g})
             log.info("OPERATOR: %s", expanded_g)
     else:

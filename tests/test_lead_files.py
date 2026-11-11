@@ -105,6 +105,108 @@ class TestLeadReload:
         assert agent._lead_reload("free text without headers", log) == "free text without headers"
 
 
+def _first_message(text="@CLAUDE.md run your next cycle!"):
+    """A history as a session leaves it: the first message with its attachment and
+    a runtime note appended, an assistant reply."""
+    expanded, files, refs, _ = agent._expand_file_refs_ex(text)
+    agent._LEAD["refs"] = []
+    lead = agent._lead_update(None, files, log)
+    first = {"role": "user", "content": expanded + "\n\n" + agent._RUNTIME_NOTE_HEAD +
+             "\nCurrent time: t0", "_tokens": 99}
+    return [first, {"role": "assistant", "content": "ok"}], lead
+
+
+class TestPlace:
+    """The lead files live in one history message; re-reads refresh it in place."""
+
+    def test_re_referencing_the_lead_refreshes_its_place_and_leaves_a_note(self, repo):
+        history, lead = _first_message()
+        (repo / "CLAUDE.md").write_text("# Iris\n\nRule one.\nRule two.\n", encoding="utf-8")
+        expanded, files, _, _ = agent._expand_file_refs_ex("@CLAUDE.md made some updates")
+        new_lead, body = agent._lead_absorb(history, lead, expanded, files, log)
+        assert "Rule two." in new_lead
+        place = history[0]["content"]
+        assert place.startswith("@CLAUDE.md run your next cycle!\n\n[SYSTEM CONTEXT")
+        assert "Rule two." in place and place.count("Rule one.") == 1
+        assert place.endswith("\n\n" + agent._RUNTIME_NOTE_HEAD + "\nCurrent time: t0")
+        assert "_tokens" not in history[0], "the cached token count is dropped with the old text"
+        assert body == "@CLAUDE.md made some updates\n\n" + agent._lead_note()
+        assert "Rule" not in body and "AGENT IDENTITY FILE" not in body
+        assert agent._lead_refs_from_text(body) == [], "the note is not a header"
+
+    def test_an_unchanged_file_still_goes_to_its_place_not_the_message(self, repo):
+        history, lead = _first_message()
+        before = history[0]["content"]
+        expanded, files, _, _ = agent._expand_file_refs_ex("@CLAUDE.md again")
+        _, body = agent._lead_absorb(history, lead, expanded, files, log)
+        assert history[0]["content"] == before and history[0]["_tokens"] == 99
+        assert body.endswith(agent._lead_note()) and "Rule one." not in body
+
+    def test_another_file_alongside_the_lead_rides_in_the_message(self, repo):
+        history, lead = _first_message()
+        expanded, files, _, _ = agent._expand_file_refs_ex("@CLAUDE.md and @notes.md")
+        _, body = agent._lead_absorb(history, lead, expanded, files, log)
+        assert "some notes" in body and "[notes.md: 1 lines]" in body
+        assert "Rule one." not in body and agent._lead_note() in body
+
+    def test_other_files_alone_leave_the_place_and_the_message_as_they_were(self, repo):
+        history, lead = _first_message()
+        expanded, files, _, _ = agent._expand_file_refs_ex("@notes.md look")
+        new_lead, body = agent._lead_absorb(history, lead, expanded, files, log)
+        assert new_lead is lead and body == expanded and history[0]["_tokens"] == 99
+
+    def test_no_place_in_the_history_keeps_the_file_in_the_message(self, repo):
+        _, lead = _first_message()
+        history = [{"role": "user", "content": "a session whose first message was summarized away"}]
+        expanded, files, _, _ = agent._expand_file_refs_ex("@CLAUDE.md again")
+        _, body = agent._lead_absorb(history, lead, expanded, files, log)
+        assert body == expanded
+
+    def test_the_first_files_make_their_own_message_the_place(self, repo):
+        agent._LEAD["refs"] = []
+        expanded, files, _, _ = agent._expand_file_refs_ex("@CLAUDE.md go")
+        new_lead, body = agent._lead_absorb([], None, expanded, files, log)
+        assert new_lead == files and body == expanded
+
+    def test_resume_places_the_disk_copy_and_reduces_an_old_duplicate(self, repo):
+        history, lead = _first_message()
+        # a second whole copy, as every re-reference left before the place existed
+        expanded, files, _, _ = agent._expand_file_refs_ex("@CLAUDE.md Run your next cycle!")
+        history.append({"role": "user", "content": expanded + "\n\n" + agent._RUNTIME_NOTE_HEAD + "\nt1"})
+        (repo / "CLAUDE.md").write_text("# Iris\n\nRule one.\nRule two.\n", encoding="utf-8")
+        fresh = agent._lead_reload(lead, log)
+        assert agent._lead_place(history, fresh, log)
+        assert "Rule two." in history[0]["content"]
+        assert history[2]["content"] == ("@CLAUDE.md Run your next cycle!\n\n" + agent._lead_note() +
+                                         "\n\n" + agent._RUNTIME_NOTE_HEAD + "\nt1")
+        assert sum(m["content"].count("Rule one.") for m in history) == 1
+
+    def test_a_later_copy_carrying_other_files_is_not_cut(self, repo):
+        history, lead = _first_message()
+        expanded, files, _, _ = agent._expand_file_refs_ex("@CLAUDE.md with @notes.md")
+        history.append({"role": "user", "content": expanded})
+        assert agent._lead_place(history, lead, log)
+        assert history[2]["content"] == expanded
+
+    def test_the_banner_is_shown_once_for_a_re_reference(self, repo, monkeypatch):
+        history, lead = _first_message()
+        shown = []
+        monkeypatch.setattr(agent, "_emit", lambda ev, *a: shown.append(ev) if ev == "on_file_attached" else None)
+        expanded, files, _, _ = agent._expand_file_refs_ex("@CLAUDE.md again")
+        agent._lead_absorb(history, lead, expanded, files, log)
+        assert shown == ["on_file_attached"]
+
+    def test_an_untrimmed_window_carries_the_lead_once(self, repo):
+        history, lead = _first_message()
+        (repo / "CLAUDE.md").write_text("# Iris\n\nRule one.\nRule two.\n", encoding="utf-8")
+        expanded, files, _, _ = agent._expand_file_refs_ex("@CLAUDE.md updated")
+        lead, body = agent._lead_absorb(history, lead, expanded, files, log)
+        history.append({"role": "user", "content": body})
+        sent, _ = agent._build_context(history, {"text": "", "up_to": 0}, lead, 60000, 1000, log)
+        text = "\n".join(m["content"] for m in sent if isinstance(m.get("content"), str))
+        assert text.count("Rule two.") == 1 and "Rule one.\nRule two." in text
+
+
 def test_the_checkpoint_carries_the_refs(repo, monkeypatch):
     monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(repo / "cp.json"))
     agent._LEAD["refs"] = ["CLAUDE.md"]
