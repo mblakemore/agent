@@ -63,6 +63,7 @@ A few things worth knowing on day one:
 - **Handles long sessions:** older history is summarized in the background, and progress is saved every turn.
 - **Catches common model mistakes:** broken tool calls are repaired, and invented file contents are caught before they mislead it.
 - **Can ask a bigger model:** an optional advisor model is consulted when the main one gets stuck.
+- **Waits instead of polling:** long commands keep running in the background and report when they finish, `wait` blocks for free until something happens, and an optional gate (`preferences.gate.enabled`) lets a cheap model hold noisy monitor output for a digest instead of waking the main one.
 
 ## Learn more
 

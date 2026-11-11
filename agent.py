@@ -629,6 +629,17 @@ _DEFAULT_CONFIG = {
         # that wants the explicit exit opts in with true; the text-only completion
         # paths end a cycle either way.
         "end_cycle_tool": False,
+        # The event bus (monitor_bus.py): a detached or background exec_command
+        # session, and a background subagent, queue one item when they exit.
+        "session_events": True,
+        # The gate in front of event sources (gate.py). `enabled` is the master
+        # switch, read at startup: off, nothing is judged or held, a saved brief is
+        # inert, and the `gate` tool and monitor's brief/bypass/quiet are refused.
+        # On, the summary model judges a source only once it carries a brief, so
+        # the switch itself costs nothing. The other keys (timeout_s,
+        # digest_after_s, max_held_chars, digest_raw_chars, log_dir) default from
+        # gate.DEFAULTS; see docs/config-reference.md.
+        "gate": {"enabled": False},
     },
 }
 
