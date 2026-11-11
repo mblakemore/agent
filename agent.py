@@ -3685,9 +3685,11 @@ def _lead_refs_from_text(initial_files):
     return out
 
 
-def _lead_update(initial_files, files, log):
+def _lead_update(initial_files, files, log, refs=None):
     """Decide what leads the trimmed window after a message that referenced files
-    (`files` is what `_expand_file_refs` attached; the refs are read off its headers).
+    (`files` is what `_expand_file_refs` attached; `refs` are the refs it attached, as
+    typed, and without them they are read off the headers in `files`, which a file
+    quoting a header can fool).
 
     The first message with files sets the lead. A later message that names one of
     the lead files again re-reads them all from disk (so `@CLAUDE.md` refreshes an
@@ -3697,7 +3699,7 @@ def _lead_update(initial_files, files, log):
     every later window."""
     if not files:
         return initial_files
-    refs = _lead_refs_from_text(files)
+    refs = list(refs) if refs else _lead_refs_from_text(files)
     if not initial_files or not _LEAD["refs"]:
         _LEAD["refs"] = list(refs)
         return files
@@ -3736,52 +3738,77 @@ def _same_path(a, b):
 _LEAD_PREAMBLE_RE = re.compile(r"\[SYSTEM CONTEXT: Your working directory is [^\n]*\]\n\n\Z")
 
 
-def _lead_header_re(ref):
-    """The header `_attach_file_refs` wrote for `ref`, identity file or plain."""
-    return re.compile(r"^\[(?:AGENT IDENTITY FILE: )?" + re.escape(ref) +
-                      r"(?: \(loaded from |: (?:first \d+ of )?\d+ lines\])", re.MULTILINE)
-
-
-def _lead_block(content, ref):
-    """(start, end) of the attachment block of a message that carries `ref`: from the
-    working-directory preamble (or the first header) to the runtime note or the end.
-    Attachments always close a message (`text + "\\n\\n" + files`), and a runtime note
-    is only ever appended after them."""
+def _lead_block(content, refs):
+    """(start, end) of the attachment block of a message that carries one of the lead
+    `refs` (any spelling of the same path): from the working-directory preamble (or
+    the header) to the runtime note or the end. Attachments always close a message
+    (`text + "\\n\\n" + files`) and a runtime note is only ever appended after them, so
+    the end is found first and the header is the first one before it naming a lead
+    file. A header-like line typed by the person can still fool this; `_lead_span`
+    is tried first where the earlier text is known."""
     if not isinstance(content, str):
         return None
-    m = _lead_header_re(ref).search(content)
-    if not m:
+    end = content.find("\n\n" + _RUNTIME_NOTE_HEAD)
+    if end == -1:
+        end = len(content)
+    start = None
+    for m in _LEAD_HEADER_RE.finditer(content, 0, end):
+        ref = m.group(1) or m.group(2)
+        if ref and any(_same_path(ref, lead) for lead in refs):
+            start = m.start()
+            break
+    if start is None:
         return None
-    start = m.start()
     pm = _LEAD_PREAMBLE_RE.search(content[:start])
     if pm:
         start = pm.start()
-    end = content.find("\n\n" + _RUNTIME_NOTE_HEAD, m.start())
-    return start, (end if end != -1 else len(content))
+    return start, end
+
+
+def _lead_span(content, old):
+    """The exact span of `old` (the lead text as it was last attached) in a message, if
+    it is there verbatim: the block without any header parsing. A trailing newline
+    the pinned-block extractor stripped does not matter."""
+    if not isinstance(content, str) or not isinstance(old, str) or not old:
+        return None
+    o = old.rstrip("\n")
+    if not o:
+        return None
+    i = content.find(o)
+    if i == -1:
+        return None
+    e = i + len(o)
+    while e < len(content) and content[e] == "\n" \
+            and not content.startswith("\n\n" + _RUNTIME_NOTE_HEAD, e):
+        e += 1
+    return i, e
 
 
 def _lead_note():
     return "[" + ", ".join(_LEAD["refs"]) + ": re-read from disk; the current text leads this conversation]"
 
 
-def _lead_place(conversation_history, fresh, log):
+def _lead_place(conversation_history, fresh, log, old=None):
     """Put `fresh` (the current lead text) in its place: the first user message carrying
-    the lead's first file has its attachment block replaced; any later user message
-    whose attachments are exactly the lead files is reduced to the note. A message
-    already holding `fresh` is left untouched (no cache cost). Returns True when a
-    place was found."""
+    a lead file has its attachment block replaced; any later user message whose
+    attachments are exactly the lead files is reduced to the note. `old` is the lead
+    text as it was last attached (the previous `initial_files`): where a message holds
+    it verbatim, that span is the block, so a header-like line in the typed text
+    cannot widen the cut. A message already holding the text is left untouched (no
+    cache cost); `_LEAD["replaced"]` is set when one was rewritten, for the cache-miss
+    log. Returns True when a place was found."""
     refs = _LEAD["refs"]
-    if not refs or not fresh or not conversation_history:
+    if not refs or not isinstance(fresh, str) or not fresh or not conversation_history:
         return False
     placed = False
     for msg in conversation_history:
         if msg.get("role") != "user":
             continue
-        blk = _lead_block(msg.get("content"), refs[0])
+        content = msg.get("content")
+        blk = (_lead_span(content, old) if not placed else None) or _lead_block(content, refs)
         if not blk:
             continue
         s, e = blk
-        content = msg["content"]
         if not placed:
             replacement = fresh
             placed = True
@@ -3790,26 +3817,46 @@ def _lead_place(conversation_history, fresh, log):
             if not block_refs or not all(any(_same_path(r, lead) for lead in refs) for r in block_refs):
                 continue                  # carries other files too; not ours to cut
             replacement = _lead_note()
-        if content[s:e] != replacement:
+        if content[s:e].rstrip("\n") != replacement.rstrip("\n"):
             msg["content"] = content[:s] + replacement + content[e:]
             msg.pop("_tokens", None)     # token_utils caches counts per message
+            _LEAD["replaced"] = True
     return placed
 
 
-def _lead_absorb(conversation_history, initial_files, expanded, files, log):
+def _lead_refs_of(expanded, files):
+    """The refs a message attached: the headers in `files`, kept only when the typed
+    text names them, so a header-like line inside a file's content (a file quoting
+    `[notes.md: 1 lines]`) is not taken for an attachment. Callers go through the
+    three-tuple `_expand_file_refs`, which tests stand in for, so the refs are
+    recovered here rather than carried from the expansion."""
+    parsed = _lead_refs_from_text(files)
+    if not isinstance(expanded, str) or not isinstance(files, str):
+        return parsed
+    tail = "\n\n" + files.rstrip("\n")
+    body = expanded.rstrip("\n")
+    if not body.endswith(tail):
+        return parsed
+    typed = set(_FILE_REF.findall(body[:-len(tail)]))
+    kept = [r for r in parsed if r in typed]
+    return kept or parsed
+
+
+def _lead_absorb(conversation_history, initial_files, expanded, files, log, refs=None):
     """A message's files and the lead, together. `_lead_update` decides the lead; when
     the message re-read a lead file, the fresh text goes to the lead's place in the
     history and the message keeps the note (plus any other files it named), so the
-    lead is never in the window twice. Returns (initial_files, message_content)."""
+    lead is never in the window twice. `refs` are the refs the expansion attached.
+    Returns (initial_files, message_content)."""
     if not files:
         return initial_files, expanded
+    refs = list(refs) if refs else _lead_refs_of(expanded, files)
     before = initial_files
-    after = _lead_update(initial_files, files, log)
+    after = _lead_update(initial_files, files, log, refs=refs)
     if before is None or after is before:
         return after, expanded            # first files (this message is the place) or lead kept
-    refs = _lead_refs_from_text(files)
     others = [r for r in refs if not any(_same_path(r, lead) for lead in _LEAD["refs"])]
-    if not refs or not _lead_place(conversation_history, after, log):
+    if not refs or not _lead_place(conversation_history, after, log, old=before):
         log.info("lead place not found in the history; %s stays in its message", ", ".join(refs))
         return after, expanded
     typed = expanded[:-len("\n\n" + files)] if expanded.endswith("\n\n" + files) else expanded
@@ -3821,6 +3868,29 @@ def _lead_absorb(conversation_history, initial_files, expanded, files, log):
         body += "\n\n" + extra
     log.info("lead files re-read into their place: %s", ", ".join(_LEAD["refs"]))
     return after, body
+
+
+def _spill_initial_prompt(expanded, files, log):
+    """F3a for the first message: typed bulk past `limits.tool_result_max_chars` goes to
+    a file with a reference; the files it attached stay, since an identity file is
+    loaded whole by design and is the place the lead lives for the whole session."""
+    cap = _tool_result_spill_cap()
+    if cap <= 0 or not isinstance(expanded, str):
+        return expanded
+    typed, tail = expanded, ""
+    if files and isinstance(files, str):
+        body = expanded.rstrip("\n")
+        attached = "\n\n" + files.rstrip("\n")
+        if body.endswith(attached):
+            typed, tail = body[:-len(attached)], expanded[len(body) - len(attached):]
+    if len(typed) <= cap:
+        return expanded
+    ref = _spill_tool_result(0, "prompt", typed, log, kind="prompt")
+    if ref is None:
+        return expanded
+    log.info("F3a spill: initial prompt of %d chars -> file (cap %d)", len(typed), cap)
+    return ("[Your initial instructions were too large for the context window and were "
+            "saved to a file — read them from there before acting.]\n" + ref + tail)
 
 
 def _lead_reload(initial_files, log):
@@ -5837,12 +5907,15 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             conversation_history, summary_state, start_turn, initial_files, _clean_exit = cp
             log.info("CONTINUE: resuming from checkpoint (turn %d, %d messages, clean_exit=%s)",
                      start_turn, len(conversation_history), _clean_exit)
+            _cp_lead = initial_files
             initial_files = _lead_reload(initial_files, log)
             # The disk copy takes its place in the history too: an untrimmed window
             # sends the history, not the lead slot, so without this an edit made
             # between sessions reached the model only once the window trimmed.
-            if _lead_place(conversation_history, initial_files, log):
-                log.info("lead files placed in the history on resume")
+            _LEAD.pop("replaced", None)
+            if _lead_place(conversation_history, initial_files, log, old=_cp_lead) \
+                    and _LEAD.get("replaced"):
+                log.info("lead files placed in the history on resume (changed since the checkpoint)")
             # Cap summary from old checkpoints that may have bloated summaries
             if summary_state.get("text"):
                 summary_state["text"] = _condense_summary(summary_state["text"], log)
@@ -6050,13 +6123,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         # F3a: inbound bulk spills too. A spec with a data blob pasted in, or a log dumped
         # into the initial prompt, goes to a file with a reference — bulk belongs in files,
         # references in context, in both directions. Same cap as tool results.
-        _in_cap = _tool_result_spill_cap()
-        if _in_cap > 0 and isinstance(expanded, str) and len(expanded) > _in_cap:
-            _ref = _spill_tool_result(0, "prompt", expanded, log, kind="prompt")
-            if _ref is not None:
-                log.info("F3a spill: initial prompt of %d chars -> file (cap %d)", len(expanded), _in_cap)
-                expanded = ("[Your initial instructions were too large for the context window and were "
-                            "saved to a file — read them from there before acting.]\n" + _ref)
+        expanded = _spill_initial_prompt(expanded, files, log)
         conversation_history.append({"role": "user", "content": expanded})
         log.debug("USER: %s", expanded)
         result = run_agent_single(conversation_history, summary_state, initial_files, log,
@@ -8136,6 +8203,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             _head_moved = bool(summary_state.pop("_head_moved", False))
                             _collapsed = bool(summary_state.pop("_collapsed", False))
                             _rewrote = bool(summary_state.pop("_rewrote_window", False))
+                            _lead_placed = bool(_LEAD.pop("replaced", False))
                             _harvested_this_turn = _harvested_this_turn or bool(summary_state.pop("_lead_changed", False))
                             _c_total = _c_read + _c_write + _c_unc
                             _prev_req_sig = _CACHE_REQ["prev_sig"]
@@ -8168,6 +8236,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                            "collapse" if _collapsed else
                                            "eviction" if _head_moved else
                                            "summary-harvest" if _harvested_this_turn else
+                                           "lead-reread" if _lead_placed else
                                            "history-rewrite" if _rewrote else
                                            ("idle" if _idle else "provider") if _prefix_same
                                            else "unknown")

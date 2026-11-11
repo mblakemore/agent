@@ -207,6 +207,124 @@ class TestPlace:
         assert text.count("Rule two.") == 1 and "Rule one.\nRule two." in text
 
 
+class TestPlaceEdges:
+    """What a reviewer asked about: header-like typed text, files quoting headers,
+    a pinned first prompt, byte-identical re-reads, two lead files, spellings, a
+    failing extra file, list content, old checkpoints and the first-message spill."""
+
+    def test_a_header_like_line_in_the_typed_text_is_not_cut(self, repo):
+        typed = "see this\n[CLAUDE.md: 3 lines]\nwas the old header\n@CLAUDE.md go"
+        history, lead = _first_message(typed)
+        (repo / "CLAUDE.md").write_text("# Iris\n\nRule one.\nRule two.\n", encoding="utf-8")
+        expanded, files, refs, _ = agent._expand_file_refs_ex("@CLAUDE.md again")
+        agent._lead_absorb(history, lead, expanded, files, log, refs=refs)
+        place = history[0]["content"]
+        assert place.startswith("see this\n[CLAUDE.md: 3 lines]\nwas the old header\n@CLAUDE.md go\n\n[SYSTEM CONTEXT")
+        assert "Rule two." in place and place.count("Rule one.") == 1
+
+    def test_a_lead_file_quoting_a_header_does_not_widen_the_lead(self, repo):
+        (repo / "CLAUDE.md").write_text("# Iris\n\n[notes.md: 1 lines]\nRule one.\n", encoding="utf-8")
+        expanded, files, _ = agent._expand_file_refs("@CLAUDE.md go")
+        agent._LEAD["refs"] = []
+        lead, body = agent._lead_absorb([], None, expanded, files, log)   # refs recovered, not given
+        assert agent._LEAD["refs"] == ["CLAUDE.md"]
+        history = [{"role": "user", "content": expanded}]
+        expanded2, files2, _ = agent._expand_file_refs("@CLAUDE.md again")
+        _, body2 = agent._lead_absorb(history, lead, expanded2, files2, log)
+        assert agent._LEAD["refs"] == ["CLAUDE.md"] and "some notes" not in body2
+        assert body2.endswith(agent._lead_note())
+
+    def test_a_pinned_first_prompt_does_not_rewrite_an_unchanged_place(self, repo):
+        expanded, files, refs, _ = agent._expand_file_refs_ex("<pinned>keep</pinned> @CLAUDE.md go")
+        agent._LEAD["refs"] = []
+        lead = agent._lead_update(None, files, log, refs=refs)
+        cleaned, _ = agent._extract_pinned(expanded)
+        assert not cleaned.endswith("\n"), "the extractor strips the trailing newline"
+        history = [{"role": "user", "content": cleaned, "_tokens": 7}]
+        agent._LEAD.pop("replaced", None)
+        expanded2, files2, refs2, _ = agent._expand_file_refs_ex("@CLAUDE.md again")
+        agent._lead_absorb(history, lead, expanded2, files2, log, refs=refs2)
+        assert history[0]["content"] == cleaned and history[0]["_tokens"] == 7
+        assert not agent._LEAD.get("replaced")
+
+    def test_a_byte_identical_re_read_sets_no_replaced_flag_but_a_change_does(self, repo):
+        history, lead = _first_message()
+        agent._LEAD.pop("replaced", None)
+        assert agent._lead_place(history, lead, log, old=lead) and not agent._LEAD.get("replaced")
+        (repo / "CLAUDE.md").write_text("# Iris\n\nRule one.\nRule two.\n", encoding="utf-8")
+        fresh, _, _ = agent._attach_file_refs(["CLAUDE.md"], announce=False)
+        assert agent._lead_place(history, fresh, log, old=lead) and agent._LEAD.pop("replaced") is True
+
+    def test_two_lead_files_are_placed_as_one_block(self, repo):
+        history, lead = _first_message("@CLAUDE.md @notes.md go")
+        assert agent._LEAD["refs"] == ["CLAUDE.md", "notes.md"]
+        (repo / "notes.md").write_text("newer notes\n", encoding="utf-8")
+        expanded, files, refs, _ = agent._expand_file_refs_ex("@notes.md changed")
+        new_lead, body = agent._lead_absorb(history, lead, expanded, files, log, refs=refs)
+        place = history[0]["content"]
+        assert "newer notes" in place and "some notes" not in place and "Rule one." in place
+        assert place.count("[SYSTEM CONTEXT") == 1 and place.count("[notes.md: 1 lines]") == 1
+        assert body == "@notes.md changed\n\n" + agent._lead_note() and "newer notes" in new_lead
+
+    def test_a_later_copy_spelled_differently_is_reduced_on_resume(self, repo):
+        history, lead = _first_message()
+        expanded, files, _, _ = agent._expand_file_refs_ex("@./CLAUDE.md Run your next cycle!")
+        history.append({"role": "user", "content": expanded})
+        assert agent._lead_place(history, lead, log, old=lead)
+        assert history[2]["content"] == "@./CLAUDE.md Run your next cycle!\n\n" + agent._lead_note()
+
+    def test_an_other_file_that_fails_to_read_keeps_the_whole_message(self, repo, monkeypatch):
+        history, lead = _first_message()
+        expanded, files, refs, _ = agent._expand_file_refs_ex("@CLAUDE.md with @notes.md")
+        real = agent._attach_file_refs
+
+        def flaky(refs, announce=True):
+            if refs == ["notes.md"]:
+                return None, [], "Error: file 'notes.md' does not exist"
+            return real(refs, announce=announce)
+        monkeypatch.setattr(agent, "_attach_file_refs", flaky)
+        _, body = agent._lead_absorb(history, lead, expanded, files, log, refs=refs)
+        assert body == expanded
+
+    def test_a_first_message_with_list_content_has_no_place(self, repo):
+        _, lead = _first_message()
+        history = [{"role": "user", "content": [{"type": "text", "text": "a picture"}]}]
+        expanded, files, refs, _ = agent._expand_file_refs_ex("@CLAUDE.md again")
+        _, body = agent._lead_absorb(history, lead, expanded, files, log, refs=refs)
+        assert body == expanded and history[0]["content"] == [{"type": "text", "text": "a picture"}]
+
+    def test_an_old_checkpoint_without_refs_is_placed_on_resume(self, repo, monkeypatch):
+        history, lead = _first_message()
+        monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(repo / "cp.json"))
+        agent._save_checkpoint(history, {"text": "", "up_to": 0}, 2, lead)
+        cp = json.load(open(repo / "cp.json"))
+        del cp["initial_file_refs"]
+        json.dump(cp, open(repo / "cp.json", "w"))
+        agent._LEAD["refs"] = []
+        hist, _, _, files, _ = agent._load_checkpoint()
+        (repo / "CLAUDE.md").write_text("# Iris\n\nRule one.\nRule two.\n", encoding="utf-8")
+        fresh = agent._lead_reload(files, log)
+        assert agent._LEAD["refs"] == ["CLAUDE.md"]
+        assert agent._lead_place(hist, fresh, log, old=files)
+        assert "Rule two." in hist[0]["content"] and hist[0]["content"].count("Rule one.") == 1
+
+    def test_the_first_message_spill_keeps_the_attached_files(self, repo, monkeypatch):
+        monkeypatch.setattr(agent, "_tool_result_spill_cap", lambda: 100)
+        spilled = []
+        monkeypatch.setattr(agent, "_spill_tool_result",
+                            lambda i, name, text, log, kind="": spilled.append(text) or "[spilled to .agent/spill/x]")
+        expanded, files, refs, _ = agent._expand_file_refs_ex("x" * 500 + " @CLAUDE.md")
+        out = agent._spill_initial_prompt(expanded, files, log)
+        assert out.startswith("[Your initial instructions were too large") and "Rule one." in out
+        assert spilled == ["x" * 500 + " @CLAUDE.md"]
+        # a short prompt with a long file is not spilled at all
+        spilled.clear()
+        assert agent._spill_initial_prompt("hi @CLAUDE.md\n\n" + "y" * 300, "y" * 300, log).endswith("y" * 300)
+        assert spilled == []
+        # no files: the old behaviour
+        assert agent._spill_initial_prompt("z" * 500, None, log).startswith("[Your initial")
+
+
 def test_the_checkpoint_carries_the_refs(repo, monkeypatch):
     monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(repo / "cp.json"))
     agent._LEAD["refs"] = ["CLAUDE.md"]
