@@ -26,6 +26,15 @@ Each cycle is a turn loop:
 - **One call waits for it.** Calling `exec_command` with only the `session_id` and `wait=<seconds>` blocks until the process exits (or the wait runs out) and returns its exit code and output, so a three-minute run costs one call rather than a sleep-and-poll loop. A double-Escape interrupts the wait, not the process.
 - **Its complete output is on disk.** Every background or detached command streams everything it prints to `.agent/exec/<session>-<time>.log` in the agent's home; the result names the path. When the tool result has since been compressed or truncated in the conversation, the file is still there to grep. The newest 30 logs are kept.
 - **The result stays readable.** The exit code and output of a finished command remain available from later polls of the same session until the next command runs in it.
+- **Its exit arrives by itself.** A detached or background command is a *source* on the event bus: when it exits, one line with its exit code and output tail is queued for the model, like a monitor's output, so the common case needs no poll at all (`preferences.session_events`).
+
+## The event bus: sources, `wait` and the gate
+
+Every request carries the whole context, so the bill for an always-on agent is set by how many times the model is woken. Two habits drive that number up: a monitor that wakes the model for every line of a noisy stream, and a long job checked by repeated polls that mostly find nothing. The bus (`monitor_bus.py`) addresses both without making any call blocking that was not before.
+
+- **Sources.** Everything the agent is tracking is a source on one bus: a monitor (a command on an interval, or a file watched with `monitor path=…`), a detached or background `exec_command` session, a `subagent` started with `background=true`. A finished session or subagent queues one item by itself.
+- **`wait`.** Fan-out stays non-blocking; `wait` is the fan-in. It blocks inside the tool call, so no request is open, until anything tracked produces an item, or the sources in `any_of` do, or every source in `all_of` has finished (a barrier). It returns everything that is ready, not just the first thing, and ends with what is still running so the model is reminded of its other threads before it blocks again. Typed input interrupts it (the line is kept for the loop); esc·esc cancels it. A `-a` run can wait an hour for one request's worth of tokens.
+- **The gate** (`gate.py`, on when `preferences.gate.enabled` is true). A source may carry a *brief*, prose the model writes saying what is worth a wake (`monitor brief=…`, or the `gate` tool for any source). Output from a gated source is judged by the summary model first: "wake" comes through now; "hold" is kept, with a one-line summary, and never dropped. Held items arrive as one digest when the source next wakes, when the agent wakes for any other reason (the digest rides along), when the oldest passes `digest_after_s`, or when the held buffer fills; the raw text is in `.agent/gate/<source>.log`. `bypass` and `quiet` are regexes checked before any model call. A judge that fails, times out or answers nonsense wakes: the gate fails open. Each verdict is a `gate.verdict` log line and a `gate` telemetry event.
 
 ## Escalation: when the advisor is consulted
 
@@ -62,7 +71,8 @@ theme.py, spinner.py  # Colors and spinner
 cancel.py             # Double-escape cancel handler
 escalation_policy.py  # When to consult the advisor
 phase_engine.py       # Phase machine for scaffolded agents
-monitor_bus.py        # Background monitors that inject into the loop
+monitor_bus.py        # The event bus: monitors, sessions and subagents as sources; wait
+gate.py               # The cheap judge in front of a gated source, and its digests
 token_utils.py        # Token counting (tokenizer or char estimate)
 tool_recovery.py      # Auto-recovery from recoverable tool errors
 telemetry.py          # Opt-in OTLP telemetry
@@ -80,7 +90,9 @@ tools/
   goal.py             # Durable multi-cycle goals
   subagent.py         # Run a task in a child agent
   consult_advisor.py  # Ask the advisor model
-  monitor.py          # Arm and stop background monitors
+  monitor.py          # Arm and stop background monitors (command or watched file, brief)
+  wait.py             # Block until a tracked job, subagent or monitor has something
+  gate.py             # Set what a source may wake the model for (preferences.gate)
   end_cycle.py        # Signal a clean end of cycle (opt-in: preferences.end_cycle_tool)
   sleep.py            # Pause execution
   tool_search.py      # Find and load the deferred and hidden tools (see "Lazy tools")
