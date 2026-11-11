@@ -382,6 +382,23 @@ def _track_session(sid, command):
         pass
 
 
+def _own_session_if_busy(sid, session):
+    """A command going to the background while `session` still runs an earlier one gets a
+    session of its own. Otherwise the new process overwrote the old record: the old reader
+    thread kept writing its output and exit code over the new job's, and the finished item
+    on the bus named the wrong command. Returns (sid, session, note); the note is "" when
+    the session was free. A split session is temporary, cleaned up at exit, and is allowed
+    past the temp-session cap, since the alternative is a corrupted record."""
+    bg = session.get("bg_proc")
+    if bg is None or bg.poll() is not None:
+        return sid, session, ""
+    new_sid = f"agent-tmp-{secrets.token_hex(4)}"
+    _sessions[new_sid] = {"bg_proc": None, "bg_output": ""}
+    _temp_session_ids.append(new_sid)
+    return new_sid, _sessions[new_sid], (f" (session {sid} is still running its earlier "
+                                        f"command, so this one has its own session)")
+
+
 def _session_reported(sid):
     """The model read this session's exit from a poll: the bus item for it is redundant.
     Take it back if it is queued, forget the source."""
@@ -990,6 +1007,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
             )
         except Exception as e:
             return f"Error: starting background command: {e}"
+        sid, session, split_note = _own_session_if_busy(sid, session)
         sink = _open_log_sink(sid, home_cwd)
         session["bg_proc"] = proc
         session["bg_output"] = ""
@@ -998,9 +1016,9 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         _track_session(sid, command)
         t = threading.Thread(target=_read_bg_output, args=(proc, session, sink, sid), daemon=True)
         t.start()
-        return (f"[session: {sid}]\nCommand started in background. Its exit arrives by "
-                f"itself; wait() blocks until it (or anything else) does. Poll with "
-                f"session_id to read output meanwhile{_log_note(session)}.")
+        return (f"[session: {sid}]{split_note}\nCommand started in background. Its exit "
+                f"arrives by itself; wait() blocks until it (or anything else) does. Poll "
+                f"with session_id to read output meanwhile{_log_note(session)}.")
 
     # ── Foreground execution ──────────────────────────────────────────
     # Collect stdout in a background reader thread so the main thread
@@ -1101,6 +1119,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         _restore_terminal_modes(_saved_modes)
 
     if detached:
+        sid, session, split_note = _own_session_if_busy(sid, session)
         with _sink_lock:
             sink = _open_log_sink(sid, home_cwd)
             if sink is not None:
@@ -1127,7 +1146,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
         threading.Thread(target=_mirror, daemon=True).start()
         tail = session["bg_output"][-4000:]
         return (
-            f"[session: {sid}] (still running after {_DETACH_AFTER_S:g}s — continuing in background; "
+            f"[session: {sid}]{split_note} (still running after {_DETACH_AFTER_S:g}s — continuing in background; "
             f"its exit arrives by itself, or wait() blocks until it does; poll with "
             f"session_id=\"{sid}\", wait=N to read output meanwhile{_log_note(session)})\n{tail}"
         )

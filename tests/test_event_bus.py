@@ -225,3 +225,50 @@ def test_a_reused_session_id_is_not_reaped_with_its_predecessor(monkeypatch):
     time.sleep(0.8)
     src = monitor_bus.source("same")
     assert src is not None and not src.done
+
+
+# ── a second background command never overwrites a running one ───────────
+def _poll_until_done(sid, seconds=6):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        r = ec.fn(session_id=sid)
+        if "exit=" in r:
+            return r
+        time.sleep(0.1)
+    return r
+
+
+def test_a_background_command_in_a_busy_session_gets_its_own():
+    a = _sid(ec.fn("sleep 0.6; echo A-done", timeout=30, background=True, new_session=True))
+    out = ec.fn("echo B-done", timeout=30, background=True, session_id=a)
+    b = _sid(out)
+    assert b != a and "still running its earlier command" in out
+    ra, rb = _poll_until_done(a), _poll_until_done(b)
+    assert "exit=0" in ra and "A-done" in ra and "B-done" not in ra
+    assert "exit=0" in rb and "B-done" in rb and "A-done" not in rb
+
+
+def test_a_detaching_command_in_a_busy_session_gets_its_own(monkeypatch):
+    monkeypatch.setattr(ec, "_DETACH_AFTER_S", 0.2)
+    a = _sid(ec.fn("sleep 1; echo A-done", timeout=30, background=True, new_session=True))
+    out = ec.fn("sleep 0.5; echo B-done", timeout=30, session_id=a)
+    b = _sid(out)
+    assert b != a and "still running" in out
+    ra, rb = _poll_until_done(a), _poll_until_done(b)
+    assert "A-done" in ra and "B-done" not in ra and "B-done" in rb
+
+
+def test_a_quick_foreground_command_in_a_busy_session_is_unchanged():
+    a = _sid(ec.fn("sleep 0.5; echo A-done", timeout=30, background=True, new_session=True))
+    out = ec.fn("echo quick", timeout=30, session_id=a)
+    assert f"[session: {a}]" in out and "quick" in out and "still running its earlier" not in out
+    ra = _poll_until_done(a)
+    assert "A-done" in ra
+
+
+def test_each_split_job_reports_its_own_exit_on_the_bus():
+    a = _sid(ec.fn("sleep 0.3; echo A-done", timeout=30, background=True, new_session=True))
+    b = _sid(ec.fn("echo B-done", timeout=30, background=True, session_id=a))
+    out = wait_fn(all_of=[a, b], max_s=10)
+    assert f"[session: {a}] exit=0" in out and f"[session: {b}] exit=0" in out
+    assert out.count("A-done") == 1 and out.count("B-done") == 1

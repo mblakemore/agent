@@ -26,6 +26,7 @@ Each cycle is a turn loop:
 - **One call waits for it.** Calling `exec_command` with only the `session_id` and `wait=<seconds>` blocks until the process exits (or the wait runs out) and returns its exit code and output, so a three-minute run costs one call rather than a sleep-and-poll loop. A double-Escape interrupts the wait, not the process.
 - **Its complete output is on disk.** Every background or detached command streams everything it prints to `.agent/exec/<session>-<time>.log` in the agent's home; the result names the path. When the tool result has since been compressed or truncated in the conversation, the file is still there to grep. The newest 30 logs are kept.
 - **The result stays readable.** The exit code and output of a finished command remain available from later polls of the same session until the next command runs in it.
+- **A busy session is never overwritten.** A command that goes to the background while its session still runs an earlier one gets a session of its own (the result says so), so both jobs keep their own output, exit code and log; a quick foreground command in a busy session runs as before.
 - **Its exit arrives by itself.** A detached or background command is a *source* on the event bus: when it exits, one line with its exit code and output tail is queued for the model, like a monitor's output, so the common case needs no poll at all (`preferences.session_events`).
 
 ## The event bus: sources, `wait` and the gate
