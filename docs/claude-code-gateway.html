@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Code gateway (-cc) — agent</title>
+<meta name="description" content="agent.py -cc stands up an Anthropic-native /v1/messages endpoint and points it at whichever backend agent.py is configured for (llamacpp, bedrock, or foundry). This lets Claude Code — or anything that speaks the Anthropic Messages API — drive your local/self-hosted model.">
+<link rel="canonical" href="https://mblakemore.github.io/agent/claude-code-gateway.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Claude Code gateway (-cc)">
+<meta property="og:description" content="agent.py -cc stands up an Anthropic-native /v1/messages endpoint and points it at whichever backend agent.py is configured for (llamacpp, bedrock, or foundry). This lets Claude Code — or anything that speaks the Anthropic Messages API — drive your local/self-hosted model.">
+<meta property="og:url" content="https://mblakemore.github.io/agent/claude-code-gateway.html">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/agent-docs.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"Claude Code gateway (-cc)","url":"https://mblakemore.github.io/agent/claude-code-gateway.html","description":"agent.py -cc stands up an Anthropic-native /v1/messages endpoint and points it at whichever backend agent.py is configured for (llamacpp, bedrock, or foundry). This lets Claude Code — or anything that speaks the Anthropic Messages API — drive your local/self-hosted model."}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><div class="in">
+  <span class="brand"><a href="index.html">agent</a></span>
+  <span class="tag">documentation</span>
+  <nav aria-label="primary">
+    <a href="index.html">Overview</a>
+    <a href="https://github.com/mblakemore/agent">Source</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="setup-wizard.html">Setup wizard — /setup</a></li><li><a href="cli.html">CLI and usage</a></li><li><a href="headless.html">Headless runs</a></li><li><a href="job-contract.html">The job contract — running agent.py as a verifiable worker</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="config-reference.html">Config reference</a></li><li><a href="how-it-works.html">How it works</a></li><li><a href="agent-scaffold.html">Agent scaffold — /agent</a></li><li><a href="models.html">Recommended models</a></li><li><a href="aicommons.html">AI Commons backend</a></li><li><a href="bedrock.html">Bedrock backend</a></li><li><a href="claude-code-gateway.html" aria-current="page">Claude Code gateway (-cc)</a></li></ul></aside>
+  <main id="main">
+    <p class="eyebrow">Claude Code gateway (-cc)</p>
+<h1>Claude Code gateway (<code>-cc</code>)</h1>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/claude-code-gateway.md"><code>docs/claude-code-gateway.md</code></a> · last changed 2026-11-11 (3df643d)</p>
+<p><code>agent.py -cc</code> stands up an Anthropic-native <code>/v1/messages</code> endpoint and points it at whichever backend <code>agent.py</code> is configured for (<code>llamacpp</code>, <code>bedrock</code>, or <code>foundry</code>). This lets <a href="https://docs.claude.com/en/docs/claude-code">Claude Code</a> — or anything that speaks the Anthropic Messages API — drive your local/self-hosted model.</p>
+<pre tabindex="0"><code class="language-bash">python agent.py -cc                      # listen on 127.0.0.1:8788
+python agent.py -cc 0.0.0.0:9000         # explicit host:port
+python agent.py -cc --backend-main bedrock   # forward to a different backend
+</code></pre>
+<p>Then point Claude Code at it:</p>
+<pre tabindex="0"><code class="language-bash">export ANTHROPIC_BASE_URL=http://localhost:8788
+export ANTHROPIC_API_KEY=dummy           # any non-empty value; the gateway ignores it
+claude
+</code></pre>
+<p>Against the <a href="aicommons.html#claude-code">AI Commons</a> backend the gateway is not needed: that gateway already speaks the Messages API, so Claude Code can use it directly.</p>
+<h2 id="how-it-works">How it works</h2>
+<ul>
+<li>It is a <strong>stateless translator</strong> — Anthropic Messages in, OpenAI chat-completions to the backend, and the streamed reply translated back to Anthropic SSE. Tool definitions, <code>tool_use</code>/<code>tool_result</code> blocks, images, and streaming tool calls are all converted in both directions.</li>
+<li>Claude Code runs its <strong>own</strong> agentic loop and resends the full conversation each turn, so the gateway bypasses <code>agent.py</code>'s session pipeline (no checkpointing, summarization, or cycle limits) and forces a fresh backend conversation per request.</li>
+<li>The model id Claude Code sends is ignored; requests always go to the configured main backend's model. Gemma <code>&lt;think&gt;</code> reasoning is suppressed so it doesn't surface as message content.</li>
+<li><code>GET /health</code> reports backend reachability; <code>POST /v1/messages/count_tokens</code> returns an estimate.</li>
+</ul>
+<h2 id="resilience-for-slow-or-flaky-backends">Resilience for slow or flaky backends</h2>
+<p>If the backend cuts a stream <em>after</em> tokens have started flowing (e.g. a Bedrock proxy behind an API Gateway with a ~29s timeout), the gateway closes the turn cleanly with <code>stop_reason: max_tokens</code> instead of letting the client see "stream ended prematurely". If the backend fails <em>before</em> any content reaches the client, the gateway retries with backoff (only then — once tokens stream, retrying would duplicate output). Tunable via env vars:</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CC_GATEWAY_MAX_RETRIES</code></td>
+<td><code>2</code></td>
+<td>Retries when the backend fails before producing any content. Each retry can cost up to one read-timeout, so keep it small. <code>0</code> disables.</td>
+</tr>
+<tr>
+<td><code>CC_GATEWAY_RETRY_BASE_DELAY</code></td>
+<td><code>1.0</code></td>
+<td>Initial backoff (seconds); doubles each retry.</td>
+</tr>
+<tr>
+<td><code>CC_GATEWAY_RETRY_MAX_DELAY</code></td>
+<td><code>8.0</code></td>
+<td>Cap on backoff (seconds).</td>
+</tr>
+<tr>
+<td><code>CC_GATEWAY_CONNECT_TIMEOUT</code></td>
+<td><code>30</code></td>
+<td>Connect timeout to the backend (seconds).</td>
+</tr>
+<tr>
+<td><code>CC_GATEWAY_READ_TIMEOUT</code></td>
+<td><code>600</code></td>
+<td>Read timeout — a slow backend can hold the stream this long.</td>
+</tr>
+<tr>
+<td><code>AGENT_FOLD_SYSTEM</code></td>
+<td><code>auto</code></td>
+<td>Workaround for backends that silently drop <code>role:"system"</code>, below. <code>auto</code> probes the backend once (~20 tokens, ~1.5s) and caches the result per <code>(base_url, model)</code> for 7 days; <code>always</code> folds without probing; <code>never</code> disables. Applies to both <code>-cc</code> and the main agent loop.</td>
+</tr>
+<tr>
+<td><code>AGENT_CACHE_DIR</code></td>
+<td><code>~/.cache/agent</code></td>
+<td>Where the probe result is cached (<code>backend_caps.json</code>).</td>
+</tr>
+</tbody>
+</table></div>
+<p>These mitigate transient failures but cannot make a turn that genuinely needs longer than the backend's hard timeout <em>complete</em> — that requires fixing the backend (e.g. streaming via a Lambda Function URL instead of API Gateway).</p>
+<p>Implemented in <code>cc_gateway.py</code>; requires <code>fastapi</code> + <code>uvicorn</code> (already in <code>requirements.txt</code>).</p>
+<h2 id="backends-that-silently-drop-system-messages">Backends that silently drop <code>system</code> messages</h2>
+<p>Some OpenAI-compatible gateways accept a <code>role:"system"</code> message, return HTTP 200,
+and never show it to the model — no error, no warning. The symptom is an agent that
+appears to ignore its instructions. This was measured against a Bedrock proxy behind
+API Gateway, where a 9-word system prompt is dropped exactly like a 6000-token one
+(<code>developer</code> too); the likely cause is that Bedrock's <code>Converse</code> API takes <code>system</code>
+as a top-level parameter rather than a message role, so it is lost in translation.</p>
+<p>When <code>AGENT_FOLD_SYSTEM=auto</code> (the default), the backend is probed once and, if it
+drops <code>system</code>, system content is merged into the following user message — which
+every backend delivers. Backends that honour <code>system</code> (e.g. local llama.cpp) are
+left untouched.</p>
+<p>The probe <strong>fails safe</strong>: any error, timeout or ambiguous reply folds. Folding a
+backend that works is harmless; not folding one that drops <code>system</code> silently
+discards the entire system prompt.</p>
+<p>This is a workaround — the durable fix is server-side. The 7-day cache TTL means a
+server-side fix is picked up automatically without a config change.</p>
+    <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
+  </main>
+</div>
+</body>
+</html>

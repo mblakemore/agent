@@ -4,18 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CLI and usage — agent</title>
-<meta name="description" content="Command-line arguments, the interactive TUI, slash commands and environment variables.">
+<meta name="description" content="Command-line arguments, the interactive TUI, slash commands and environment variables. The behaviours a supervisor relies on when it runs the agent unattended (deadline, result contract, exit codes, jobs) have their own page: Headless runs. So does the Claude Code gateway.">
 <link rel="canonical" href="https://mblakemore.github.io/agent/cli.html">
 <meta property="og:type" content="article">
 <meta property="og:title" content="CLI and usage">
-<meta property="og:description" content="Command-line arguments, the interactive TUI, slash commands and environment variables.">
+<meta property="og:description" content="Command-line arguments, the interactive TUI, slash commands and environment variables. The behaviours a supervisor relies on when it runs the agent unattended (deadline, result contract, exit codes, jobs) have their own page: Headless runs. So does the Claude Code gateway.">
 <meta property="og:url" content="https://mblakemore.github.io/agent/cli.html">
 <meta name="twitter:card" content="summary">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="assets/agent-docs.css">
-<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"CLI and usage","url":"https://mblakemore.github.io/agent/cli.html","description":"Command-line arguments, the interactive TUI, slash commands and environment variables."}</script>
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"CLI and usage","url":"https://mblakemore.github.io/agent/cli.html","description":"Command-line arguments, the interactive TUI, slash commands and environment variables. The behaviours a supervisor relies on when it runs the agent unattended (deadline, result contract, exit codes, jobs) have their own page: Headless runs. So does the Claude Code gateway."}</script>
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -28,12 +28,12 @@
   </nav>
 </div></header>
 <div class="wrap">
-  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="setup-wizard.html">Setup wizard — /setup</a></li><li><a href="cli.html" aria-current="page">CLI and usage</a></li><li><a href="job-contract.html">The job contract — running agent.py as a verifiable worker</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="config-reference.html">Config reference</a></li><li><a href="how-it-works.html">How it works</a></li><li><a href="agent-scaffold.html">Agent scaffold — /agent</a></li><li><a href="models.html">Recommended models</a></li><li><a href="aicommons.html">AI Commons backend</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="setup-wizard.html">Setup wizard — /setup</a></li><li><a href="cli.html" aria-current="page">CLI and usage</a></li><li><a href="headless.html">Headless runs</a></li><li><a href="job-contract.html">The job contract — running agent.py as a verifiable worker</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="config-reference.html">Config reference</a></li><li><a href="how-it-works.html">How it works</a></li><li><a href="agent-scaffold.html">Agent scaffold — /agent</a></li><li><a href="models.html">Recommended models</a></li><li><a href="aicommons.html">AI Commons backend</a></li><li><a href="bedrock.html">Bedrock backend</a></li><li><a href="claude-code-gateway.html">Claude Code gateway (-cc)</a></li></ul></aside>
   <main id="main">
     <p class="eyebrow">CLI and usage</p>
 <h1>CLI and usage</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-11-11 (32b8ea8)</p>
-<p>Command-line arguments, the interactive TUI, slash commands and environment variables.</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-11-11 (3df643d)</p>
+<p>Command-line arguments, the interactive TUI, slash commands and environment variables. The behaviours a supervisor relies on when it runs the agent unattended (deadline, result contract, exit codes, jobs) have their own page: <a href="headless.html">Headless runs</a>. So does the <a href="claude-code-gateway.html">Claude Code gateway</a>.</p>
 <pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
 </code></pre>
 <div class="tbl-wrap" tabindex="0"><table>
@@ -46,7 +46,7 @@
 <tbody>
 <tr>
 <td><code>-a</code>, <code>--auto</code></td>
-<td>Automation mode — run the prompt and exit; no interactive loop.</td>
+<td>Automation mode — run the prompt and exit; no interactive loop. See <a href="headless.html">Headless runs</a>.</td>
 </tr>
 <tr>
 <td><code>-c</code>, <code>--continue</code></td>
@@ -59,6 +59,14 @@
 <tr>
 <td><code>--setup</code></td>
 <td>Run the setup wizard at startup even when a config exists (interactive TTY sessions only), then continue into the session.</td>
+</tr>
+<tr>
+<td><code>--model NAME</code></td>
+<td>The main model for this run, overriding the configured one. On AI Commons without a configured model the default is <code>claude-v5.5-sonnet</code>.</td>
+</tr>
+<tr>
+<td><code>--effort LEVEL</code></td>
+<td>The main model's reasoning effort for this run (<code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, <code>max</code>) on backends that take one. <code>/effort</code> persists one.</td>
 </tr>
 <tr>
 <td><code>--nudge</code></td>
@@ -82,7 +90,7 @@
 </tr>
 <tr>
 <td><code>-cc [HOST:PORT]</code></td>
-<td>Launch an Anthropic-compatible gateway for <strong>Claude Code</strong> (default <code>127.0.0.1:8788</code>) that forwards to the configured main backend, then exit. See <a href="#claude-code-gateway--cc">Claude Code gateway</a>.</td>
+<td>Launch an Anthropic-compatible gateway for <strong>Claude Code</strong> (default <code>127.0.0.1:8788</code>) that forwards to the configured main backend, then exit. See <a href="claude-code-gateway.html">Claude Code gateway</a>.</td>
 </tr>
 <tr>
 <td><code>--result-file PATH</code></td>
@@ -98,7 +106,7 @@
 </tr>
 <tr>
 <td><code>--no-realpath-cwd</code></td>
-<td>Keep a symlinked working directory as given. By default the process canonicalizes its cwd and <code>$PWD</code> at start (see <a href="#headless--unattended-runs">Headless runs</a>).</td>
+<td>Keep a symlinked working directory as given. By default the process canonicalizes its cwd and <code>$PWD</code> at start (see <a href="headless.html#canonical-working-directory">Headless runs</a>).</td>
 </tr>
 <tr>
 <td><code>--deadline SECONDS</code></td>
@@ -110,7 +118,7 @@
 </tr>
 <tr>
 <td><code>--result-contract</code></td>
-<td>Require the final message to end with a fenced JSON result block (<code>{"contract": 1, "status": …, "summary": …}</code>); with <code>--result-file</code> the file receives the validated JSON only. Built-in schema unless <code>--result-schema</code> is given. See <a href="#headless--unattended-runs">Headless runs</a>.</td>
+<td>Require the final message to end with a fenced JSON result block (<code>{"contract": 1, "status": …, "summary": …}</code>); with <code>--result-file</code> the file receives the validated JSON only. Built-in schema unless <code>--result-schema</code> is given. See <a href="headless.html#result-contract">Headless runs</a>.</td>
 </tr>
 <tr>
 <td><code>--result-schema SCHEMA.json</code></td>
@@ -122,285 +130,11 @@
 </tr>
 <tr>
 <td><code>PROMPT...</code></td>
-<td>Initial prompt. Optional in interactive mode.</td>
+<td>Initial prompt. Optional in interactive mode. <code>@path</code> in the prompt attaches that file; <code>@AGENT.md</code> / <code>@CLAUDE.md</code> is loaded whole as the identity file.</td>
 </tr>
 </tbody>
 </table></div>
 <p>Press <strong>Escape twice</strong> within 400ms to cancel a streaming response.</p>
-<h3 id="headless-unattended-runs">Headless / unattended runs</h3>
-<p><code>agent.py -a</code> is often spawned by a supervisor — a batch queue, CI job, cron entry or another
-agent — that imposes a wall-clock budget, consumes a result, and kills the process on overrun.
-These behaviours exist for that audience; interactive sessions are untouched.</p>
-<p><strong>Canonical working directory.</strong> At start the process resolves symlinks in its working
-directory and rewrites <code>$PWD</code> to the physical path, logging the change. A run launched through
-a symlinked path otherwise produces <code>os.path.relpath()</code> values that walk out of the repository,
-and <code>git log -- &lt;path&gt;</code> then returns nothing <em>with exit 0</em>. Pass <code>--no-realpath-cwd</code> to keep the
-symlinked view (overlay-style layouts).</p>
-<p><strong>Wall-clock deadline (<code>--deadline SECONDS</code> / <code>cycle.deadline_s</code>).</strong> The wind-down ladder
-is turn-based; a run that is slow rather than turn-hungry got no warning and was killed by
-its supervisor mid-write, with work done and no result emitted. With a deadline set, the
-clock starts at run start and the agent is told at 60% (heads-up), 80% (begin wrapping up)
-and 92% (stop working — emit your final result now), through the same message channel the
-turn wind-down uses; the fractions are <code>cycle.deadline_warn_fracs</code>. At 100% the stop is
-structural: tool calls are refused (each still receives a paired result saying why), the
-success-check and claim gates stand down, and the run takes the final-result path — the
-process exits <code>10</code> and, when <code>--result-file</code> is set, the file holds whatever the model said
-last. A grind escalation defaults to half the deadline when <code>cycle.grind_elapsed_s</code> is unset,
-and an advisor consult that cannot finish in the time left is skipped with a notice rather
-than started. Unset (<code>0</code>) is today's behaviour exactly.</p>
-<p><strong>Result contract (<code>--result-contract</code>, <code>--result-schema FILE</code> / <code>cycle.result_contract</code>).</strong> Callers that
-consume structured results used to prompt for a fenced JSON block and parse the raw
-<code>--result-file</code> themselves — discipline, not structure, with two observed failures: a
-<em>decoy</em> block (the model discusses an example and the extractor grabs it) and a <code>done</code> claim
-with no block at all. When armed, the contract instruction is injected as a system message,
-and the final message must end with a fenced <code>``json block that parses and validates against
-the schema (built-in default:</code>contract: 1<code>,</code>status: done|failed|blocked|cannot-tell<code>,</code>summary<code>, optional</code>artifacts<code>,</code>verify_output<code>,</code>scope<code>). The key</code>"contract": 1<code>is the
-discriminator — a block without it is prose. Missing or invalid at exit → a correction is
-injected and the run continues, bounded by</code>cycle.result_contract_max_blocks<code>&quot;">(default 2);
-still missing at the bound, or at the deadline's hard stop, the run exits and the result file
-receives a synthesized</code><code>record, so the caller **always** gets valid JSON; the process exits</code>11<code>unless a harder stop
-already owns the code. Two valid blocks → last wins. The exit classification is folded into
-the JSON as</code>"exit": {code, name, detail}<code>. An unreadable schema refuses to start (exit</code>14<code>).
-Without the flag,</code>--result-file` is byte-identical to the raw behaviour.</p>
-<p><strong>Bulk belongs in files (<code>limits.tool_result_max_chars</code>, default 20 000).</strong> A tool result
-over the cap is written to <code>.agent/spill/&lt;turn&gt;-&lt;tool&gt;-&lt;ts&gt;.txt</code> and the model receives a
-reference — path, size, line count, a head/tail excerpt, and the instruction to read it in
-slices — instead of the payload. This replaces the old head/tail truncation at the same
-boundary and is lossless: the file holds everything. The same cap applies to an oversized
-initial prompt (a spec with a data blob pasted in), which is spilled with a reference the model
-is told to read first. A spill directory that cannot be written falls back to the legacy
-truncation with a warning. <code>0</code> disables the spill (truncation only). The context budget is
-also calibrated from the server's own token counts: every streamed turn reports
-<code>prompt_tokens</code>, the ratio observed-to-estimated is tracked, and the next window is sized by
-it — a tokenizer mismatch between the estimator and the served model stops mattering after
-the first measured turn (logged when the ratio moves by more than 10%). On the transport, an
-HTTP 500 is treated as a context overflow only when its body says so (llama.cpp names it:
-"exceeds the available context size", "context shift is disabled", "prompt is too long");
-any other 500 is a transient, retried with the existing jittered exponential backoff and
-never counted toward an overflow verdict.</p>
-<p><strong>Goal anchoring and the deliverable guard (<code>--goal</code>, <code>--deliverable</code>, <code>cycle.goal</code>,
-<code>cycle.deliverables</code>).</strong> Long-horizon drift, observed live: a 45-minute run produced a competent
-artifact answering the wrong question, self-assessed complete, and never noticed the named
-deliverable was absent. With a goal and/or deliverables set, the run receives a goal anchor at
-<code>cycle.goal_anchor_fracs</code> (default 50% and 80% of the deadline, or of the turn budget when no
-deadline) — the stated goal, the deliverables, and a mechanical "these do not exist yet" list
-from one glob sweep, no model call. A final <code>done</code> while a named deliverable is absent draws
-the standard correction (bounded like the result contract); <code>blocked</code>, <code>failed</code> and
-<code>cannot-tell</code> are always accepted — the guard polices claims, not outcomes. When the result
-contract is armed and the initial prompt carries a <code>GOAL:</code> / <code>DELIVERABLE:</code> stanza, both are
-derived automatically. The launch log names which deliverables are absent at start, so a
-misspelled path is visible before a long run rather than after it.</p>
-<p><strong>Repeat-read stall (<code>cycle.repeat_read_nudge</code>, default 3 in 6).</strong> The stall detector counts
-read-only turns; "re-reading the same file" is a sharper and earlier signature, and it is what
-pre-death loops look like. The same read-class call (tool + arguments) issued <code>n</code> times within
-<code>window</code> turns triggers one nudge naming the read — once per unique call, never a nag — and,
-when a success check is configured, the existing advisor escalation. A substantive batch
-(edit, write, exec) resets the window.</p>
-<p><strong>Classifiable exit status (<code>-a</code> / <code>-r</code> only).</strong> The process exits with a stable code and prints
-one line to stderr, <code>AGENT-EXIT: &lt;name&gt; &lt;detail&gt;</code>, so a supervisor can tell <em>completed</em> from
-<em>died-of-context</em> without parsing logs:</p>
-<div class="tbl-wrap" tabindex="0"><table>
-<thead>
-<tr>
-<th>Code</th>
-<th>Name</th>
-<th>Meaning</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>0</code></td>
-<td><code>completed</code></td>
-<td>The run finished.</td>
-</tr>
-<tr>
-<td><code>1</code></td>
-<td><code>error</code></td>
-<td>The run loop ended in an unclassified error.</td>
-</tr>
-<tr>
-<td><code>10</code></td>
-<td><code>deadline</code></td>
-<td>Wall-clock deadline stop (<code>--deadline</code>).</td>
-</tr>
-<tr>
-<td><code>11</code></td>
-<td><code>contract</code></td>
-<td>Result contract not satisfied; a synthesized <code>failed</code> result was written (<code>--result-contract</code>).</td>
-</tr>
-<tr>
-<td><code>12</code></td>
-<td><code>context</code></td>
-<td>Context exhaustion after every reduction (spill, trim, summary halving).</td>
-</tr>
-<tr>
-<td><code>13</code></td>
-<td><code>memory</code></td>
-<td>RSS crossed <code>mem.hard_mb</code>; the process exited before the OOM killer.</td>
-</tr>
-<tr>
-<td><code>14</code></td>
-<td><code>config</code></td>
-<td>Configuration error at start (unbuildable backend, unreadable schema).</td>
-</tr>
-<tr>
-<td><code>15</code></td>
-<td><code>backend</code></td>
-<td>Backend unreachable or failed after retries.</td>
-</tr>
-<tr>
-<td><code>16</code></td>
-<td><code>acceptance</code></td>
-<td><code>--job</code>: the runner re-ran the job's <code>acceptance</code> command after the agent exited and it failed, timed out, or could not be executed.</td>
-</tr>
-</tbody>
-</table></div>
-<p>Interactive sessions keep exiting <code>0</code> (or <code>2</code> on a start-up configuration error, as before).</p>
-<h3 id="declarative-jobs-and-the-acceptance-gate-job">Declarative jobs and the acceptance gate (<code>--job</code>)</h3>
-<p>A job file collects the flags a headless run needs into one reviewable artifact, and adds the
-one thing a flag cannot express: a check that runs <strong>outside</strong> the agent.</p>
-<pre tabindex="0"><code class="language-yaml">goal: One sentence. What exists after this run that does not now.
-context:    [paths to read first; the run starts with no memory]
-constraints: [what must not change; what is out of scope]
-deliverable: [path/to/thing_the_run_must_produce]
-acceptance: pytest -q tests/test_thing.py     # ONE bare command
-timebox_sec: 3600
-env_allow: [API_TOKEN]
-acceptance_timeout_sec: 300                  # optional; overrun is a failure
-refusal_max_turns: 5                         # optional; 0 disables the capability-refusal stop
-result_contract: true                        # optional; true, false, or a schema path
-</code></pre>
-<p><code>goal</code>, <code>deliverable</code> and <code>timebox_sec</code> are folded into <code>--goal</code>, <code>--deliverable</code> and
-<code>--deadline</code>; an explicit flag on the command line overrides the file, so a shared job can be
-reused with one field changed. JSON is accepted everywhere YAML is (content decides, not the
-extension) — PyYAML is optional and only needed for YAML files.</p>
-<p><strong>The gate.</strong> After the agent exits, the runner re-runs <code>acceptance</code> and <em>its</em> status is the
-verdict: a failure exits <code>16</code> no matter what the run reported. The command is also shown to the
-run, so it can check itself before finishing — but satisfying it in prose changes nothing.</p>
-<p>It fails closed. A missing binary, a timeout, and a non-zero status are all failures, because
-"the check did not run" and "the check passed" must never render the same to a supervisor. A
-command that will not parse is refused at launch rather than discovered as a dead gate an hour
-later, and so is an unknown key — a misspelled <code>acceptance</code> is a gate that never arms. If the
-run already ended with a typed hard stop (deadline, contract, context, memory, backend), that
-code is kept and the gate's failure is appended to the exit detail; <code>16</code> is reserved for a run
-that finished and whose artifact is wrong. The gate's full output goes to
-<code>.agent/acceptance-out.txt</code>; the exit line carries its last line.</p>
-<p><strong>Capability refusals end the run, bounded.</strong> A tool that exits non-zero saying the run was not
-granted something (a missing key, blocked egress, a permission, a quota) gets a one-time notice
-appended to its own result: do not build a substitute, <code>blocked</code> is the required exit. If the run
-is still calling tools <code>cycle.refusal_max_turns</code> turns later (default 5, <code>refusal_max_turns</code> in
-the job file, 0 = off), tool calls are refused and the final result is forced; a missing result
-block becomes a synthesized <code>blocked</code> record naming the tool and its exit code. Headless runs
-only; files the run merely read are never classified as refusals.</p>
-<p><strong><code>env_allow</code></strong> scrubs the environment to the listed names plus what a process needs to run
-(the interpreter's own <code>PYTHON*</code> variables among them, so a scrub never re-buffers the log a
-supervisor is reading the run through).
-Omitting the key does nothing; <code>[]</code> is a real instruction meaning <em>this job needs no
-inherited variables</em>, and the two are deliberately distinguishable.</p>
-<h3 id="claude-code-gateway-cc">Claude Code gateway (<code>-cc</code>)</h3>
-<p><code>agent.py -cc</code> stands up an Anthropic-native <code>/v1/messages</code> endpoint and points it at whichever backend <code>agent.py</code> is configured for (<code>llamacpp</code>, <code>bedrock</code>, or <code>foundry</code>). This lets <a href="https://docs.claude.com/en/docs/claude-code">Claude Code</a> — or anything that speaks the Anthropic Messages API — drive your local/self-hosted model.</p>
-<pre tabindex="0"><code class="language-bash">python agent.py -cc                      # listen on 127.0.0.1:8788
-python agent.py -cc 0.0.0.0:9000         # explicit host:port
-python agent.py -cc --backend-main bedrock   # forward to a different backend
-</code></pre>
-<p>Then point Claude Code at it:</p>
-<pre tabindex="0"><code class="language-bash">export ANTHROPIC_BASE_URL=http://localhost:8788
-export ANTHROPIC_API_KEY=dummy           # any non-empty value; the gateway ignores it
-claude
-</code></pre>
-<p>How it works:</p>
-<ul>
-<li>It is a <strong>stateless translator</strong> — Anthropic Messages in, OpenAI chat-completions to the backend, and the streamed reply translated back to Anthropic SSE. Tool definitions, <code>tool_use</code>/<code>tool_result</code> blocks, images, and streaming tool calls are all converted in both directions.</li>
-<li>Claude Code runs its <strong>own</strong> agentic loop and resends the full conversation each turn, so the gateway bypasses <code>agent.py</code>'s session pipeline (no checkpointing, summarization, or cycle limits) and forces a fresh backend conversation per request.</li>
-<li>The model id Claude Code sends is ignored; requests always go to the configured main backend's model. Gemma <code>&lt;think&gt;</code> reasoning is suppressed so it doesn't surface as message content.</li>
-<li><code>GET /health</code> reports backend reachability; <code>POST /v1/messages/count_tokens</code> returns an estimate.</li>
-</ul>
-<p><strong>Resilience for slow/flaky backends.</strong> If the backend cuts a stream <em>after</em> tokens have started flowing (e.g. a Bedrock proxy behind an API Gateway with a ~29s timeout), the gateway closes the turn cleanly with <code>stop_reason: max_tokens</code> instead of letting the client see "stream ended prematurely". If the backend fails <em>before</em> any content reaches the client, the gateway retries with backoff (only then — once tokens stream, retrying would duplicate output). Tunable via env vars:</p>
-<div class="tbl-wrap" tabindex="0"><table>
-<thead>
-<tr>
-<th>Variable</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>CC_GATEWAY_MAX_RETRIES</code></td>
-<td><code>2</code></td>
-<td>Retries when the backend fails before producing any content. Each retry can cost up to one read-timeout, so keep it small. <code>0</code> disables.</td>
-</tr>
-<tr>
-<td><code>CC_GATEWAY_RETRY_BASE_DELAY</code></td>
-<td><code>1.0</code></td>
-<td>Initial backoff (seconds); doubles each retry.</td>
-</tr>
-<tr>
-<td><code>CC_GATEWAY_RETRY_MAX_DELAY</code></td>
-<td><code>8.0</code></td>
-<td>Cap on backoff (seconds).</td>
-</tr>
-<tr>
-<td><code>CC_GATEWAY_CONNECT_TIMEOUT</code></td>
-<td><code>30</code></td>
-<td>Connect timeout to the backend (seconds).</td>
-</tr>
-<tr>
-<td><code>CC_GATEWAY_READ_TIMEOUT</code></td>
-<td><code>600</code></td>
-<td>Read timeout — a slow backend can hold the stream this long.</td>
-</tr>
-<tr>
-<td><code>AGENT_FOLD_SYSTEM</code></td>
-<td><code>auto</code></td>
-<td>Workaround for backends that silently drop <code>role:"system"</code>. <code>auto</code> probes the backend once (~20 tokens, ~1.5s) and caches the result per <code>(base_url, model)</code> for 7 days; <code>always</code> folds without probing; <code>never</code> disables. Applies to both <code>-cc</code> and the main agent loop.</td>
-</tr>
-<tr>
-<td><code>AGENT_CACHE_DIR</code></td>
-<td><code>~/.cache/agent</code></td>
-<td>Where the probe result is cached (<code>backend_caps.json</code>).</td>
-</tr>
-</tbody>
-</table></div>
-<h3 id="measuring-context-estimator-drift-scriptsmeasure_token_driftpy">Measuring context-estimator drift (<code>scripts/measure_token_drift.py</code>)</h3>
-<p>The context budget is sized by <code>token_utils</code>, which counts with a fixed tokenizer. The server
-may be serving a different model family, so that count is a guess about someone else's
-vocabulary. <code>_update_token_calibration</code> corrects for it at runtime from the <code>prompt_tokens</code>
-every streamed turn reports; this script tells you how large the error is, per content class.</p>
-<pre tabindex="0"><code>python3 scripts/measure_token_drift.py --n-ctx 196608     # human-readable
-python3 scripts/measure_token_drift.py --json             # machine-readable
-</code></pre>
-<p>It needs a <strong>live server</strong> — there is no mock answer to "what does the server actually count?"
-Read <code>ratio = actual / estimated</code>: above 1.0 the server counts more than we estimated and the
-budget is too large (the overflow direction); below 1.0 the guess is conservative and leaves
-window unused. <strong>Report the spread, not the mean.</strong> A uniform ratio is a constant the budget
-absorbs; a content-dependent one averages away on paper and bites on the worst input.</p>
-<p>A measured example, to calibrate expectations before assuming a tokenizer mismatch is the
-problem: against a 27B model served by a very different tokenizer, the mean ratio was 0.944
-with a 0.847-1.022 spread — conservative on four of five classes and under-estimating prose by
-only 2.2% (about +4.3k tokens on a 196k window). The chat template cost a fixed 45 tokens plus
-5 per message, which the text estimate does not count at all — under 1% of that window even in
-a long conversation. <strong>The wrong-tokenizer hazard is real but small and mostly safe-signed;
-bulk tool output pasted into context is the failure that actually overflows windows</strong>, which is
-why output spilling exists. Re-run this after any model swap rather than carrying the numbers.</p>
-<h3 id="backends-that-silently-drop-system-messages">Backends that silently drop <code>system</code> messages</h3>
-<p>Some OpenAI-compatible gateways accept a <code>role:"system"</code> message, return HTTP 200,
-and never show it to the model — no error, no warning. The symptom is an agent that
-appears to ignore its instructions. This was measured against a Bedrock proxy behind
-API Gateway, where a 9-word system prompt is dropped exactly like a 6000-token one
-(<code>developer</code> too); the likely cause is that Bedrock's <code>Converse</code> API takes <code>system</code>
-as a top-level parameter rather than a message role, so it is lost in translation.</p>
-<p>When <code>AGENT_FOLD_SYSTEM=auto</code> (the default), the backend is probed once and, if it
-drops <code>system</code>, system content is merged into the following user message — which
-every backend delivers. Backends that honour <code>system</code> (e.g. local llama.cpp) are
-left untouched.</p>
-<p>The probe <strong>fails safe</strong>: any error, timeout or ambiguous reply folds. Folding a
-backend that works is harmless; not folding one that drops <code>system</code> silently
-discards the entire system prompt.</p>
-<p>This is a workaround — the durable fix is server-side. The 7-day cache TTL means a
-server-side fix is picked up automatically without a config change.</p>
-<p>These mitigate transient failures but cannot make a turn that genuinely needs longer than the backend's hard timeout <em>complete</em> — that requires fixing the backend (e.g. streaming via a Lambda Function URL instead of API Gateway).</p>
-<p>Implemented in <code>cc_gateway.py</code>; requires <code>fastapi</code> + <code>uvicorn</code> (already in <code>requirements.txt</code>).</p>
 <h3 id="interactive-tui">Interactive TUI</h3>
 <p>The default TUI (<code>prompt_toolkit</code>) provides:</p>
 <ul>
@@ -409,7 +143,7 @@ server-side fix is picked up automatically without a config change.</p>
 <li><strong>Input history</strong> navigable with ↑ / ↓</li>
 <li><strong>Key bindings</strong>: <code>Enter</code> submits, <code>Ctrl-N</code> inserts a literal newline</li>
 <li><strong>Resize reflow</strong>: when the window size settles after a resize, the session so far (the last 5,000 lines) is reprinted for the new width, with tool status rows shortened or restored to fit. This clears the terminal's scrollback, including anything above the agent. Live-input mode only (the default).</li>
-<li><strong>Live input</strong>: a line typed while a turn is running is delivered to the model at the next turn boundary. A slash command typed then (<code>/model main NAME</code>, <code>/verbose</code>) is held and run when the turn's tool burst ends, never handed to the model as text. <code>esc·esc</code> cancels the running turn; <code>exit</code> quits.</li>
+<li><strong>Live input</strong>: a line typed while a turn is running is delivered to the model at the next turn boundary. A slash command typed then (<code>/model main NAME</code>, <code>/verbose</code>) is held and run when the turn's tool burst ends, never handed to the model as text. <code>esc·esc</code> cancels the running turn; <code>exit</code> quits. <code>interactive.live_input: false</code> in the config turns this mode off.</li>
 </ul>
 <p>Falls back to plain <code>input()</code> automatically if <code>prompt_toolkit</code> isn't installed.</p>
 <h3 id="slash-commands">Slash commands</h3>
@@ -450,8 +184,16 @@ server-side fix is picked up automatically without a config change.</p>
 <td>Show, set or clear your own system prompt (<code>preferences.system_prompt</code>). <code>/system &lt;text&gt;</code> puts the text first in the system message of every request, ahead of the agent's own lines, and persists it to <code>.agent/config.json</code>; it applies from the next request. <code>/system clear</code> removes it. <code>Ctrl-N</code> adds a line break for a multi-line prompt.</td>
 </tr>
 <tr>
+<td><code>/tools [list\|search WORDS\|load NAMES\|core NAME\|defer NAME\|hide NAME] [--save]</code></td>
+<td>The lazy-tool tiers. <code>list</code> (the default) shows every tool's tier and the schema tokens the model currently sees; <code>search</code> finds tools by keyword; <code>load</code> adds tools to the session's list; <code>core</code>, <code>defer</code> and <code>hide</code> move a tool between tiers for this session, or for good with <code>--save</code>, which writes the <a href="config-reference.html#tools"><code>tools</code></a> block.</td>
+</tr>
+<tr>
 <td><code>/agent</code></td>
 <td>Scaffold an autonomous-agent identity here: type (six-phase/worker/minimal) then name, an AGENT.md/CLAUDE.md generated from the live config (real model table, advisor guidance, measured context), git provisioning when the folder isn't a repo (init / GitHub via <code>gh</code> / clone-it-yourself), and a finalizing <code>C0</code> init commit.</td>
+</tr>
+<tr>
+<td><code>/phase</code></td>
+<td>For a six-phase scaffolded agent: print which of PERCEIVE, PROBE, DECIDE, PLAN, IMPLEMENT, VERIFY and TRACK have a <code>done</code> task in the task tracker this cycle.</td>
 </tr>
 <tr>
 <td><code>/alias</code></td>
@@ -462,16 +204,13 @@ server-side fix is picked up automatically without a config change.</p>
 <td>Toggle compact vs. full tool-result output.</td>
 </tr>
 <tr>
-<td><code>/tools [N\|all]</code></td>
-<td>Show buffered tool calls with a one-line result preview.</td>
-</tr>
-<tr>
 <td><code>exit</code> / <code>quit</code></td>
 <td>End the session.</td>
 </tr>
 </tbody>
 </table></div>
 <h3 id="environment-variables">Environment variables</h3>
+<p>Settings that belong to the machine or the launch rather than the project live in the environment. Everything about the project is in <a href="config-reference.html"><code>config.json</code></a>.</p>
 <div class="tbl-wrap" tabindex="0"><table>
 <thead>
 <tr>
@@ -485,24 +224,12 @@ server-side fix is picked up automatically without a config change.</p>
 <td>Disable all terminal colors and cursor escapes (also active when stdout is not a TTY).</td>
 </tr>
 <tr>
-<td><code>BEDROCK_API_URL</code></td>
-<td>Bedrock gateway URL — fallback when the keystore has no <code>up</code> entries.</td>
-</tr>
-<tr>
-<td><code>BEDROCK_API_KEY</code></td>
-<td>Bedrock API key — fallback.</td>
-</tr>
-<tr>
-<td><code>AGENT_BEDROCK_STORE</code></td>
-<td>Override path to the <code>bedrock_creds.json</code> keystore.</td>
-</tr>
-<tr>
-<td><code>BEDROCK_DAILY_CAP_USD</code></td>
-<td>Combined daily spend cap across roles (default <code>$10</code> main, <code>$1</code> summary).</td>
-</tr>
-<tr>
 <td><code>AGENT_HEALTH_TIMEOUT</code></td>
 <td>Seconds to wait for the startup backend health probe (default <code>10</code>). Raise it for cold-start endpoints (e.g. AWS API Gateway/Lambda) that are slow on the first request.</td>
+</tr>
+<tr>
+<td><code>AGENT_TOKENIZER</code></td>
+<td>A Hugging Face tokenizer id matching the served model, for exact token counts (needs <code>transformers</code>). Unset, a conservative character-based estimate is used and corrected at runtime from the server's own <code>prompt_tokens</code>.</td>
 </tr>
 <tr>
 <td><code>AGENT_BASH_EXE</code></td>
@@ -513,8 +240,20 @@ server-side fix is picked up automatically without a config change.</p>
 <td>Build the scriptable in-process fake backend instead of any configured kind (tests, control-flow reproduction; never opens a socket). See <a href="configurations.html#hosted-backends">configurations</a>.</td>
 </tr>
 <tr>
-<td><code>AGENT_CTX_SPILL_THRESHOLD</code></td>
-<td>Chars above which a tool result is spilled to a file during context-overflow recovery (default <code>4000</code>, halving per pass to <code>1000</code>).</td>
+<td><code>AGENT_MONITORS_FILE</code></td>
+<td>Where persistent monitors are saved (default <code>.agent/monitors.json</code>). See <a href="config-reference.html#the-monitors-file">the monitors file</a>.</td>
+</tr>
+<tr>
+<td><code>AGENT_ALLOW_CATASTROPHIC=1</code></td>
+<td>Switch off the always-on guard against system-destroying commands; the config key <a href="config-reference.html#allow_catastrophic_commands"><code>allow_catastrophic_commands</code></a> does the same per project.</td>
+</tr>
+<tr>
+<td><code>MAX_EXTRA_TOOLS</code></td>
+<td>Cap on how many agent-written tools from <code>.agent/tools/</code> load (default <code>0</code>, no cap).</td>
+</tr>
+<tr>
+<td><code>AGENT_DEBUG_PAYLOAD</code></td>
+<td>Dump every request and response to the model: <code>1</code>, <code>true</code> or <code>stderr</code> pretty-prints to stderr; any other value is a file path that receives JSON lines.</td>
 </tr>
 <tr>
 <td><code>AGENT_STALL_TIMEOUT_S</code></td>
@@ -525,15 +264,81 @@ server-side fix is picked up automatically without a config change.</p>
 <td>Prompt-processing rate, in tokens per second, the backend is known to beat (default <code>500</code>). The stall budget becomes <code>max(base, estimated_prompt_tokens / floor)</code>; a 39k-token prompt at 500 t/s gets 78 s. Lower it for a slow CPU backend.</td>
 </tr>
 <tr>
-<td><code>AGENT_PRUNE_OLD_THINKING</code></td>
-<td><code>0</code> keeps every assistant turn's stored thinking blocks in the checkpoint file; by default only the newest turn's are saved (the rest was half of a 1.25 MB checkpoint written every turn). This concerns the checkpoint only: within a run every stored block is sent back on every request, because Opus 4.5+, Sonnet 4.6+ and Haiku 5.5 keep prior turns' thinking in the cached prefix and a turn sent without a block it had before is a cache miss from there on. After a <code>-c</code> resume the pruned turns simply have no thinking, consistently.</td>
+<td><code>AGENT_STALL_RETRIES</code></td>
+<td>How many times a stalled turn is retried with an escalating sampling override before the cycle gives up on it (default <code>2</code>). The override clears once a turn streams normally.</td>
+</tr>
+<tr>
+<td><code>AGENT_CTX_SPILL_THRESHOLD</code></td>
+<td>Chars above which a tool result is spilled to a file during context-overflow recovery (default <code>4000</code>, halving per pass to <code>1000</code>).</td>
 </tr>
 <tr>
 <td><code>AGENT_COMPRESS_PRESSURE_FRAC</code></td>
 <td>Fraction of the context window (estimated prompt tokens / <code>ctx_size</code>) above which older repeated tool results are compressed in place (default <code>0.70</code>). Below it nothing in the history is rewritten: an in-place rewrite invalidates a prompt-caching server's key-value cache from that point on, and costs a full prefill on the next turn.</td>
 </tr>
+<tr>
+<td><code>AGENT_PRUNE_OLD_THINKING</code></td>
+<td><code>0</code> keeps every assistant turn's stored thinking blocks in the checkpoint file; by default only the newest turn's are saved (the rest was half of a 1.25 MB checkpoint written every turn). This concerns the checkpoint only: within a run every stored block is sent back on every request, because Opus 4.5+, Sonnet 4.6+ and Haiku 5.5 keep prior turns' thinking in the cached prefix and a turn sent without a block it had before is a cache miss from there on. After a <code>-c</code> resume the pruned turns simply have no thinking, consistently.</td>
+</tr>
+<tr>
+<td><code>AGENT_MEM_WARN_MB</code>, <code>AGENT_MEM_HARD_MB</code></td>
+<td>Resident-size thresholds in MB (defaults <code>8192</code> and <code>12288</code>): a warning in the log past the first, a clean exit with the <code>memory</code> code past the second. See <a href="headless.html#memory-ceiling">Headless runs</a>.</td>
+</tr>
+<tr>
+<td><code>AGENT_DISABLE_MEM_TRIM=1</code></td>
+<td>Skip the per-turn <code>gc</code> and <code>malloc_trim</code> (for measuring their effect).</td>
+</tr>
+<tr>
+<td><code>AGENT_FOLD_SYSTEM</code>, <code>AGENT_CACHE_DIR</code></td>
+<td>The workaround for backends that drop <code>system</code> messages, and where its probe result is cached. See <a href="claude-code-gateway.html#backends-that-silently-drop-system-messages">Claude Code gateway</a>; it applies to the main loop as well.</td>
+</tr>
+<tr>
+<td><code>CC_GATEWAY_*</code></td>
+<td>Retry and timeout settings of the Claude Code gateway, on <a href="claude-code-gateway.html#resilience-for-slow-or-flaky-backends">its page</a>.</td>
+</tr>
+<tr>
+<td><code>AGENTPY_TELEMETRY=1</code></td>
+<td>Export OTLP metrics (needs the <code>opentelemetry</code> packages; without them a warning and no metrics). <code>AGENTPY_TELEMETRY_OTLP_ENDPOINT</code> (default <code>http://localhost:9090/api/v1/otlp/v1/metrics</code>, a Prometheus OTLP receiver), <code>AGENTPY_TELEMETRY_JOB</code> (service name, default <code>agentpy</code>), <code>AGENTPY_TELEMETRY_INSTANCE</code> (default <code>&lt;host&gt;-&lt;folder&gt;</code>, set it when several agents run from one folder) and <code>AGENTPY_TELEMETRY_VERBOSE=1</code> (adds per-turn histograms).</td>
+</tr>
+<tr>
+<td><code>AICOMMONS_BASE_URL</code>, <code>AICOMMONS_API_KEY</code>, <code>AICOMMONS_MODEL_CATALOG</code></td>
+<td>The AI Commons gateway's credentials and model catalog, on <a href="aicommons.html#credentials">its page</a>.</td>
+</tr>
+<tr>
+<td><code>BEDROCK_API_URL</code>, <code>BEDROCK_API_KEY</code></td>
+<td>Legacy Bedrock gateway URL and key — fallback when the keystore has no <code>up</code> entries.</td>
+</tr>
+<tr>
+<td><code>AGENT_BEDROCK_STORE</code></td>
+<td>Override path to the <code>bedrock_creds.json</code> keystore (shared with AI Commons).</td>
+</tr>
+<tr>
+<td><code>BEDROCK_DAILY_CAP_USD</code></td>
+<td>Combined daily spend cap across roles on the legacy backend (default <code>$10</code> main, <code>$1</code> summary).</td>
+</tr>
 </tbody>
 </table></div>
+<p><code>AGENT_BACKEND_OVERRIDES</code> and <code>AGENT_SUBAGENT_ARGS</code> are set by the agent for its own subagents and are not meant to be set by hand.</p>
+<h3 id="measuring-context-estimator-drift-scriptsmeasure_token_driftpy">Measuring context-estimator drift (<code>scripts/measure_token_drift.py</code>)</h3>
+<p>The context budget is sized by <code>token_utils</code>, which counts with a fixed tokenizer. The server
+may be serving a different model family, so that count is a guess about someone else's
+vocabulary. <code>_update_token_calibration</code> corrects for it at runtime from the <code>prompt_tokens</code>
+every streamed turn reports; this script tells you how large the error is, per content class.</p>
+<pre tabindex="0"><code>python3 scripts/measure_token_drift.py --n-ctx 196608     # human-readable
+python3 scripts/measure_token_drift.py --json             # machine-readable
+</code></pre>
+<p>It needs a <strong>live server</strong> — there is no mock answer to "what does the server actually count?"
+Read <code>ratio = actual / estimated</code>: above 1.0 the server counts more than we estimated and the
+budget is too large (the overflow direction); below 1.0 the guess is conservative and leaves
+window unused. <strong>Report the spread, not the mean.</strong> A uniform ratio is a constant the budget
+absorbs; a content-dependent one averages away on paper and bites on the worst input.</p>
+<p>A measured example, to calibrate expectations before assuming a tokenizer mismatch is the
+problem: against a 27B model served by a very different tokenizer, the mean ratio was 0.944
+with a 0.847-1.022 spread — conservative on four of five classes and under-estimating prose by
+only 2.2% (about +4.3k tokens on a 196k window). The chat template cost a fixed 45 tokens plus
+5 per message, which the text estimate does not count at all — under 1% of that window even in
+a long conversation. <strong>The wrong-tokenizer hazard is real but small and mostly safe-signed;
+bulk tool output pasted into context is the failure that actually overflows windows</strong>, which is
+why output spilling exists. Re-run this after any model swap rather than carrying the numbers.</p>
     <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
   </main>
 </div>

@@ -28,13 +28,14 @@
   </nav>
 </div></header>
 <div class="wrap">
-  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="setup-wizard.html">Setup wizard — /setup</a></li><li><a href="cli.html">CLI and usage</a></li><li><a href="job-contract.html">The job contract — running agent.py as a verifiable worker</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="config-reference.html" aria-current="page">Config reference</a></li><li><a href="how-it-works.html">How it works</a></li><li><a href="agent-scaffold.html">Agent scaffold — /agent</a></li><li><a href="models.html">Recommended models</a></li><li><a href="aicommons.html">AI Commons backend</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="setup-wizard.html">Setup wizard — /setup</a></li><li><a href="cli.html">CLI and usage</a></li><li><a href="headless.html">Headless runs</a></li><li><a href="job-contract.html">The job contract — running agent.py as a verifiable worker</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="config-reference.html" aria-current="page">Config reference</a></li><li><a href="how-it-works.html">How it works</a></li><li><a href="agent-scaffold.html">Agent scaffold — /agent</a></li><li><a href="models.html">Recommended models</a></li><li><a href="aicommons.html">AI Commons backend</a></li><li><a href="bedrock.html">Bedrock backend</a></li><li><a href="claude-code-gateway.html">Claude Code gateway (-cc)</a></li></ul></aside>
   <main id="main">
     <p class="eyebrow">Config reference</p>
 <h1>Config reference</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/config-reference.md"><code>docs/config-reference.md</code></a> · last changed 2026-11-11 (c880f92)</p>
-<p>Every key the agent reads from its config file, with its default. All sections are optional; omitted keys use the defaults below. <strong>You rarely need to write this by hand</strong>: the <a href="setup-wizard.html"><code>/setup</code> wizard</a> writes and calibrates it for you from live probes of your endpoints. For whole setups rather than single keys, see <a href="configurations.html">Configurations</a>.</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/config-reference.md"><code>docs/config-reference.md</code></a> · last changed 2026-11-11 (3df643d)</p>
+<p>Every key the agent reads from its config file, with its default. All sections are optional; omitted keys use the defaults below. <strong>You rarely need to write this by hand</strong>: the <a href="setup-wizard.html"><code>/setup</code> wizard</a> writes and calibrates it for you from live probes of your endpoints. For whole setups rather than single keys, see <a href="configurations.html">Configurations</a>; for what a headless run's keys do together, see <a href="headless.html">Headless runs</a>.</p>
 <p>The agent looks for <code>.agent/config.json</code> first, then falls back to <code>config.json</code> in the working directory (wherever you run <code>agent.py</code> from). Putting it under <code>.agent/</code> keeps your local, key-bearing config alongside the other runtime files. When you run inside a git repo, the agent best-effort adds <code>.agent/</code> and <code>config.json</code> to <code>.gitignore</code> so your config (which may hold API keys) and runtime state never get committed. Outside a repo it leaves the directory untouched.</p>
+<p>Sections, in the order a config file usually grows: <a href="#backends"><code>backends</code></a> · <a href="#generation"><code>generation</code></a> · <a href="#think"><code>think</code></a> · <a href="#context"><code>context</code></a> · <a href="#cycle"><code>cycle</code></a> · <a href="#limits"><code>limits</code></a> · <a href="#retry"><code>retry</code></a> · <a href="#advisor"><code>advisor</code></a> · <a href="#subagent"><code>subagent</code></a> · <a href="#bedrock"><code>bedrock</code></a> · <a href="#preferences"><code>preferences</code></a> · <a href="#tools"><code>tools</code></a> · <a href="#command_guards"><code>command_guards</code></a> · <a href="#allow_catastrophic_commands"><code>allow_catastrophic_commands</code></a> · <a href="#interactive"><code>interactive</code></a> · <a href="#log_dir-and-log_prefix"><code>log_dir</code>, <code>log_prefix</code></a> · <a href="#env"><code>env</code></a> · <a href="#bootstrap"><code>bootstrap</code></a> · <a href="#llamacpp"><code>llamacpp</code></a> · <a href="#the-monitors-file">the monitors file</a> · <a href="#full-example">full example</a>. Environment variables are on the <a href="cli.html#environment-variables">CLI page</a>.</p>
 <h2 id="backends"><code>backends</code></h2>
 <p>Preferred shape. Replaces the legacy <code>llm</code> / <code>summary</code> flat blocks (which still work — they are synthesized into <code>backends</code> at load time).</p>
 <pre tabindex="0"><code class="language-json">{
@@ -67,7 +68,7 @@
 <tr>
 <td><code>kind</code></td>
 <td><code>"llamacpp"</code></td>
-<td>Backend type: <code>"llamacpp"</code> (any OpenAI-compatible server), <code>"aicommons"</code>, <code>"foundry"</code>, or <code>"bedrock"</code> (legacy).</td>
+<td>Backend type: <code>"llamacpp"</code> (any OpenAI-compatible server), <code>"aicommons"</code>, <code>"foundry"</code>, <code>"bedrock"</code> (legacy) or <code>"fake"</code> (the in-process test backend, see <a href="configurations.html#hosted-backends">Configurations</a>).</td>
 </tr>
 <tr>
 <td><code>base_url</code></td>
@@ -94,11 +95,17 @@
 <td><code>true</code> (main) / <code>true</code> (summary)</td>
 <td>Set <code>false</code> to disable the summary backend entirely.</td>
 </tr>
+<tr>
+<td><code>effort</code></td>
+<td>—</td>
+<td>Reasoning effort for this role (<code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, <code>max</code>) on backends that take one. <code>/effort</code> writes it.</td>
+</tr>
 </tbody>
 </table></div>
-<p>For <strong>AI Commons</strong> keys (credentials, effort, quota) see <a href="aicommons.html">AI Commons</a>. For legacy <strong>Bedrock</strong> keys (<code>api_url</code>, spend caps, keystore) see <a href="bedrock.html">Bedrock</a>.</p>
+<p><strong>Legacy <code>llm</code> and <code>summary</code> blocks.</strong> <code>llm.base_url</code>, <code>llm.model</code>, <code>summary.base_url</code>, <code>summary.model</code>, <code>summary.enabled</code> and <code>summary.max_wait_on_save</code> (<code>10</code>: seconds the checkpoint waits for a running summary before saving without it) are still read and mapped onto <code>backends.main</code> and <code>backends.summary</code>. New configs should use <code>backends</code>.</p>
+<p>For <strong>AI Commons</strong> keys (the top-level <code>aicommons</code> block: credentials, effort, thinking, quota, <code>max_context_tokens</code>) see <a href="aicommons.html">AI Commons</a>. For legacy <strong>Bedrock</strong> keys (<code>api_url</code>, spend caps, keystore) see <a href="bedrock.html">Bedrock</a>.</p>
 <h2 id="generation"><code>generation</code></h2>
-<p>Inference parameters forwarded to the LLM on every request.</p>
+<p>Inference parameters forwarded to the LLM on every request. <code>--temperature</code>, <code>--top-p</code> and <code>--seed</code> override them for one run.</p>
 <div class="tbl-wrap" tabindex="0"><table>
 <thead>
 <tr>
@@ -134,6 +141,11 @@
 <td>Penalise tokens already present in context.</td>
 </tr>
 <tr>
+<td><code>seed</code></td>
+<td><code>null</code></td>
+<td>Sampling seed for reproducible runs; <code>null</code> is the server's own default. Honoured by llama.cpp; a backend without a seed warns once and ignores it.</td>
+</tr>
+<tr>
 <td><code>enable_thinking</code></td>
 <td><code>false</code></td>
 <td>Whether the <strong>main loop</strong> may emit thinking. Default <code>false</code>: the design is no-thinking-in-main plus the opt-in <a href="#think"><code>think</code> tool</a>, so the model reasons hard only when it chooses to. Set <code>true</code> to let the main model think on every turn (bounded by <code>max_tokens</code>; the <code>think</code> tool stays available either way). On tasks a capable model handles, <code>true</code> is measurably slower (~2–6×) for no accuracy gain — reach for it on genuinely hard tasks, not as a default. Requires a thinking-capable model/server (e.g. Qwen3 with <code>llama-server --reasoning</code>).</td>
@@ -165,6 +177,11 @@
 <td><code>depths.deep</code></td>
 <td><code>16384</code></td>
 <td><code>max_tokens</code> for a <code>deep</code> think — rarely needed.</td>
+</tr>
+<tr>
+<td><code>system_prompt</code></td>
+<td>unset</td>
+<td>Sent as the system turn of every <code>think</code> call. Leave it unset unless your model's chat template needs a trigger token there to start thinking; by default thinking is switched on through the template and nothing model-specific is sent.</td>
 </tr>
 </tbody>
 </table></div>
@@ -238,7 +255,8 @@
 </tbody>
 </table></div>
 <h2 id="cycle"><code>cycle</code></h2>
-<p>Per-session run limits.</p>
+<p>Per-session run limits, the two verification gates, and the controls a headless run uses. <a href="headless.html">Headless runs</a> explains how the headless keys work together.</p>
+<h3 id="turn-limits">Turn limits</h3>
 <div class="tbl-wrap" tabindex="0"><table>
 <thead>
 <tr>
@@ -267,6 +285,114 @@
 <td><code>max_total_nudges</code></td>
 <td><code>6</code></td>
 <td>Total auto-nudges allowed before giving up (requires <code>preferences.nudge</code> or <code>--nudge</code>).</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="verification-gates">Verification gates</h3>
+<p>These are the "success check" and "claim guard" that <a href="how-it-works.html#guardrails">How it works</a> and the escalation policy refer to. Both are off unless set.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>success_check</code></td>
+<td>unset</td>
+<td>A shell command that must exit <code>0</code> before the model may end a cycle (180 s timeout). It is shown to the model in the system prompt. When the model stops with a text-only completion or calls <code>end_cycle</code>, the command runs: a non-zero exit turns the stop back with a correction, at most three times per cycle. The gate stands down past the deadline, on a capability-refusal stop, and when the final result block says <code>blocked</code>, <code>failed</code> or <code>cannot-tell</code>, so a run is never asked to fake a pass for a check it has already said it cannot honestly satisfy. A passing check also counts as verification for the claim guard below.</td>
+</tr>
+<tr>
+<td><code>grind_elapsed_s</code></td>
+<td><code>0</code></td>
+<td>With a success check set: run it once at this many seconds of wall-clock, as well as at 70% of the turn budget, and if it still fails and nothing has been edited for <code>grind_no_progress_turns</code>, suggest the advisor (the <em>grind</em> signal). <code>0</code> leaves only the turn trigger; a headless run with a deadline defaults this to half the deadline.</td>
+</tr>
+<tr>
+<td><code>grind_no_progress_turns</code></td>
+<td><code>4</code></td>
+<td>Turns without a file edit or command that make a failing check count as grinding rather than slow. <code>0</code> disables that condition.</td>
+</tr>
+<tr>
+<td><code>claim_trace_max_blocks</code></td>
+<td><code>0</code></td>
+<td>The claim guard. A final message that says tests were run or verified while no verification command ran this session, or that a commit was made while none was, is turned back with a correction, up to this many times per cycle. <code>0</code> is off; the <a href="setup-wizard.html#the-checklist"><code>/setup</code> wizard</a> writes <code>2</code> when you tick the claim guard. Story prose can read as a claim, which is why it is off by default.</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="headless-controls">Headless controls</h3>
+<p>Each of these has a flag of the same meaning; the flag wins. See <a href="headless.html">Headless runs</a>.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>deadline_s</code></td>
+<td><code>0</code></td>
+<td>Wall-clock budget for the run in seconds; <code>0</code> is off. <code>--deadline</code> overrides it. At the deadline tool calls are refused and the final result is forced (exit <code>10</code>).</td>
+</tr>
+<tr>
+<td><code>deadline_warn_fracs</code></td>
+<td><code>[0.6, 0.8, 0.92]</code></td>
+<td>Fractions of the deadline at which the model is warned, through the wind-down channel.</td>
+</tr>
+<tr>
+<td><code>refusal_max_turns</code></td>
+<td><code>5</code></td>
+<td>Headless only. After a tool result says the run was never granted something it needs (a key, egress, a permission), tool calls are refused this many turns later and the final result is forced, the same way the deadline does. <code>0</code> is off.</td>
+</tr>
+<tr>
+<td><code>result_contract</code></td>
+<td><code>false</code></td>
+<td><code>false</code> leaves <code>--result-file</code> as raw text; <code>true</code> requires the final message to end with a fenced JSON block carrying <code>"contract": 1</code> that validates against the built-in schema; a path names a JSON schema file. <code>--result-contract</code> / <code>--result-schema</code> override it.</td>
+</tr>
+<tr>
+<td><code>result_contract_max_blocks</code></td>
+<td><code>2</code></td>
+<td>How many times a missing or invalid result block redirects the exit before a synthesized <code>{"status": "failed"}</code> record is written (exit <code>11</code>).</td>
+</tr>
+<tr>
+<td><code>goal</code></td>
+<td><code>""</code></td>
+<td>The run's stated goal, injected as an anchor at <code>goal_anchor_fracs</code>. <code>--goal</code> overrides it. Derived from a <code>GOAL:</code> stanza in the prompt when the result contract is armed.</td>
+</tr>
+<tr>
+<td><code>deliverables</code></td>
+<td><code>[]</code></td>
+<td>Paths or globs the run must produce. A final <code>done</code> while one is absent draws a correction. <code>--deliverable</code> (repeatable) overrides it; derived from a <code>DELIVERABLE:</code> stanza when the result contract is armed.</td>
+</tr>
+<tr>
+<td><code>goal_anchor_fracs</code></td>
+<td><code>[0.5, 0.8]</code></td>
+<td>Fractions of the deadline (or of the turn budget without one) at which the goal anchor is injected.</td>
+</tr>
+<tr>
+<td><code>repeat_read_nudge</code></td>
+<td><code>{"n": 3, "window": 6}</code></td>
+<td>The same read-class call (tool plus arguments) repeated <code>n</code> times within <code>window</code> turns draws one nudge naming the read, once per unique call.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="limits"><code>limits</code></h2>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tool_result_max_chars</code></td>
+<td><code>20000</code></td>
+<td>A tool result, or an initial prompt, over this many characters is written to <code>.agent/spill/</code> and replaced in the conversation by a reference with a head/tail excerpt, lossless. <code>0</code> keeps the legacy head/tail truncation only. The files attached to a first message (<code>@AGENT.md</code>) are never spilled with it.</td>
 </tr>
 </tbody>
 </table></div>
@@ -356,6 +482,11 @@ best thing available for the rare hard sub-problem, so the fast model keeps the 
 <td>Bearer token, if the endpoint needs one.</td>
 </tr>
 <tr>
+<td><code>kind</code></td>
+<td><code>"llamacpp"</code></td>
+<td>Backend type, as for <code>backends</code>; <code>"aicommons"</code> puts the advisor on the gateway.</td>
+</tr>
+<tr>
 <td><code>prefill_token_budget</code></td>
 <td><code>1500</code></td>
 <td>Hard ceiling on the brief handed to the advisor (see below).</td>
@@ -373,7 +504,7 @@ best thing available for the rare hard sub-problem, so the fast model keeps the 
 <tr>
 <td><code>timeout_s</code></td>
 <td><code>900</code></td>
-<td>Per-consultation timeout.</td>
+<td>Per-consultation timeout. Unset, it is derived from the budgets and the measured speed (<code>/setup calibrate</code>).</td>
 </tr>
 </tbody>
 </table></div>
@@ -389,6 +520,29 @@ tool registry, so the model never sees a tool it cannot use and never wastes tur
 server that is not running.</p>
 <p>See <a href="configurations.html">Configurations</a> for the full three-tier setup, and
 <a href="models.html">Recommended models</a> for what to run as the advisor.</p>
+<h2 id="subagent"><code>subagent</code></h2>
+<p>What a child agent started by the <code>subagent</code> tool runs on. A subagent inherits the parent's <code>--backend-main</code> / <code>--backend-summary</code> choices; these two keys give it a cheaper tier, since each one starts with a cold prompt cache anyway.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>model</code></td>
+<td>the parent's</td>
+<td>Passed to the child as <code>--model</code>.</td>
+</tr>
+<tr>
+<td><code>effort</code></td>
+<td>the parent's</td>
+<td>Passed to the child as <code>--effort</code>.</td>
+</tr>
+</tbody>
+</table></div>
 <h2 id="bedrock"><code>bedrock</code></h2>
 <p>Legacy Bedrock tuning (only relevant when <code>backends.main.kind</code> or <code>backends.summary.kind</code> is <code>"bedrock"</code>).</p>
 <div class="tbl-wrap" tabindex="0"><table>
@@ -567,6 +721,100 @@ server that is not running.</p>
 }
 </code></pre>
 <p>Guards fire after the built-in hallucination guards (<code>/home/user</code>, <code>python</code>→<code>python3</code>) but before the command runs.</p>
+<h2 id="allow_catastrophic_commands"><code>allow_catastrophic_commands</code></h2>
+<p>A top-level boolean, default <code>false</code>. Separate from <code>command_guards</code>, an always-on guard in <code>exec_command</code> blocks the unambiguous system destroyers even in an unconfigured folder: a recursive delete of <code>/</code>, your home directory or a system directory such as <code>/etc</code> or <code>/usr</code>, a recursive <code>chmod</code> or <code>chown</code> of <code>/</code>, <code>dd</code> or <code>mkfs</code> on a block device, or a redirect into one. A delete of <code>./build</code> or <code>/tmp/x</code> is never blocked. <code>true</code> (or the environment variable <code>AGENT_ALLOW_CATASTROPHIC=1</code>) switches the guard off.</p>
+<h2 id="interactive"><code>interactive</code></h2>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>live_input</code></td>
+<td><code>true</code></td>
+<td>The interactive TUI's live-input mode: a line typed while a turn runs is delivered at the next turn boundary, a slash command typed then is held until the tool burst ends, and the session is reprinted on a terminal resize. <code>false</code> gives a plain prompt between turns. No effect under <code>-a</code> or <code>--no-tui</code>.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="log_dir-and-log_prefix"><code>log_dir</code> and <code>log_prefix</code></h2>
+<p>Two top-level keys for the session logs.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>log_dir</code></td>
+<td><code>.agent/history</code></td>
+<td>Directory for the per-session logs, relative to the working directory.</td>
+</tr>
+<tr>
+<td><code>log_prefix</code></td>
+<td><code>"session"</code></td>
+<td>The log file is <code>&lt;log_prefix&gt;_&lt;YYYYmmdd_HHMMSS&gt;.log</code>; <code>errors.log</code> sits alongside it.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="env"><code>env</code></h2>
+<p>A top-level object of environment variables to export when the agent starts, for tools and hooks that read their identity or settings from the environment. A variable already set in the environment is never overridden: a launch script, systemd unit or CI job is closer to the operator than a config file is. Values are written as strings; a <code>null</code> value is skipped.</p>
+<pre tabindex="0"><code class="language-json">{ &quot;env&quot;: { &quot;SOME_TOOL_IDENTITY&quot;: &quot;worker-3&quot; } }
+</code></pre>
+<h2 id="bootstrap"><code>bootstrap</code></h2>
+<p>For scaffolded agents whose identity file refers to state files that may not exist yet on a fresh clone. On a fresh start (not <code>-c</code>) the agent reads <code>AGENT.md</code> / <code>CLAUDE.md</code> in the working directory and creates, empty, any declared file or directory the identity file mentions that is missing. Nothing is declared by default, so nothing is created.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>placeholder_files</code></td>
+<td><code>[]</code></td>
+<td>Relative paths to create empty when the identity file names them and they are absent.</td>
+</tr>
+<tr>
+<td><code>placeholder_dirs</code></td>
+<td><code>[]</code></td>
+<td>Directories to create under the same rule.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="llamacpp"><code>llamacpp</code></h2>
+<p>Extension keys sent only when the main backend's <code>kind</code> is <code>"llamacpp"</code>. They are llama.cpp sampling extensions the OpenAI-compatible endpoint accepts and a hosted backend would reject.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>generation.repeat_penalty</code></td>
+<td><code>1.1</code></td>
+<td>Repetition penalty. Unpenalised repetition on a small model can turn into a degeneration loop that eats the streaming deadline.</td>
+</tr>
+<tr>
+<td><code>generation.repeat_last_n</code></td>
+<td><code>256</code></td>
+<td>How many recent tokens the penalty considers.</td>
+</tr>
+</tbody>
+</table></div>
+<h2 id="the-monitors-file">The monitors file</h2>
+<p>Not part of <code>config.json</code>, but configuration an always-on agent carries. A monitor armed by the <code>monitor</code> tool with <code>persist=true</code> is saved to <code>.agent/monitors.json</code> (or the path in <code>AGENT_MONITORS_FILE</code>) and re-armed when the agent restarts. Each entry holds what the tool call gave it: <code>label</code>, <code>command</code> or <code>path</code>, <code>interval_seconds</code> (default 15, minimum 2), <code>prefix</code>, <code>dedup</code>, and, for the gate, <code>brief</code>, <code>bypass</code> and <code>quiet</code>. The file can be edited by hand between sessions; a brief on a persisted monitor is inert until <code>preferences.gate.enabled</code> is true. See <a href="how-it-works.html#the-event-bus-sources-wait-and-the-gate">How it works</a>.</p>
 <h2 id="full-example">Full example</h2>
 <pre tabindex="0"><code class="language-json">{
   &quot;backends&quot;: {
@@ -574,10 +822,9 @@ server that is not running.</p>
     &quot;summary&quot;: { &quot;kind&quot;: &quot;llamacpp&quot;, &quot;base_url&quot;: &quot;http://127.0.0.1:8082&quot;, &quot;enabled&quot;: true }
   },
   &quot;generation&quot;: { &quot;temperature&quot;: 0.8, &quot;enable_thinking&quot;: false },
-  &quot;think&quot;:      { &quot;depths&quot;: { &quot;brief&quot;: 2048, &quot;normal&quot;: 4096, &quot;deep&quot;: 16384 },
-                  &quot;system_prompt&quot;: null },
+  &quot;think&quot;:      { &quot;depths&quot;: { &quot;brief&quot;: 2048, &quot;normal&quot;: 4096, &quot;deep&quot;: 16384 } },
   &quot;context&quot;:    { &quot;ctx_size&quot;: 32768 },
-  &quot;cycle&quot;:      { &quot;max_turns&quot;: 50 },
+  &quot;cycle&quot;:      { &quot;max_turns&quot;: 50, &quot;success_check&quot;: &quot;pytest -q&quot; },
   &quot;preferences&quot;: {
     &quot;nudge&quot;: true,
     &quot;tools_whitelist&quot;: [&quot;file&quot;, &quot;exec_command&quot;, &quot;search_files&quot;, &quot;think&quot;, &quot;task_tracker&quot;]
@@ -590,9 +837,6 @@ server that is not running.</p>
   ]
 }
 </code></pre>
-<p><code>think.system_prompt</code> is sent as the system turn of every <code>think</code> call; leave it unset unless
-your model's chat template needs a trigger token there to start thinking. By default thinking is
-switched on through the template (<code>enable_thinking</code>), and nothing model-specific is sent.</p>
     <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
   </main>
 </div>

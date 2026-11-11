@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anthropic API backend — agent</title>
+<meta name="description" content="The agent can run on the Anthropic API directly, billed to your API account&#x27;s credits. Backend kind: anthropic (aliases claude, anthropic-api). It shares the AI Commons backend&#x27;s Messages API path, so it gets the same native tool calling, streaming, thinking, effort and prompt caching.">
+<link rel="canonical" href="https://mblakemore.github.io/agent/anthropic.html">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Anthropic API backend">
+<meta property="og:description" content="The agent can run on the Anthropic API directly, billed to your API account&#x27;s credits. Backend kind: anthropic (aliases claude, anthropic-api). It shares the AI Commons backend&#x27;s Messages API path, so it gets the same native tool calling, streaming, thinking, effort and prompt caching.">
+<meta property="og:url" content="https://mblakemore.github.io/agent/anthropic.html">
+<meta name="twitter:card" content="summary">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Michroma&family=IBM+Plex+Sans:wght@300;400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="assets/agent-docs.css">
+<script type="application/ld+json">{"@context":"https://schema.org","@type":"TechArticle","name":"Anthropic API backend","url":"https://mblakemore.github.io/agent/anthropic.html","description":"The agent can run on the Anthropic API directly, billed to your API account&#x27;s credits. Backend kind: anthropic (aliases claude, anthropic-api). It shares the AI Commons backend&#x27;s Messages API path, so it gets the same native tool calling, streaming, thinking, effort and prompt caching."}</script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar"><div class="in">
+  <span class="brand"><a href="index.html">agent</a></span>
+  <span class="tag">documentation</span>
+  <nav aria-label="primary">
+    <a href="index.html">Overview</a>
+    <a href="https://github.com/mblakemore/agent">Source</a>
+  </nav>
+</div></header>
+<div class="wrap">
+  <aside class="side" aria-label="documents"><p class="lbl">Documents</p><ul><li><a href="index.html">agent</a></li><li><a href="install.html">Install</a></li><li><a href="setup.html">Setup — getting a model server running</a></li><li><a href="setup-wizard.html">Setup wizard — /setup</a></li><li><a href="cli.html">CLI and usage</a></li><li><a href="job-contract.html">The job contract — running agent.py as a verifiable worker</a></li><li><a href="configurations.html">Configurations</a></li><li><a href="config-reference.html">Config reference</a></li><li><a href="how-it-works.html">How it works</a></li><li><a href="agent-scaffold.html">Agent scaffold — /agent</a></li><li><a href="models.html">Recommended models</a></li><li><a href="aicommons.html">AI Commons backend</a></li><li><a href="anthropic.html" aria-current="page">Anthropic API backend</a></li><li><a href="bedrock.html">Bedrock backend</a></li></ul></aside>
+  <main id="main">
+    <p class="eyebrow">Anthropic API backend</p>
+<h1>Anthropic API backend</h1>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/anthropic.md"><code>docs/anthropic.md</code></a></p>
+<p>The agent can run on the Anthropic API directly, billed to your API account's credits. Backend kind: <code>anthropic</code> (aliases <code>claude</code>, <code>anthropic-api</code>). It shares the <a href="aicommons.html">AI Commons</a> backend's Messages API path, so it gets the same native tool calling, streaming, thinking, effort and prompt caching.</p>
+<h2 id="quick-start">Quick start</h2>
+<pre tabindex="0"><code class="language-bash">export ANTHROPIC_API_KEY=&quot;&lt;your key&gt;&quot;      # from platform.claude.com/settings/keys
+agent --backend-main anthropic --backend-summary anthropic &quot;your task&quot;
+</code></pre>
+<p>Without a configured model, the defaults are <code>claude-sonnet-5-5</code> for main and <code>claude-haiku-5-5</code> for summary. <code>--model</code> picks another main model, and <code>--effort</code> sets its reasoning effort (<code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, <code>max</code>).</p>
+<p>Or run <code>/setup</code> and pick <strong>Anthropic API</strong>. It uses <code>ANTHROPIC_API_KEY</code> when it is set; otherwise it asks for a key and saves it in <code>.agent/config.json</code> (mode 600). Then it lists the models your key can use.</p>
+<h2 id="credentials">Credentials</h2>
+<p>Resolved in this order:</p>
+<ol>
+<li>The role's own <code>api_key</code> in <code>backends</code>.</li>
+<li>The shared <code>anthropic</code> block at the top of <code>.agent/config.json</code>.</li>
+<li><code>ANTHROPIC_API_KEY</code>.</li>
+<li>Whatever the <code>anthropic</code> SDK finds by itself: <code>ANTHROPIC_AUTH_TOKEN</code>, or a profile saved by <code>ant auth login</code>.</li>
+</ol>
+<p><code>base_url</code> (or <code>ANTHROPIC_BASE_URL</code>) points it at another Messages API endpoint.</p>
+<h2 id="config">Config</h2>
+<pre tabindex="0"><code class="language-json">{
+  &quot;anthropic&quot;: { &quot;api_key&quot;: &quot;&lt;key&gt;&quot; },
+  &quot;backends&quot;: {
+    &quot;main&quot;:    { &quot;kind&quot;: &quot;anthropic&quot;, &quot;model&quot;: &quot;claude-opus-5-5&quot;, &quot;effort&quot;: &quot;high&quot; },
+    &quot;summary&quot;: { &quot;kind&quot;: &quot;anthropic&quot;, &quot;model&quot;: &quot;claude-haiku-5-5&quot; }
+  }
+}
+</code></pre>
+<p>The keys from the AI Commons <a href="aicommons.html#config">config table</a> apply here too (<code>thinking</code>, <code>effort</code>, <code>max_context_tokens</code>), except the quota and catalog keys. <code>max_request_bytes</code> defaults to 30 MB, under the API's 32 MB limit.</p>
+<h2 id="how-it-differs-from-ai-commons">How it differs from AI Commons</h2>
+<ul>
+<li><strong>Model limits come from the API.</strong> At startup the agent reads the model's context window, output limit and thinking support from <code>GET /v1/models/{id}</code>. There is no hand-kept model table.</li>
+<li><strong>No allowance polling.</strong> Spend and limits are in the <a href="https://platform.claude.com/">Claude Console</a>. When the account runs out of credits, the agent stops with a "credit balance is too low" message (or fails over to another backend if one is configured).</li>
+<li><strong>Thinking blocks survive history edits.</strong> The API signs each thinking block against the conversation before it. When the context window fills, the agent drops old turns, and <code>/system</code> changes the system prompt. On accounts that enforce the check, either would make later requests fail. So every request asks the API to drop thinking blocks that no longer match (<code>prefix_mismatch_behavior: "drop_block"</code>, beta <code>thinking-binding-controls-2026-08-01</code>) instead of rejecting the request.</li>
+</ul>
+<p>Prompt caching, effort escalation, the session log lines (<code>anthropic.cache</code>, <code>anthropic.session</code>) and error handling work as described on the <a href="aicommons.html">AI Commons</a> page.</p>
+    <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
+  </main>
+</div>
+</body>
+</html>

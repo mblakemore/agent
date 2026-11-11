@@ -21,12 +21,16 @@
     <lastmod>2026-11-11</lastmod>
   </url>
   <url>
+    <loc>https://mblakemore.github.io/agent/headless.html</loc>
+    <lastmod>2026-11-11</lastmod>
+  </url>
+  <url>
     <loc>https://mblakemore.github.io/agent/job-contract.html</loc>
-    <lastmod>2026-09-04</lastmod>
+    <lastmod>2026-11-11</lastmod>
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/configurations.html</loc>
-    <lastmod>2026-10-25</lastmod>
+    <lastmod>2026-11-11</lastmod>
   </url>
   <url>
     <loc>https://mblakemore.github.io/agent/config-reference.html</loc>
@@ -51,5 +55,9 @@
   <url>
     <loc>https://mblakemore.github.io/agent/bedrock.html</loc>
     <lastmod>2026-10-24</lastmod>
+  </url>
+  <url>
+    <loc>https://mblakemore.github.io/agent/claude-code-gateway.html</loc>
+    <lastmod>2026-11-11</lastmod>
   </url>
 </urlset>
