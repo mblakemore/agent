@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">How it works</p>
 <h1>How it works</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/how-it-works.md"><code>docs/how-it-works.md</code></a> · last changed 2026-11-11 (c880f92)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/how-it-works.md"><code>docs/how-it-works.md</code></a> · last changed 2026-11-11 (b7f52d2)</p>
 <h2 id="the-turn-loop">The turn loop</h2>
 <p>Each cycle is a turn loop:</p>
 <ol>
@@ -43,7 +43,7 @@
 </ol>
 <h2 id="guardrails">Guardrails</h2>
 <ul>
-<li><strong>Checkpointing</strong>: history and summary state are written to <code>.agent/state/conversation_checkpoint.json</code> every turn. <code>--continue</code> resumes from there. The lead files of the trimmed window (the <code>@file</code> references of the first message, typically the identity file) are stored by name and re-read from disk on resume, so an identity file edited during the session is current after <code>-c</code>; if a file is gone, the checkpoint's copy is used. During a session, <code>@file</code> in a later message keeps the lead as it is unless it names a lead file, which re-reads them all.</li>
+<li><strong>Checkpointing</strong>: history and summary state are written to <code>.agent/state/conversation_checkpoint.json</code> every turn. <code>--continue</code> resumes from there. The lead files of the trimmed window (the <code>@file</code> references of the first message, typically the identity file) are stored by name and re-read from disk on resume, so an identity file edited during the session is current after <code>-c</code>; if a file is gone, the checkpoint's copy is used. During a session, <code>@file</code> in a later message keeps the lead as it is unless it names a lead file, which re-reads them all. The lead files have one place in the history, the message that first attached them: a re-read, on <code>-c</code> or by a later <code>@CLAUDE.md</code>, replaces the text in that place, and the later message keeps a one-line note (plus any other files it named). Before this, every re-reference added a second whole copy, and an untrimmed window sent both, one of them stale, for the rest of the session. The refresh costs one prompt-cache miss over the history when the file has actually changed.</li>
 <li><strong>Async summarization</strong>: a background thread condenses older messages while the main model keeps working.</li>
 <li><strong>Cycle limits</strong>: after <code>cycle.max_turns</code> turns (default 250) the agent is asked to wrap up; after <code>cycle.wind_down_turns</code> more it is forced to stop.</li>
 <li><strong>Text-loop detection</strong>: three identical text responses in a row end the cycle.</li>

@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">CLI and usage</p>
 <h1>CLI and usage</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-11-03 (30b3670)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-11-11 (32b8ea8)</p>
 <p>Command-line arguments, the interactive TUI, slash commands and environment variables.</p>
 <pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
 </code></pre>
@@ -50,7 +50,7 @@
 </tr>
 <tr>
 <td><code>-c</code>, <code>--continue</code></td>
-<td>Resume from the last checkpoint. Combine with <code>-a</code> for auto-resume-and-exit. The files that lead the trimmed window (<code>@AGENT.md</code> / <code>@CLAUDE.md</code> from the first message) are re-read from disk on resume; a prompt given with <code>-c</code> is ignored when a checkpoint exists.</td>
+<td>Resume from the last checkpoint. Combine with <code>-a</code> for auto-resume-and-exit. The files that lead the trimmed window (<code>@AGENT.md</code> / <code>@CLAUDE.md</code> from the first message) are re-read from disk on resume and the fresh text replaces the copy in the message that first attached them, so an edit made between sessions reaches the model at once; a prompt given with <code>-c</code> is ignored when a checkpoint exists.</td>
 </tr>
 <tr>
 <td><code>-r N</code>, <code>--repeat N</code></td>
