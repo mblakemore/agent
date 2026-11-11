@@ -91,10 +91,11 @@ def test_three_holds_then_a_wake_arrive_as_one_digest_plus_the_item():
     assert monitor_bus.drain() == []
     monitor_bus.emit("s", "ERROR: boom")
     items = monitor_bus.drain()
-    assert len(items) == 2
-    assert items[0].startswith("[digest:s] 3 held items") and "summary of it" in items[0]
-    assert "raw text:" in items[0]
-    assert items[1] == "ERROR: boom"
+    assert len(items) == 1                     # one item: the digest, then the wake
+    digest, item = items[0].split("\n\n", 1)
+    assert digest.startswith("[digest:s] 3 held items") and "summary of it" in digest
+    assert "raw text:" in digest
+    assert item == "ERROR: boom"
     assert len(j.prompts) == 4 and "wake me for errors" in j.prompts[0]
     # the judge saw what was already held
     assert "summary of it" in j.prompts[3]
@@ -163,6 +164,8 @@ def test_the_size_cap_flushes_a_digest():
 
 def test_the_timer_flushes_a_digest(monkeypatch):
     monkeypatch.setattr(monitor_bus, "_SWEEP_S", 0.1)
+    # configure() pokes the sweeper, so the new interval applies now, not after its
+    # current sleep.
     monitor_bus.configure(gate={"enabled": True, "digest_after_s": 0.3}, judge=FakeJudge())
     _src()
     monitor_bus.emit("s", "p1")
@@ -180,7 +183,7 @@ def test_digest_raw_chars_includes_the_raw_text():
     monitor_bus.emit("s", "the raw progress line")
     monitor_bus.emit("s", "go")
     items = monitor_bus.drain()
-    assert "raw:\nthe raw progress line" in items[0]
+    assert "raw:\nthe raw progress line" in items[0] and items[0].endswith("\n\ngo")
 
 
 # ── the tools ─────────────────────────────────────────────────────────────
@@ -234,3 +237,52 @@ def test_parse_answer_finds_the_object_inside_chatter():
     assert gate.parse_answer('Sure: {"verdict": "WAKE", "why": "err", "line": "l"} ok')[0] == "wake"
     assert gate.parse_answer('{"verdict": "drop"}') is None
     assert gate.parse_answer("") is None
+
+
+# ── review fixes ──────────────────────────────────────────────────────────
+def test_re_arming_a_label_keeps_what_the_gate_held():
+    monitor_bus.configure(judge=FakeJudge("hold", "wake"))
+    _src()
+    monitor_bus.emit("s", "p1")
+    monitor_bus.arm("s", "true", interval=3600, brief="a new brief")
+    assert len(monitor_bus.source("s").held) == 1
+    monitor_bus.emit("s", "go")
+    assert monitor_bus.drain()[0].startswith("[digest:s] 1 held item")
+
+
+def test_a_finished_session_goes_through_its_gate():
+    j = FakeJudge("hold")
+    monitor_bus.configure(judge=j)
+    monitor_bus.source_started("job-1", "session", note="make")
+    assert "gated" in gate_fn("set", source="job-1", brief="only failures")
+    monitor_bus.source_finished("job-1", "[session: job-1] exit=0 all good")
+    assert monitor_bus.drain() == [] and len(j.prompts) == 1
+    assert len(monitor_bus.source("job-1").held) == 1 and monitor_bus.source("job-1").done
+
+
+def test_with_the_gate_off_a_brief_is_inert():
+    j = FakeJudge("hold")
+    monitor_bus.configure(judge=j)
+    _src()
+    monitor_bus.configure(gate={"enabled": False})
+    monitor_bus.emit("s", "x")
+    assert monitor_bus.drain() == ["x"] and j.prompts == []
+
+
+def test_a_gated_hold_does_not_end_a_wait_but_a_wake_does_with_the_digest_in_front():
+    from tools.wait import fn as wait_fn
+    import threading
+    monitor_bus.configure(judge=FakeJudge("hold", "wake"))
+    _src()
+    threading.Timer(0.1, lambda: monitor_bus.emit("s", "progress")).start()
+    threading.Timer(0.5, lambda: monitor_bus.emit("s", "ERROR")).start()
+    out = wait_fn(max_s=5)
+    assert "[wait] 1 item" in out
+    assert out.index("[digest:s] 1 held item") < out.index("ERROR")
+
+
+def test_a_second_finish_of_the_same_source_queues_nothing():
+    monitor_bus.source_started("job-2", "session")
+    monitor_bus.source_finished("job-2", "first")
+    monitor_bus.source_finished("job-2", "second")
+    assert monitor_bus.drain() == ["first"]

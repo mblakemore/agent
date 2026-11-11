@@ -10,6 +10,27 @@ try:
 except ImportError:  # a harness without the bus: subagents block, as before
     _bus = None
 
+# Background sub-agent processes still running, so an exit of this process (end of a -a
+# cycle, 'exit') takes them down instead of orphaning a child agent with a dead parent.
+_live_bg = set()
+_live_bg_lock = threading.Lock()
+
+
+def _kill_background_subagents():
+    with _live_bg_lock:
+        procs = list(_live_bg)
+        _live_bg.clear()
+    for proc in procs:
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+import atexit  # noqa: E402
+atexit.register(_kill_background_subagents)
+
 # Default wall-clock timeout for a sub-agent process (seconds).
 # Sub-agents may call LLMs and run multi-step tasks, so they legitimately need
 # several minutes.  600 s (10 min) is generous without being unbounded.
@@ -59,18 +80,43 @@ def subagent(
 
         def _run_bg():
             try:
-                result = _run_subagent(prompt, timeout)
+                result = _run_subagent(prompt, timeout, tracked=True)
             except Exception as e:  # noqa: BLE001
                 result = f"Error: running sub-agent: {e}"
             _bus.source_finished(sid, f"[subagent: {sid}] finished\n{result}")
 
         threading.Thread(target=_run_bg, name=f"subagent:{sid}", daemon=True).start()
         return (f"[subagent: {sid}] started in the background (timeout {timeout:g}s). Its "
-                f"answer arrives by itself; wait() or wait(any_of=[\"{sid}\"]) blocks until it does.")
+                f"answer arrives by itself; wait() or wait(any_of=[\"{sid}\"]) blocks until it "
+                f"does. It is killed, answer lost, if this process ends first (a cycle that "
+                f"ends its turn, or exit), so wait for it before finishing.")
     return _run_subagent(prompt, timeout)
 
 
-def _run_subagent(prompt, timeout):
+def _run_tracked(cmd, timeout):
+    """The background variant of the run below: a Popen kept in _live_bg so an exit of
+    this process kills it. Returns a run()-shaped object or raises TimeoutExpired."""
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True)
+    with _live_bg_lock:
+        _live_bg.add(proc)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise
+    finally:
+        with _live_bg_lock:
+            _live_bg.discard(proc)
+
+    class _Done:
+        returncode = proc.returncode
+        stdout, stderr = out, err
+    return _Done()
+
+
+def _run_subagent(prompt, timeout, tracked=False):
     # Determine the absolute path to agent.py
     # tools/subagent.py -> ../agent.py
     tool_dir = os.path.dirname(os.path.abspath(__file__))
@@ -96,15 +142,18 @@ def _run_subagent(prompt, timeout):
         # Execute the process with a wall-clock timeout so a hung or infinite-
         # loop sub-agent cannot block the parent agent indefinitely.
         try:
-            process = subprocess.run(
-                cmd,
-                # not the terminal: the child agent's exit handler would reset its modes
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=timeout,
-            )
+            if tracked:
+                process = _run_tracked(cmd, timeout)
+            else:
+                process = subprocess.run(
+                    cmd,
+                    # not the terminal: the child agent's exit handler would reset its modes
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=timeout,
+                )
         except subprocess.TimeoutExpired:
             return (
                 f"Error: sub-agent timed out after {timeout}s. "

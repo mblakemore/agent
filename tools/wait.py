@@ -60,6 +60,10 @@ def fn(any_of=None, all_of=None, max_s: float = 600) -> str:
 
     elapsed = r["elapsed"]
     n = len(r["items"])
+    if r["reason"] == "control":
+        return ("[wait] a typed /command or exit is pending and runs when this turn ends; "
+                "finish the turn now rather than calling wait again" +
+                (f".\n{chr(10).join(r['items'])}" if r["items"] else "."))
     if r["interrupted"]:
         head = f"[wait] interrupted after {elapsed:.0f}s by {r['interrupted']}"
         head += f"; {n} item{'s' if n != 1 else ''} had arrived" if n else "; nothing had arrived"

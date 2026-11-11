@@ -199,8 +199,10 @@ class Source:
         self.held_chars = 0
         self.events = 0                       # items this source has put on the bus
         self.done = False                     # sessions and subagents: finished
+        self.reported = False                 # the model read the result another way
         self.started = time.time()
         self.result = ""                      # the finished item's text, re-readable
+        self.raw_path = None
 
     def set_gate(self, brief="", bypass="", quiet=""):
         self.brief = str(brief or "").strip()
@@ -210,7 +212,10 @@ class Source:
 
     @property
     def gated(self):
-        return bool(self.brief or self.bypass is not None or self.quiet is not None)
+        """A brief or a pattern, and the gate switched on: with the gate off a persisted
+        brief is inert, so the summary model is never called behind the operator's back."""
+        return bool(_CFG["gate"]["enabled"]
+                    and (self.brief or self.bypass is not None or self.quiet is not None))
 
     def describe(self):
         age = int(time.time() - self.started)
@@ -256,6 +261,7 @@ class _Bus:
         self._sources = {}
         self._cv = threading.Condition()      # notified on every enqueue / source change
         self._sweeper = None
+        self._sweep_wake = threading.Event()  # set to make the sweeper run now
 
     # ── sources ───────────────────────────────────────────────────────────
     def _add_source(self, src):
@@ -309,9 +315,11 @@ class _Bus:
     # ── emit: a source's output, through the gate when it has one ────────────
     def emit(self, sid, text, prefix=""):
         """Output from source `sid`: enqueued, or judged first when the source is gated."""
-        src = self.source(sid)
+        return self._emit(self.source(sid), text, prefix=prefix)
+
+    def _emit(self, src, text, prefix="", count=True):
         if src is None or not src.gated:
-            self._put(prefix + text, source=src)
+            self._put(prefix + text, source=src, count=count)
             return _gate.Verdict(_gate.WAKE, "not gated", how="bypass")
         cfg = _CFG["gate"]
         with self._lock:
@@ -320,8 +328,10 @@ class _Bus:
                         quiet=src.quiet, complete=_CFG["judge"], timeout=cfg["timeout_s"])
         _record_verdict(v)
         if v.verdict == _gate.WAKE:
-            self._flush_held(src, reason="woken")
-            self._put(prefix + text, source=src)
+            # One item, digest first: an idle loop that takes a single item from the
+            # queue gets the whole story, never the digest alone.
+            digest = self._take_held(src, reason="woken")
+            self._put((digest + "\n\n" if digest else "") + prefix + text, source=src, count=count)
             return v
         path = _gate.append_raw(cfg["log_dir"], src.label, text)
         with self._lock:
@@ -369,7 +379,8 @@ class _Bus:
     def _sweep(self):
         """Flush held items older than digest_after_s; reap finished sources after a while."""
         while True:
-            time.sleep(_SWEEP_S)
+            self._sweep_wake.wait(_SWEEP_S)
+            self._sweep_wake.clear()
             try:
                 after = _CFG["gate"]["digest_after_s"]
                 now = time.time()
@@ -381,7 +392,10 @@ class _Bus:
                     # A finished session or subagent nobody waited on is forgotten
                     # after a while; its item was delivered at a turn boundary.
                     if src.done and now - getattr(src, "finished_at", now) > _REAP_DONE_S:
-                        self._remove_source(src.id)
+                        with self._lock:
+                            same = self._sources.get(src.id) is src
+                        if same:              # not a new source under a reused id
+                            self._remove_source(src.id)
             except Exception:  # noqa: BLE001 — a sweeper must never die
                 _log.debug("gate sweeper", exc_info=True)
 
@@ -397,15 +411,40 @@ class _Bus:
         src = self.source(sid)
         if src is None:
             src = self._add_source(Source(str(sid), "session"))
-        src.done = True
-        src.finished_at = time.time()
-        src.result = text
-        if _CFG["session_events"]:
-            self._put(text, source=src)
-        else:
+        with self._lock:
+            already = src.done
+            src.done = True
+            src.finished_at = time.time()
+            src.result = text
+        if already or src.reported or not _CFG["session_events"]:
             with self._cv:
-                self._cv.notify_all()
+                self._cv.notify_all()      # a waiter on all_of/any_of still sees `done`
+            return src
+        self._emit(src, text)
         return src
+
+    def retract(self, sid):
+        """The model has read this source's result another way (it polled the session to
+        completion): take its finished item off the queue if it is still there, and do not
+        queue one later. Returns True when an item was removed."""
+        src = self.source(sid)
+        if src is None:
+            return False
+        src.reported = True
+        removed = False
+        with self._q.mutex:
+            keep = []
+            for item in self._q.queue:
+                text = item[1] if isinstance(item, tuple) else item
+                if not removed and src.result and text == src.result:
+                    removed = True
+                    continue
+                keep.append(item)
+            if removed:
+                self._q.queue.clear()
+                self._q.queue.extend(keep)
+                self._q.unfinished_tasks = len(keep)
+        return removed
 
     def forget(self, sid):
         """Stop tracking a finished session or subagent (its item has been read)."""
@@ -427,6 +466,11 @@ class _Bus:
         deadline = start + max(0.0, float(max_s))
         snapshot = {x.id: x.events for x in self.list_sources()}
         items, interrupted, reason = [], None, "timeout"
+        if self.pending_control():
+            # A slash command or 'exit' typed earlier is held for the loop until this turn
+            # ends; waiting would only be interrupted by it again, at once, every time.
+            return {"items": [], "elapsed": 0.0, "interrupted": "a pending command",
+                    "reason": "control"}
 
         def _any_fired():
             for sid in any_of:
@@ -439,15 +483,20 @@ class _Bus:
             return all((self.source(sid) is None or self.source(sid).done) for sid in all_of)
 
         while True:
+            if cancel_check is not None and cancel_check():
+                reason = "cancelled"
+                break
             drained = self.drain_items(with_digests=False)
             for kind, text in drained:
                 if kind == "user":
                     self.put_user(text)
-                    interrupted = "user input"
+                    if _is_control(text):
+                        interrupted, reason = "a pending command", "control"
+                    elif not interrupted:
+                        interrupted, reason = "user input", "interrupted"
                 else:
                     items.append(text)
             if interrupted:
-                reason = "interrupted"
                 break
             if all_of:
                 if _all_done():
@@ -459,9 +508,6 @@ class _Bus:
                     break
             elif items:
                 reason = "ready"
-                break
-            if cancel_check is not None and cancel_check():
-                reason = "cancelled"
                 break
             now = time.monotonic()
             if now >= deadline:
@@ -509,9 +555,14 @@ class _Bus:
                 existing.stop()   # replace: stop the old one, start a fresh one
             m = _Monitor(label, command, interval, cmd_timeout, prefix, bool(dedup), path=path)
             self._monitors[label] = m
-            self._sources[label] = Source(label, "watch" if path else "monitor",
-                                          brief=brief, bypass=bypass, quiet=quiet,
-                                          note=path or command)
+            old_src = self._sources.get(label)
+            src = Source(label, "watch" if path else "monitor",
+                         brief=brief, bypass=bypass, quiet=quiet, note=path or command)
+            if old_src is not None:          # re-armed: what the gate held is kept
+                src.held, src.held_chars = old_src.held, old_src.held_chars
+                src.raw_path = getattr(old_src, "raw_path", None)
+                src.events = old_src.events
+            self._sources[label] = src
             m.start()
         if self._sources[label].gated:
             self._ensure_sweeper()
@@ -593,6 +644,12 @@ class _Bus:
         # before-prompt race).
         return not self._q.empty()
 
+    def pending_control(self):
+        """Is a typed control line (a /command, 'exit') queued for the loop?"""
+        with self._q.mutex:
+            return any(isinstance(i, tuple) and i[0] == "user" and _is_control(i[1])
+                       for i in self._q.queue)
+
     def drain_items(self, with_digests=True):
         """Return the queued (kind, text) items (FIFO), emptying the queue. A raw
         text item counts as a monitor ping. Non-blocking; safe every turn.
@@ -630,6 +687,12 @@ class _Bus:
 _BUS = _Bus()
 
 
+def _is_control(text):
+    """A typed line the loop acts on itself, never the model: a slash command or exit."""
+    t = str(text or "").strip()
+    return t.startswith("/") or t.lower() in ("exit", "quit") or "\x00" in t
+
+
 def _record_verdict(v):
     try:
         import telemetry
@@ -652,6 +715,7 @@ def configure(session_events=None, gate=None, judge=_KEEP):
         _CFG["gate"] = _gate.config_from(gate)
     if judge is not _KEEP:
         _CFG["judge"] = judge
+    _BUS._sweep_wake.set()
     return dict(_CFG)
 
 
@@ -759,6 +823,14 @@ def source_finished(sid, text):
 
 def forget(sid):
     return _BUS.forget(sid)
+
+
+def retract(sid):
+    return _BUS.retract(sid)
+
+
+def pending_control():
+    return _BUS.pending_control()
 
 
 def source(sid):

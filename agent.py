@@ -2009,7 +2009,9 @@ def _gate_judge(prompt, timeout):
     with _GATE_JUDGE_LOCK:
         try:
             return backend.complete(prompt=prompt, gen_params=gen, timeout=timeout)
-        except TypeError:  # a backend whose complete() takes only the prompt
+        except TypeError as e:  # a backend whose complete() takes only the prompt
+            if "unexpected keyword" not in str(e):
+                raise
             return backend.complete(prompt=prompt)
 
 
@@ -6150,15 +6152,17 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                         continue
                     if _files:
                         initial_files = _lead_update(initial_files, _files, log)
-                    conversation_history.append({"role": "user", "content": _expanded})
+                    _body = _expanded
                     log.debug("USER (live): %s", _expanded[:200])
                 else:
-                    # A monitor ping consumed while idle IS the task (raw text); the
-                    # gate's held digests ride along on this wake.
-                    _digests = monitor_bus.take_held_digests()
-                    if _digests:
-                        _text = _text + "\n\n" + "\n\n".join(_digests)
-                    conversation_history.append({"role": "user", "content": _text})
+                    # A monitor ping consumed while idle IS the task (raw text).
+                    _body = _text
+                # Either way the agent is waking: the gate's held digests ride along
+                # instead of earning a wake of their own later.
+                _digests = monitor_bus.take_held_digests()
+                if _digests:
+                    _body = _body + "\n\n" + "\n\n".join(_digests)
+                conversation_history.append({"role": "user", "content": _body})
                 # Cancel-flag reset happens at run_agent_single entry (the
                 # turn boundary — single authority for tui_mode flag
                 # lifetime); here we only drop the toolbar's cancelling

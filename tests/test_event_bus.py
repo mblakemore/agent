@@ -162,7 +162,7 @@ def test_a_monitor_ping_ends_a_wait():
 # ── background subagents ──────────────────────────────────────────────────
 def test_a_background_subagent_is_a_source_whose_answer_arrives_on_the_bus(monkeypatch):
     import tools.subagent as sa
-    monkeypatch.setattr(sa, "_run_subagent", lambda prompt, timeout: f"answer to {prompt}")
+    monkeypatch.setattr(sa, "_run_subagent", lambda prompt, timeout, tracked=False: f"answer to {prompt}")
     out = subagent_fn("add 2 and 2", background=True)
     assert out.startswith("[subagent: sub-") and "wait()" in out
     sid = out.split("[subagent: ")[1].split("]")[0]
@@ -173,7 +173,7 @@ def test_a_background_subagent_is_a_source_whose_answer_arrives_on_the_bus(monke
 
 def test_a_foreground_subagent_still_blocks(monkeypatch):
     import tools.subagent as sa
-    monkeypatch.setattr(sa, "_run_subagent", lambda prompt, timeout: "done")
+    monkeypatch.setattr(sa, "_run_subagent", lambda prompt, timeout, tracked=False: "done")
     assert subagent_fn("x") == "done"
     assert monitor_bus.list_sources() == []
 
@@ -190,3 +190,38 @@ def test_a_watched_file_reports_only_what_is_appended(tmp_path):
         fh.write("new line\n")
     out = wait_fn(max_s=6)
     assert "new line" in out and "old line" not in out
+
+
+# ── review fixes ──────────────────────────────────────────────────────────
+def test_a_session_polled_to_completion_queues_no_item():
+    sid = _sid(ec.fn("echo polled", timeout=30, background=True, new_session=True))
+    out = ec.fn(session_id=sid, wait=5)
+    assert "exit=0" in out and "polled" in out
+    time.sleep(0.3)
+    assert monitor_bus.drain() == []
+    assert monitor_bus.source(sid) is None
+
+
+def test_a_pending_slash_command_does_not_spin_wait():
+    monitor_bus.put_user("/model x")
+    t0 = time.time()
+    out = wait_fn(max_s=5)
+    assert time.time() - t0 < 1 and "pending" in out and "rather than calling wait again" in out
+    assert monitor_bus.drain_items() == [("user", "/model x")]
+    # the same, arriving mid-wait
+    threading.Timer(0.2, lambda: monitor_bus.put_user("/effort high")).start()
+    out = wait_fn(max_s=5)
+    assert "pending" in out and monitor_bus.drain_items() == [("user", "/effort high")]
+
+
+def test_a_reused_session_id_is_not_reaped_with_its_predecessor(monkeypatch):
+    monkeypatch.setattr(monitor_bus, "_REAP_DONE_S", 0.2)
+    monkeypatch.setattr(monitor_bus, "_SWEEP_S", 0.1)
+    monitor_bus.source_started("same", "session")
+    monitor_bus.source_finished("same", "done once")
+    monitor_bus.drain()
+    monitor_bus.source_started("same", "session")      # a new job under the same id
+    monitor_bus.configure()                             # poke the sweeper
+    time.sleep(0.8)
+    src = monitor_bus.source("same")
+    assert src is not None and not src.done

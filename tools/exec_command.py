@@ -382,6 +382,18 @@ def _track_session(sid, command):
         pass
 
 
+def _session_reported(sid):
+    """The model read this session's exit from a poll: the bus item for it is redundant.
+    Take it back if it is queued, forget the source."""
+    if _bus is None:
+        return
+    try:
+        _bus.retract(sid)
+        _bus.forget(sid)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _session_finished(sid, session, rc):
     """One bus item when a background process exits, so the agent needs no poll:
     the exit code and the output tail, with the log pointer for the rest."""
@@ -748,6 +760,7 @@ def fn(command: str = "", session_id: str = "", timeout: float = 120,
                 rc = bg.returncode
                 session["bg_proc"] = None
                 session["last_rc"] = rc
+                _session_reported(sid)
                 return (f"[session: {sid}] exit={rc} (background process finished"
                         f"{_log_note(session)})\n{output}")
             output = session.get("bg_output", "")
