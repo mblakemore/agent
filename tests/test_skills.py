@@ -206,8 +206,91 @@ def test_tool_search_skill_answers_with_the_text_once_and_lists_the_catalog_for_
     assert skills.LOADED == ["zoom"]
     out = tool_search.fn("skill:nope")
     assert "no skill named nope" in out and "Skills available: release, zoom, style" in out
-    assert "secret" in tool_search.fn("skill:secret")   # hidden: loadable by name, not listed
+    out = tool_search.fn("skill:secret")                # hidden: the keyboard only
+    assert "not available to the model" in out and "Hidden instructions" not in out
+    assert skills.request_load("secret", by="command")[0]
     assert registry.PENDING_LOADS == []                 # no tool list change
+
+
+def test_a_multi_skill_result_stays_loaded_after_a_window_sync(tree):
+    first = tool_search.fn("skill:zoom")
+    out = tool_search.fn("skill:zoom,release,style")   # a notice first, then two texts
+    assert out.startswith("skill zoom is already loaded") and out.count("[skill: ") == 2
+    hist = [{"role": "tool", "name": "tool_search", "content": first},
+            {"role": "tool", "name": "tool_search", "content": out}]
+    assert skills.sync_loaded(hist, 0) == [] and skills.LOADED == ["zoom", "release", "style"]
+    assert skills.sync_loaded(hist, 1) == ["zoom"] and skills.LOADED == ["release", "style"]
+    # prose that quotes a header is not a load
+    prose = [{"role": "tool", "name": "read_file", "content": "log:\n[skill: zoom (x), 1 line]\n"}]
+    assert skills.skills_in(prose) == []
+
+
+def test_max_chars_never_exceeds_the_spill_cap(tmp_path, caplog):
+    with caplog.at_level(logging.WARNING, logger="agent"):
+        cfg = skills.configure({"max_chars": 30000}, cwd=str(tmp_path), spill_cap=8000)
+    assert cfg["max_chars"] == 8000 and "must never spill" in caplog.text
+    assert skills.configure({"max_chars": 5000}, cwd=str(tmp_path), spill_cap=8000)["max_chars"] == 5000
+    assert skills.configure({}, cwd=str(tmp_path), spill_cap=0)["max_chars"] == 20000   # spill off
+
+
+def test_a_queued_load_waits_while_a_tool_call_is_unanswered(tree):
+    skills.request_load("zoom", by="command")
+    hist = [{"role": "user", "content": "go"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "t1", "function": {"name": "x", "arguments": "{}"}}]}]
+    assert agent._skills_at_boundary(hist, None, 0, log) == ""
+    assert len(hist) == 2 and [n for n, _ in skills.PENDING] == ["zoom"] and skills.LOADED == []
+    hist.append({"role": "tool", "tool_call_id": "t1", "name": "x", "content": "ok"})
+    agent._skills_at_boundary(hist, None, 0, log)
+    assert skills.LOADED == ["zoom"] and hist[-1]["_skills"] == ["zoom"]
+
+
+def test_a_verdict_arriving_after_a_reset_is_dropped(tree):
+    skills.CFG["pick"] = "always"
+    judge = Judge('[{"name": "zoom", "confidence": 0.9}]')
+    judge.block = threading.Event()
+    skills.set_judge(judge)
+    assert skills.PICKER.kick("join a meeting", "user")
+    skills.reset_session()                       # /clear
+    judge.block.set()
+    time.sleep(0.2)
+    assert skills.PICKER.harvest() is None and skills.PENDING == []
+
+
+def test_the_judge_gets_the_configured_timeout(tree):
+    seen = []
+    skills.CFG["pick_timeout_s"] = 3.5
+    skills.pick("join", complete=lambda p, t: seen.append(t) or "[]")
+    assert seen == [3.5]
+
+
+def test_a_resume_finds_a_skill_a_boundary_appended(tree, tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(tmp_path / "cp.json"))
+    hist = [{"role": "user", "content": "go"}]
+    skills.request_load("zoom", by="command")
+    agent._skills_at_boundary(hist, None, 0, log)
+    agent._save_checkpoint(hist, {"text": "", "up_to": 0}, 1, None)
+    skills.reset_session()
+    cp = agent._load_checkpoint()
+    assert cp and skills.LOADED == ["zoom"]
+    assert skills.sync_loaded(cp[0], 0) == [] and skills.LOADED == ["zoom"]   # the _skills key survived
+
+
+def test_a_deployment_without_skills_sees_no_change(loop, monkeypatch):
+    assert skills.SKILLS == {}
+    calls = []
+    monkeypatch.setattr(skills, "_complete", lambda p, t: calls.append(p) or "[]")
+    skills.CFG["pick"] = "always"
+    mocks, sent = loop
+    mocks.script(_tool_turn("t1", "read_file", '{"path": "x"}'), _text_turn())
+    mocks.stub_tool("read_file", "contents")
+    history = [{"role": "user", "content": "do it"}]
+    agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
+    assert calls == []
+    assert not any("_skill_pick" in m or "_skills" in m for m in history)
+    assert all(skills.CATALOG_PREFIX not in _system(b) and skills.INSTRUCTIONS not in _system(b) for b in sent)
+    user_text = "".join(m["content"] for m in history if m["role"] == "user")
+    assert "[skill:" not in user_text and "A skill may apply" not in user_text
+    skills.CFG["pick"] = "off"
 
 
 def test_tool_search_loads_several_and_refuses_past_the_token_cap(tree):
@@ -296,7 +379,7 @@ def test_pick_at_start_uses_the_judge_or_the_keyword_floor(tree):
     skills.CFG["pick"] = "off"
     assert skills.pick_at_start("Zoom in on the chart; mind the house style") == (["zoom", "style"], [])
     skills.reset_session()
-    assert skills.pick_at_start("zoomed") == ([], [])   # whole words only
+    assert skills.pick_at_start("zoomed foo_zoom") == ([], [])   # whole words only
     assert skills.STATE["started"]
 
 

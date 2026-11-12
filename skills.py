@@ -54,6 +54,7 @@ PICK_LEVELS = ("off", "start", "always")
 CATALOG_PREFIX = "Skills, loaded on request with tool_search skill:NAME:"
 HEADER_PREFIX = "[skill: "
 _HEADER_RE = re.compile(r"^\[skill: ([^\s()]+) \(")
+_HEADER_LINE_RE = re.compile(r"^\[skill: ([^\s()]+) \(", re.MULTILINE)
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _CATALOG_DESC_CHARS = 60
 _PICK_TEXT_CHARS = 2000
@@ -117,9 +118,11 @@ class Skill:
 
 # ── Configuration and discovery ──────────────────────────────────────
 
-def configure(raw, cwd=None, complete=None, count_tokens=None):
+def configure(raw, cwd=None, complete=None, count_tokens=None, spill_cap=None):
     """Apply the `skills` config block (anything missing is a default). `complete` is
-    the summary-model call the picker uses; `count_tokens(text)` the estimator."""
+    the summary-model call the picker uses; `count_tokens(text)` the estimator;
+    `spill_cap` the harness's tool-result spill limit, which `max_chars` never exceeds
+    (a skill load must never spill)."""
     global _complete, _count_tokens, _cwd
     cfg = dict(DEFAULTS)
     if isinstance(raw, dict):
@@ -148,6 +151,10 @@ def configure(raw, cwd=None, complete=None, count_tokens=None):
         pick = "off"
     cfg["pick"] = pick
     cfg["pick_on_events"] = bool(cfg["pick_on_events"])
+    if spill_cap and cfg["max_chars"] > int(spill_cap):
+        _log.warning("skills.max_chars %d is over limits.tool_result_max_chars %d; a skill load "
+                     "must never spill, so %d is used", cfg["max_chars"], int(spill_cap), int(spill_cap))
+        cfg["max_chars"] = int(spill_cap)
     CFG.clear()
     CFG.update(cfg)
     _cwd = cwd or os.getcwd()
@@ -400,18 +407,24 @@ def loaded_tokens():
 
 
 def skills_of(msg):
-    """The skills a history message carries: a tool result or user turn that begins
-    with the header, or a message a turn boundary appended skills to (`_skills`)."""
+    """The skills a history message carries: a tool_search result (every header line
+    in it: `skill:A,B` answers with several, a notice may come first), any other
+    message that begins with the header, or one a turn boundary appended skills to
+    (`_skills`). Prose that merely mentions a header is not a load: only a tool_search
+    result is scanned past its first line."""
     names = []
     content = msg.get("content")
-    if isinstance(content, str) and content.startswith(HEADER_PREFIX):
-        m = _HEADER_RE.match(content)
-        if m:
-            names.append(m.group(1))
+    if isinstance(content, str):
+        if msg.get("role") == "tool" and msg.get("name") == "tool_search":
+            names += [m.group(1) for m in _HEADER_LINE_RE.finditer(content)]
+        elif content.startswith(HEADER_PREFIX):
+            m = _HEADER_RE.match(content)
+            if m:
+                names.append(m.group(1))
     for n in msg.get("_skills") or []:
         if isinstance(n, str) and n not in names:
             names.append(n)
-    return names
+    return list(dict.fromkeys(names))
 
 
 def sync_loaded(conversation_history, oldest_idx):
@@ -457,21 +470,25 @@ def load_text(names, by="model"):
     loaded, with a notice for each that cannot. The text lands as the tool result, so
     the window carries it from now; LOADED notes it at once."""
     out = []
-    tokens, chars = 0, 0
+    tokens = 0
+    loaded_here = 0
     for raw in names:
         name = resolve(raw) or raw
         ok, why = can_load(name, extra=tokens)
-        if ok and chars and chars + len(SKILLS[name].render()) > CFG["max_chars"]:
+        if ok and SKILLS[name].hidden and by == "model":
+            ok, why = False, (f"skill {name} is not available to the model (disable-model-invocation); "
+                              "only /skill " + name + " at the keyboard loads it.")
+        chars = sum(len(x) + 1 for x in out)   # notices count: the whole answer must not spill
+        if ok and loaded_here and chars + len(SKILLS[name].render()) > CFG["max_chars"]:
             ok, why = False, (f"skill {name} does not fit in this answer beside the others; "
                               "load it with its own tool_search skill:" + name + " call.")
         if not ok:
             out.append(why)
             continue
         s = SKILLS[name]
-        text = s.render()
-        out.append(text)
+        out.append(s.render())
         tokens += s.tokens
-        chars += len(text)
+        loaded_here += 1
         LOADED.append(name)
         _note_load(name, by)
     return "\n".join(out)
@@ -549,7 +566,7 @@ def keyword_matches(text):
         if s.name in LOADED:
             continue
         for kw in s.keywords:
-            if re.search(r"(?<![a-z0-9])" + re.escape(kw) + r"(?![a-z0-9])", low):
+            if re.search(r"(?<![a-z0-9_])" + re.escape(kw) + r"(?![a-z0-9_])", low):
                 hits.append(s.name)
                 break
     return hits
@@ -664,7 +681,8 @@ def pick_at_start(text):
         if ok:
             loads.append(name)
     if loads:
-        _log.info("skill.pick source=start how=keywords picked=%s", ",".join(loads))
+        _log.info("skill.pick source=start how=keywords picked=%s suggested=- ms=0", ",".join(loads))
+        _event("skill_pick", "start:keywords")
     return loads, []
 
 

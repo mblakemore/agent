@@ -274,12 +274,15 @@ def _drain_monitor_injections(conversation_history, framing=None):
     # Skills (`pick: "always"`): a typed line is judged like any user message, bus
     # items only when `pick_on_events` is on; never blocks (a worker thread).
     try:
-        if _skills.SKILLS and _skills.CFG.get("pick") == "always":
-            if typed:
-                _skills.PICKER.kick("\n\n".join(typed), source="user")
-            elif events and _skills.CFG.get("pick_on_events"):
-                _skills.PICKER.kick("\n\n".join(events), source="events")
-            msg["_skill_pick"] = True   # judged here, not again at the run's entry
+        if _skills.SKILLS:
+            if _skills.CFG.get("pick") == "always":
+                if typed:
+                    _skills.PICKER.kick("\n\n".join(typed), source="user")
+                elif events and _skills.CFG.get("pick_on_events"):
+                    _skills.PICKER.kick("\n\n".join(events), source="events")
+            # Judged here or not at all: a monitor's output is never "the task in the
+            # user's words" for the session-start pick.
+            msg["_skill_pick"] = True
     except Exception:
         pass
     return True
@@ -2077,8 +2080,18 @@ def _skill_judge(prompt, timeout):
     return _gate_judge(prompt, timeout, max_tokens=_skills._PICK_MAX_TOKENS, lock=_SKILL_JUDGE_LOCK)
 
 
+def _spill_cap_for_skills():
+    """limits.tool_result_max_chars as `_tool_result_spill_cap` reads it (defined further
+    down this file, after this runs): a real integer, else the legacy boundary."""
+    v = (_config.get("limits") or {}).get("tool_result_max_chars", _MAX_TOOL_RESULT_CHARS)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return _MAX_TOOL_RESULT_CHARS
+    return max(0, int(v))
+
+
 _skills.configure(_config.get("skills"), cwd=os.getcwd(), complete=_skill_judge,
-                  count_tokens=lambda text: count_tokens_from_message({"role": "user", "content": text}))
+                  count_tokens=lambda text: count_tokens_from_message({"role": "user", "content": text}),
+                  spill_cap=_spill_cap_for_skills())
 _skills.discover(log=logging.getLogger("agent"))
 
 _TOOL_TIERS = _registry.apply_tiers(
@@ -2540,6 +2553,10 @@ def _skills_at_boundary(conversation_history, messages_to_send, oldest_idx, log)
     verdict = _skills.PICKER.harvest()
     if verdict:
         _skills.apply_verdict(verdict)
+    if _skills.PENDING and _has_pending_tool_calls(conversation_history):
+        # A user turn here would strand the unanswered tool call; the load waits for
+        # the next boundary, as a bus injection does.
+        return _skills.take_suggestions()
     for name, text, by in _skills.take_pending():
         msg = _append_turn_text(conversation_history, messages_to_send, text)
         msg.setdefault("_skills", []).append(name)   # the window sync finds it here
@@ -7756,6 +7773,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         _CTX_REDUCE_MAX = 10     # max number of message-reduction attempts
         _ctx_spill_passes = 0    # spill-to-file passes taken this turn (stage 1)
         _gateway_timeout_recovered = False
+        _skill_suggestion = ""   # the picker's line for this turn's note, kept across attempts
 
         for _ctx_attempt in range(_CTX_REDUCE_MAX + 1):
             telemetry.record_context_size(ctx_size)
@@ -7847,7 +7865,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # the model owns the work.
             _now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             _apply_tool_loads(_session_tools, log)   # loads asked for last turn join the list here
-            _skill_suggestion = _skills_at_boundary(conversation_history, messages_to_send, oldest_idx, log)
+            # A retried attempt keeps the suggestion the first one harvested.
+            _skill_suggestion = _skills_at_boundary(conversation_history, messages_to_send, oldest_idx, log) or _skill_suggestion
             _system_lines = [
                 f"Current time (UTC, ISO8601): {_now_iso}",
                 f"Working directory: {os.getcwd()} — use this for all file paths, not /home/user.",
