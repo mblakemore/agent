@@ -611,6 +611,10 @@ _DEFAULT_CONFIG = {
         # number waits at most that many seconds for a running summary, then sends
         # the request with the last summary and lets the worker catch up.
         "wait_s": None,
+        # Prompt-caching backends: once the window stands at this fraction of its
+        # budget (or of the message cap), summarize what the next eviction is certain
+        # to drop, so the eviction finds its summary ready. 0 = off.
+        "ahead": 0.0,
     },
     "bedrock": {
         "adaptive_max_tokens": True,
@@ -2581,6 +2585,19 @@ def _summary_wait_s():
         return None
 
 
+def _summary_ahead_frac():
+    """summary.ahead: the window fill (a fraction of the budget, or of the message
+    cap) at which the summary of what the next eviction will drop is started; 0 off."""
+    try:
+        v = float(_config.get("summary", {}).get("ahead", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if 0.0 < v < 1.0 else 0.0
+
+
+_ALIGN_BAND = (0.75, 1.25)   # an aligned window may be this much smaller or larger than a greedy one
+
+
 class _CompletionResponse:
     """Just enough of a chat-completions response (``.json()``) for tool_recovery."""
 
@@ -3648,6 +3665,81 @@ def _cache_keepalive_arm(log):
 
     t = threading.Thread(target=_worker, name="cache-keepalive", daemon=True)
     _KEEPALIVE["stop"], _KEEPALIVE["thread"] = stop, t
+    t.start()
+    return True
+
+
+# ── Summary ahead of a cache collapse ────────────────────────────────────────
+# While the agent waits for input on a caching backend, nothing in the history
+# changes, so the window a collapse would rebuild (context.cache_collapse_frac)
+# after an idle gap longer than the cache's lifetime is known now. When the gap
+# reaches half that lifetime the summary of what the collapse will drop is
+# started, and the wake request goes out at once instead of after it (measured
+# 2026-11-02: 32 collapses, each behind a synchronous summary of ~11 s).
+_SUMMARY_IDLE = {"stop": None, "thread": None, "run": None}
+_SUMMARY_IDLE_AT_FRAC = 0.5    # of the proven cache lifetime
+_SUMMARY_IDLE_POLL_S = 30.0    # keepalives move last_at, so the gap is re-read this often
+
+
+def _summary_idle_loop(stop, run, log, now=time.time):
+    """Wait for the idle gap to reach half the cache's proven lifetime, then start the
+    summary a collapse would need, once. `run` holds the history, state, summarizer
+    and sizes of the run that just ended. Returns why it stopped, for the tests."""
+    key = _cache_lifetime_key()
+    while True:
+        alive_s, _ = _cache_lifetime_estimate(_cache_lifetimes(), key)
+        last = _CACHE_REQ["last_at"]
+        if not last or not alive_s:
+            return "no-record"
+        gap = now() - last
+        due_in = alive_s * _SUMMARY_IDLE_AT_FRAC - gap
+        if due_in > 0:
+            if stop.wait(min(due_in, _SUMMARY_IDLE_POLL_S)):
+                return "run"
+            continue
+        summarizer, state = run["summarizer"], run["state"]
+        if summarizer.is_running or summarizer.pending_up_to() is not None:
+            return "busy"
+        edge = _collapse_edge(run["history"], state, run["initial_files"], run["ctx_size"], run["max_tokens"])
+        if edge is None:
+            return "no-collapse"
+        msgs = run["history"][state["up_to"]:edge]
+        if not msgs or not summarizer.kick(state["text"], msgs, edge, kind="idle"):
+            return "nothing"
+        log.info("summary.idle kick after %ds idle: up_to=%d edge=%d (%d messages), for the collapse due past %ds",
+                 int(gap), state["up_to"], edge, len(msgs), int(alive_s))
+        telemetry.record_patch_event("summary_idle", kind="fired")
+        return "kicked"
+
+
+def _summary_idle_disarm():
+    """Stop the idle watcher (a run is starting)."""
+    stop = _SUMMARY_IDLE.get("stop")
+    if stop is not None:
+        stop.set()
+    _SUMMARY_IDLE["stop"] = None
+    _SUMMARY_IDLE["thread"] = None
+
+
+def _summary_idle_arm(log):
+    """Start the idle watcher for the run that just ended, when summary.ahead is on,
+    the backend caches and a collapse is configured. Called with the keepalive."""
+    _summary_idle_disarm()
+    run = _SUMMARY_IDLE.get("run")
+    if (not run or run.get("summarizer") is None or not _summary_ahead_frac()
+            or not _prompt_caching_backend() or not _cache_collapse_frac()):
+        return False
+    stop = threading.Event()
+
+    def _worker():
+        try:
+            why = _summary_idle_loop(stop, run, log)
+            log.debug("summary.idle thread done: %s", why)
+        except Exception as e:  # noqa: BLE001
+            log.debug("summary.idle thread error: %s", e)
+
+    t = threading.Thread(target=_worker, name="summary-idle", daemon=True)
+    _SUMMARY_IDLE["stop"], _SUMMARY_IDLE["thread"] = stop, t
     t.start()
     return True
 
@@ -4950,6 +5042,108 @@ def _build_initial_files_msg(initial_files):
     return {"role": "user", "content": initial_files + _TRIMMED_LEAD}
 
 
+def _context_budget(ctx_size, max_tokens):
+    """The token budget of one request's window: the context less the tools, the
+    reserved output and a safety margin (ctx_size//4: chat-template overhead the
+    tokenizer does not count), calibrated to what the server actually counts (F3b)."""
+    global _TOOLS_TOKENS
+    if _TOOLS_TOKENS is None:
+        _TOOLS_TOKENS = _estimate_tools_tokens()
+    reserved_output = min(max_tokens, ctx_size // 2)
+    budget = ctx_size - _TOOLS_TOKENS - reserved_output - max(512, ctx_size // 4)
+    return _calibrated_budget(budget)
+
+
+def _fill_window(history, fill_budget, fill_max, context_tokens):
+    """Pure: the greedy fill from the newest message back, stopping at `fill_max`
+    messages or `fill_budget` tokens, with `context_tokens` reserved for the lead
+    whenever the window would not start at message 0. Returns (oldest_idx, used):
+    where the window starts (len(history) when nothing fits) and its tokens."""
+    used, n, oldest = 0, 0, len(history)
+    for i in range(len(history) - 1, -1, -1):
+        if n >= fill_max:
+            break
+        t = _estimate_tokens(history[i])
+        if used + t + (context_tokens if i > 0 else 0) > fill_budget:
+            break
+        used += t
+        n += 1
+        oldest = i
+    return oldest, used
+
+
+def _evicted_edge(history, head, used, budget, n_max, ahead):
+    """Pure: the index up to which the next eviction is certain to drop messages, or
+    None while the window stands under `ahead` of both limits. An eviction keeps the
+    newest _CACHE_EVICT_TO_FRAC of the budget (and of the message cap), so at least
+    the other share of the window as it stands now leaves at the next one, and its
+    summary can be made now and be ready then."""
+    if not ahead or head is None or head >= len(history):
+        return None
+    n = len(history) - head
+    keep = _CACHE_EVICT_TO_FRAC
+    by_tokens = used >= budget * ahead
+    by_count = n >= n_max * ahead
+    if not (by_tokens or by_count):
+        return None
+    keep_budget = int(used - budget * (1.0 - keep)) if by_tokens else budget
+    keep_max = (n - (n_max + 1 - max(2, int(n_max * keep)))) if by_count else n_max
+    if keep_budget <= 0 or keep_max <= 0:
+        return None
+    edge, _ = _fill_window(history, keep_budget, keep_max, 0)
+    return edge if head < edge < len(history) else None
+
+
+def _aligned_head(history, ready, head, fill_budget, fill_max, n_max, budget, context_tokens):
+    """Pure: when a summary is ready up to `ready`, past the current `head`, and the
+    window from there is within _ALIGN_BAND of the one a greedy rebuild would make,
+    that is the new head: nothing leaves unsummarized and nothing is waited for. A
+    summary made for a collapse is never taken at an eviction, nor the reverse: the
+    band rejects a window a quarter smaller or larger than the greedy one."""
+    if not isinstance(ready, int) or head is None or ready <= head or ready >= len(history):
+        return None
+    n = len(history) - ready
+    used = sum(_estimate_tokens(m) for m in history[ready:])
+    if n > n_max or used + context_tokens > budget:
+        return None
+    g_idx, g_used = _fill_window(history, fill_budget, fill_max, context_tokens)
+    g_n = len(history) - g_idx
+    if not g_used or not g_n:
+        return None
+    lo, hi = _ALIGN_BAND
+    if used > g_used * hi:
+        return None
+    if used >= g_used * lo or n >= g_n * lo:
+        return ready
+    return None
+
+
+def _lead_tokens(summary_state, initial_files):
+    """The tokens of the lead message a trimmed window would carry right now."""
+    if summary_state.get("text"):
+        return _estimate_tokens(_build_context_footnote(summary_state["text"], initial_files))
+    if initial_files:
+        return _estimate_tokens(_build_initial_files_msg(initial_files))
+    return 0
+
+
+def _collapse_edge(history, summary_state, initial_files, ctx_size, max_tokens):
+    """The head a cache collapse would rebuild the window to if it happened now, or
+    None when it would not happen (collapse off, no kept head, the window already
+    small: the same test as _cache_collapse_due) or nothing new would leave."""
+    frac = _cache_collapse_frac()
+    head = summary_state.get("_cache_head")
+    if not frac or not isinstance(head, int) or not (0 <= head < len(history)):
+        return None
+    budget = _context_budget(ctx_size, max_tokens)
+    lead = _lead_tokens(summary_state, initial_files)
+    used = sum(_estimate_tokens(m) for m in history[head:]) + (lead if head > 0 else 0)
+    if not used > budget * frac * 1.5:
+        return None
+    edge, _ = _fill_window(history, int(budget * frac), max(2, int(_MAX_CONTEXT_MESSAGES * frac)), lead)
+    return edge if edge > summary_state.get("up_to", 0) and edge < len(history) else None
+
+
 def _build_context(conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                     max_messages_override=None):
     """Build the context window dynamically based on token budget.
@@ -4963,18 +5157,7 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
 
     Returns (messages_to_send, oldest_included_idx).
     """
-    global _TOOLS_TOKENS
-    if _TOOLS_TOKENS is None:
-        _TOOLS_TOKENS = _estimate_tools_tokens()
-
-    reserved_output = min(max_tokens, ctx_size // 2)
-    # Safety margin: ctx_size//4 gives ~25% headroom.  This accounts for
-    # chat-template overhead (~4 special tokens per message boundary, system
-    # prompt formatting for tools) that our tokenizer doesn't count.
-    budget = ctx_size - _TOOLS_TOKENS - reserved_output - max(512, ctx_size // 4)
-    # F3b: spend estimator-tokens so that the SERVER sees at most `budget` (ratio observed
-    # from real prompt_tokens; 1.0 until the first measured turn).
-    budget = _calibrated_budget(budget)
+    budget = _context_budget(ctx_size, max_tokens)
     effective_max = max_messages_override if max_messages_override else _MAX_CONTEXT_MESSAGES
 
     context_msg = None
@@ -5047,19 +5230,24 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
         frac = fill_frac or (_CACHE_EVICT_TO_FRAC if (_prompt_caching_backend() and not max_messages_override) else 1.0)
         fill_budget = int(budget * frac) if frac < 1.0 else budget
         fill_max = max(2, int(effective_max * frac)) if frac < 1.0 else effective_max
-        for i in range(len(conversation_history) - 1, -1, -1):
-            if len(selected) >= fill_max:
-                break
-            msg_tokens = _estimate_tokens(conversation_history[i])
-            needed = used + msg_tokens
-            if context_msg and i > 0:
-                needed += context_tokens
-            if needed > fill_budget:
-                break
-            selected.append(conversation_history[i])
-            used += msg_tokens
-            oldest_idx = i
-        selected.reverse()
+        aligned = None
+        if frac < 1.0 and head is not None:
+            # A summary made ahead of this head move (summary.ahead, or the idle watcher
+            # before a collapse) ends at _ready_up_to: start the window there when that
+            # is about the size a greedy rebuild would make, so the summary is complete
+            # and nothing waits.
+            aligned = _aligned_head(conversation_history, summary_state.get("_ready_up_to"), head,
+                                    fill_budget, fill_max, effective_max, budget, context_tokens)
+        if aligned is not None:
+            oldest_idx = aligned
+            used = sum(_estimate_tokens(m) for m in conversation_history[aligned:])
+            log.info("summary.align: window head %s -> %d, where the ready summary ends (%d messages, ~%d tokens)",
+                     head, aligned, len(conversation_history) - aligned, used)
+            telemetry.record_patch_event("summary_align", kind="fired")
+        else:
+            oldest_idx, used = _fill_window(conversation_history, fill_budget, fill_max,
+                                            context_tokens if context_msg else 0)
+        selected = list(conversation_history[oldest_idx:])
         if frac < 1.0:
             if summary_state.get("_cache_head") not in (None, oldest_idx):
                 log.info("cache-friendly eviction: window head %s -> %d (%d messages, ~%d tokens)",
@@ -5073,11 +5261,19 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
                 summary_state["_evict_summarize"] = True
             summary_state["_cache_head"] = oldest_idx
 
+    window_used = used
     if oldest_idx > 0 and context_msg:
         selected.insert(0, context_msg)
         used += context_tokens
     else:
         context_msg = None   # nothing leads an untrimmed window (the log line reports what was sent)
+    ahead = _summary_ahead_frac() if (_prompt_caching_backend() and not max_messages_override) else 0.0
+    if ahead and oldest_idx < len(conversation_history):
+        # Read by the run loop: the worker summarizes up to the edge now, the eviction
+        # then aligns to it (above) and goes out with its summary at no wait.
+        edge = _evicted_edge(conversation_history, oldest_idx, window_used, budget, effective_max, ahead)
+        if edge is not None and edge > summary_state.get("up_to", 0):
+            summary_state["_ahead_edge"] = edge
     if context_msg is None and not any(m["role"] == "user" for m in selected):
         if initial_files:
             selected.insert(0, {"role": "user", "content": initial_files + "\n\nContinue."})
@@ -7021,6 +7217,7 @@ def run_agent_single(*args, **kwargs):
     _write_cycle_status("running")
     _run_turn_hooks("start")
     _cache_keepalive_disarm()
+    _summary_idle_disarm()
     try:
         result = _run_agent_single_impl(*args, **kwargs)
         _write_cycle_status("complete", result=result)
@@ -7034,6 +7231,7 @@ def run_agent_single(*args, **kwargs):
             _log = args[3] if len(args) > 3 else kwargs.get("log")
             if _log is not None:
                 _cache_keepalive_arm(_log)
+                _summary_idle_arm(_log)
         except Exception:  # the keepalive is a saving, never a failure
             pass
 
@@ -7772,6 +7970,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
     _cicd_issue_view_called = False  # tracks whether `gh issue view` was called before merge (PRE-MERGE CHECK)
 
     _async_summarizer = async_summarizer
+    _SUMMARY_IDLE["run"] = {"history": conversation_history, "state": summary_state, "summarizer": async_summarizer,
+                            "initial_files": initial_files, "ctx_size": ctx_size, "max_tokens": max_tokens}
 
     # T5.15 — stall-retry budget (across the cycle, not per-turn). When the
     # streaming stall guard (T3.8) trips, the framework adjusts sampling for
@@ -8031,6 +8231,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
 
         for _ctx_attempt in range(_CTX_REDUCE_MAX + 1):
             telemetry.record_context_size(ctx_size)
+            _ready = _async_summarizer.pending_up_to() if _async_summarizer else None
+            summary_state["_ready_up_to"] = _ready if isinstance(_ready, int) else None
             messages_to_send, oldest_idx = _build_context(
                 conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                 max_messages_override=_ctx_max_messages)
@@ -8094,10 +8296,25 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # only — no log noise, since this is the COMMON case now.
                     telemetry.record_patch_event("summary_gated", kind="skipped")
                     _patch_telemetry["summary_gated"] += 1
+                _ahead_edge = summary_state.pop("_ahead_edge", None)
+                if (isinstance(_ahead_edge, int) and _ahead_edge > summary_state["up_to"]
+                        and not _async_summarizer.is_running and _async_summarizer.pending_up_to() is None):
+                    # summary.ahead: the window is nearly full and these messages are certain
+                    # to leave at the next eviction; their summary is held until then.
+                    _ahead_msgs = conversation_history[summary_state["up_to"]:_ahead_edge]
+                    if _ahead_msgs and _async_summarizer.kick(summary_state["text"], _ahead_msgs, _ahead_edge,
+                                                              kind="ahead"):
+                        log.info("summary.ahead kick up_to=%d edge=%d (%d messages, window ~%d tokens)",
+                                 summary_state["up_to"], _ahead_edge, len(_ahead_msgs), _ctx_tokens_used)
+                        telemetry.record_patch_event("summary_ahead", kind="fired")
+                        _emit("on_notice", "info",
+                              f"[summarizing {len(_ahead_msgs)} messages ahead of the next eviction]")
             elif _maybe_resummarize(conversation_history, summary_state, oldest_idx, log):
                 messages_to_send, oldest_idx = _build_context(
                     conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                     max_messages_override=_ctx_max_messages)
+            summary_state.pop("_ahead_edge", None)
+            summary_state.pop("_ready_up_to", None)
 
             # Inject wind-down as a system message at the end of context
             if wind_down_msg:
