@@ -25,11 +25,20 @@ def fn(query: str = "", max_results: int = 5) -> str:
     q = str(query or "").strip()
     if not q:
         return ("Error: give keywords (for example 'pdf' or 'screenshot page'), or "
-                "select:name,name to load by name. " + _registry.catalog_text())
+                "select:name,name to load by name, or skill:NAME for a skill. "
+                + _registry.catalog_text())
     try:
         limit = max(1, int(max_results))
     except (TypeError, ValueError):
         limit = 5
+    if q.lower().startswith("skill:"):
+        # A skill's text IS the answer: appended as this tool result, it costs no cache
+        # miss and is in the window from now (skills.py).
+        import skills as _skills
+        wanted = [n.strip() for n in q[len("skill:"):].split(",") if n.strip()]
+        if not wanted:
+            return "Error: skill:NAME names the skill to load. " + _skills.catalog_text()
+        return _skills.load_text(wanted, by="model")
     unknown = []
     if q.lower().startswith("select:"):
         wanted = [n.strip() for n in q[len("select:"):].split(",") if n.strip()]
@@ -43,9 +52,11 @@ def fn(query: str = "", max_results: int = 5) -> str:
                 unknown.append(n)
     else:
         known = _registry.search(q, limit)
+    skill_lines = _skill_matches(q) if not q.lower().startswith("select:") else []
     if not known:
         tail = (" Unknown: " + ", ".join(unknown) + ".") if unknown else ""
-        return f'No tool matches "{q}".{tail} ' + _registry.catalog_text(include_hidden=True)
+        return (f'No tool matches "{q}".{tail} ' + _registry.catalog_text(include_hidden=True)
+                + ("\n" + "\n".join(skill_lines) if skill_lines else ""))
     lines = []
     loaded = []
     for n in known[:limit]:
@@ -61,7 +72,19 @@ def fn(query: str = "", max_results: int = 5) -> str:
         lines.append(f"Loaded {len(loaded)} tool(s); they are in your tool list from the next turn.")
     else:
         lines.append("Nothing new to load; these are already in your list.")
+    lines += skill_lines
     return "\n".join(lines)
+
+
+def _skill_matches(query):
+    """Skills a free-text query names, listed beside the tool matches (not loaded)."""
+    try:
+        import skills as _skills
+        hits = _skills.search(query)
+    except Exception:
+        return []
+    return [f"Skill `{n}` ({_skills.SKILLS[n].short()}): load it with tool_search skill:{n}"
+            for n in hits[:3]]
 
 
 definition = {
@@ -73,14 +96,16 @@ definition = {
             "'screenshot page', 'schedule a prompt'), or 'select:name,name' to load by name. "
             "Loaded tools stay for the session and are usable from the next turn. Loading "
             "changes your tool list, which costs one cache miss, so load what the task needs "
-            "in one call. The short list of other tools is in your instructions."
+            "in one call. The short list of other tools is in your instructions. "
+            "'skill:NAME' (or skill:NAME,NAME) answers with a skill's instructions instead; "
+            "the skills are listed in your instructions when there are any."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Keywords, or select:name,name.",
+                    "description": "Keywords, select:name,name, or skill:NAME.",
                 },
                 "max_results": {
                     "type": "integer",

@@ -46,6 +46,7 @@ def _cmd_help(ctx: SimpleNamespace, args: str) -> None:
         "  /verbose       — toggle compact/full tool output",
         "  /tools [N|all] — show buffered tool calls (default: all; N = last N only)",
         "  /tools list|search WORDS|load NAMES|core|defer|hide NAME [--save] — the lazy-tool tiers",
+        "  /skill [list|NAME|reload] — the skills (instruction files); NAME loads one next turn",
         "  /phase         — show current phase checkpoint",
         "  exit/quit      — end the session",
     ]
@@ -60,6 +61,11 @@ def _cmd_clear(ctx: SimpleNamespace, args: str) -> None:
     ctx.initial_files = None
     if ctx.async_summarizer:
         ctx.async_summarizer.reset()
+    try:
+        import skills as _skills
+        _skills.reset_session()   # the loaded skills went with the history
+    except Exception:
+        pass
     new_log, new_log_path, _ = ctx.setup_logger()
     ctx.log = new_log
     ctx.log_path = new_log_path
@@ -322,6 +328,40 @@ def _cmd_tools(ctx: SimpleNamespace, args: str) -> None:
     ctx.cb._print(ctx.cb.render_tools(limit=limit))
 
 
+def _cmd_skill(ctx: SimpleNamespace, args: str) -> None:
+    """`/skill [list|NAME|reload]`: the skills (skills.py). `list` (the default) shows
+    every skill, its tokens, whether the catalog names it and whether it is loaded;
+    `NAME` queues one as a user message for the next turn; `reload` rediscovers."""
+    import skills as _skills
+    out = ctx.cb._print
+    verb = (args or "list").strip()
+    if verb.lower() == "list":
+        if not _skills.SKILLS:
+            out("  no skills: put a SKILL.md under .agent/skills/NAME/ or .claude/skills/NAME/, "
+                "or register documents in the config's skills.catalog list")
+            return
+        lines = [theme.c(theme.SKY, "Skills (load with /skill NAME, or the model with tool_search skill:NAME):")]
+        for s in _skills.SKILLS.values():
+            state = "loaded" if s.name in _skills.LOADED else (
+                "queued" if any(n == s.name for n, _ in _skills.PENDING) else "")
+            tier = "hidden " if s.hidden else "catalog"
+            lines.append(f"  {tier}  {s.name:<20} {s.tokens:>6} tok  {state:<6} {s.short()}")
+        cap = _skills.CFG.get("max_loaded_tokens")
+        lines.append(f"  loaded    {_skills.loaded_tokens()} tokens" + (f" of {cap}" if cap else "")
+                     + f"; picker: {_skills.CFG.get('pick')}")
+        out("\n".join(lines))
+        return
+    if verb.lower() == "reload":
+        names = _skills.discover(log=ctx.log)
+        out(f"  skills: {', '.join(names) if names else 'none found'}")
+        return
+    ok, msg = _skills.request_load(verb, by="command")
+    if ok:
+        safe_cb(ctx.cb, "on_notice", "info", "  " + msg)
+    else:
+        safe_cb(ctx.cb, "on_notice", "warn", "  " + msg)
+
+
 def _cmd_phase(ctx: SimpleNamespace, args: str) -> None:
     _warn_extra_args(ctx, "/phase", args)
     phases = ["PERCEIVE", "PROBE", "DECIDE", "PLAN", "IMPLEMENT", "VERIFY", "TRACK"]
@@ -433,6 +473,7 @@ _COMMANDS: dict[str, Callable[[SimpleNamespace, str], None]] = {
     "/alias": _cmd_alias,
     "/verbose": _cmd_verbose,
     "/tools": _cmd_tools,
+    "/skill": _cmd_skill,
     "/phase": _cmd_phase,
     "/agent": _cmd_agent,
 }

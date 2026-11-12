@@ -78,6 +78,7 @@ The wizard writes `.agent/config.json`. Three keys cover most adjustments:
 - **Catches common model mistakes:** broken tool calls are repaired, and invented file contents are caught before they mislead it.
 - **Can ask a bigger model:** an optional advisor model is consulted when the main one gets stuck.
 - **Waits instead of polling:** long commands keep running in the background and report when they finish, `wait` blocks for free until something happens, and an optional gate (`preferences.gate.enabled`) lets a cheap model hold noisy monitor output for a digest instead of waking the main one.
+- **Loads instructions on demand:** skill files (`.claude/skills/NAME/SKILL.md`, or your own docs registered in the config) are named in one line and pulled in by name with `tool_search skill:NAME`, by `/skill NAME`, or by a cheap model that reads the task and picks; a skill is a message, not a tool schema, so loading one mid-session costs no cache miss.
 - **Runs unattended:** `agent -a` takes a deadline, a goal and named deliverables, checks its own result against a schema, and exits with a code a supervisor can act on. `/agent` turns a folder into a long-lived agent with an identity file that leads every session.
 
 ## Learn more

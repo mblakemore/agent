@@ -423,11 +423,15 @@ def _reset_tool_registry_session():
     """Lazy tools: what one test loaded (tools.LOADED, PENDING_LOADS, RESUME_LOADED) must
     not be in the next test's session list."""
     import tools as _registry
+    import skills as _skills
     import agent as _agent
     _registry.reset_session()
+    _skills.reset_session()
     _agent._LEAD["refs"] = []      # the lead files of one test's session are not the next's
     yield
     _registry.reset_session()
+    _skills.reset_session()
+    _skills.SKILLS.clear()         # skills one test discovered are not the next's
     _agent._LEAD["refs"] = []
 
 

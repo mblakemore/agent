@@ -97,6 +97,7 @@ from spinner import StreamStatus
 from token_utils import count_tokens_from_message, count_tools_tokens
 from tools import MAP_FN, tools, load_extra_tools
 import tools as _registry
+import skills as _skills
 import monitor_bus
 import schedule_bus
 import tools.end_cycle as _end_cycle_tool
@@ -253,13 +254,14 @@ def _drain_monitor_injections(conversation_history, framing=None):
         queued = monitor_bus.drain_items()
     except Exception:
         return False
-    items, held = [], []
+    items, held, typed, events = [], [], [], []
     for kind, text in queued:
         if text == _LIVE_EXIT_MARK or (
                 kind == "user" and _SLASH_HOLD["active"] and text.lstrip().startswith("/")):
             held.append(text)
         else:
             items.append(text)
+            (typed if kind == "user" else events).append(text)
     for text in held:
         monitor_bus.put_user(text)
     if not items:
@@ -267,7 +269,19 @@ def _drain_monitor_injections(conversation_history, framing=None):
     body = "\n\n".join(items)
     if framing:
         body = framing + "\n\n" + body
-    conversation_history.append({"role": "user", "content": body})
+    msg = {"role": "user", "content": body}
+    conversation_history.append(msg)
+    # Skills (`pick: "always"`): a typed line is judged like any user message, bus
+    # items only when `pick_on_events` is on; never blocks (a worker thread).
+    try:
+        if _skills.SKILLS and _skills.CFG.get("pick") == "always":
+            if typed:
+                _skills.PICKER.kick("\n\n".join(typed), source="user")
+            elif events and _skills.CFG.get("pick_on_events"):
+                _skills.PICKER.kick("\n\n".join(events), source="events")
+            msg["_skill_pick"] = True   # judged here, not again at the run's entry
+    except Exception:
+        pass
     return True
 
 
@@ -469,6 +483,23 @@ _DEFAULT_CONFIG = {
         "catalog": True,             # the one-line list of deferred tools in the system prompt
         "preload_from_prompt": True, # load tools the task text names before the first request
         "implicit_run": True,        # a deferred tool called with fitting arguments runs at once
+    },
+    # Skills (skills.py): instruction files the model loads by name with
+    # `tool_search skill:NAME`, named in one catalog line beside the tools; optionally
+    # picked by the summary model from the task text. Every key is off or harmless by
+    # default; discovery of .agent/skills and .claude/skills is always on.
+    "skills": {
+        "dirs": [],                  # extra directories of <name>/SKILL.md
+        "catalog": [],               # registered documents: {name, path, description, keywords?}
+        "max_chars": 20000,          # a bigger file is not a skill (the spill cap)
+        "max_loaded_tokens": 12000,  # loads past this are refused with a notice
+        "pick": "off",               # "start": one summary-model pick before the first request;
+                                     # "always": also after each later user message
+        "pick_on_events": False,     # "always" also judges delivered bus items
+        "load_threshold": 0.75,      # a pick at or above this is loaded
+        "suggest_threshold": 0.4,    # ... at or above this is suggested in the runtime note
+        "max_picks_per_turn": 2,
+        "pick_timeout_s": 15,
     },
     # No model name ships: an empty model takes the server's own (startup reads
     # /v1/models), and /setup writes the one picked.
@@ -2011,13 +2042,14 @@ _apply_switch_model_tier()
 _GATE_JUDGE_LOCK = threading.Lock()   # one judge call at a time, from any source thread
 
 
-def _gate_judge(prompt, timeout):
-    """The summary model as the gate's judge: one small deterministic completion. Every
-    backend's complete() builds its request afresh, so a call from a monitor thread is
-    safe beside the main loop; the lock only keeps gated sources from stampeding."""
+def _gate_judge(prompt, timeout, max_tokens=200, lock=_GATE_JUDGE_LOCK):
+    """The summary model as the gate's judge (and, with its own lock, the skill
+    picker's): one small deterministic completion. Every backend's complete() builds its
+    request afresh, so a call from a monitor thread is safe beside the main loop; the
+    lock only keeps gated sources from stampeding."""
     backend = _agent_mod()._summary_backend
-    gen = {"max_tokens": 200, "temperature": 0}
-    with _GATE_JUDGE_LOCK:
+    gen = {"max_tokens": max_tokens, "temperature": 0}
+    with lock:
         try:
             return backend.complete(prompt=prompt, gen_params=gen, timeout=timeout)
         except TypeError as e:  # a backend whose complete() takes only the prompt
@@ -2034,6 +2066,20 @@ _registry.GATES["gate"] = monitor_bus.gate_enabled
 if "gate" in _registry.DEFINITIONS and monitor_bus.gate_enabled():
     _registry.TIERS["gate"] = "deferred"
     _registry.rebuild()
+
+
+# ── Skills (skills.py): discovered once here; the picker shares the gate's judge call
+# but not its lock, so a slow pick never delays a gate verdict ──
+_SKILL_JUDGE_LOCK = threading.Lock()
+
+
+def _skill_judge(prompt, timeout):
+    return _gate_judge(prompt, timeout, max_tokens=_skills._PICK_MAX_TOKENS, lock=_SKILL_JUDGE_LOCK)
+
+
+_skills.configure(_config.get("skills"), cwd=os.getcwd(), complete=_skill_judge,
+                  count_tokens=lambda text: count_tokens_from_message({"role": "user", "content": text}))
+_skills.discover(log=logging.getLogger("agent"))
 
 _TOOL_TIERS = _registry.apply_tiers(
     _TOOLS_CFG, whitelist=_tools_whitelist if isinstance(_tools_whitelist, list) else None,
@@ -2461,6 +2507,64 @@ def _persist_runtime_note(conversation_history, messages_to_send, lines, turn):
     conversation_history.append(msg)
     if messages_to_send is not None:
         messages_to_send.append(msg)
+
+
+def _append_turn_text(conversation_history, messages_to_send, text):
+    """Add text for the model at a turn boundary the way the runtime note does: onto
+    the newest message when it is a user turn or a tool result not yet sent, else as a
+    user turn of its own (never two user turns in a row)."""
+    last = conversation_history[-1] if conversation_history else None
+    if (last is not None and last.get("role") in ("user", "tool")
+            and isinstance(last.get("content"), str) and last.get("_note_turn") is None):
+        last["content"] = (last["content"] + "\n\n" + text) if last["content"] else text
+        last.pop("_tokens", None)
+        return last
+    msg = {"role": "user", "content": text}
+    conversation_history.append(msg)
+    if messages_to_send is not None:
+        messages_to_send.append(msg)
+    return msg
+
+
+def _skills_at_boundary(conversation_history, messages_to_send, oldest_idx, log):
+    """The skills work of a turn boundary, after the window is built and before the
+    runtime note: the loaded set is re-derived from the window (a trimmed skill leaves
+    it), a verdict the picker finished is applied, queued skills (keyboard, picker)
+    join the newest message, and the picker's suggestions come back as one line for
+    the runtime note ('' when none)."""
+    if not _skills.SKILLS:
+        return ""
+    left = _skills.sync_loaded(conversation_history, oldest_idx)
+    if left:
+        log.info("skill.evicted %s (left the window; can be loaded again)", ", ".join(left))
+    verdict = _skills.PICKER.harvest()
+    if verdict:
+        _skills.apply_verdict(verdict)
+    for name, text, by in _skills.take_pending():
+        msg = _append_turn_text(conversation_history, messages_to_send, text)
+        msg.setdefault("_skills", []).append(name)   # the window sync finds it here
+        _emit("on_notice", "info", f"skill {name} loaded ({by})")
+    return _skills.take_suggestions()
+
+
+def _skills_on_entry(conversation_history, log):
+    """At the start of a run: the newest user message not yet judged goes to the
+    picker. The first of the session is judged synchronously before the first request
+    (`pick: start` or `always`, else the keyword floor); later ones (`always`) on a
+    worker thread, harvested at a turn boundary."""
+    if not _skills.SKILLS:
+        return
+    msg = next((m for m in reversed(conversation_history)
+                if m.get("role") == "user" and isinstance(m.get("content"), str)), None)
+    if msg is None or msg.get("_skill_pick"):
+        return
+    msg["_skill_pick"] = True
+    if not _skills.STATE["started"]:
+        loads, suggests = _skills.pick_at_start(msg["content"])
+        if loads or suggests:
+            log.info("skills at start: load %s, suggest %s", loads or "-", suggests or "-")
+    else:
+        _skills.PICKER.kick(msg["content"], source="user")
 
 
 def _tool_args_complete(tool_call):
@@ -4070,6 +4174,15 @@ def _build_summary_prompt(old_summary, new_messages):
             "\n\nGROUND TRUTH (include verbatim in your summary under STATE):\n"
             + "\n".join(f"- {f}" for f in cicd_facts)
         )
+    # A skill loaded among these messages leaves the window with them: the summary
+    # says it was loaded, so the model knows it once had those instructions.
+    _skill_names = _skills.skills_in(new_messages)
+    if _skill_names:
+        structure_instruction += (
+            "\n\nUnder STATE, also say that these skills (instruction files) were loaded and "
+            "are no longer in the conversation; each can be loaded again with "
+            "tool_search skill:NAME: " + ", ".join(_skill_names)
+        )
 
     if old_summary:
         return (
@@ -4190,6 +4303,8 @@ def _compress_repeated_tool_results(conversation_history: list, func_name: str, 
             continue
         if content.startswith("[compressed"):
             continue
+        if _skills.skills_of(conversation_history[idx]):
+            continue   # a skill's text is instructions; it leaves by trimming, not in pieces
         conversation_history[idx]["content"] = (
             _summarize_for_compression(content, func_name, log)
             if (not local_only and len(changed) < _TOOL_RESULT_COMPRESS_MODEL_MAX)
@@ -5050,6 +5165,7 @@ def _save_checkpoint(conversation_history, summary_state, turn, initial_files,
             "initial_file_refs": list(_LEAD["refs"]),
             "clean_exit": clean_exit,
             "loaded_tools": list(_registry.LOADED),
+            "loaded_skills": list(_skills.LOADED),
         }
         os.makedirs(os.path.dirname(_CHECKPOINT_PATH), exist_ok=True)
         with open(_CHECKPOINT_PATH, "w", encoding="utf-8") as f:
@@ -5067,6 +5183,11 @@ def _load_checkpoint():
         with open(_CHECKPOINT_PATH, encoding="utf-8", errors="replace") as f:
             cp = json.load(f)
         _registry.RESUME_LOADED[:] = [n for n in (cp.get("loaded_tools") or []) if isinstance(n, str)]
+        # The skill text is in the history; the names are restored for the catalog and
+        # the picker until the first window sync re-derives them.
+        _skills.RESUME_LOADED[:] = [n for n in (cp.get("loaded_skills") or []) if isinstance(n, str)]
+        _skills.LOADED[:] = [n for n in _skills.RESUME_LOADED if n in _skills.SKILLS]
+        _skills.STATE["started"] = bool(cp.get("conversation_history"))
         _LEAD["refs"] = [r for r in (cp.get("initial_file_refs") or []) if isinstance(r, str)]
         return (
             cp["conversation_history"],
@@ -5354,11 +5475,15 @@ def _render_context_bar(history, summary_state, ctx_size, width=30):
     pct = total / ctx_size if ctx_size else 0.0
     bar = theme.bar(pct, width=width)
     pct_str = f"{pct*100:.1f}%"
+    skills_line = ""
+    if _skills.LOADED:
+        skills_line = (f"\n  skills:  {_skills.loaded_tokens()} tokens in {len(_skills.LOADED)} "
+                       f"loaded ({', '.join(_skills.LOADED)})")
     return (
         f"{bar} {pct_str}\n"
         f"  history: {body_tokens} tokens in {len(history)} messages\n"
         f"  summary: {summary_tokens} tokens\n"
-        f"  budget:  {total} / {ctx_size} tokens"
+        f"  budget:  {total} / {ctx_size} tokens" + skills_line
     )
 
 
@@ -7244,6 +7369,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         if _preloaded:
             log.info("tools.preloaded %s", ", ".join(_preloaded))
         _apply_tool_loads(_session_tools, log)
+    # Skills: the first message of the session is judged now (nothing is cached yet);
+    # later ones on a worker thread. Queued loads join the newest message at the turn.
+    _skills_on_entry(conversation_history, log)
     # end_cycle is unlocked (appended to _session_tools) after the first nudge
     # fires so the agent can't skip the cycle by calling it before doing work.
     _end_cycle_unlocked = not _END_CYCLE_ENABLED  # off (the default): never offered
@@ -7719,6 +7847,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # the model owns the work.
             _now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             _apply_tool_loads(_session_tools, log)   # loads asked for last turn join the list here
+            _skill_suggestion = _skills_at_boundary(conversation_history, messages_to_send, oldest_idx, log)
             _system_lines = [
                 f"Current time (UTC, ISO8601): {_now_iso}",
                 f"Working directory: {os.getcwd()} — use this for all file paths, not /home/user.",
@@ -7727,6 +7856,12 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 _catalog_line = _registry.catalog_line()
                 if _catalog_line:
                     _system_lines.append(_catalog_line)   # static: the same bytes every request
+                _skill_catalog = _skills.catalog_line()
+                if _skill_catalog:
+                    _system_lines.append(_skills.INSTRUCTIONS)   # static too
+                    _system_lines.append(_skill_catalog)
+            if _skill_suggestion:
+                _system_lines.append(_skill_suggestion)
             # WS1: phase checkpoint every turn — phase state survives
             # summarization the same way the CICD footnote line does.
             if _phase_engine is not None:
@@ -7782,7 +7917,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # message, the c0b2660 lesson), so the whole history remains the cached prefix.
             _static_lines = [ln for ln in _system_lines
                              if ln.startswith("Working directory:") or ln.startswith("Tool-selection guidance:")
-                             or ln.startswith(_registry.CATALOG_PREFIX)]
+                             or ln.startswith(_registry.CATALOG_PREFIX)
+                             or ln.startswith(_skills.CATALOG_PREFIX) or ln is _skills.INSTRUCTIONS]
             if _prompt_caching_backend():
                 # E7: nothing run-specific before the first user turn, so runs that start
                 # within the cache TTL share the cached system prompt + tools.
