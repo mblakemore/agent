@@ -32,10 +32,10 @@
   <main id="main">
     <p class="eyebrow">Config reference</p>
 <h1>Config reference</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/config-reference.md"><code>docs/config-reference.md</code></a> · last changed 2026-11-11 (3df643d)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/config-reference.md"><code>docs/config-reference.md</code></a> · last changed 2026-11-12 (630c8dc)</p>
 <p>Every key the agent reads from its config file, with its default. All sections are optional; omitted keys use the defaults below. <strong>You rarely need to write this by hand</strong>: the <a href="setup-wizard.html"><code>/setup</code> wizard</a> writes and calibrates it for you from live probes of your endpoints. For whole setups rather than single keys, see <a href="configurations.html">Configurations</a>; for what a headless run's keys do together, see <a href="headless.html">Headless runs</a>.</p>
 <p>The agent looks for <code>.agent/config.json</code> first, then falls back to <code>config.json</code> in the working directory (wherever you run <code>agent.py</code> from). Putting it under <code>.agent/</code> keeps your local, key-bearing config alongside the other runtime files. When you run inside a git repo, the agent best-effort adds <code>.agent/</code> and <code>config.json</code> to <code>.gitignore</code> so your config (which may hold API keys) and runtime state never get committed. Outside a repo it leaves the directory untouched.</p>
-<p>Sections, in the order a config file usually grows: <a href="#backends"><code>backends</code></a> · <a href="#generation"><code>generation</code></a> · <a href="#think"><code>think</code></a> · <a href="#context"><code>context</code></a> · <a href="#cycle"><code>cycle</code></a> · <a href="#limits"><code>limits</code></a> · <a href="#retry"><code>retry</code></a> · <a href="#advisor"><code>advisor</code></a> · <a href="#subagent"><code>subagent</code></a> · <a href="#bedrock"><code>bedrock</code></a> · <a href="#preferences"><code>preferences</code></a> · <a href="#tools"><code>tools</code></a> · <a href="#command_guards"><code>command_guards</code></a> · <a href="#allow_catastrophic_commands"><code>allow_catastrophic_commands</code></a> · <a href="#interactive"><code>interactive</code></a> · <a href="#log_dir-and-log_prefix"><code>log_dir</code>, <code>log_prefix</code></a> · <a href="#env"><code>env</code></a> · <a href="#bootstrap"><code>bootstrap</code></a> · <a href="#llamacpp"><code>llamacpp</code></a> · <a href="#the-monitors-file">the monitors file</a> · <a href="#full-example">full example</a>. Environment variables are on the <a href="cli.html#environment-variables">CLI page</a>.</p>
+<p>Sections, in the order a config file usually grows: <a href="#backends"><code>backends</code></a> · <a href="#generation"><code>generation</code></a> · <a href="#think"><code>think</code></a> · <a href="#context"><code>context</code></a> · <a href="#cycle"><code>cycle</code></a> · <a href="#limits"><code>limits</code></a> · <a href="#retry"><code>retry</code></a> · <a href="#advisor"><code>advisor</code></a> · <a href="#subagent"><code>subagent</code></a> · <a href="#bedrock"><code>bedrock</code></a> · <a href="#preferences"><code>preferences</code></a> · <a href="#tools"><code>tools</code></a> · <a href="#skills"><code>skills</code></a> · <a href="#command_guards"><code>command_guards</code></a> · <a href="#allow_catastrophic_commands"><code>allow_catastrophic_commands</code></a> · <a href="#interactive"><code>interactive</code></a> · <a href="#log_dir-and-log_prefix"><code>log_dir</code>, <code>log_prefix</code></a> · <a href="#env"><code>env</code></a> · <a href="#bootstrap"><code>bootstrap</code></a> · <a href="#llamacpp"><code>llamacpp</code></a> · <a href="#the-monitors-file">the monitors file</a> · <a href="#full-example">full example</a>. Environment variables are on the <a href="cli.html#environment-variables">CLI page</a>.</p>
 <h2 id="backends"><code>backends</code></h2>
 <p>Preferred shape. Replaces the legacy <code>llm</code> / <code>summary</code> flat blocks (which still work — they are synthesized into <code>backends</code> at load time).</p>
 <pre tabindex="0"><code class="language-json">{
@@ -700,6 +700,79 @@ server that is not running.</p>
 }
 </code></pre>
 <p><code>/tools list</code> shows the tiers and the schema tokens the model sees; <code>/tools search WORDS</code>, <code>/tools load NAMES</code>, and <code>/tools core|defer|hide NAME [--save]</code> change them from the keyboard.</p>
+<h2 id="skills"><code>skills</code></h2>
+<p>Skills are instruction files the model pulls into its context by name: a markdown file for one kind of task (joining a meeting, cutting a release, the house style for a report). Unlike a tool, a skill is text in a message: loaded mid-session it is appended, costs no cache miss, and leaves the window by trimming like any other message, so a wrong load costs a few thousand tokens for a while, not a prefix rebuild.</p>
+<p>Discovery is always on and finds every <code>SKILL.md</code> under <code>.agent/skills/NAME/</code>, then under <code>.claude/skills/NAME/</code> (Claude Code's layout, so a project's skills serve both harnesses unchanged), then under each directory in <code>dirs</code>. The file's YAML frontmatter gives <code>name</code> (default: the directory name), <code>description</code> (required; a file without one is skipped with a warning), <code>keywords</code> (this harness's addition: whole-word phrases that load the skill at session start when the picker is off or fails) and <code>disable-model-invocation</code> (<code>true</code> keeps the skill out of the catalog and off the picker, and <code>tool_search skill:NAME</code> refuses it; only <code>/skill NAME</code> at the keyboard loads it). Other fields (<code>allowed-tools</code>, <code>model</code>, arguments) are ignored: the body is instructions, and the model runs what it says with the tools it has.</p>
+<p>When there is at least one skill and <code>tools.catalog</code> is on, the system prompt gains a paragraph saying what skills are and one static catalog line, <code>Skills, loaded on request with tool_search skill:NAME: …</code> (about eight tokens per skill), under the same <code>tools.catalog</code> switch as the tool catalog. The model loads one with <code>tool_search skill:NAME</code> (several: <code>skill:NAME,NAME</code>); the text arrives as the tool result under a header naming the file and its directory, so a Claude Code skill's references to the scripts beside it still make sense. <code>/skill NAME</code> loads one from the keyboard at the next turn; <code>/skill list</code> shows every skill, its tokens and whether it is loaded; <code>/skill reload</code> rediscovers. Loaded names ride the checkpoint, and when trimming evicts a skill's message the summarizer is told to say so, so the model knows it once had those instructions and can load them again.</p>
+<div class="tbl-wrap" tabindex="0"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dirs</code></td>
+<td><code>[]</code></td>
+<td>Extra directories of <code>NAME/SKILL.md</code>, relative to the working directory or absolute.</td>
+</tr>
+<tr>
+<td><code>catalog</code></td>
+<td><code>[]</code></td>
+<td>Documents registered as skills without moving them or adding frontmatter: a list of <code>{"name", "path", "description", "keywords"?}</code> objects. The header of a registered document names its path only.</td>
+</tr>
+<tr>
+<td><code>max_chars</code></td>
+<td><code>20000</code></td>
+<td>A file whose rendered text is longer is not a skill (a skill is a few thousand tokens of instructions, not a manual) and is skipped at discovery with a warning. Never more than <code>limits.tool_result_max_chars</code> (a larger value is lowered to it with a warning), so a load never spills.</td>
+</tr>
+<tr>
+<td><code>max_loaded_tokens</code></td>
+<td><code>12000</code></td>
+<td>A load that would take the loaded skills past this is refused with a notice naming what is loaded; the skill can be loaded once those leave the window.</td>
+</tr>
+<tr>
+<td><code>pick</code></td>
+<td><code>"off"</code></td>
+<td>The picker on the summary model. <code>"start"</code>: one call before the first request of a session (nothing is cached yet, so a load there costs no miss) with the user's own words of the first message and the catalog, answered as a JSON list of <code>{"name", "confidence"}</code>. <code>"always"</code>: also after each later message from the user, on a worker thread that never blocks a turn; a verdict not ready by the next turn boundary is applied at the one after, and one overtaken by a newer message is dropped. Any failure (timeout, error, unreadable answer) loads nothing and logs why; the <code>keywords</code> floor then decides at session start.</td>
+</tr>
+<tr>
+<td><code>pick_on_events</code></td>
+<td><code>false</code></td>
+<td>With <code>"always"</code>, also judge each batch of bus items delivered to the model (a monitor's output, a finished job).</td>
+</tr>
+<tr>
+<td><code>load_threshold</code></td>
+<td><code>0.75</code></td>
+<td>A pick with confidence at or above this is loaded as part of the next user turn, under its header, before the runtime note.</td>
+</tr>
+<tr>
+<td><code>suggest_threshold</code></td>
+<td><code>0.4</code></td>
+<td>A pick between this and <code>load_threshold</code> becomes one line in the runtime note: <code>A skill may apply: … load it with tool_search skill:NAME.</code></td>
+</tr>
+<tr>
+<td><code>max_picks_per_turn</code></td>
+<td><code>2</code></td>
+<td>Loads per verdict at most.</td>
+</tr>
+<tr>
+<td><code>pick_timeout_s</code></td>
+<td><code>15</code></td>
+<td>Seconds to wait for the judge.</td>
+</tr>
+</tbody>
+</table></div>
+<pre tabindex="0"><code class="language-json">&quot;skills&quot;: {
+  &quot;catalog&quot;: [
+    {&quot;name&quot;: &quot;meetings&quot;, &quot;path&quot;: &quot;docs/meetings.md&quot;, &quot;description&quot;: &quot;Joining and leaving a video call&quot;, &quot;keywords&quot;: [&quot;meeting&quot;, &quot;join the call&quot;]}
+  ],
+  &quot;pick&quot;: &quot;start&quot;
+}
+</code></pre>
+<p>Every verdict is one <code>skill.pick source=start|user|events how=judge|failopen|keywords|none|dropped picked=… suggested=… ms=…</code> line in the session log (<code>failopen</code> adds <code>err=</code>; <code>none</code> means nothing to pick from; <code>dropped</code> is a verdict overtaken by a newer message) and one telemetry event; every load is <code>skill.load name=… tokens=… by=model|picker|command|keywords</code>. An identity file can then say "the <code>meetings</code> skill covers calls" instead of carrying a reading list. Note that the harness adds <code>.agent/</code> to <code>.gitignore</code>, so skills a project keeps under version control belong in <code>.claude/skills/</code> or a directory named in <code>dirs</code>.</p>
 <h2 id="command_guards"><code>command_guards</code></h2>
 <p>A list of regex-pattern / message pairs that intercept <code>exec_command</code> calls before the shell sees them. When a command matches a pattern, execution is blocked and the message is returned to the agent as a tool error — the agent can then reason about it and try something else.</p>
 <p>Patterns are case-insensitive regexes matched against the full command string.</p>

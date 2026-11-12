@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">agent</p>
 <h1>agent</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/README.md"><code>README.md</code></a> · last changed 2026-11-11 (3df643d)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/README.md"><code>README.md</code></a> · last changed 2026-11-12 (a9dcb6a)</p>
 <p>A coding assistant that runs in your terminal. You give it a task, and it reads files, edits code and runs commands until the task is done. It works with a model on your own machine (llama.cpp, Ollama, vLLM) or a hosted one.</p>
 <p><img alt="agent TUI screenshot" src="assets/screenshot.png" /></p>
 <p>📖 <strong><a href="https://mblakemore.github.io/agent/">Documentation site</a></strong>: this README and the guides in <code>docs/</code>, rendered.</p>
@@ -101,6 +101,7 @@ agent
 <li><strong>Catches common model mistakes:</strong> broken tool calls are repaired, and invented file contents are caught before they mislead it.</li>
 <li><strong>Can ask a bigger model:</strong> an optional advisor model is consulted when the main one gets stuck.</li>
 <li><strong>Waits instead of polling:</strong> long commands keep running in the background and report when they finish, <code>wait</code> blocks for free until something happens, and an optional gate (<code>preferences.gate.enabled</code>) lets a cheap model hold noisy monitor output for a digest instead of waking the main one.</li>
+<li><strong>Loads instructions on demand:</strong> skill files (<code>.claude/skills/NAME/SKILL.md</code>, or your own docs registered in the config) are named in one line and pulled in by name with <code>tool_search skill:NAME</code>, by <code>/skill NAME</code>, or by a cheap model that reads the task and picks; a skill is a message, not a tool schema, so loading one mid-session costs no cache miss.</li>
 <li><strong>Runs unattended:</strong> <code>agent -a</code> takes a deadline, a goal and named deliverables, checks its own result against a schema, and exits with a code a supervisor can act on. <code>/agent</code> turns a folder into a long-lived agent with an identity file that leads every session.</li>
 </ul>
 <h2 id="learn-more">Learn more</h2>

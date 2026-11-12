@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">CLI and usage</p>
 <h1>CLI and usage</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-11-11 (3df643d)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/cli.md"><code>docs/cli.md</code></a> · last changed 2026-11-12 (630c8dc)</p>
 <p>Command-line arguments, the interactive TUI, slash commands and environment variables. The behaviours a supervisor relies on when it runs the agent unattended (deadline, result contract, exit codes, jobs) have their own page: <a href="headless.html">Headless runs</a>. So does the <a href="claude-code-gateway.html">Claude Code gateway</a>.</p>
 <pre tabindex="0"><code>python agent.py [OPTIONS] [PROMPT...]
 </code></pre>
@@ -190,6 +190,10 @@
 <tr>
 <td><code>/agent</code></td>
 <td>Scaffold an autonomous-agent identity here: type (six-phase/worker/minimal) then name, an AGENT.md/CLAUDE.md generated from the live config (real model table, advisor guidance, measured context), git provisioning when the folder isn't a repo (init / GitHub via <code>gh</code> / clone-it-yourself), and a finalizing <code>C0</code> init commit.</td>
+</tr>
+<tr>
+<td><code>/skill [list\|NAME\|reload]</code></td>
+<td>The <a href="config-reference.html#skills">skills</a>: <code>list</code> (the default) shows every skill, its tokens, whether the catalog names it and whether it is loaded; <code>NAME</code> loads one as part of the next user turn; <code>reload</code> rediscovers the skill files (the catalog line in the system prompt changes with it, one prefix miss on a caching backend). The model loads one itself with <code>tool_search skill:NAME</code>.</td>
 </tr>
 <tr>
 <td><code>/phase</code></td>

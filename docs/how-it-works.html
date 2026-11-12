@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">How it works</p>
 <h1>How it works</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/how-it-works.md"><code>docs/how-it-works.md</code></a> · last changed 2026-11-11 (3df643d)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/how-it-works.md"><code>docs/how-it-works.md</code></a> · last changed 2026-11-12 (a9dcb6a)</p>
 <h2 id="the-turn-loop">The turn loop</h2>
 <p>Each cycle is a turn loop:</p>
 <ol>
@@ -91,6 +91,7 @@ setup_wizard.py       # /setup
 agent_scaffold.py     # /agent
 wizard_ui.py          # Radio lists and checkboxes for the wizards
 commands.py           # Slash-command dispatcher
+skills.py             # Skills: SKILL.md discovery, the catalog line, the picker (see &quot;Skills&quot;)
 tui.py                # prompt_toolkit front end
 transcript.py         # Session record, reprinted on terminal resize
 callbacks.py, ui.py   # UI callback interface and shared components
@@ -132,6 +133,8 @@ tools/
 <h3 id="lazy-tools">Lazy tools</h3>
 <p>Every tool is registered (<code>tools.MAP_FN</code>, <code>tools.DEFINITIONS</code>), but the model's request carries only the <strong>core</strong> tier's schemas (<code>tools.tools</code>). The <strong>deferred</strong> tools are named in one static line of the system prompt and the <strong>hidden</strong> ones not at all; the core tool <code>tool_search</code> finds them by keywords or name and asks for them to be loaded. The agent loop appends the asked-for schemas to the session's tool list once per turn (<code>_apply_tool_loads</code>), so a load costs one cache miss, not one per call, and loaded tools stay for the session and survive a <code>-c</code> resume through the checkpoint. A tool called from memory that is not in the list runs at once when its arguments fit (and is loaded), otherwise it answers with its schema; a name from another harness (<code>bash</code>, <code>grep</code>) is resolved to the tool it means. Tiers come from the tool module (<code>_tier</code>), the shipped defaults (<code>tools.DEFAULT_CORE</code>) and the <code>tools</code> block of the config; <code>docs/config-reference.md</code> has the keys.</p>
 <p>A tool function receives its arguments and nothing else. The one supported way for a tool to act on the running harness is <code>tools.RUNTIME</code>, a small registry agent.py fills at startup: <code>get_model(role)</code>, <code>set_model(role, model)</code> (what <code>/model</code> does, persisted), <code>models(role)</code> (the configured switchable models), <code>get_effort(role)</code> and <code>set_effort(role, effort)</code> (what <code>/effort</code> does). The shipped <code>switch_model</code> tool is built on it and exists only when <code>preferences.switchable_models</code> names models. Under another harness the registry is empty and such a tool answers with an error.</p>
+<h3 id="skills">Skills</h3>
+<p>A skill is an instruction file for one kind of task, discovered from <code>.agent/skills/NAME/SKILL.md</code>, <code>.claude/skills/NAME/SKILL.md</code> (Claude Code's layout) and the <code>skills</code> block of the config (<code>skills.py</code>). Where a tool is a schema at the front of the cached prefix, so that loading one mid-session is a miss over the whole context, a skill is text in a message: <code>tool_search skill:NAME</code> answers with its body as the tool result, append-only, cached from the next request on, and it leaves the window by trimming like anything else. The system prompt carries one static catalog line naming the skills beside the tool catalog; <code>/skill NAME</code> loads one from the keyboard as part of the next user turn; the loaded set is re-derived from the window each turn (<code>skills.sync_loaded</code>), so a skill that was trimmed away can be loaded again, and the summarizer is told to mention it. An optional picker (<code>skills.pick</code>) puts the summary model in front of the catalog: before the first request it reads the user's own words and loads what applies above a confidence threshold, or suggests it in the runtime note below that; at <code>"always"</code> it also judges later messages on a worker thread, fail-open like the gate. <code>docs/config-reference.md#skills</code> has the keys and the log lines.</p>
     <footer>Generated from the repository's own markdown by <code>tools/docs-build.py</code>. Edit the markdown, not this page.</footer>
   </main>
 </div>
