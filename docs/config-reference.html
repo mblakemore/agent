@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">Config reference</p>
 <h1>Config reference</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/config-reference.md"><code>docs/config-reference.md</code></a> · last changed 2026-11-12 (0db5185)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/config-reference.md"><code>docs/config-reference.md</code></a> · last changed 2026-11-12 (0bf1f55)</p>
 <p>Every key the agent reads from its config file, with its default. All sections are optional; omitted keys use the defaults below. <strong>You rarely need to write this by hand</strong>: the <a href="setup-wizard.html"><code>/setup</code> wizard</a> writes and calibrates it for you from live probes of your endpoints. For whole setups rather than single keys, see <a href="configurations.html">Configurations</a>; for what a headless run's keys do together, see <a href="headless.html">Headless runs</a>.</p>
 <p>The agent looks for <code>.agent/config.json</code> first, then falls back to <code>config.json</code> in the working directory (wherever you run <code>agent.py</code> from). Putting it under <code>.agent/</code> keeps your local, key-bearing config alongside the other runtime files. When you run inside a git repo, the agent best-effort adds <code>.agent/</code> and <code>config.json</code> to <code>.gitignore</code> so your config (which may hold API keys) and runtime state never get committed. Outside a repo it leaves the directory untouched.</p>
 <p>Sections, in the order a config file usually grows: <a href="#backends"><code>backends</code></a> · <a href="#generation"><code>generation</code></a> · <a href="#think"><code>think</code></a> · <a href="#context"><code>context</code></a> · <a href="#cycle"><code>cycle</code></a> · <a href="#limits"><code>limits</code></a> · <a href="#retry"><code>retry</code></a> · <a href="#advisor"><code>advisor</code></a> · <a href="#subagent"><code>subagent</code></a> · <a href="#bedrock"><code>bedrock</code></a> · <a href="#preferences"><code>preferences</code></a> · <a href="#tools"><code>tools</code></a> · <a href="#skills"><code>skills</code></a> · <a href="#command_guards"><code>command_guards</code></a> · <a href="#allow_catastrophic_commands"><code>allow_catastrophic_commands</code></a> · <a href="#interactive"><code>interactive</code></a> · <a href="#log_dir-and-log_prefix"><code>log_dir</code>, <code>log_prefix</code></a> · <a href="#env"><code>env</code></a> · <a href="#bootstrap"><code>bootstrap</code></a> · <a href="#llamacpp"><code>llamacpp</code></a> · <a href="#the-monitors-file">the monitors file</a> · <a href="#full-example">full example</a>. Environment variables are on the <a href="cli.html#environment-variables">CLI page</a>.</p>
@@ -626,6 +626,11 @@ server that is not running.</p>
 <td><code>restart_tool</code></td>
 <td><code>false</code></td>
 <td>Offer the <code>restart</code> tool: the model may restart its own process when the turn ends, the same way <code>/restart</code> does from the keyboard (the process re-executes itself with <code>-c</code> and the session continues from the checkpoint; see <a href="cli.html#slash-commands">the CLI</a>). Off by default: the model never sees it and a call to it is refused. On, it is named in the catalog; more than three restarts in ten minutes are refused.</td>
+</tr>
+<tr>
+<td><code>restart_resume_prompt</code></td>
+<td><code>""</code></td>
+<td>After a restart the <code>restart</code> tool asked for, this text goes in as the user's message and a turn runs before the input loop, so an agent that restarted itself comes back to work rather than waiting at the prompt until someone types or a monitor pings (for example <code>"continue"</code>). Empty: wait at the prompt. A keyboard <code>/restart</code> always returns to the prompt; <code>-a</code> runs resume on their own.</td>
 </tr>
 <tr>
 <td><code>switchable_models</code></td>
