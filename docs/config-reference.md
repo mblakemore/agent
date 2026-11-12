@@ -42,6 +42,12 @@ Preferred shape. Replaces the legacy `llm` / `summary` flat blocks (which still 
 
 **Legacy `llm` and `summary` blocks.** `llm.base_url`, `llm.model`, `summary.base_url`, `summary.model`, `summary.enabled` and `summary.max_wait_on_save` (`10`: seconds the checkpoint waits for a running summary before saving without it) are still read and mapped onto `backends.main` and `backends.summary`. New configs should use `backends`.
 
+**Summary timing** (the `summary` block; both keys are read live).
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `summary.wait_s` | `null` | What a window head move does when no summary of the messages that left is ready. On a prompt-caching backend the head moves at an eviction (the window no longer fits), at a cache collapse (a wake after an idle gap longer than the cache's lifetime) and on an overflow retry. `null`: the summary is made now, in front of the request (blocking; measured 11 s at the median on one deployment). A number: wait at most that many seconds for a summary that is already running, then send the request with the last summary and let the worker catch up; its result lands at a later harvest (`summary.harvest … kind=late` in the log, one cache miss). `0` never waits. |
+
 For **AI Commons** keys (the top-level `aicommons` block: credentials, effort, thinking, quota, `max_context_tokens`) see [AI Commons](aicommons.md). For legacy **Bedrock** keys (`api_url`, spend caps, keystore) see [Bedrock](bedrock.md).
 
 ## `generation`

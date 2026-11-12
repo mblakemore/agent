@@ -606,6 +606,11 @@ _DEFAULT_CONFIG = {
         "model": "",
         "enabled": True,
         "max_wait_on_save": 10,
+        # At a window head move (eviction, cache collapse, overflow retry) with no
+        # summary ready: null summarizes now, in front of the request (blocking); a
+        # number waits at most that many seconds for a running summary, then sends
+        # the request with the last summary and lets the worker catch up.
+        "wait_s": None,
     },
     "bedrock": {
         "adaptive_max_tokens": True,
@@ -2562,6 +2567,18 @@ def _cache_collapse_due(gap_s, alive_s, frac, window_tokens, budget):
     if gap_s <= alive_s:
         return False
     return window_tokens > budget * frac * 1.5
+
+
+def _summary_wait_s():
+    """summary.wait_s: None when a head move with no summary ready summarizes in front
+    of the request; otherwise the seconds to wait for a running summary, 0 or more."""
+    v = _config.get("summary", {}).get("wait_s")
+    if v is None or v == "":
+        return None
+    try:
+        return max(0.0, float(v))
+    except (TypeError, ValueError):
+        return None
 
 
 class _CompletionResponse:
@@ -5098,6 +5115,56 @@ def _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, for
     summary_state["_lead_changed"] = True   # see AsyncSummarizer.harvest
     _emit("on_summary_done")
     return True
+
+
+def _fold_summary_at_head_move(conversation_history, summary_state, oldest_idx, log, why, summarizer):
+    """The window head just moved (an eviction, a cache collapse, an overflow retry).
+    The prefix after the lead is dead on this request anyway, so the lead may change
+    at no extra cost, and the summary of what left belongs in this request rather
+    than in a later one as a second miss (measured 2026-11-02: 11 harvest misses,
+    220k uncached tokens, in 40 minutes). A summary that is ready is applied. When
+    none is, `summary.wait_s` decides: None summarizes now, in front of the request
+    (blocking; measured 11 s at the median); a number waits at most that long for a
+    running summary, then sends the request with the last summary and lets the
+    worker catch up, which lands at a later harvest (kind=late). Returns True when
+    the summary state changed, so the window must be rebuilt."""
+    changed = bool(summarizer is not None and summarizer.harvest(summary_state))
+    if oldest_idx - summary_state["up_to"] <= 0:
+        if changed:
+            log.info("%s: the ready summary of the history up to message %d folded into this request",
+                     why, summary_state["up_to"])
+        return changed
+    wait_s = _summary_wait_s()
+    running = summarizer is not None and summarizer.is_running
+    if wait_s is None or summarizer is None:
+        if running:
+            log.info("%s: a summary is already running; the next turn harvests it", why)
+            return changed
+        if _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True):
+            log.info("%s: summary of the history up to message %d folded into this request", why, oldest_idx)
+            return True
+        return changed
+    if running and wait_s > 0:
+        _emit("on_notice", "info", f"[summary: waiting up to {wait_s:g}s]")
+        t0 = time.monotonic()
+        summarizer.drain(timeout=wait_s)
+        if summarizer.harvest(summary_state):
+            changed = True
+            if oldest_idx - summary_state["up_to"] <= 0:
+                log.info("%s: the summary arrived after %.1fs of the %gs wait and is folded into this request",
+                         why, time.monotonic() - t0, wait_s)
+                return True
+        running = summarizer.is_running
+    left = conversation_history[summary_state["up_to"]:oldest_idx]
+    if running:
+        log.info("summary.nowait %s: %d messages left the window unsummarized; a summary is still "
+                 "running after the %gs wait, the next harvest catches up", why, len(left), wait_s)
+    elif left and summarizer.kick(summary_state["text"], left, oldest_idx, kind="late"):
+        log.info("summary.nowait %s: %d messages left the window unsummarized; the worker catches up "
+                 "(wait_s=%g)", why, len(left), wait_s)
+    _emit("on_notice", "info", "[summary: going on without one]")
+    telemetry.record_patch_event("summary_nowait", kind=why.replace(" ", "_"))
+    return changed
 
 
 # ── Logger setup ──────────────────────────────────────────────────────
@@ -7971,17 +8038,12 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             _collapsed_now = summary_state.pop("_collapse_summarize", False)
             _evicted_now = summary_state.pop("_evict_summarize", False)
             if _collapsed_now or _evicted_now:
-                # The prefix after the lead is dead on this request anyway (the window
-                # head moved, by collapse or eviction), so the lead message may change
-                # at no extra cost: summarise everything that left the window now,
-                # synchronously, instead of harvesting it a turn or two later as a
-                # second miss. The rebuilt context keeps the new head.
+                # The window head moved (collapse or eviction): the summary of what left
+                # goes into this request, ready, waited for or skipped as summary.wait_s
+                # says (_fold_summary_at_head_move). The rebuilt context keeps the new head.
                 _why = "cache collapse" if _collapsed_now else "eviction"
-                if _async_summarizer is not None and _async_summarizer.is_running:
-                    log.info("%s: a summary is already running; the next turn harvests it", _why)
-                elif _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True):
-                    log.info("%s: summary of the history up to message %d folded into this request",
-                             _why, oldest_idx)
+                if _fold_summary_at_head_move(conversation_history, summary_state, oldest_idx, log, _why,
+                                              _async_summarizer):
                     messages_to_send, oldest_idx = _build_context(
                         conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                         max_messages_override=_ctx_max_messages)
@@ -8308,8 +8370,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     log.warning("Context overflow (attempt %d/%d): reducing from %d to max %d messages",
                                 _ctx_attempt + 1, _CTX_REDUCE_MAX, current_count, _ctx_max_messages)
                     _emit("on_context_recovery")
-                    # Force a resummarize with the tighter window so dropped messages aren't lost
-                    _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True)
+                    # The dropped messages are summarized (now, or by the worker: summary.wait_s)
+                    _fold_summary_at_head_move(conversation_history, summary_state, oldest_idx, log,
+                                               "context overflow", _async_summarizer)
                 continue
             except (BedrockBudgetExceeded, ConfigError) as e:
                 # Not retryable within this run (failover already declined or failed):
