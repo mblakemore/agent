@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">How it works</p>
 <h1>How it works</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/how-it-works.md"><code>docs/how-it-works.md</code></a> · last changed 2026-11-12 (a9dcb6a)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/how-it-works.md"><code>docs/how-it-works.md</code></a> · last changed 2026-11-12 (047e9de)</p>
 <h2 id="the-turn-loop">The turn loop</h2>
 <p>Each cycle is a turn loop:</p>
 <ol>
@@ -44,7 +44,7 @@
 <h2 id="guardrails">Guardrails</h2>
 <ul>
 <li><strong>Checkpointing</strong>: history and summary state are written to <code>.agent/state/conversation_checkpoint.json</code> every turn. <code>--continue</code> resumes from there. The lead files of the trimmed window (the <code>@file</code> references of the first message, typically the identity file) are stored by name and re-read from disk on resume, so an identity file edited during the session is current after <code>-c</code>; if a file is gone, the checkpoint's copy is used. During a session, <code>@file</code> in a later message keeps the lead as it is unless it names a lead file, which re-reads them all. The lead files have one place in the history, the message that first attached them: a re-read, on <code>-c</code> or by a later <code>@CLAUDE.md</code>, replaces the text in that place, and the later message keeps a one-line note (plus any other files it named). Before this, every re-reference added a second whole copy, and an untrimmed window sent both, one of them stale, for the rest of the session. The refresh costs one prompt-cache miss over the history when the file has actually changed.</li>
-<li><strong>Async summarization</strong>: a background thread condenses older messages while the main model keeps working.</li>
+<li><strong>Async summarization</strong>: a background thread condenses older messages while the main model keeps working, and shortens its own result when it is over the cap. On a caching backend the window head moves in chunks (an eviction, a collapse after an idle gap), and the summary of what left belongs in that request: <code>summary.ahead</code> makes it before the move (what the next eviction is certain to drop is summarized once the window is that full, the collapse summary once the idle gap reaches half the cache's lifetime) and the move aligns the new head to where the ready summary ends; <code>summary.wait_s</code> says what to do when none is ready (block for it, as before, or wait that long and go on with the last one). A finished summary whose edge is past the head is held until the head gets there, since applying it earlier would rewrite the cached prefix for nothing.</li>
 <li><strong>Cycle limits</strong>: after <code>cycle.max_turns</code> turns (default 250) the agent is asked to wrap up; after <code>cycle.wind_down_turns</code> more it is forced to stop.</li>
 <li><strong>Text-loop detection</strong>: three identical text responses in a row end the cycle.</li>
 <li><strong>The success check</strong>: <code>cycle.success_check</code> names a command (a test suite, a build) that must exit 0 before the model may end a cycle. The model sees it in the system prompt; when it stops, the harness runs it, and a failure turns the stop back with a correction, three times at most. It is also the signal the escalation policy below reads. Off unless set; see the <a href="config-reference.html#verification-gates">config reference</a>.</li>
