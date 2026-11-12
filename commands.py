@@ -47,6 +47,7 @@ def _cmd_help(ctx: SimpleNamespace, args: str) -> None:
         "  /tools [N|all] — show buffered tool calls (default: all; N = last N only)",
         "  /tools list|search WORDS|load NAMES|core|defer|hide NAME [--save] — the lazy-tool tiers",
         "  /skill [list|NAME|reload] — the skills (instruction files); NAME loads one next turn",
+        "  /restart [reason] — restart the agent process with -c: same session, new code",
         "  /phase         — show current phase checkpoint",
         "  exit/quit      — end the session",
     ]
@@ -462,6 +463,21 @@ def _cmd_setup(ctx: SimpleNamespace, args: str) -> None:
     ctx.log.info("/setup wrote %s (sections: %s)", cfg_path, sorted(updates))
 
 
+def _cmd_restart(ctx: SimpleNamespace, args: str) -> None:
+    """`/restart [reason]`: end the session the way 'exit' does, after a checkpoint, and
+    re-execute the process with -c so the same session continues on the new code. The
+    loop sees the request at this boundary (agent._request_restart)."""
+    req = getattr(ctx, "request_restart", None)
+    if not callable(req):
+        safe_cb(ctx.cb, "on_notice", "warn", "/restart: this harness exposes no restart control")
+        return
+    ok, msg = req(by="command", reason=args)
+    if ok:
+        safe_cb(ctx.cb, "on_notice", "info", msg)
+    else:
+        safe_cb(ctx.cb, "on_notice", "warn", msg)
+
+
 _COMMANDS: dict[str, Callable[[SimpleNamespace, str], None]] = {
     "/help": _cmd_help,
     "/setup": _cmd_setup,
@@ -474,6 +490,7 @@ _COMMANDS: dict[str, Callable[[SimpleNamespace, str], None]] = {
     "/verbose": _cmd_verbose,
     "/tools": _cmd_tools,
     "/skill": _cmd_skill,
+    "/restart": _cmd_restart,
     "/phase": _cmd_phase,
     "/agent": _cmd_agent,
 }

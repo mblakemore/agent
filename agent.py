@@ -663,6 +663,10 @@ _DEFAULT_CONFIG = {
         # that wants the explicit exit opts in with true; the text-only completion
         # paths end a cycle either way.
         "end_cycle_tool": False,
+        # The restart tool: the model may re-execute its own process with -c (the same
+        # session, from the checkpoint written as the turn ends). Off by default; /restart
+        # at the keyboard always works.
+        "restart_tool": False,
         # The event bus (monitor_bus.py): a detached or background exec_command
         # session, and a background subagent, queue one item when they exit.
         "session_events": True,
@@ -2017,6 +2021,83 @@ _registry.RUNTIME.update({
     "get_model": _runtime_get_model, "set_model": _runtime_set_model, "models": _switchable_models,
     "get_effort": _runtime_get_effort, "set_effort": _runtime_set_effort,
 })
+
+
+# ── Restart in place (/restart, the restart tool) ─────────────────────────────
+# A restart ends the session the way 'exit' does, after the checkpoint is written, and
+# then main() replaces the process with `python agent.py <same arguments> -c`: the same
+# pid, terminal and tmux pane, the new code, and the session resumed from the checkpoint.
+# The request is a flag read at turn boundaries: the loops end on it, run_agent_single
+# returns "restart" once the turn's tool results are recorded (never mid-tool-call), and
+# main() does the exec after the normal teardown has restored the terminal.
+_RESTART = {"requested": False, "by": "", "reason": "", "at": 0.0,
+            "resumed": None,     # the checkpoint's restart record, when this run follows one
+            "recent": []}        # times of recent restarts (carried in the checkpoint)
+_RESTART_LIMIT, _RESTART_WINDOW_S = 3, 600
+_CKPT_TURN = {"turn": 0}         # the turn the newest checkpoint carries (for a boundary save)
+
+
+def _restart_too_often(now=None):
+    """More than _RESTART_LIMIT restarts within _RESTART_WINDOW_S: a loop, not a fix."""
+    now = time.time() if now is None else now
+    recent = [t for t in _RESTART["recent"] if isinstance(t, (int, float)) and now - t < _RESTART_WINDOW_S]
+    _RESTART["recent"] = recent
+    return len(recent) >= _RESTART_LIMIT
+
+
+def _request_restart(by="command", reason=""):
+    """Ask for the restart; (ok, message). The tool path is refused when restarts are
+    coming too fast; the keyboard is never refused."""
+    by = str(by or "command")
+    reason = " ".join(str(reason or "").split())[:200]
+    if _RESTART["requested"]:
+        return True, "a restart is already requested; it happens when this turn ends"
+    if by == "tool" and _restart_too_often():
+        return False, (f"restarted {_RESTART_LIMIT} times in the last {_RESTART_WINDOW_S // 60} minutes; "
+                       "not again until that calms down (Mike can /restart at the keyboard)")
+    _RESTART.update(requested=True, by=by, reason=reason, at=time.time())
+    _RESTART["recent"].append(_RESTART["at"])
+    return True, ("restart requested: when this turn ends the process re-executes itself with -c "
+                  "and this session continues from its checkpoint (same history, loaded tools and "
+                  "skills; monitors armed with persist come back, the rest do not)")
+
+
+def _restart_argv(argv):
+    """The arguments to re-execute with: the same ones, `-c` added once."""
+    out = [str(a) for a in argv]
+    if not any(a in ("-c", "--continue") for a in out[1:]):
+        out.insert(1, "-c")
+    return out
+
+
+def _exec_restart():
+    """Replace this process with `python agent.py ... -c`. Only reached after the session's
+    own teardown (terminal restored, monitors stopped, telemetry flushed)."""
+    argv = _restart_argv(sys.argv)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    logging.shutdown()
+    try:
+        os.execv(sys.executable, [sys.executable] + argv)
+    except OSError as e:
+        print(f"restart failed: {e}; start it by hand: {sys.executable} {' '.join(argv)}",
+              file=sys.stderr, flush=True)
+        sys.exit(3)
+
+
+def _restart_gate():
+    """The restart tool exists only with `preferences.restart_tool` true."""
+    try:
+        return bool(_config.get("preferences", {}).get("restart_tool", False))
+    except Exception:
+        return False
+
+
+_registry.RUNTIME["request_restart"] = _request_restart
+_registry.GATES["restart"] = _restart_gate
+if "restart" in _registry.DEFINITIONS and _restart_gate():
+    _registry.TIERS["restart"] = "deferred"
+    _registry.rebuild()
 
 
 def _switch_model_gate():
@@ -5183,7 +5264,11 @@ def _save_checkpoint(conversation_history, summary_state, turn, initial_files,
             "clean_exit": clean_exit,
             "loaded_tools": list(_registry.LOADED),
             "loaded_skills": list(_skills.LOADED),
+            "restart": ({"by": _RESTART["by"], "reason": _RESTART["reason"], "at": _RESTART["at"],
+                         "recent": list(_RESTART["recent"])} if _RESTART["requested"]
+                        else {"recent": list(_RESTART["recent"])}),
         }
+        _CKPT_TURN["turn"] = turn
         os.makedirs(os.path.dirname(_CHECKPOINT_PATH), exist_ok=True)
         with open(_CHECKPOINT_PATH, "w", encoding="utf-8") as f:
             json.dump(checkpoint, f)
@@ -5206,6 +5291,9 @@ def _load_checkpoint():
         _skills.LOADED[:] = [n for n in _skills.RESUME_LOADED if n in _skills.SKILLS]
         _skills.STATE["started"] = bool(cp.get("conversation_history"))
         _LEAD["refs"] = [r for r in (cp.get("initial_file_refs") or []) if isinstance(r, str)]
+        _rs = cp.get("restart") if isinstance(cp.get("restart"), dict) else {}
+        _RESTART["recent"] = [t for t in (_rs.get("recent") or []) if isinstance(t, (int, float))]
+        _RESTART["resumed"] = _rs if _rs.get("at") else None
         return (
             cp["conversation_history"],
             cp["summary_state"],
@@ -6047,8 +6135,12 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         cp = _load_checkpoint()
         if cp:
             conversation_history, summary_state, start_turn, initial_files, _clean_exit = cp
+            _CKPT_TURN["turn"] = start_turn
             log.info("CONTINUE: resuming from checkpoint (turn %d, %d messages, clean_exit=%s)",
                      start_turn, len(conversation_history), _clean_exit)
+            if _RESTART["resumed"]:
+                log.info("CONTINUE: after a restart by %s (%s)", _RESTART["resumed"].get("by"),
+                         _RESTART["resumed"].get("reason") or "no reason given")
             _cp_lead = initial_files
             initial_files = _lead_reload(initial_files, log)
             # The disk copy takes its place in the history too: an untrimmed window
@@ -6420,7 +6512,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 set_model=_set_model_for_role, set_system_prompt=_set_system_prompt,
                 get_effort=_get_effort_for_role, set_effort=_set_effort_for_role,
                 render_context_bar=_render_context_bar,
-                refresh_cb_log=_refresh_cb_log, apply_setup=_apply_setup_updates)
+                refresh_cb_log=_refresh_cb_log, apply_setup=_apply_setup_updates, request_restart=_request_restart)
             with _borrowed_terminal():
                 handled = _commands.handle_command(_ui, ctx)
             if handled:
@@ -6448,7 +6540,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             # that takes the whole machine down rather than just this loop.
             _bad_items = 0
             _MAX_BAD_ITEMS = 10
-            while True:
+            while not _RESTART["requested"]:
                 try:
                     _item = monitor_bus.get_blocking()
                 except KeyboardInterrupt:
@@ -6524,7 +6616,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             sys.stdout.write("\n")
             sys.stdout.flush()
 
-    while not _skip_blocking:
+    while not _skip_blocking and not _RESTART["requested"]:
         # Monitor idle-wake pre-check (TUI only): if a monitor queued output
         # while we were between prompts, inject and run it before blocking on
         # input — closes the race where output lands just before prompt() starts.
@@ -6593,7 +6685,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 set_effort=_set_effort_for_role,
                 render_context_bar=_render_context_bar,
                 refresh_cb_log=_refresh_cb_log,
-                apply_setup=_apply_setup_updates,
+                apply_setup=_apply_setup_updates, request_restart=_request_restart,
             )
             if _commands.handle_command(user_input, ctx):
                 # /clear may have rotated log and initial_files — pull them back
@@ -6618,6 +6710,18 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                          gen["presence_penalty"], max_tokens, ctx_size,
                          async_summarizer=_async_summarizer)
 
+    if _RESTART["requested"]:
+        # The checkpoint the re-exec resumes from: the history as it stands at this
+        # boundary (a /restart typed before any turn overwrites a stale file with an
+        # empty one, so -c starts fresh rather than resuming an older session).
+        if _async_summarizer:
+            _async_summarizer.harvest(summary_state)
+        _save_checkpoint(conversation_history, summary_state, _CKPT_TURN["turn"], initial_files)
+        _emit("on_notice", "info",
+              f"Restarting with -c ({_RESTART['by']}{': ' + _RESTART['reason'] if _RESTART['reason'] else ''})")
+        log.info("RESTART: by %s (%s); checkpoint at turn %d, %d messages",
+                 _RESTART["by"], _RESTART["reason"] or "no reason", _CKPT_TURN["turn"],
+                 len(conversation_history))
     if tui_session is not None:
         tui_session.close()
     monitor_bus.clear_notifier()
@@ -7881,6 +7985,14 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     _system_lines.append(_skill_catalog)
             if _skill_suggestion:
                 _system_lines.append(_skill_suggestion)
+            if _RESTART["resumed"]:
+                _rs, _RESTART["resumed"] = _RESTART["resumed"], None
+                _system_lines.append(
+                    "The agent process restarted (by %s%s) and this session resumed from its "
+                    "checkpoint: same history, tools and skills; monitors armed with persist "
+                    "came back, others did not." % (
+                        "the restart tool" if _rs.get("by") == "tool" else "/restart at the keyboard",
+                        f": {_rs.get('reason')}" if _rs.get("reason") else ""))
             # WS1: phase checkpoint every turn — phase state survives
             # summarization the same way the CICD footnote line does.
             if _phase_engine is not None:
@@ -10554,6 +10666,12 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         if _async_summarizer:
             _async_summarizer.harvest(summary_state)
         _save_checkpoint(conversation_history, summary_state, turn, initial_files)
+        if _RESTART["requested"]:
+            # The restart tool answered this turn; its result is in the history and the
+            # checkpoint. The session loop ends on the flag and main() re-executes.
+            log.info("restart requested by %s (%s): ending the turn for the re-exec",
+                     _RESTART["by"], _RESTART["reason"] or "no reason")
+            return "restart"
 
         # T5.17 — rolling per-session patch-effectiveness summary. Only emits
         # when at least one counter is non-zero (no fires = no log noise).
@@ -11081,6 +11199,8 @@ def main():
             verbose=args.verbose,
             result_file=args.result_file,
         )
+    if _RESTART["requested"]:
+        _exec_restart()   # never returns
     # F6: in -a / -r mode, say how the run ended in a form a supervisor can classify and exit
     # with the matching code. Interactive sessions never reach here with _AUTO_MODE set.
     # The gate runs BEFORE the exit line is composed, so its verdict is what a supervisor
