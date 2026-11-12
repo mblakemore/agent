@@ -4220,13 +4220,16 @@ def _summary_request(prompt, base_url=None, model=None, **kwargs):
         raise e
 
 
-def _condense_summary(text, log=None):
-    """Re-summarize if text exceeds the character cap. Preserves all info."""
+def _condense_summary(text, log=None, quiet=False):
+    """Re-summarize if text exceeds the character cap. Preserves all info.
+    `quiet` skips the notices: the worker thread condenses its own result there,
+    and nothing on the main thread is waiting for it."""
     if len(text) <= _SUMMARY_MAX_CHARS:
         return text
     if log:
         log.info("Summary too long (%d chars, limit %d) — condensing", len(text), _SUMMARY_MAX_CHARS)
-    _emit("on_summary_start", 0)
+    if not quiet:
+        _emit("on_summary_start", 0)
     prompt = (
         f"The following summary is too long ({len(text)} chars). "
         f"Rewrite it in under {_SUMMARY_MAX_CHARS // 2} characters. "
@@ -4243,7 +4246,8 @@ def _condense_summary(text, log=None):
             condensed = condensed[:_SUMMARY_MAX_CHARS].rsplit('\n', 1)[0] + "\n[...truncated]"
         if log:
             log.info("Condensed summary: %d → %d chars", len(text), len(condensed))
-        _emit("on_notice", "info", f"[summary condensed: {len(text)} → {len(condensed)} chars]")
+        if not quiet:
+            _emit("on_notice", "info", f"[summary condensed: {len(text)} → {len(condensed)} chars]")
         return condensed
     except Exception as e:
         if log:
@@ -4531,6 +4535,12 @@ class AsyncSummarizer:
         if summarizer.harvest(summary_state):            # pick up result
             ...
         summarizer.drain()                               # block before checkpoint
+
+    The worker hands over finished text: the condense pass, when the summary comes
+    back over the character cap, runs on the worker too (measured on one deployment
+    before this: 5 to 19 s on the main thread at harvest time, 21 times in six
+    sessions). `kind` names why a summary was made (threshold, ahead, idle, late,
+    resumed) and is in the summary.harvest log line.
     """
 
     def __init__(self, config, log):
@@ -4540,13 +4550,14 @@ class AsyncSummarizer:
         self._thread = None
         self._pending_result = None
         self._pending_up_to = None
+        self._pending_kind = ""
         self._running = False
 
-    def kick(self, old_summary_text, messages_snapshot, up_to_idx):
-        """Start background summarization if not already running."""
+    def kick(self, old_summary_text, messages_snapshot, up_to_idx, kind="threshold"):
+        """Start background summarization if not already running. True when started."""
         with self._lock:
             if self._running:
-                return
+                return False
             self._running = True
 
         msgs = deepcopy(messages_snapshot)
@@ -4568,9 +4579,11 @@ class AsyncSummarizer:
                         model=self._config["llm"]["model"],
                     )
                 self._log.info("ASYNC SUMMARY: %s", result)
+                result = _condense_summary(result, self._log, quiet=True)   # here, never on the main thread
                 with self._lock:
                     self._pending_result = result
                     self._pending_up_to = up_to_idx
+                    self._pending_kind = kind
             except Exception as e:
                 self._log.error("Async summary failed: %s", e)
             finally:
@@ -4579,20 +4592,48 @@ class AsyncSummarizer:
 
         self._thread = threading.Thread(target=_worker, daemon=True)
         self._thread.start()
+        return True
+
+    def pending_up_to(self):
+        """The edge (history index) of a finished summary not yet applied, or None."""
+        with self._lock:
+            return self._pending_up_to if self._pending_result is not None else None
+
+    def seed(self, text, up_to, kind="resumed"):
+        """Hold a finished summary, from a checkpoint, as if the worker had just made it."""
+        with self._lock:
+            self._pending_result = text
+            self._pending_up_to = up_to
+            self._pending_kind = kind
 
     def harvest(self, summary_state):
-        """If a completed summary is available, apply it. Returns True if updated."""
+        """Apply a finished summary when it ends at or before the window's head
+        (summary_state["_head"], set by every window build): the messages it covers
+        have left the window, and the lead message is the only place they still are.
+        One that ends past the head, made ahead of an eviction, is held until the head
+        moves there: applying it earlier would rewrite the lead, and so the cached
+        prefix, while the messages are still in the window. A held one rides along
+        in summary_state["_pending"] so a checkpoint keeps it (see main's resume).
+        Returns True if the state was updated."""
         with self._lock:
             if self._pending_result is None:
                 return False
-            summary_state["text"] = _condense_summary(self._pending_result, self._log)
+            head = summary_state.get("_head")
+            if isinstance(head, int) and self._pending_up_to > head:
+                summary_state["_pending"] = {"text": self._pending_result, "up_to": self._pending_up_to,
+                                             "kind": self._pending_kind}
+                return False
+            summary_state["text"] = self._pending_result
             summary_state["up_to"] = self._pending_up_to
             # A new summary rewrites the lead message of the next request, i.e. one
             # expected cache miss. Harvests happen at several sites (turn start, the
             # stop paths), so the flag lives on the state and the cache.miss log pops it.
             summary_state["_lead_changed"] = True
+            summary_state.pop("_pending", None)
+            self._log.info("summary.harvest up_to=%d kind=%s", self._pending_up_to, self._pending_kind or "threshold")
             self._pending_result = None
             self._pending_up_to = None
+            self._pending_kind = ""
             return True
 
     @property
@@ -4612,6 +4653,7 @@ class AsyncSummarizer:
         with self._lock:
             self._pending_result = None
             self._pending_up_to = None
+            self._pending_kind = ""
 
 
 # ── Context window management ─────────────────────────────────────────
@@ -5028,6 +5070,7 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
                     selected.insert(0, conversation_history[i])
                     break
 
+    summary_state["_head"] = oldest_idx   # read by AsyncSummarizer.harvest: a summary past it is held
     log.debug("Context budget: %d/%d tokens, %d messages, oldest_idx=%d, has_context_msg=%s",
               used, budget, len(selected), oldest_idx, context_msg is not None)
     return selected, oldest_idx
@@ -6198,6 +6241,14 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     conversation_history = conversation_history if continue_mode and start_turn > 0 else []
     summary_state = summary_state if continue_mode and start_turn > 0 else {"text": "", "up_to": 0}
     initial_files = initial_files if continue_mode and start_turn > 0 else None
+    _held = summary_state.pop("_pending", None)
+    if (_async_summarizer is not None and isinstance(_held, dict) and _held.get("text")
+            and isinstance(_held.get("up_to"), int)):
+        # A summary made ahead of an eviction that had not happened when the checkpoint
+        # was written: held again here, applied when the head moves past it.
+        _async_summarizer.seed(_held["text"], _held["up_to"], _held.get("kind") or "resumed")
+        log.info("summary.resume: a finished summary up to message %d rides along from the checkpoint",
+                 _held["up_to"])
 
     # AC3/AC4 of #1028 — close ephemeral tasks left open from a prior session
     # and build a [Session resume] preamble for the first user message.
