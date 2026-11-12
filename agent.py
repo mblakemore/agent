@@ -667,6 +667,11 @@ _DEFAULT_CONFIG = {
         # session, from the checkpoint written as the turn ends). Off by default; /restart
         # at the keyboard always works.
         "restart_tool": False,
+        # After a restart the model asked for (the restart tool), send this as the user's
+        # message and run a turn, instead of waiting at the prompt until someone types
+        # or a monitor pings. Empty: wait at the prompt. A keyboard /restart always
+        # returns to the prompt.
+        "restart_resume_prompt": "",
         # The event bus (monitor_bus.py): a detached or background exec_command
         # session, and a background subagent, queue one item when they exit.
         "session_events": True,
@@ -2083,6 +2088,19 @@ def _exec_restart():
         print(f"restart failed: {e}; start it by hand: {sys.executable} {' '.join(argv)}",
               file=sys.stderr, flush=True)
         sys.exit(3)
+
+
+def _restart_resume_prompt():
+    """The text to resume with after a restart the TOOL asked for (empty: none). Read
+    before the first turn consumes the restart record."""
+    rs = _RESTART.get("resumed")
+    if not rs or rs.get("by") != "tool":
+        return ""
+    try:
+        text = _config.get("preferences", {}).get("restart_resume_prompt", "")
+    except Exception:
+        return ""
+    return text.strip() if isinstance(text, str) else ""
 
 
 def _restart_gate():
@@ -6261,6 +6279,20 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
             log.info("schedules active: %s", ", ".join(_sched))
     except Exception:
         log.debug("restore_persisted failed", exc_info=True)
+
+    # A restart the model asked for comes back to work, not to the prompt: the configured
+    # text (preferences.restart_resume_prompt) goes in as the user's message and one turn
+    # runs before the input loop, as an initial prompt would. A keyboard /restart returns
+    # to the prompt. Auto mode resumes its run anyway.
+    _resume_text = _restart_resume_prompt() if (continue_mode and start_turn > 0 and not auto) else ""
+    if _resume_text:
+        _emit("on_user_message", _resume_text)
+        conversation_history.append({"role": "user", "content": _resume_text})
+        log.info("RESTART: resuming with the configured prompt (%d chars)", len(_resume_text))
+        run_agent_single(conversation_history, summary_state, initial_files, log,
+                         gen["temperature"], gen["top_p"], gen["top_k"],
+                         gen["presence_penalty"], max_tokens, ctx_size,
+                         async_summarizer=_async_summarizer)
 
     if initial_prompt and not (continue_mode and start_turn > 0):
         _emit("on_user_message", initial_prompt)

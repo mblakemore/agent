@@ -240,3 +240,52 @@ def test_main_execs_when_requested(monkeypatch):
     except SystemExit:
         pass
     assert execs == [True]
+
+
+# ── the resume prompt after a tool-initiated restart ──────────────────────────
+
+def _resume_run(monkeypatch, resumed, prompt):
+    """run_agent_interactive resuming a checkpoint; returns the run_agent_single calls."""
+    calls = []
+    agent._RESTART["resumed"] = resumed
+    monkeypatch.setitem(agent._config, "preferences", {"restart_resume_prompt": prompt})
+    cp = ([{"role": "user", "content": "before"}, {"role": "assistant", "content": "ok"}],
+          {"text": "", "up_to": 0}, 3, None, False)
+    with patch('agent._setup_logger', return_value=(MagicMock(), "log.txt", "err.txt")), \
+         patch('agent._check_api_health', return_value=(True, "")), \
+         patch('agent._detect_ctx_size', return_value=None), \
+         patch('agent._emit'), \
+         patch('agent._load_checkpoint', return_value=cp), \
+         patch('agent._lead_reload', side_effect=lambda f, log: f), \
+         patch('agent._lead_place', return_value=False), \
+         patch('agent.cleanup_temp_sessions'), \
+         patch('agent.TerminalCallbacks'), \
+         patch('agent._save_checkpoint'), \
+         patch('agent.run_agent_single', side_effect=lambda h, *a, **k: calls.append(list(h)) or "success"), \
+         patch('builtins.input', side_effect=['exit']):
+        agent.run_agent_interactive(initial_prompt=None, auto=False, continue_mode=True, tui=False)
+    return calls
+
+
+def test_resume_prompt_runs_a_turn_after_a_tool_restart(monkeypatch):
+    calls = _resume_run(monkeypatch, {"by": "tool", "reason": "new code", "at": 1.0}, " continue ")
+    assert len(calls) == 1
+    assert calls[0][-1] == {"role": "user", "content": "continue"}
+    assert calls[0][0]["content"] == "before"   # the checkpoint's history is kept
+
+
+def test_resume_prompt_not_after_a_keyboard_restart(monkeypatch):
+    assert _resume_run(monkeypatch, {"by": "command", "reason": "", "at": 1.0}, "continue") == []
+
+
+def test_resume_prompt_empty_waits_at_the_prompt(monkeypatch):
+    assert _resume_run(monkeypatch, {"by": "tool", "reason": "", "at": 1.0}, "") == []
+    assert _resume_run(monkeypatch, None, "continue") == []
+
+
+def test_restart_resume_prompt_reads_the_config(monkeypatch):
+    agent._RESTART["resumed"] = {"by": "tool", "at": 1.0}
+    monkeypatch.setitem(agent._config, "preferences", {"restart_resume_prompt": 7})
+    assert agent._restart_resume_prompt() == ""
+    monkeypatch.setitem(agent._config, "preferences", {"restart_resume_prompt": "go on"})
+    assert agent._restart_resume_prompt() == "go on"

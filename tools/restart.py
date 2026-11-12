@@ -6,6 +6,8 @@ checkpoint is written, the session is torn down like an 'exit', and main() repla
 process with `python agent.py <the same arguments> -c`: same pid, terminal and tmux pane;
 the history, loaded tools and skills come back from the checkpoint, monitors armed with
 persist come back from .agent/monitors.json, other monitors and background jobs do not.
+With `preferences.restart_resume_prompt` set, the resumed session gets that text as the
+user's message and runs a turn at once; otherwise it waits at the prompt.
 
 Opt-in: `preferences.restart_tool` true; off, the tool does not exist to the model
 (agent.py gates it). More than three restarts in ten minutes are refused.
@@ -38,7 +40,9 @@ definition = {
             "and this same session continues from its checkpoint on the code now on disk. "
             "Use it after the harness, a tool, a skill or the config changed on disk. Say "
             "what you are about to do first; nothing more happens in this turn after the "
-            "call. Monitors without persist and background jobs are lost."
+            "call. Monitors without persist and background jobs are lost. The session "
+            "resumes with the configured resume prompt when there is one, else waits at "
+            "the prompt until someone types or a monitor pings."
         ),
         "parameters": {
             "type": "object",
