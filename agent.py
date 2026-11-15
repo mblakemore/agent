@@ -5072,17 +5072,23 @@ def _fill_window(history, fill_budget, fill_max, context_tokens):
     return oldest, used
 
 
-def _evicted_edge(history, head, used, budget, n_max, ahead):
+def _evicted_edge(history, head, used, budget, n_max, ahead, lead=0):
     """Pure: the index up to which the next eviction is certain to drop messages, or
     None while the window stands under `ahead` of both limits. An eviction keeps the
     newest _CACHE_EVICT_TO_FRAC of the budget (and of the message cap), so at least
     the other share of the window as it stands now leaves at the next one, and its
-    summary can be made now and be ready then."""
+    summary can be made now and be ready then. `lead` is the lead message's tokens:
+    the eviction fires when window and lead together outgrow the budget, so the line
+    is measured on both (a lead of a quarter of the budget kept the window alone under
+    80% right up to every eviction, and nothing was ever kicked ahead: 2026-11-14).
+    The kept share stays `used` less the leaving share of the budget: with the growth
+    still to come before the eviction it lands on the same window a greedy rebuild
+    makes, lead or no lead."""
     if not ahead or head is None or head >= len(history):
         return None
     n = len(history) - head
     keep = _CACHE_EVICT_TO_FRAC
-    by_tokens = used >= budget * ahead
+    by_tokens = used + lead >= budget * ahead
     by_count = n >= n_max * ahead
     if not (by_tokens or by_count):
         return None
@@ -5108,7 +5114,11 @@ def _aligned_head(history, ready, head, fill_budget, fill_max, n_max, budget, co
         return None
     g_idx, g_used = _fill_window(history, fill_budget, fill_max, context_tokens)
     g_n = len(history) - g_idx
-    if not g_used or not g_n:
+    if not g_n:
+        # The greedy rebuild keeps no message (a lead larger than the share): a summary
+        # that ends within a message or two of the end is the whole of it.
+        return ready if n <= 2 else None
+    if not g_used:
         return None
     lo, hi = _ALIGN_BAND
     if used > g_used * hi:
@@ -5130,7 +5140,10 @@ def _lead_tokens(summary_state, initial_files):
 def _collapse_edge(history, summary_state, initial_files, ctx_size, max_tokens):
     """The head a cache collapse would rebuild the window to if it happened now, or
     None when it would not happen (collapse off, no kept head, the window already
-    small: the same test as _cache_collapse_due) or nothing new would leave."""
+    small: the same test as _cache_collapse_due) or nothing new would leave. The
+    head may be the end of the history: a lead larger than the collapsed share
+    leaves the rebuilt window with no message at all (the builder does the same),
+    and the summary of everything is what that collapse needs."""
     frac = _cache_collapse_frac()
     head = summary_state.get("_cache_head")
     if not frac or not isinstance(head, int) or not (0 <= head < len(history)):
@@ -5141,7 +5154,7 @@ def _collapse_edge(history, summary_state, initial_files, ctx_size, max_tokens):
     if not used > budget * frac * 1.5:
         return None
     edge, _ = _fill_window(history, int(budget * frac), max(2, int(_MAX_CONTEXT_MESSAGES * frac)), lead)
-    return edge if edge > summary_state.get("up_to", 0) and edge < len(history) else None
+    return edge if edge > summary_state.get("up_to", 0) and edge <= len(history) else None
 
 
 def _build_context(conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
@@ -5271,7 +5284,8 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
     if ahead and oldest_idx < len(conversation_history):
         # Read by the run loop: the worker summarizes up to the edge now, the eviction
         # then aligns to it (above) and goes out with its summary at no wait.
-        edge = _evicted_edge(conversation_history, oldest_idx, window_used, budget, effective_max, ahead)
+        edge = _evicted_edge(conversation_history, oldest_idx, window_used, budget, effective_max, ahead,
+                             context_tokens if context_msg else 0)
         if edge is not None and edge > summary_state.get("up_to", 0):
             summary_state["_ahead_edge"] = edge
     if context_msg is None and not any(m["role"] == "user" for m in selected):

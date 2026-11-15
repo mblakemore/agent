@@ -533,3 +533,61 @@ class TestIdleWatcher:
         monkeypatch.setitem(agent._config["summary"], "ahead", 0.8)
         monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="llamacpp"))
         assert agent._summary_idle_arm(MagicMock()) is False
+
+
+# ── a lead message that is a large share of the budget (measured 2026-11-14: a quarter) ──
+
+def _big_lead(monkeypatch):
+    """Every message costs 10, the lead (a footnote carrying the summary BIGLEAD) 100."""
+    monkeypatch.setattr(agent, "_estimate_tokens",
+                        lambda m: 100 if "BIGLEAD" in str(m.get("content", "")) else 10)
+
+
+class TestTheLeadCountsTowardTheEvictionLine:
+    def test_the_edge_measures_window_and_lead_together(self, monkeypatch):
+        monkeypatch.setattr(agent, "_estimate_tokens", lambda m: 10)
+        h = _hist(22)   # 23 messages, window of 22 from head 1 = 220 tokens, 57% of 388
+        assert agent._evicted_edge(h, 1, 220, 388, 100, 0.8) is None
+        # with a 100-token lead the request stands at 320 of 388: over the line; the kept
+        # share is still 220 - 0.4*388 = 64 → the newest 6, so the 16 older ones go
+        assert agent._evicted_edge(h, 1, 220, 388, 100, 0.8, lead=100) == 23 - 6
+
+    def test_the_window_builder_passes_its_lead(self, small_budget, monkeypatch):
+        _big_lead(monkeypatch)
+        monkeypatch.setitem(agent._config["summary"], "ahead", 0.8)
+        h, state = _hist(26), {"text": "BIGLEAD", "up_to": 0, "_cache_head": 1}
+        _, oldest = agent._build_context(h, state, "", 1000, 100, log)
+        # 26 messages (260) + lead (100) = 360 of 388: the head holds, the edge is reported
+        assert oldest == 1 and state["_ahead_edge"] == 27 - 10
+        edge = state.pop("_ahead_edge")
+        h.extend({"role": "user", "content": f"more {i}"} for i in range(3))   # 290 + 100 > 388
+        state["_ready_up_to"] = edge
+        _, oldest = agent._build_context(h, state, "", 1000, 100, log)
+        assert oldest == edge and state["_evict_summarize"] is True
+
+
+class TestALeadLargerThanTheCollapsedShare:
+    def test_the_idle_watcher_summarizes_everything(self, small_budget, monkeypatch):
+        """The collapse keeps 58 tokens and the lead alone is 100: the rebuilt window
+        holds no message, so the summary the collapse needs runs to the end."""
+        run, s = TestIdleWatcher()._run(monkeypatch)
+        _big_lead(monkeypatch)
+        run["state"]["text"] = "BIGLEAD"
+        clock = [1000.0]
+        why = agent._summary_idle_loop(FakeStop(clock), run, MagicMock(), now=lambda: clock[0])
+        assert why == "kicked" and s.kicks == [(52, 52, "idle")], (why, s.kicks)
+
+    def test_the_wake_message_alone_aligns_to_that_summary(self, small_budget, monkeypatch):
+        """One message arrived since the idle summary was made (the wake): the greedy
+        rebuild keeps nothing, the window starts where the summary ends instead."""
+        _big_lead(monkeypatch)
+        monkeypatch.setitem(agent._config["context"], "cache_collapse_frac", 0.15)
+        monkeypatch.setattr(agent, "_cache_lifetime_estimate", lambda record, key: (600.0, None))
+        monkeypatch.setattr(agent, "_CACHE_REQ", {"n": 5, "prev_sig": None, "last_at": time.time() - 3000})
+        h = _hist(51) + [{"role": "user", "content": "wake"}]
+        state = {"text": "BIGLEAD", "up_to": 0, "_cache_head": 1, "_ready_up_to": 52}
+        _, oldest = agent._build_context(h, state, "", 1000, 100, log)
+        assert oldest == 52 and state["_collapsed"] is True
+        state = {"text": "BIGLEAD", "up_to": 0, "_cache_head": 1}
+        _, oldest = agent._build_context(h, state, "", 1000, 100, log)
+        assert oldest == 53, "without a ready summary the rebuilt window holds no message"
