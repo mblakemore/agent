@@ -35,6 +35,7 @@ DEFAULTS = {
     "max_held_chars": 8000,
     "digest_raw_chars": 0,
     "log_dir": os.path.join(".agent", "gate"),
+    "verdict_log": True,
 }
 
 _PROMPT_TEXT_CAP = 3000      # chars of new output shown to the judge
@@ -75,6 +76,7 @@ def config_from(raw):
         except (TypeError, ValueError):
             cfg[k] = DEFAULTS[k]
     cfg["log_dir"] = str(cfg["log_dir"] or DEFAULTS["log_dir"])
+    cfg["verdict_log"] = bool(cfg["verdict_log"])
     return cfg
 
 
@@ -186,18 +188,37 @@ def format_digest(label, held, raw_chars=0, log_path=None, reason=""):
     return "\n".join(lines)
 
 
+def _log_file(log_dir, label, suffix):
+    """`<log_dir>/<label><suffix>`, the directory made and gitignored on first use."""
+    os.makedirs(log_dir, exist_ok=True)
+    gi = os.path.join(log_dir, ".gitignore")
+    if not os.path.exists(gi):
+        with open(gi, "w", encoding="utf-8") as fh:
+            fh.write("*\n")
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(label))[:60] or "source"
+    return os.path.join(log_dir, f"{safe}{suffix}")
+
+
 def append_raw(log_dir, label, text):
     """Keep the raw held text on disk so the agent can read it if the digest is too thin."""
     try:
-        os.makedirs(log_dir, exist_ok=True)
-        gi = os.path.join(log_dir, ".gitignore")
-        if not os.path.exists(gi):
-            with open(gi, "w", encoding="utf-8") as fh:
-                fh.write("*\n")
-        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(label))[:60] or "source"
-        path = os.path.join(log_dir, f"{safe}.log")
+        path = _log_file(log_dir, label, ".log")
         with open(path, "a", encoding="utf-8", errors="replace") as fh:
             fh.write(time.strftime("%Y-%m-%d %H:%M:%S ") + text.rstrip("\n") + "\n")
+        return path
+    except OSError:
+        return None
+
+
+def append_verdict(log_dir, label, v):
+    """One line per judged item, wakes and holds alike, beside the raw held log. The held
+    log alone cannot show a false wake (the brief woke the agent for nothing), which is
+    the half of the gate's error an agent tuning its brief needs to see. Returns the path."""
+    try:
+        path = _log_file(log_dir, label, ".verdicts.log")
+        with open(path, "a", encoding="utf-8", errors="replace") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {v.verdict} how={v.how} ms={int(v.ms)} "
+                     f"why={first_line(v.why, 200)} | {first_line(v.line)}\n")
         return path
     except OSError:
         return None

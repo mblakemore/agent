@@ -286,3 +286,58 @@ def test_a_second_finish_of_the_same_source_queues_nothing():
     monitor_bus.source_finished("job-2", "first")
     monitor_bus.source_finished("job-2", "second")
     assert monitor_bus.drain() == ["first"]
+
+
+# ── the verdict log: wakes beside holds ───────────────────────────────────
+def _verdict_lines(tmp_path):
+    path = tmp_path / "gate" / "s.verdicts.log"
+    return path.read_text().splitlines() if path.exists() else []
+
+
+def test_every_judged_item_writes_one_verdict_line(tmp_path):
+    monitor_bus.configure(judge=FakeJudge("hold", "wake"))
+    _src(bypass=r"\bboss\b", quiet=r"\bnoise\b")
+    monitor_bus.emit("s", "the boss is here")       # bypass → wake, no judge
+    monitor_bus.emit("s", "just noise again")        # quiet → hold, no judge
+    monitor_bus.emit("s", "progress 1")              # judged → hold
+    monitor_bus.emit("s", "ERROR: boom")             # judged → wake
+    lines = _verdict_lines(tmp_path)
+    assert len(lines) == 4
+    assert " wake how=bypass " in lines[0] and lines[0].endswith("| the boss is here")
+    assert " hold how=quiet " in lines[1] and "matched quiet" in lines[1]
+    assert " hold how=judge " in lines[2] and "why=scripted" in lines[2]
+    assert " wake how=judge " in lines[3]
+    assert all(line[:10].count("-") == 2 for line in lines)   # dated, like the held log
+    # the raw held log is what it was: held text only
+    raw = (tmp_path / "gate" / "s.log").read_text()
+    assert "just noise again" in raw and "progress 1" in raw and "boom" not in raw
+
+
+def test_a_failed_judge_logs_its_failopen_wake(tmp_path):
+    monitor_bus.configure(judge=FakeJudge(TimeoutError("slow")))
+    _src()
+    monitor_bus.emit("s", "something")
+    (line,) = _verdict_lines(tmp_path)
+    assert " wake how=failopen " in line and "TimeoutError" in line
+
+
+def test_an_ungated_source_writes_no_verdict(tmp_path):
+    monitor_bus.configure(judge=FakeJudge("hold"))
+    _src(brief="")
+    monitor_bus.emit("s", "plain output")
+    assert monitor_bus.drain() == ["plain output"]
+    assert _verdict_lines(tmp_path) == []
+
+
+def test_verdict_log_false_keeps_only_the_held_text(tmp_path):
+    monitor_bus.configure(gate={"enabled": True, "log_dir": str(tmp_path / "gate"),
+                                "verdict_log": False}, judge=FakeJudge("hold"))
+    _src()
+    monitor_bus.emit("s", "a long progress line")
+    assert _verdict_lines(tmp_path) == []
+    assert (tmp_path / "gate" / "s.log").read_text().strip().endswith("a long progress line")
+
+
+def test_the_verdict_log_default_is_on_and_a_string_is_read_as_a_flag():
+    assert gate.config_from(None)["verdict_log"] is True
+    assert gate.config_from({"verdict_log": 0})["verdict_log"] is False

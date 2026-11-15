@@ -5157,6 +5157,25 @@ def _collapse_edge(history, summary_state, initial_files, ctx_size, max_tokens):
     return edge if edge > summary_state.get("up_to", 0) and edge <= len(history) else None
 
 
+_LEAD_LOGGED = {"tokens": None}   # the last context.lead line's size (one per process)
+
+
+def _log_lead(tokens, summary_state, initial_files, log):
+    """One INFO line with the lead's size, again when it moves by more than a tenth. The
+    lead (the identity files and the summary, as the footnote carries them) rides in every
+    trimmed request and sets what a cache collapse can keep; a trim of the identity file
+    should be measured here, not estimated from a chars-per-token ratio (2026-11-15: a
+    lead of 12.5k tokens in a 56.6k budget was found on the debug line by accident)."""
+    last = _LEAD_LOGGED["tokens"]
+    if last is not None and abs(tokens - last) <= last // 10:
+        return
+    _LEAD_LOGGED["tokens"] = tokens
+    text = summary_state.get("text") or ""
+    files = _estimate_tokens({"role": "user", "content": initial_files}) if initial_files else 0
+    summary = _estimate_tokens({"role": "user", "content": text}) if text else 0
+    log.info("context.lead tokens=%d files=%d summary=%d", tokens, files, summary)
+
+
 def _build_context(conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
                     max_messages_override=None):
     """Build the context window dynamically based on token budget.
@@ -5198,6 +5217,7 @@ def _build_context(conversation_history, summary_state, initial_files, ctx_size,
         context_msg = _build_initial_files_msg(initial_files)
         context_tokens = _estimate_tokens(context_msg)
     if context_msg:
+        _log_lead(context_tokens, summary_state, initial_files, log)
         if context_tokens > budget * 0.5:
             # Summary is large — reduce message count to make room
             remaining_budget = budget - context_tokens

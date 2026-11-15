@@ -591,3 +591,35 @@ class TestALeadLargerThanTheCollapsedShare:
         state = {"text": "BIGLEAD", "up_to": 0, "_cache_head": 1}
         _, oldest = agent._build_context(h, state, "", 1000, 100, log)
         assert oldest == 53, "without a ready summary the rebuilt window holds no message"
+
+
+class TestTheLeadIsLoggedOnce:
+    """context.lead: one INFO line with the lead's size, again when it moves by a tenth."""
+
+    def _build(self, monkeypatch, state, files="FILES " * 50):
+        monkeypatch.setattr(agent, "_TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
+        monkeypatch.setattr(agent, "_TOOLS_TOKENS", 0)
+        monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="llamacpp"))
+        lg = MagicMock()
+        agent._build_context(_hist(6), state, files, 100000, 100, lg)
+        return [c.args for c in lg.info.call_args_list if c.args[0].startswith("context.lead")]
+
+    def test_one_line_with_the_parts_then_silence(self, monkeypatch):
+        monkeypatch.setattr(agent, "_LEAD_LOGGED", {"tokens": None})
+        state = {"text": "a summary of what went before", "up_to": 0}
+        (line,) = self._build(monkeypatch, state)
+        fmt, tokens, files, summary = line
+        assert fmt == "context.lead tokens=%d files=%d summary=%d"
+        assert tokens > files > 0 and summary > 0 and tokens > summary
+        assert self._build(monkeypatch, state) == []           # the same lead again: quiet
+
+    def test_a_lead_that_grows_by_more_than_a_tenth_is_logged_again(self, monkeypatch):
+        monkeypatch.setattr(agent, "_LEAD_LOGGED", {"tokens": None})
+        state = {"text": "short", "up_to": 0}
+        assert len(self._build(monkeypatch, state)) == 1
+        state["text"] = "a much longer summary " * 40
+        assert len(self._build(monkeypatch, state)) == 1
+
+    def test_no_lead_no_line(self, monkeypatch):
+        monkeypatch.setattr(agent, "_LEAD_LOGGED", {"tokens": None})
+        assert self._build(monkeypatch, {"text": "", "up_to": 0}, files="") == []

@@ -327,6 +327,8 @@ class _Bus:
         v = _gate.judge(src.brief, src.label, text, held_lines, bypass=src.bypass,
                         quiet=src.quiet, complete=_CFG["judge"], timeout=cfg["timeout_s"])
         _record_verdict(v)
+        if cfg["verdict_log"]:
+            _gate.append_verdict(cfg["log_dir"], src.label, v)
         if v.verdict == _gate.WAKE:
             # One item, digest first: an idle loop that takes a single item from the
             # queue gets the whole story, never the digest alone.
