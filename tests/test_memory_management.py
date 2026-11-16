@@ -15,6 +15,7 @@ import pytest
 from unittest.mock import patch
 
 import agent
+import memory_pressure
 
 def test_read_vmrss_mb_positive():
     """VmRSS for the current process is > 0 in a real Linux env."""
@@ -53,8 +54,8 @@ def test_check_memory_watermark_ok_under_normal_load():
 def test_check_memory_watermark_pressure_with_tight_warn(monkeypatch, caplog):
     """Setting warn threshold below current RSS returns 'pressure' and logs."""
     # Use a 1 MB warn threshold — current process RSS is well above this.
-    monkeypatch.setattr(agent, "_MEM_WARN_MB", 1)
-    monkeypatch.setattr(agent, "_MEM_HARD_MB", 100_000)  # never hit
+    monkeypatch.setattr(memory_pressure, "MEM_WARN_MB", 1)
+    monkeypatch.setattr(memory_pressure, "MEM_HARD_MB", 100_000)  # never hit
     log = logging.getLogger("test_pressure")
     with caplog.at_level(logging.WARNING, logger="test_pressure"):
         state = agent._check_memory_watermark(log)
@@ -67,7 +68,7 @@ def test_hard_limit_exits_cleanly(monkeypatch):
     the process with code 2. Use mocks to ensure coverage is tracked.
     """
     # Set hard limit to 1 MB — trivially exceeded by current process
-    monkeypatch.setattr(agent, "_MEM_HARD_MB", 1)
+    monkeypatch.setattr(memory_pressure, "MEM_HARD_MB", 1)
     log = logging.getLogger("test_hard_limit")
     
     with pytest.raises(SystemExit) as excinfo:
@@ -79,7 +80,7 @@ def test_hard_limit_exits_cleanly(monkeypatch):
 def test_hard_limit_name_error_path(monkeypatch):
     """Verify the NameError path when _log_bedrock_session_spend is missing."""
     # Set hard limit to 1 MB — trivially exceeded by current process
-    monkeypatch.setattr(agent, "_MEM_HARD_MB", 1)
+    monkeypatch.setattr(memory_pressure, "MEM_HARD_MB", 1)
     log = logging.getLogger("test_hard_limit_name_error")
     
     # Save the original function to restore it

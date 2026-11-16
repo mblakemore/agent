@@ -31,6 +31,7 @@ GUARDED_FILES = [
     "checkpoint.py",
     "context_window.py",
     "lead.py",
+    "memory_pressure.py",
     "restart_state.py",
 ]
 

@@ -12,6 +12,7 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _REPO)
 import agent as _agent  # noqa: E402
 import llm_backend as _lb  # noqa: E402
+import memory_pressure
 from agent import (_SPILL_MARKER, _calibrated_budget, _spill_tool_result,  # noqa: E402
                    _update_token_calibration, run_agent_single)
 
@@ -31,7 +32,7 @@ class TestSpillHelper:
 
     def test_write_failure_returns_none_never_raises(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(_agent, "_SPILL_DIR", str(tmp_path / "not-a-dir.txt"))
+        monkeypatch.setattr(memory_pressure, "SPILL_DIR", str(tmp_path / "not-a-dir.txt"))   # read where the code lives
         (tmp_path / "not-a-dir.txt").write_text("a file where the dir must be")
         assert _spill_tool_result(1, "t", "x" * 100, logging.getLogger("t")) is None
 
