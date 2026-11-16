@@ -1,6 +1,7 @@
 import pytest
 import logging
 import re
+import tool_args
 from agent import _sanitize_tool_args, _salvage_tool_args
 
 # Mock logger
@@ -167,12 +168,12 @@ def test_repair_logs_a_warning_with_the_head_of_the_raw_args():
 def test_token_leakage_still_reaches_the_salvage(monkeypatch):
     # The repairer must not shadow the heuristic: these shapes are not JSON at all.
     reached = []
-    real = _agent._salvage_tool_args
+    real = tool_args.salvage_tool_args
 
     def spy(func_name, raw, log):
         reached.append(raw)
         return real(func_name, raw, log)
-    monkeypatch.setattr(_agent, "_salvage_tool_args", spy)
+    monkeypatch.setattr(tool_args, "salvage_tool_args", spy)
     assert _repair_tool_args("file", "write,path:test.txt,content:hello", MockLog()) == {
         "action": "write", "path": "test.txt", "content": "hello"}
     assert _repair_tool_args("exec_command", "command: ls -la", MockLog()) == {"command": "ls -la"}
@@ -186,13 +187,13 @@ def test_garbage_returns_none_without_raising():
 
 
 def test_a_repairer_result_that_is_not_a_dict_falls_through(monkeypatch):
-    monkeypatch.setattr(_agent, "_json_repair", SimpleNamespace(repair_json=lambda raw, return_objects: [1, 2]))
+    monkeypatch.setattr(tool_args, "_json_repair", SimpleNamespace(repair_json=lambda raw, return_objects: [1, 2]))
     assert _repair_tool_args("exec_command", "command: ls -la", MockLog()) == {"command": "ls -la"}
-    monkeypatch.setattr(_agent, "_json_repair", SimpleNamespace(repair_json=lambda raw, return_objects: 1 / 0))
+    monkeypatch.setattr(tool_args, "_json_repair", SimpleNamespace(repair_json=lambda raw, return_objects: 1 / 0))
     assert _repair_tool_args("exec_command", "command: ls -la", MockLog()) == {"command": "ls -la"}
 
 
 def test_without_the_package_the_behaviour_is_the_old_one(monkeypatch):
-    monkeypatch.setattr(_agent, "_json_repair", None)
+    monkeypatch.setattr(tool_args, "_json_repair", None)
     assert _repair_tool_args("other", '{"action": "read", "path": "test.txt", ', MockLog()) is None
     assert _repair_tool_args("exec_command", "command: ls -la", MockLog()) == {"command": "ls -la"}

@@ -1,5 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
+import tool_args
 import agent
 import summarize
 import context_window
@@ -124,7 +125,7 @@ def test_salvage_tool_args_exec_command():
     # Targets lines 620-621
     log = logging.getLogger("test")
     # Provide a string that is not valid JSON but contains a key:value pair
-    result = agent._salvage_tool_args("exec_command", 'command: "ls -la"', log)
+    result = tool_args.salvage_tool_args("exec_command", 'command: "ls -la"', log)
     assert result == {"command": "ls -la"}
 
 def test_build_summary_prompt_cicd_facts():

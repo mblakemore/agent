@@ -2,6 +2,7 @@ import pytest
 import logging
 import os
 import sys
+import tool_args
 import agent
 import summarize
 from unittest.mock import patch, MagicMock
@@ -22,7 +23,7 @@ def test_validate_tool_call_pr_body_oserror():
 def test_salvage_tool_args_exception():
     # Targets lines 623-624: except Exception as e: log.debug(...)
     # Pass non-string raw_args to trigger exception in cleaned = raw_args.replace(...)
-    result = agent._salvage_tool_args("exec_command", None, log)
+    result = tool_args.salvage_tool_args("exec_command", None, log)
     assert result is None
 
 def test_setup_logger_default_history_dir():

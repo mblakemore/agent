@@ -2,6 +2,7 @@ import logging
 import os
 import tempfile
 from unittest.mock import patch, MagicMock
+import tool_args
 import agent
 import summarize
 
@@ -27,7 +28,7 @@ def test_validate_tool_call_reads_pr_body_success():
 def test_salvage_tool_args_garbled():
     # Target Lines 623-624
     raw = 'command": "ls -la'
-    result = agent._salvage_tool_args("exec_command", raw, log)
+    result = tool_args.salvage_tool_args("exec_command", raw, log)
     assert result is not None
     assert "command" in result
     assert result["command"] == "ls -la"

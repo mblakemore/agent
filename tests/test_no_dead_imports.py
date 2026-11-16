@@ -36,6 +36,7 @@ GUARDED_FILES = [
     "memory_pressure.py",
     "system_prompt.py",
     "summarize.py",
+    "tool_args.py",
     "restart_state.py",
 ]
 
