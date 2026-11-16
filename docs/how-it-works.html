@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">How it works</p>
 <h1>How it works</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/how-it-works.md"><code>docs/how-it-works.md</code></a> · last changed 2026-11-16 (9c187c3)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/how-it-works.md"><code>docs/how-it-works.md</code></a> · last changed 2026-11-16 (c46885a)</p>
 <h2 id="the-turn-loop">The turn loop</h2>
 <p>Each cycle is a turn loop:</p>
 <ol>
@@ -106,6 +106,7 @@ system_prompt.py      # The per-turn lines, the static/dynamic split, the runtim
 live_input.py         # The always-live prompt thread and the terminal borrow
 restart_state.py      # The state behind /restart and the restart tool
 tui.py                # prompt_toolkit front end
+activity.py           # What the loop is doing right now, for the F2 status key
 transcript.py         # Session record, reprinted on terminal resize
 callbacks.py, ui.py   # UI callback interface and shared components
 theme.py, spinner.py  # Colors and spinner

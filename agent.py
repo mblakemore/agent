@@ -95,6 +95,7 @@ import skills as _skills
 import live_input as _live
 import system_prompt as _sp
 import cicd_gates as _cicd
+import activity as _act
 import agent_config as _cfg
 import monitor_bus
 import schedule_bus
@@ -3519,6 +3520,24 @@ class _Session:
 
         _seed_phase_tasks(_config, self.log)
 
+    _STATUS_ASK_TAIL = 24          # messages the F3 question shows the summary model
+    _STATUS_ASK_LOCK = threading.Lock()
+
+    def _ask_status(self):
+        """F3: the summary model's short read of what the agent is doing, from the
+        transcript tail and the loop's own record. Printed, logged, never model input."""
+        tail = _summ.format_for_summary(list(self.conversation_history)[-self._STATUS_ASK_TAIL:])
+        prompt = (
+            "You are watching an AI agent work; a person at the keyboard wants to know what "
+            "it is doing. From the loop's own record and the transcript tail, answer in at "
+            "most five plain lines: what it is doing now, what it is waiting on, what it "
+            "will likely do next, and whether anything looks stuck or repeated. No preamble.\n\n"
+            "LOOP RECORD:\n" + _act.describe() + "\n\nTRANSCRIPT TAIL:\n" + tail + "\n\nANSWER:"
+        )
+        answer = (_gate_judge(prompt, timeout=90, max_tokens=350, lock=self._STATUS_ASK_LOCK) or "").strip()
+        self.log.info("status ask (F3): %s", answer)
+        return answer or "(the summary model said nothing)"
+
     def _front_end(self):
         """The prompt_toolkit session and its callbacks, persistent monitors and schedules,
         the resume prompt after a restart."""
@@ -3566,6 +3585,8 @@ class _Session:
                     cb=_cb,
                     estimate_tokens=_cw.estimate_tokens,
                     enable_cancel_key=self._live_input,
+                    status_text=_act.describe,
+                    ask_status=self._ask_status,
                 )
                 _cb = _tuimod.TuiCallbacks(self.tui_session, verbose=getattr(_cb, "verbose", False))
                 # Idle-wake (app.exit from a monitor thread) is only for the default
@@ -4971,10 +4992,12 @@ class _Run:
                 if r is _NEXT:
                     break
                 if r is not None:
+                    _act.idle()
                     return r
 
     def _begin_turn(self):
         self.turn += 1
+        _act.turn_started(self.turn)
         # Grind escalation (turn-budget): once per cycle, if a success_check is
         # configured and the model has burned most of its budget with the check
         # still red, it is grinding (distinct actions, no convergence) — the
@@ -5581,6 +5604,7 @@ class _Run:
         self._deltas_received = 0
         _stall_detected = False
         self.status = StreamStatus(emit=_emit)
+        _act.request_started(getattr(_main_backend, "model", None) or _config["llm"].get("model"))
         # Sky-blue header — the aurora family's complement to the violet
         # "You:" prompt (NO_COLOR-safe; the PT spinner label strips ANSI).
         # DEFERRED to the first text token: a tool-only response shows only
@@ -5932,6 +5956,7 @@ class _Run:
 
         self.full_content = _THINK_TAG_RE.sub('', "".join(self.content_parts)).strip()
         _emit("on_assistant_text", self.full_content)
+        _act.response_text(self.full_content)
         self.tool_calls = [self.tool_calls_by_index[i] for i in sorted(self.tool_calls_by_index)] if self.tool_calls_by_index else []
 
         # A response cut off by max_tokens or the wall leaves its last tool call with
@@ -6640,6 +6665,7 @@ class _Run:
         if use_spinner:
             self.tool_status.first_token()
             self.tool_status.finish()
+        _act.tool_finished(self.func_name, len(str(getattr(self, "result_str", "") or "")))
         _emit("on_tool_start", self.func_name, self.func_args)
         self._finish_result()
         self._write_loop_check()
@@ -6993,6 +7019,7 @@ class _Run:
                 # should stop the batch here, not after another
                 # long tool run.
                 check_cancelled()
+                _act.tool_started(self.func_name, self.func_args)
                 self.result_str = str(MAP_FN[self.func_name](**self.func_args))
                 if self._alias_note:
                     self.result_str = self._alias_note + self.result_str

@@ -83,6 +83,7 @@ system_prompt.py      # The per-turn lines, the static/dynamic split, the runtim
 live_input.py         # The always-live prompt thread and the terminal borrow
 restart_state.py      # The state behind /restart and the restart tool
 tui.py                # prompt_toolkit front end
+activity.py           # What the loop is doing right now, for the F2 status key
 transcript.py         # Session record, reprinted on terminal resize
 callbacks.py, ui.py   # UI callback interface and shared components
 theme.py, spinner.py  # Colors and spinner

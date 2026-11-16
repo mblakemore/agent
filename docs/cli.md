@@ -40,7 +40,7 @@ The default TUI (`prompt_toolkit`) provides:
 - **Bottom toolbar** — `cwd · model · message count · context ~% · verbose state`
 - **Completion** for slash commands (`/he<Tab>`) and `@path` file refs (`@src/<Tab>`)
 - **Input history** navigable with ↑ / ↓
-- **Key bindings**: `Enter` submits, `Ctrl-N` inserts a literal newline
+- **Key bindings**: `Enter` submits, `Ctrl-N` inserts a literal newline. `F2` prints what the agent is doing from the loop's own record: the turn, the tool call in flight with its full arguments (the tool line in the scrollback is shortened), the last reply and the last tool result. `F3` asks the summary model for a short read of the transcript tail. Both print to the terminal only and go to the session log; the agent never sees them, and both work while a turn or a `wait` is running.
 - **Resize reflow**: when the window size settles after a resize, the session so far (the last 5,000 lines) is reprinted for the new width, with tool status rows shortened or restored to fit. This clears the terminal's scrollback, including anything above the agent. Live-input mode only (the default).
 - **Live input**: a line typed while a turn is running is delivered to the model at the next turn boundary. A slash command typed then (`/model main NAME`, `/verbose`) is held and run when the turn's tool burst ends, never handed to the model as text. `esc·esc` cancels the running turn; `exit` quits. `interactive.live_input: false` in the config turns this mode off.
 

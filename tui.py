@@ -225,6 +225,8 @@ if _AVAILABLE:
     def _build_key_bindings(
         enable_cancel: bool = False,
         on_cancel: Callable[[], None] | None = None,
+        on_status: Callable[[], None] | None = None,
+        on_ask: Callable[[], None] | None = None,
     ) -> KeyBindings:
         kb = KeyBindings()
 
@@ -235,6 +237,20 @@ if _AVAILABLE:
         @kb.add("c-n")
         def _(event) -> None:
             event.current_buffer.insert_text("\n")
+
+        # The two status keys: F2 prints what the loop is doing from its own record,
+        # F3 asks the summary model for a short read of the transcript tail. Both print
+        # to the terminal only; the agent never sees either. They work while a turn runs
+        # (a slash line typed then waits for the turn to end; these do not).
+        if on_status is not None:
+            @kb.add("f2")
+            def _(event) -> None:
+                on_status()
+
+        if on_ask is not None:
+            @kb.add("f3")
+            def _(event) -> None:
+                on_ask()
 
         if enable_cancel:
             # Concurrent-input mode owns the keyboard continuously, so the
@@ -294,8 +310,15 @@ if _AVAILABLE:
             cb: TerminalCallbacks,
             estimate_tokens: Callable[[dict], int],
             enable_cancel_key: bool = False,
+            status_text: Callable[[], str] | None = None,
+            ask_status: Callable[[], str] | None = None,
         ) -> None:
             self.history = history
+            # The status keys' sources: a cheap text of the loop's own record (F2) and
+            # a question to the summary model (F3), each run off the key's thread.
+            self._status_text = status_text
+            self._ask_status = ask_status
+            self._asking = threading.Lock()
             self.summary_state = summary_state
             self.config = config
             self.ctx_size = ctx_size
@@ -324,6 +347,8 @@ if _AVAILABLE:
                 key_bindings=_build_key_bindings(
                     enable_cancel=enable_cancel_key,
                     on_cancel=self._on_cancel_key,
+                    on_status=self.show_status if status_text is not None else None,
+                    on_ask=self.ask_status if ask_status is not None else None,
                 ),
                 completer=LlmboxCompleter(),
                 complete_while_typing=False,
@@ -539,6 +564,44 @@ if _AVAILABLE:
             """Drop the '⏳ cancelling…' toolbar segment (turn boundary)."""
             self.cancelling = False
 
+        # -- the status keys ---------------------------------------------
+
+        def _notice(self, text: str) -> None:
+            self.cb.on_notice("info", text)
+
+        def show_status(self, wait: bool = False) -> None:
+            """F2: the loop's own record of what it is doing, printed above the prompt.
+            Runs on its own thread so the print takes the same path as the loop's."""
+            def _do():
+                try:
+                    self._notice(self._status_text())
+                except Exception as e:  # noqa: BLE001 — a status key must never kill the prompt
+                    self._notice(f"status: {e}")
+            t = threading.Thread(target=_do, name="status-key", daemon=True)
+            t.start()
+            if wait:
+                t.join(5)
+
+        def ask_status(self, wait: bool = False) -> None:
+            """F3: the summary model's read of the transcript tail, printed above the
+            prompt and nowhere else. One question at a time; a press meanwhile says so."""
+            if not self._asking.acquire(blocking=False):
+                self._notice("still asking the summary model…")
+                return
+
+            def _do():
+                try:
+                    self._notice("asking the summary model what the agent is doing…")
+                    self._notice(self._ask_status())
+                except Exception as e:  # noqa: BLE001
+                    self._notice(f"ask: {e}")
+                finally:
+                    self._asking.release()
+            t = threading.Thread(target=_do, name="ask-key", daemon=True)
+            t.start()
+            if wait:
+                t.join(120)
+
         # -- public API ------------------------------------------------
 
         def prompt(self) -> str:
@@ -729,7 +792,7 @@ if _AVAILABLE:
 
             # Right-aligned hint: minimal in-bar reminder of the two
             # keys an operator most often needs.
-            right_hint = "esc·esc cancel  │  /help "
+            right_hint = "F2 status  │  F3 ask  │  esc·esc cancel  │  /help "
             right = (
                 f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}">{right_hint}</style>'
             )

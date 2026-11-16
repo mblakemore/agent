@@ -303,3 +303,57 @@ class TestStubFallback(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(tui._AVAILABLE, "prompt_toolkit not installed")
+class TestStatusKeys(unittest.TestCase):
+    """F2 prints the loop's record, F3 asks the summary model; both print to the terminal
+    only, off the key's thread, and F3 refuses a second question while one runs."""
+
+    def _make(self, status_text=None, ask_status=None):
+        import io, contextlib
+        from callbacks import TerminalCallbacks
+        out = io.StringIO()
+        cb = TerminalCallbacks()
+        sess = tui.TuiSession(
+            history=[], summary_state={}, config={"llm": {"model": "m"}}, ctx_size=4096, cb=cb,
+            estimate_tokens=lambda m: 1, status_text=status_text, ask_status=ask_status)
+        return sess, out, contextlib.redirect_stdout(out)
+
+    def test_show_status_prints_the_record(self):
+        sess, out, cap = self._make(status_text=lambda: "turn 4 · exec_command running for 9s\narguments:\n  {}")
+        with cap:
+            sess.show_status(wait=True)
+        self.assertIn("exec_command running for 9s", out.getvalue())
+
+    def test_ask_prints_the_answer_and_holds_a_second_press(self):
+        import threading
+        gate = threading.Event()
+        def ask():
+            gate.wait(5)
+            return "it is waiting on pytest"
+        sess, out, cap = self._make(ask_status=ask)
+        with cap:
+            sess.ask_status()
+            sess.ask_status()             # while the first runs
+            gate.set()
+            sess._asking.acquire(timeout=5); sess._asking.release()
+        text = out.getvalue()
+        self.assertIn("asking the summary model", text)
+        self.assertIn("still asking", text)
+        self.assertIn("it is waiting on pytest", text)
+
+    def test_keys_are_bound_only_when_given(self):
+        def names(kb):
+            return {str(getattr(k, "value", k)).lower() for b in kb.bindings for k in b.keys}
+        self.assertFalse({"f2", "f3"} & names(tui._build_key_bindings()))
+        self.assertTrue({"f2", "f3"} <= names(tui._build_key_bindings(on_status=lambda: None, on_ask=lambda: None)))
+
+    def test_key_errors_never_escape(self):
+        def boom():
+            raise RuntimeError("no record")
+        sess, out, cap = self._make(status_text=boom)
+        with cap:
+            sess.show_status(wait=True)
+        self.assertIn("status: no record", out.getvalue())
+
