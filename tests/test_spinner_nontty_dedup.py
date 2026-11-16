@@ -48,7 +48,7 @@ class TestSpinnerNonTtyDedup(unittest.TestCase):
         # _STREAMING_TOOLS, and not theme._no_color().
         pattern = re.compile(
             r"use_spinner\s*=\s*\(?\s*"
-            r"func_name\s+not\s+in\s+_STREAMING_TOOLS"
+            r"(self\.)?func_name\s+not\s+in\s+_STREAMING_TOOLS"
             r"\s+and\s+not\s+theme\._no_color\(\)",
             re.DOTALL,
         )

@@ -6116,160 +6116,412 @@ def run_agent_single(*args, **kwargs):
             pass
 
 
-def _run_agent_single_impl(conversation_history: list, summary_state: dict, initial_files,
-                     log: logging.Logger,
-                     temperature=_DEFAULT_CONFIG["generation"]["temperature"],
-                     top_p=_DEFAULT_CONFIG["generation"]["top_p"],
-                     top_k=_DEFAULT_CONFIG["generation"]["top_k"],
-                     presence_penalty=_DEFAULT_CONFIG["generation"]["presence_penalty"],
-                     max_tokens=_DEFAULT_CONFIG["context"]["max_tokens"],
-                     ctx_size=_DEFAULT_CONFIG["context"]["ctx_size"],
-                     start_turn=0, async_summarizer=None):
-    """Run the agentic loop with turn limits and wind-down."""
-
-    # In TUI/live-input mode the cancel flag's lifetime is the TURN:
-    # cancellable() deliberately skips its per-region reset there (a reset
-    # per region erased esc-esc presses landing between regions), so the
-    # turn boundary — here, the single entry point every caller shares —
-    # is where a stale flag is discarded. This also drops an esc-esc
-    # pressed while idle at the prompt, which must not cancel the next turn.
-    if cancel_tui_mode():
-        cancel_reset()
-
-    turn = start_turn
-
-    # Track repeated tool failures to break infinite loops
-    _recent_tool_errors = []  # list of (tool_name, error_snippet)
-    _REPEAT_THRESHOLD = 3    # inject forced think after this many identical failures
-
-    # Track consecutive text-only responses (no tool calls).
-    # Smaller models sometimes "think aloud" without calling a tool, intending
-    # to continue on the next turn.  Auto-nudge up to _MAX_TEXT_ONLY times
-    # before treating it as a real stop signal.
-    _consecutive_text_only = 0
-
-    # Total nudge budget across the session.  Prevents infinite oscillation
-    # where a weak tool call resets the consecutive counter but the model
-    # never makes substantive progress.
-    _total_nudges = 0
-
-    # Detect degenerate text loops — model repeating the same output.
-    # Store hashes of recent text-only responses; bail if too many match.
-    _recent_text_hashes = []
-    _TEXT_LOOP_THRESHOLD = 3
-
-    # Read-only tools: calls to these don't reset the consecutive text-only
-    # counter because they don't represent substantive progress.
-    _READ_ONLY_TOOLS = {"think", "search_files", "read_pdf", "task_tracker", "read_file", "list_files"}
-
-    # After 'git push', allow a few more turns for TRACK work (results file,
-    # progress row, issue comments) before stopping on text-only response.
-    _cycle_persisted = False
-    _cycle_persisted_turn = None
-    _CYCLE_GRACE_TURNS = 7
-    # WS8.3 (run 096): count of non-TRACK tool calls blocked after grace
-    # exhausted (previously only text-only turns were bounded by grace;
-    # tool-calling turns ran to the hard cap — ~15 wasted turns).
-    _grace_tool_blocks = 0
-    # WS10.e rung 2: count of loop-breaker interventions this cycle; the
-    # 2nd+ one escalates from text redirect to a system-invoked think.
-    _loop_interventions = 0
-    # WS10.c: success-check gate state (strict type-validation — MagicMock
-    # configs and misconfigs must leave the gate off, same rule as the
-    # PhaseEngine factory).
-    _sc_cycle_cfg = _config.get("cycle") if isinstance(_config, dict) else None
-    _success_check_cmd = (_sc_cycle_cfg.get("success_check")
-                          if isinstance(_sc_cycle_cfg, dict) else None)
-    if not (isinstance(_success_check_cmd, str) and _success_check_cmd.strip()):
-        _success_check_cmd = None
-    _success_check_blocks = 0
-    _SUCCESS_CHECK_MAX_BLOCKS = 3
-    # Grind escalation: once per cycle, if a success_check is configured and the
-    # model has burned this fraction of its turn budget with the check STILL
-    # red (not converging — the distinct-plausible-actions-until-timeout mode
-    # that trips no loop/stall/gate detector), suggest the advisor. Runs the
-    # check at most once (latch), and only SUGGESTS — the glm call stays model-
-    # gated — so a false positive costs nudge tokens, not a glm call.
-    _grind_checked = False
-    _GRIND_TURN_FRACTION = 0.7
-    # Slow thinking-models are WALL-CLOCK bound, not turn bound: on a long task
-    # the run hits its subprocess timeout well before 70% of the turn budget, so
-    # the turn-based grind trigger never fires. cycle.grind_elapsed_s (seconds,
-    # 0=off) fires grind on elapsed wall-clock too — whichever comes first.
-    _grind_t0 = time.monotonic()
-    _stream_errors = 0   # F6 (review finding 3): consecutive streaming exceptions; 3 = backend error exit
+def _get_tc_args(tc):
+    raw = tc.function.arguments if hasattr(tc, 'function') else tc["function"]["arguments"]
     try:
-        _GRIND_ELAPSED_S = float((_config.get("cycle") or {}).get("grind_elapsed_s", 0) or 0)
-    except Exception:
-        _GRIND_ELAPSED_S = 0.0
-    # F1 — wall-clock deadline state. The clock starts here (run start, monotonic), independent
-    # of turns. `_deadline_hard` is read by the exit gates and the tool dispatcher below.
-    try:
-        _DEADLINE_S = float((_config.get("cycle") or {}).get("deadline_s", 0) or 0)
-    except Exception:
-        _DEADLINE_S = 0.0
-    _deadline_fracs = list((_config.get("cycle") or {}).get("deadline_warn_fracs") or [0.6, 0.8, 0.92])
-    _deadline_t0 = _grind_t0
-    _deadline_fired = set()
-    _deadline_hard = False
-    _deadline_hard_turns = 0
-    # F9 — capability-refusal stop state. Headless only: an interactive user answers a refusal
-    # themselves. `_refusal_hard` is read by the same exit gates and dispatcher as `_deadline_hard`.
-    global _LAST_REFUSAL
-    _LAST_REFUSAL = None
-    try:
-        _REFUSAL_MAX_TURNS = int((_config.get("cycle") or {}).get("refusal_max_turns", 5) or 0) \
-            if _AUTO_MODE else 0
-    except Exception:
-        _REFUSAL_MAX_TURNS = 0
-    _refusal_first_turn = None
-    _refusal_tool = None
-    _refusal_hard = False
-    _refusal_hard_turns = 0
-    if _DEADLINE_S > 0 and _GRIND_ELAPSED_S <= 0:
-        # a stuck run should escalate while there is still time to act on advice
-        _GRIND_ELAPSED_S = 0.5 * _DEADLINE_S
-        log.info("deadline %.0fs set — grind escalation defaults to %.0fs (50%%)", _DEADLINE_S, _GRIND_ELAPSED_S)
-    # No-progress gate (fixes the M2 A/B regression: grind fired on a slow-but-
-    # CONVERGING run at the elapsed mark and derailed a run the model would have
-    # finished on its own — OFF 1/3 vs ON 0/3). Only escalate if the model has
-    # NOT mutated a file in the last N turns: a converging coding run edits; a
-    # genuinely stuck one spins on reads/re-runs without changing the codebase.
-    # So the trigger distinguishes "stuck" from merely "slow". 0 disables it.
-    _last_mutation_turn = 0
-    try:
-        _GRIND_NO_PROGRESS_TURNS = int(
-            (_config.get("cycle") or {}).get("grind_no_progress_turns", 4) or 0)
-    except Exception:
-        _GRIND_NO_PROGRESS_TURNS = 4
-    # Claim-vs-trace gate: the fabricated-verification failure mode (d2 probe —
-    # the model fixes the code, then asserts "verified with pytest / committed"
-    # having run NO pytest and made NO commit; measured 4/8-5/8 on Qwen-27B, and
-    # NO sampling/MTP/temperature knob moves it (temp already 0 + MTP off still
-    # ~50-62%), so the only fix is structural: reject a completion whose claim the
-    # trace does not support). _ran_verification = a test/success-check command
-    # actually ran SINCE the last edit — an edit resets it, so a stale pre-edit
-    # run does not count as verification of the current state.
-    _ran_verification = False
-    _claim_trace_blocks = 0
-    # OFF BY DEFAULT (2026-08-15): the claim-phrase matcher false-positives
-    # on conversational/creative text — a story containing 'the test passes'
-    # drew a correction demanding a real tool run, and the model dutifully
-    # ls'd an empty folder and apologized. Coding sessions should turn it on
-    # (the /setup wizard asks, recommending it for coding projects); it
-    # writes cycle.claim_trace_max_blocks=2.
-    try:
-        _CLAIM_TRACE_MAX_BLOCKS = int(
-            (_config.get("cycle") or {}).get("claim_trace_max_blocks", 0) or 0)
-    except Exception:
-        _CLAIM_TRACE_MAX_BLOCKS = 0
-    # Advisor escalation (spike): suggest the heavyweight advisor tier at most
-    # once per cycle when the gate fails repeatedly. Inert unless
-    # _config["advisor"]["enabled"] — default-off, so no behavior change. The
-    # once-per-cycle latch is a closure attribute (reset each cycle since the
-    # closure is rebuilt per run_agent_single call), NOT a run_agent_single
-    # local — avoids the test_no_dead_locals nested-scope false positive.
-    def _funnel_ev(ev, **kw):
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        return parsed if isinstance(parsed, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _get_tc_name(tc):
+    return tc.function.name if hasattr(tc, 'function') else tc["function"]["name"]
+
+
+_NEXT = object()   # a step's answer: go to the next turn
+
+
+class _Run:
+    """One run of the agentic loop: the state a turn carries, the exit gates, and the
+    loop's steps as methods. The locals of the former single function that cross a step
+    are attributes under their old names; the step-local ones stayed locals."""
+
+    def __init__(self, conversation_history, summary_state, initial_files, log, temperature,
+                 top_p, top_k, presence_penalty, max_tokens, ctx_size, start_turn, async_summarizer):
+        self.conversation_history = conversation_history
+        self.summary_state = summary_state
+        self.initial_files = initial_files
+        self.log = log
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.presence_penalty = presence_penalty
+        self.max_tokens = max_tokens
+        self.ctx_size = ctx_size
+        self.start_turn = start_turn
+        self.async_summarizer = async_summarizer
+        self._advisor_latches = {}   # once-per-run advisor escalation, per class
+
+        # In TUI/live-input mode the cancel flag's lifetime is the TURN:
+        # cancellable() deliberately skips its per-region reset there (a reset
+        # per region erased esc-esc presses landing between regions), so the
+        # turn boundary — here, the single entry point every caller shares —
+        # is where a stale flag is discarded. This also drops an esc-esc
+        # pressed while idle at the prompt, which must not cancel the next turn.
+        if cancel_tui_mode():
+            cancel_reset()
+
+        self.turn = self.start_turn
+
+        # Track repeated tool failures to break infinite loops
+        self._recent_tool_errors = []  # list of (tool_name, error_snippet)
+        self._REPEAT_THRESHOLD = 3    # inject forced think after this many identical failures
+
+        # Track consecutive text-only responses (no tool calls).
+        # Smaller models sometimes "think aloud" without calling a tool, intending
+        # to continue on the next turn.  Auto-nudge up to _MAX_TEXT_ONLY times
+        # before treating it as a real stop signal.
+        self._consecutive_text_only = 0
+
+        # Total nudge budget across the session.  Prevents infinite oscillation
+        # where a weak tool call resets the consecutive counter but the model
+        # never makes substantive progress.
+        self._total_nudges = 0
+
+        # Detect degenerate text loops — model repeating the same output.
+        # Store hashes of recent text-only responses; bail if too many match.
+        self._recent_text_hashes = []
+        self._TEXT_LOOP_THRESHOLD = 3
+
+        # Read-only tools: calls to these don't reset the consecutive text-only
+        # counter because they don't represent substantive progress.
+        self._READ_ONLY_TOOLS = {"think", "search_files", "read_pdf", "task_tracker", "read_file", "list_files"}
+
+        # After 'git push', allow a few more turns for TRACK work (results file,
+        # progress row, issue comments) before stopping on text-only response.
+        self._cycle_persisted = False
+        self._cycle_persisted_turn = None
+        self._CYCLE_GRACE_TURNS = 7
+        # WS8.3 (run 096): count of non-TRACK tool calls blocked after grace
+        # exhausted (previously only text-only turns were bounded by grace;
+        # tool-calling turns ran to the hard cap — ~15 wasted turns).
+        self._grace_tool_blocks = 0
+        # WS10.e rung 2: count of loop-breaker interventions this cycle; the
+        # 2nd+ one escalates from text redirect to a system-invoked think.
+        self._loop_interventions = 0
+        # WS10.c: success-check gate state (strict type-validation — MagicMock
+        # configs and misconfigs must leave the gate off, same rule as the
+        # PhaseEngine factory).
+        _sc_cycle_cfg = _config.get("cycle") if isinstance(_config, dict) else None
+        self._success_check_cmd = (_sc_cycle_cfg.get("success_check")
+                              if isinstance(_sc_cycle_cfg, dict) else None)
+        if not (isinstance(self._success_check_cmd, str) and self._success_check_cmd.strip()):
+            self._success_check_cmd = None
+        self._success_check_blocks = 0
+        self._SUCCESS_CHECK_MAX_BLOCKS = 3
+        # Grind escalation: once per cycle, if a success_check is configured and the
+        # model has burned this fraction of its turn budget with the check STILL
+        # red (not converging — the distinct-plausible-actions-until-timeout mode
+        # that trips no loop/stall/gate detector), suggest the advisor. Runs the
+        # check at most once (latch), and only SUGGESTS — the glm call stays model-
+        # gated — so a false positive costs nudge tokens, not a glm call.
+        self._grind_checked = False
+        self._GRIND_TURN_FRACTION = 0.7
+        # Slow thinking-models are WALL-CLOCK bound, not turn bound: on a long task
+        # the run hits its subprocess timeout well before 70% of the turn budget, so
+        # the turn-based grind trigger never fires. cycle.grind_elapsed_s (seconds,
+        # 0=off) fires grind on elapsed wall-clock too — whichever comes first.
+        self._grind_t0 = time.monotonic()
+        self._stream_errors = 0   # F6 (review finding 3): consecutive streaming exceptions; 3 = backend error exit
+        try:
+            self._GRIND_ELAPSED_S = float((_config.get("cycle") or {}).get("grind_elapsed_s", 0) or 0)
+        except Exception:
+            self._GRIND_ELAPSED_S = 0.0
+        # F1 — wall-clock deadline state. The clock starts here (run start, monotonic), independent
+        # of turns. `_deadline_hard` is read by the exit gates and the tool dispatcher below.
+        try:
+            self._DEADLINE_S = float((_config.get("cycle") or {}).get("deadline_s", 0) or 0)
+        except Exception:
+            self._DEADLINE_S = 0.0
+        self._deadline_fracs = list((_config.get("cycle") or {}).get("deadline_warn_fracs") or [0.6, 0.8, 0.92])
+        self._deadline_t0 = self._grind_t0
+        self._deadline_fired = set()
+        self._deadline_hard = False
+        self._deadline_hard_turns = 0
+        # F9 — capability-refusal stop state. Headless only: an interactive user answers a refusal
+        # themselves. `_refusal_hard` is read by the same exit gates and dispatcher as `_deadline_hard`.
+        global _LAST_REFUSAL
+        _LAST_REFUSAL = None
+        try:
+            self._REFUSAL_MAX_TURNS = int((_config.get("cycle") or {}).get("refusal_max_turns", 5) or 0) \
+                if _AUTO_MODE else 0
+        except Exception:
+            self._REFUSAL_MAX_TURNS = 0
+        self._refusal_first_turn = None
+        self._refusal_tool = None
+        self._refusal_hard = False
+        self._refusal_hard_turns = 0
+        if self._DEADLINE_S > 0 and self._GRIND_ELAPSED_S <= 0:
+            # a stuck run should escalate while there is still time to act on advice
+            self._GRIND_ELAPSED_S = 0.5 * self._DEADLINE_S
+            self.log.info("deadline %.0fs set — grind escalation defaults to %.0fs (50%%)", self._DEADLINE_S, self._GRIND_ELAPSED_S)
+        # No-progress gate (fixes the M2 A/B regression: grind fired on a slow-but-
+        # CONVERGING run at the elapsed mark and derailed a run the model would have
+        # finished on its own — OFF 1/3 vs ON 0/3). Only escalate if the model has
+        # NOT mutated a file in the last N turns: a converging coding run edits; a
+        # genuinely stuck one spins on reads/re-runs without changing the codebase.
+        # So the trigger distinguishes "stuck" from merely "slow". 0 disables it.
+        self._last_mutation_turn = 0
+        try:
+            self._GRIND_NO_PROGRESS_TURNS = int(
+                (_config.get("cycle") or {}).get("grind_no_progress_turns", 4) or 0)
+        except Exception:
+            self._GRIND_NO_PROGRESS_TURNS = 4
+        # Claim-vs-trace gate: the fabricated-verification failure mode (d2 probe —
+        # the model fixes the code, then asserts "verified with pytest / committed"
+        # having run NO pytest and made NO commit; measured 4/8-5/8 on Qwen-27B, and
+        # NO sampling/MTP/temperature knob moves it (temp already 0 + MTP off still
+        # ~50-62%), so the only fix is structural: reject a completion whose claim the
+        # trace does not support). _ran_verification = a test/success-check command
+        # actually ran SINCE the last edit — an edit resets it, so a stale pre-edit
+        # run does not count as verification of the current state.
+        self._ran_verification = False
+        self._claim_trace_blocks = 0
+        # OFF BY DEFAULT (2026-08-15): the claim-phrase matcher false-positives
+        # on conversational/creative text — a story containing 'the test passes'
+        # drew a correction demanding a real tool run, and the model dutifully
+        # ls'd an empty folder and apologized. Coding sessions should turn it on
+        # (the /setup wizard asks, recommending it for coding projects); it
+        # writes cycle.claim_trace_max_blocks=2.
+        try:
+            self._CLAIM_TRACE_MAX_BLOCKS = int(
+                (_config.get("cycle") or {}).get("claim_trace_max_blocks", 0) or 0)
+        except Exception:
+            self._CLAIM_TRACE_MAX_BLOCKS = 0
+
+        self._result_contract_blocks = 0
+        try:
+            self._RESULT_CONTRACT_MAX_BLOCKS = int((_config.get("cycle") or {}).get("result_contract_max_blocks", 2))
+        except Exception:
+            self._RESULT_CONTRACT_MAX_BLOCKS = 2
+        # Hard cap: even with ongoing tool calls, end the cycle this many turns
+        # after persist.  Prevents post-TRACK drift into a second PERCEIVE.
+        self._CYCLE_HARD_STOP_TURNS = 15
+
+        # Track whether any commit has been made.  Completion signals are ignored
+        # until a commit lands — prevents the agent from declaring "done" before
+        # any work is actually persisted.
+        self._has_committed = False
+
+        # Reviewer-role persistence signal.  Reviewers rarely commit code; their
+        # persistent outputs are `gh pr review` verdicts and appends to
+        # CICD/reviews.md.  Tracked separately so completion signals are honored
+        # once a verdict has actually landed.
+        self._has_reviewer_persisted = False
+
+        # Track whether any file has been written/edited.  If no edit by turn 30,
+        # inject a nudge telling the agent to start coding or declare null result.
+        self._has_edited = False
+        self._EDIT_DEADLINE_TURN = 20
+        self._edit_nudge_sent = False
+        # Open-task reminder fires at most once per cycle (at completion signal or
+        # grace-period exhaustion) to surface remaining task_tracker items.
+        self._open_task_nudge_sent = False
+
+        # Per-session tools list — starts as a copy of the module-level tools so
+        # we can add end_cycle without mutating the shared list across sessions.
+        self._session_tools = list(tools)
+        # Lazy tools: what this session loaded before (a resume, an earlier turn), then what
+        # the task text asks for by name or a clear match, all before the first request.
+        _apply_tool_loads(self._session_tools, self.log, initial=True)
+        if _TOOLS_CFG.get("preload_from_prompt", True):
+            _preload_text = next((m.get("content") for m in reversed(self.conversation_history)
+                                  if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
+            _preloaded = _registry.preload_from_text(_preload_text)
+            if _preloaded:
+                self.log.info("tools.preloaded %s", ", ".join(_preloaded))
+            _apply_tool_loads(self._session_tools, self.log)
+        # Skills: the first message of the session is judged now (nothing is cached yet);
+        # later ones on a worker thread. Queued loads join the newest message at the turn.
+        _skills_on_entry(self.conversation_history, self.log)
+        # end_cycle is unlocked (appended to _session_tools) after the first nudge
+        # fires so the agent can't skip the cycle by calling it before doing work.
+        self._end_cycle_unlocked = not _END_CYCLE_ENABLED  # off (the default): never offered
+        if _prompt_caching_backend() and not self._end_cycle_unlocked and not any(
+                (t.get("function") or {}).get("name") == "end_cycle" for t in self._session_tools):
+            # P4.4: tools render FIRST in the request, so adding one mid-run invalidates the
+            # whole cached prompt. Offer end_cycle from turn 1. It is NOT gated on the
+            # first-nudge unlock: a model that finishes cleanly is never nudged, and live it
+            # had its correct end_cycle refused. The success-check / phase / CICD gates still
+            # apply, and ending this way is what a text-only finish would do anyway.
+            self._session_tools.append(_end_cycle_tool.definition)
+
+        # Reviewer sessions rarely make code edits (they verify and merge), so the
+        # edit-deadline nudge is a false positive for that role.  Detect by
+        # scanning the initial prompt for the reviewer-template marker.
+        # WS1: explicit --role wins; prompt string-matching is the legacy fallback.
+        global _active_phase_engine
+        if _explicit_role is not None:
+            self._is_reviewer_role = _explicit_role == "reviewer"
+        else:
+            self._is_reviewer_role = any(
+                isinstance(m.get("content"), str) and "CICD Reviewer" in m["content"]
+                for m in self.conversation_history[:2]
+            )
+            if self._is_reviewer_role:
+                self.log.debug("role detected by prompt string-match (legacy) — prefer --role")
+
+        # WS1: PhaseEngine — inert unless config opts in (cycle.profile/phases).
+        from phase_engine import build_phase_engine
+        self._phase_engine = build_phase_engine(_config, self.log)
+        _active_phase_engine = self._phase_engine
+        if self._phase_engine is not None:
+            self.log.info("PhaseEngine active: profile=%s", self._phase_engine.profile)
+
+        # cycle 86 (issue #425): CICD-specific guards (e.g. cycle 44 requiring
+        # `Closes #N`) only apply in the self-improvement builder loop, not in
+        # general agent sessions on other repos.  Detect by the same strategy as
+        # _is_reviewer_role — the builder template always opens with
+        # "CICD Improvement Loop — Builder".
+        if _explicit_role is not None:
+            # builder flag semantically means "CICD session" — reviewers carry it
+            # too (see WS8.2 note in _validate_tool_call); creature = neither.
+            self._is_cicd_builder = _explicit_role in ("builder", "reviewer")
+        else:
+            self._is_cicd_builder = any(
+                isinstance(m.get("content"), str) and "CICD Improvement Loop" in m["content"]
+                for m in self.conversation_history[:2]
+            )
+
+        # Detect tool-call loops: same command signature repeated N times.
+        self._recent_tool_sigs = []  # list of (frozenset of (name, args_hash)) tuples
+        self._TOOL_LOOP_THRESHOLD = 3  # inject correction after 3 identical batches
+
+        # Semantic result-loop detection: same tool returning same result despite
+        # different arguments.  Catches cases where the batch-signature detector
+        # misses because args vary slightly each time.
+        self._recent_tool_results = []  # list of (func_name, result_hash) tuples
+        self._RESULT_LOOP_WINDOW = 8
+        self._RESULT_LOOP_THRESHOLD = 3
+
+        # Per-call dedup cache. Maps (func_name, args_md5) → {
+        #   "call_idx": int, "summary": str (first 80 chars), "tokens": int
+        # }. On exact-duplicate call within _DEDUP_WINDOW calls, return a synthetic
+        # tool result and skip dispatch — saves 30-40% of token budget per long
+        # cycle (a field audit: `cat focus.json` x3, `git log -5` x5 in one
+        # session, a field-observed run Orphan Paradox audit-rewrite-audit loop). Only applied
+        # to tools that are SAFE to dedup (pure reads, no network/wallclock); see
+        # _is_dedupable_call() for the policy.
+        self._call_dedup_cache = {}
+        self._DEDUP_WINDOW = 8
+        self._call_idx_counter = 0  # monotonic per-tool-call counter
+
+        # Session-wide identical-call frequency for search_files / find_symbol.
+        # The dedup cache only covers _DEDUP_WINDOW=8 calls; the model can evade it
+        # by inserting other tool calls between retries.  This counter persists for
+        # the full session and fires a forced-think after _SEARCH_REPEAT_THRESHOLD
+        # real (non-deduped) dispatches of the same (func, args) pair.
+        self._search_sig_counts: dict = {}   # (func_name, args_md5) → dispatch count
+        self._SEARCH_REPEAT_THRESHOLD = 3
+
+        # Per-path write tracker for the write-loop detector. Each entry maps
+        # `target_path` → list of call_idx values where it was written. On 3rd+
+        # write within _WRITE_LOOP_WINDOW, append a system reminder to that
+        # turn's tool result. The canonical observed loop: 3 write-audit-rewrite
+        # passes on state/memories/context.json in one cycle.
+        self._write_path_history = {}
+        self._WRITE_LOOP_WINDOW = 8
+        self._WRITE_LOOP_THRESHOLD = 3
+
+        # Tier 5 — per-session patch-effectiveness counters. Mirrors the
+        # telemetry.record_patch_event calls so a verbose cycle-end log line
+        # gives the operator local visibility without grepping the OTEL/Grafana
+        # dashboard. Keys match the patch identifiers in telemetry docs.
+        self._patch_telemetry = {
+            "harmony_reject": 0,        # T1.1 — Harmony control tokens in tool args
+            "dedup": 0,                  # T1.2 — exact-duplicate read calls deduped
+            "write_loop": 0,             # T1.2 — write-loop detector tripped
+            "indent_guard": 0,           # T4.10 — slice-write indent mismatch rejected
+            "schema_warning": 0,         # T4.11 — JSON overwrite dropped top-level keys
+            "think_launder": 0,          # T2.7 — think prompt re-included recent context
+            "stall_abort": 0,            # T3.8 — stream stall guard fired
+            "bootstrap_create": 0,       # T3.9 — placeholder file auto-created
+            "edit_nudge": 0,             # T5.14 — heredoc-write hint emitted
+            "summary_fired": 0,          # T5.13 — async summary launched
+            "summary_gated": 0,          # T5.13 — summary skipped (under threshold)
+        }
+
+        # CICD phase tracking — module-level globals so _build_context_message()
+        # can inject them into every context window, surviving summary compression.
+        global _cicd_phase_state, _cicd_issue_number, _cicd_pr_number, _cicd_branch, _cicd_edited_files, _cicd_worktree_path
+        _cicd_phase_state = {
+            "perceive": False,
+            "probe": False,
+            "decide": False,
+            "plan": False,
+            "implement": False,
+            "verify": False,
+            "track": False,
+        }
+        _cicd_issue_number = None
+        _cicd_pr_number = None
+        _cicd_branch = None
+        self._cicd_think_used = False  # reset each cycle; set True when think() is called
+        _cicd_edited_files = set()  # reset each cycle
+        _cicd_worktree_path = None  # reset each cycle
+        self._cicd_pr_ready_called = False  # tracks whether `gh pr ready` was called before merge
+        self._cicd_issue_view_called = False  # tracks whether `gh issue view` was called before merge (PRE-MERGE CHECK)
+
+        self._async_summarizer = self.async_summarizer
+        _SUMMARY_IDLE["run"] = {"history": self.conversation_history, "state": self.summary_state, "summarizer": self.async_summarizer,
+                                "initial_files": self.initial_files, "ctx_size": self.ctx_size, "max_tokens": self.max_tokens}
+
+        # T5.15 — stall-retry budget (across the cycle, not per-turn). When the
+        # streaming stall guard (T3.8) trips, the framework adjusts sampling for
+        # the NEXT request and continues to retry. Two retries by default —
+        # first with -0.3 temp / +0.05 repeat_penalty; second with an additional
+        # -0.2 temp / +0.05 penalty (deeper escalation). Clears automatically
+        # once a turn produces deltas, so a single stall in a healthy session
+        # doesn't permanently degrade sampling for the rest of the cycle.
+        self._stall_retries_budget = int(os.environ.get("AGENT_STALL_RETRIES", "2"))
+        self._stall_retries_remaining = self._stall_retries_budget
+        self._stall_sampling_override = None  # set when stall detected; cleared on success
+
+        # Gateway-timeout recovery: when every retry on a turn returns 504, inject a
+        # size-reduction hint and retry the turn rather than immediately aborting.
+        # Capped at 2 recoveries per cycle so a persistently slow model doesn't loop forever.
+        self._gateway_timeout_recovery_count = 0
+        self._GATEWAY_TIMEOUT_RECOVERY_MAX = 2
+
+        # Action-inertia detection: count consecutive turns where the model only reads
+        # files without writing or executing anything. After the threshold, inject a
+        # nudge to commit to the fix rather than reading more files.
+        self._read_only_turns = 0
+        self._READ_ONLY_NUDGE_THRESHOLD = 5
+        self._cur_req_sig = None       # _request_signature of the request being sent (see _CACHE_REQ)
+        self._READ_ONLY_NUDGE_THRESHOLD = 5
+        # F7 — repeat-read stall signature (one nudge per unique call key, latched)
+        try:
+            _rr_cfg = (_config.get("cycle") or {}).get("repeat_read_nudge") or {}
+            self._REPEAT_READ_N = int(_rr_cfg.get("n", 3)) if isinstance(_rr_cfg, dict) else 3
+            self._REPEAT_READ_WINDOW = int(_rr_cfg.get("window", 6)) if isinstance(_rr_cfg, dict) else 6
+        except Exception:
+            self._REPEAT_READ_N, self._REPEAT_READ_WINDOW = 3, 6
+        self._repeat_seen, self._repeat_latched, self._repeat_msg = {}, set(), None
+        # F4 — goal anchoring + deliverable guard state (config or --goal/--deliverable; derived
+        # from the prompt stanza by run_agent_interactive when the contract is armed)
+        self._goal = str((_config.get("cycle") or {}).get("goal") or "") if isinstance((_config.get("cycle") or {}).get("goal"), str) else ""
+        self._deliverables = [str(d) for d in ((_config.get("cycle") or {}).get("deliverables") or []) if isinstance(d, str)] \
+            if isinstance((_config.get("cycle") or {}).get("deliverables"), list) else []
+        self._anchor_fracs = [f for f in ((_config.get("cycle") or {}).get("goal_anchor_fracs") or []) if isinstance(f, (int, float))] \
+            if isinstance((_config.get("cycle") or {}).get("goal_anchor_fracs"), list) else []
+        self._anchor_fired = set()
+        self._deliverable_blocks = 0
+        self._turn_had_action = False  # set True when write/edit/exec called this turn
+
+        # Consecutive edit_file failures per path — after 2 consecutive failures on
+        # the same file, inject a user turn telling the model to stop and rewrite.
+        self._edit_fail_counts: dict = {}
+
+        # "Agent:" header discipline (field report 2026-08-14): the label marks the
+        # START of a contiguous agent-output run and prints once per run — lazily,
+        # on the first TEXT token (a tool-only response never earns a bare label).
+        # A queued user message folded in mid-burst starts a new run, so the label
+        # re-appears after it as a continuation marker.
+        self._agent_header_owed = True
+
+    def _funnel_ev(self, ev, **kw):
         """Append one advisor-escalation funnel event (guarded; never raises).
         LOCAL per-run observability: telemetry is OTLP/Prometheus-gated and the
         replay results schema has no advisor field, so without this a re-run
@@ -6283,7 +6535,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             rec = {"ev": ev}
             rec.update(kw)
             try:
-                rec["t_s"] = round(time.monotonic() - _grind_t0, 1)
+                rec["t_s"] = round(time.monotonic() - self._grind_t0, 1)
             except Exception:
                 pass
             with open(os.path.join(".agent", "advisor_funnel.jsonl"), "a") as _f:
@@ -6291,7 +6543,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         except Exception:
             pass
 
-    def _build_advisor_context(fail_output):
+    def _build_advisor_context(self, fail_output):
         """Assemble GROUNDED context for the advisor auto-invoke: the task, the
         exact success-check command, its failing output, and the agent's most
         recent action. Without this framing GLM misread a code-fixing agent as a
@@ -6300,19 +6552,19 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         try:
             parts = []
             try:
-                for _m in conversation_history:
+                for _m in self.conversation_history:
                     if isinstance(_m, dict) and _m.get("role") == "user" and _m.get("content"):
                         parts.append("TASK (what I must accomplish):\n"
                                      + str(_m["content"])[:800])
                         break
             except Exception:
                 pass
-            if _success_check_cmd:
-                parts.append("SUCCESS CHECK (must exit 0):\n$ " + str(_success_check_cmd))
+            if self._success_check_cmd:
+                parts.append("SUCCESS CHECK (must exit 0):\n$ " + str(self._success_check_cmd))
             if fail_output and str(fail_output).strip():
                 parts.append("CURRENT FAILING OUTPUT:\n" + str(fail_output)[:1600])
             try:
-                for _m in reversed(conversation_history):
+                for _m in reversed(self.conversation_history):
                     if (isinstance(_m, dict) and _m.get("role") == "assistant"
                             and str(_m.get("content") or "").strip()):
                         parts.append("WHAT I LAST TRIED:\n" + str(_m["content"])[:600])
@@ -6323,7 +6575,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         except Exception:
             return str(fail_output)[:3000]
 
-    def _maybe_advisor_nudge(source="gate", context=""):
+    def _maybe_advisor_nudge(self, source="gate", context=""):
         """Return a one-time advisor-escalation suggestion string if the current
         signals warrant escalation and the advisor tier is enabled; else "".
 
@@ -6372,22 +6624,22 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 "advisor_legacy_shared_latch", False)) if isinstance(_config, dict) else False
             _latch = "_fired" if _legacy_latch else (
                 "_auto_fired" if _auto else "_suggest_fired")
-            _funnel_ev("reached", source=source, auto=_auto, latch=_latch)
-            if getattr(_maybe_advisor_nudge, _latch, False):
-                _funnel_ev("suppressed_latch", source=source, latch=_latch)
+            self._funnel_ev("reached", source=source, auto=_auto, latch=_latch)
+            if self._advisor_latches.get(_latch, False):
+                self._funnel_ev("suppressed_latch", source=source, latch=_latch)
                 return ""
             _stuck = _auto
             from escalation_policy import should_escalate, LoopSignals
             _dec = should_escalate(LoopSignals(
-                consecutive_gate_failures=_success_check_blocks,
+                consecutive_gate_failures=self._success_check_blocks,
                 self_reported_stuck=_stuck,
                 task_difficulty=str(_adv_cfg.get("task_difficulty", "unknown")),
                 advisor_calls_cap=int(_adv_cfg.get("max_calls_per_task", 3)),
             ))
             if not _dec.escalate:
-                _funnel_ev("no_escalate", source=source)
+                self._funnel_ev("no_escalate", source=source)
                 return ""
-            setattr(_maybe_advisor_nudge, _latch, True)
+            self._advisor_latches[_latch] = True
             # E2: on a backend with an effort knob, raise effort first (same model, so
             # the cache and stored thinking survive; once per run). The advisor path
             # below still runs.
@@ -6395,7 +6647,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             if callable(_esc):
                 _new_effort = _esc()
                 if _new_effort:
-                    log.info("effort escalated to %s (source=%s)", _new_effort, source)
+                    self.log.info("effort escalated to %s (source=%s)", _new_effort, source)
                     telemetry.record_patch_event("effort_escalation", kind=source + ":" + _new_effort)
                     _emit("on_notice", "info", f"[raising reasoning effort to {_new_effort}]")
             # First-class telemetry (same pipeline as success_check_block): the
@@ -6413,14 +6665,14 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                          "prior redirect was ignored)",
                 "grind": "you have spent most of your turn budget and the "
                          "success check is STILL failing — you are not converging",
-                "gate": f"the success check has FAILED {_success_check_blocks}x",
+                "gate": f"the success check has FAILED {self._success_check_blocks}x",
             }[source]
             _reason = {
                 "stall": "stuck: repeated-failure loop",
                 "grind": "grind: turn-budget spent, check still red",
-                "gate": f"failed success_check x{_success_check_blocks}",
+                "gate": f"failed success_check x{self._success_check_blocks}",
             }[source]
-            log.info("advisor escalation suggested (source=%s, mode=%s, "
+            self.log.info("advisor escalation suggested (source=%s, mode=%s, "
                      "triggers=%s)", source, _dec.mode, _dec.triggers)
             # AUTO-INVOKE for the stuck-state triggers (grind/stall): the k=3 +
             # live-panel demo showed the 27B IGNORES a suggestion to escalate
@@ -6454,23 +6706,23 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                           "I last tried (all below), give ONE concrete code-level "
                           "fix to make that command pass. No meta-advice about "
                           "prompts or process — I need the specific fix.")
-                    _adv_context = _build_advisor_context(context)
-                    _funnel_ev("auto_invoke_call", source=source,
+                    _adv_context = self._build_advisor_context(context)
+                    self._funnel_ev("auto_invoke_call", source=source,
                                ctx_chars=len(_adv_context))
                     # F1: a consult must FIT before the deadline. Same arithmetic the tool
                     # uses for its own timeout; if it cannot finish in the time left, inject
                     # the pending-consult notice instead and let the run wrap without it.
-                    if _DEADLINE_S > 0:
+                    if self._DEADLINE_S > 0:
                         try:
                             from tools.consult_advisor import derive_timeout_s as _dts
                             _need = int(_dts(_config.get("advisor") or {}))
                         except Exception:
                             _need = 0
-                        _left = _DEADLINE_S - (time.monotonic() - _deadline_t0)
+                        _left = self._DEADLINE_S - (time.monotonic() - self._deadline_t0)
                         if _need and _left < _need:
-                            _funnel_ev("auto_invoke_skipped_deadline", source=source,
+                            self._funnel_ev("auto_invoke_skipped_deadline", source=source,
                                        need_s=_need, left_s=int(_left))
-                            log.warning("advisor auto-invoke skipped: needs ~%ds, %ds left before the deadline",
+                            self.log.warning("advisor auto-invoke skipped: needs ~%ds, %ds left before the deadline",
                                         _need, int(_left))
                             return ("[SYSTEM: escalation to the advisor was due (" + _situation +
                                     f") but cannot finish before the deadline ({int(_left)}s left, "
@@ -6478,17 +6730,17 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     telemetry.record_tool_call("consult_advisor")
                     _advice = MAP_FN["consult_advisor"](
                         question=_q, context=_adv_context, reason=_reason)
-                    _funnel_ev("auto_invoke_answered", source=source,
+                    self._funnel_ev("auto_invoke_answered", source=source,
                                chars=len(str(_advice)))
-                    log.info("advisor auto-invoked (source=%s)", source)
+                    self.log.info("advisor auto-invoked (source=%s)", source)
                     return ("[SYSTEM: the heavyweight advisor was consulted "
                             "because " + _situation + ". APPLY its guidance now:"
                             "\n" + str(_advice)[:2500] + "]")
                 except Exception as _ai_e:  # fall back to a suggestion
-                    _funnel_ev("auto_invoke_error", source=source,
+                    self._funnel_ev("auto_invoke_error", source=source,
                                err=str(_ai_e)[:200])
-                    log.warning("advisor auto-invoke failed: %s", _ai_e)
-            _funnel_ev("suggested", source=source, mode=_dec.mode)
+                    self.log.warning("advisor auto-invoke failed: %s", _ai_e)
+            self._funnel_ev("suggested", source=source, mode=_dec.mode)
             return (
                 "[SYSTEM: escalation available — " + _situation +
                 f", past the fast model's reliable range ({', '.join(_dec.triggers)}). "
@@ -6498,27 +6750,26 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 "once — don't loop.]"
             )
         except Exception as _adv_e:  # never let the hook break a gate/turn loop
-            log.debug("advisor escalation hook skipped: %s", _adv_e)
+            self.log.debug("advisor escalation hook skipped: %s", _adv_e)
             return ""
 
-    def _success_gate_blocks_exit(path_name):
+    def _success_gate_blocks_exit(self, path_name):
         """WS10.c shared exit gate. Telemetry (2026-07-12) showed the agent
         has (at least) THREE clean-exit paths — end_cycle tool, completion-
         signal return, and the no-nudge text-only stop — and the gate
         guarded only the first, which replay runs never take. One closure,
         every exit. Returns True if the exit was blocked (caller: inject the
         redirect already appended and continue)."""
-        nonlocal _success_check_blocks, _ran_verification
-        if not _success_check_cmd:
+        if not self._success_check_cmd:
             return False
-        if _deadline_hard or _refusal_hard:
+        if self._deadline_hard or self._refusal_hard:
             # F1/F9: past the deadline (or a refusal stop) the gate must not hold the run for a
             # fix it has no time for — the result says the check failed; the supervisor reads
             # the exit code and the result block.
-            log.info("success_check gate stood down — %s (%s exit)",
-                     "deadline reached" if _deadline_hard else "capability refusal stop", path_name)
+            self.log.info("success_check gate stood down — %s (%s exit)",
+                     "deadline reached" if self._deadline_hard else "capability refusal stop", path_name)
             return False
-        if _success_check_blocks >= _SUCCESS_CHECK_MAX_BLOCKS:
+        if self._success_check_blocks >= self._SUCCESS_CHECK_MAX_BLOCKS:
             return False
         # F9: this gate polices "done while RED". A final message whose result block says
         # blocked / failed / cannot-tell is not claiming done, and turning it back asks the run
@@ -6527,68 +6778,61 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         # correctly at turn 5 was turned back HERE with "the check still FAILS, fix it", and
         # spent five more turns writing labelled placeholder files so that a file-existence
         # check would pass. The harness, not the model, produced that outcome.
-        _final_obj, _ = _extract_result_block(_last_assistant_text(conversation_history))
+        _final_obj, _ = _extract_result_block(_last_assistant_text(self.conversation_history))
         if _final_obj is not None and _final_obj.get("status") in ("blocked", "failed", "cannot-tell"):
-            log.info("success_check gate stood down — the run reports %s (%s exit)",
+            self.log.info("success_check gate stood down — the run reports %s (%s exit)",
                      _final_obj.get("status"), path_name)
             return False
-        _sc_rc, _sc_out = _run_success_check(_success_check_cmd, log)
+        _sc_rc, _sc_out = _run_success_check(self._success_check_cmd, self.log)
         if _sc_rc == 0:
-            log.info("success_check PASSED — %s exit permitted", path_name)
+            self.log.info("success_check PASSED — %s exit permitted", path_name)
             # The harness just verified the current state — a subsequent
             # "I ran the tests" claim is now supported (don't trip the
             # claim-vs-trace gate on a genuinely-verified completion).
-            _ran_verification = True
+            self._ran_verification = True
             return False
-        _success_check_blocks += 1
-        log.info("success_check FAILED (rc=%d) — %s exit blocked (%d/%d)",
-                 _sc_rc, path_name, _success_check_blocks,
-                 _SUCCESS_CHECK_MAX_BLOCKS)
+        self._success_check_blocks += 1
+        self.log.info("success_check FAILED (rc=%d) — %s exit blocked (%d/%d)",
+                 _sc_rc, path_name, self._success_check_blocks,
+                 self._SUCCESS_CHECK_MAX_BLOCKS)
         telemetry.record_patch_event("success_check_block", kind=path_name)
-        conversation_history.append({"role": "user", "content": (
+        self.conversation_history.append({"role": "user", "content": (
             "Error: you are ending the cycle but the declared success check "
             "still FAILS (exit=" + str(_sc_rc) + "). The work is NOT "
             "complete. Output tail:\n" + _sc_out +
             "\nFix what the check reports, re-run it yourself to confirm, "
             "then commit and finish."
         )})
-        _adv_msg = _maybe_advisor_nudge()
+        _adv_msg = self._maybe_advisor_nudge()
         if _adv_msg:
-            conversation_history.append({"role": "user", "content": _adv_msg})
+            self.conversation_history.append({"role": "user", "content": _adv_msg})
         return True
 
-    _result_contract_blocks = 0
-    try:
-        _RESULT_CONTRACT_MAX_BLOCKS = int((_config.get("cycle") or {}).get("result_contract_max_blocks", 2))
-    except Exception:
-        _RESULT_CONTRACT_MAX_BLOCKS = 2
-
-    def _result_contract_blocks_exit(path_name, text):
+    def _result_contract_blocks_exit(self, path_name, text):
         """F2 exit interception, claim-guard style, on the SAME three exits the success gate
         guards. The final message must end with a fenced JSON block that carries
         "contract": 1 and validates. Missing/invalid → inject a correction and continue,
         bounded by cycle.result_contract_max_blocks; past the bound, or past the deadline, the
         exit proceeds and the result-file writer synthesizes a failed record (exit 11)."""
-        nonlocal _result_contract_blocks
         if not _result_contract_armed():
             return False
         obj, why = _extract_result_block(text)
         if obj is not None:
             ok, vwhy = _validate_result(obj, _RESULT_CONTRACT_SCHEMA or RESULT_CONTRACT_DEFAULT_SCHEMA)
             if ok:
-                log.info("result contract satisfied — %s exit permitted", path_name)
+                self.log.info("result contract satisfied — %s exit permitted", path_name)
                 return False
             why = f"the result block is invalid: {vwhy}"
-        if _deadline_hard or _refusal_hard or _result_contract_blocks >= _RESULT_CONTRACT_MAX_BLOCKS:
-            log.warning("result contract UNSATISFIED at %s (%s) — %s; a record will be synthesized",
-                        path_name, why, "deadline reached" if _deadline_hard
-                        else ("capability refusal stop" if _refusal_hard else "correction bound reached"))
+        if self._deadline_hard or self._refusal_hard or self._result_contract_blocks >= self._RESULT_CONTRACT_MAX_BLOCKS:
+            self.log.warning("result contract UNSATISFIED at %s (%s) — %s; a record will be synthesized",
+                        path_name, why, "deadline reached" if self._deadline_hard
+                        else ("capability refusal stop" if self._refusal_hard else "correction bound reached"))
             return False
-        _result_contract_blocks += 1
-        log.info("result contract unsatisfied (%s) — %s exit redirected (%d/%d)",
-                 why, path_name, _result_contract_blocks, _RESULT_CONTRACT_MAX_BLOCKS)
+        self._result_contract_blocks += 1
+        self.log.info("result contract unsatisfied (%s) — %s exit redirected (%d/%d)",
+                 why, path_name, self._result_contract_blocks, self._RESULT_CONTRACT_MAX_BLOCKS)
         telemetry.record_patch_event("result_contract_block", kind=path_name)
-        conversation_history.append({"role": "user", "content": (
+        self.conversation_history.append({"role": "user", "content": (
             "Error: you are ending the run but your message does not end with a valid result "
             "block (" + why + "). Reply again and END with one fenced ```json block: "
             "{\"contract\": 1, \"status\": \"done|failed|blocked|cannot-tell\", \"summary\": ..., "
@@ -6596,35 +6840,34 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             "what makes it the result; \"failed\" and \"blocked\" are acceptable statuses.")})
         return True
 
-    def _deliverable_guard_blocks_exit(path_name, text):
+    def _deliverable_guard_blocks_exit(self, path_name, text):
         """F4: 'done' while a named deliverable is absent draws the standard correction
         (bounded by result_contract_max_blocks). Polices CLAIMS, not outcomes: a result block
         whose status is blocked/failed/cannot-tell passes untouched, and so does the exit past
         the deadline. Nothing configured → never fires."""
-        nonlocal _deliverable_blocks
-        if not _deliverables or _deadline_hard or _refusal_hard:
+        if not self._deliverables or self._deadline_hard or self._refusal_hard:
             return False
         obj, _why = _extract_result_block(text)
         if obj is not None and obj.get("status") in ("blocked", "failed", "cannot-tell"):
             return False
-        missing = _missing_deliverables(_deliverables)
+        missing = _missing_deliverables(self._deliverables)
         if not missing:
             return False
-        if _deliverable_blocks >= _RESULT_CONTRACT_MAX_BLOCKS:
-            log.warning("deliverable guard: %s exit proceeds with %d deliverable(s) still missing (bound reached): %s",
+        if self._deliverable_blocks >= self._RESULT_CONTRACT_MAX_BLOCKS:
+            self.log.warning("deliverable guard: %s exit proceeds with %d deliverable(s) still missing (bound reached): %s",
                         path_name, len(missing), missing[:5])
             return False
-        _deliverable_blocks += 1
-        log.info("deliverable guard: %s exit redirected (%d/%d) — missing %s",
-                 path_name, _deliverable_blocks, _RESULT_CONTRACT_MAX_BLOCKS, missing[:5])
+        self._deliverable_blocks += 1
+        self.log.info("deliverable guard: %s exit redirected (%d/%d) — missing %s",
+                 path_name, self._deliverable_blocks, self._RESULT_CONTRACT_MAX_BLOCKS, missing[:5])
         telemetry.record_patch_event("deliverable_guard_block", kind=path_name)
-        conversation_history.append({"role": "user", "content": (
+        self.conversation_history.append({"role": "user", "content": (
             "Error: you report done, but these named deliverables do not exist: "
             + ", ".join(missing[:8]) + ". Produce them now, or change your status to "
             "blocked/failed and say why.")})
         return True
 
-    def _claim_vs_trace_block(text, ran_verification, has_committed, blocks, max_blocks):
+    def _claim_vs_trace_block(self, text, ran_verification, has_committed, blocks, max_blocks):
         """Reject a completion whose CLAIM the trace does not support — the
         fabricated-verification failure mode (d2 probe: the model fixes the code
         then asserts 'verified with pytest / committed' having run neither).
@@ -6636,7 +6879,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         this catches 'claimed an action never taken' (invisible without the trace,
         and unfixable by any sampling knob — hence structural). State is passed in
         (not closed over) so the reads register in the caller's scope."""
-        if _deadline_hard or _refusal_hard:
+        if self._deadline_hard or self._refusal_hard:
             return False, blocks   # F1/F9: past a hard stop, accept the final result as given
         if not text or max_blocks <= 0 or blocks >= max_blocks:
             return False, blocks
@@ -6644,12 +6887,12 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         if not _unsupported:
             return False, blocks
         blocks += 1
-        log.info("claim-vs-trace: unsupported claim(s) %s — exit blocked (%d/%d)",
+        self.log.info("claim-vs-trace: unsupported claim(s) %s — exit blocked (%d/%d)",
                  _unsupported, blocks, max_blocks)
         telemetry.record_patch_event(
             "claim_vs_trace_block",
             kind="+".join(s.split()[0] for s in _unsupported))
-        conversation_history.append({"role": "user", "content": (
+        self.conversation_history.append({"role": "user", "content": (
             "You reported " + " and ".join(_unsupported) + ", but there is NO "
             "such tool call in this session — you did not actually do it. Do not "
             "report an action you did not perform. Run it now with exec_command "
@@ -6657,7 +6900,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         )})
         return True, blocks
 
-    def _claim_gate_blocks_textonly_exit():
+    def _claim_gate_blocks_textonly_exit(self):
         """Backstop the claim-vs-trace gate at the nudge-enabled give-up / strip
         exits (2026-07-15, WS10.c sibling-path class). The three phrase-gated
         exits (completion_signal / first_textonly_completion / no-nudge
@@ -6676,278 +6919,63 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         the three inline sites) so no dead-locals false positive. Bounded by
         _CLAIM_TRACE_MAX_BLOCKS, so every caller's continue-instead-of-return is
         safe. Returns True if the exit was blocked."""
-        nonlocal _claim_trace_blocks
-        _blk, _claim_trace_blocks = _claim_vs_trace_block(
-            full_content, _ran_verification, _has_committed,
-            _claim_trace_blocks, _CLAIM_TRACE_MAX_BLOCKS)
+        _blk, self._claim_trace_blocks = self._claim_vs_trace_block(
+            self.full_content, self._ran_verification, self._has_committed,
+            self._claim_trace_blocks, self._CLAIM_TRACE_MAX_BLOCKS)
         return _blk
-    # Hard cap: even with ongoing tool calls, end the cycle this many turns
-    # after persist.  Prevents post-TRACK drift into a second PERCEIVE.
-    _CYCLE_HARD_STOP_TURNS = 15
 
-    # Track whether any commit has been made.  Completion signals are ignored
-    # until a commit lands — prevents the agent from declaring "done" before
-    # any work is actually persisted.
-    _has_committed = False
+    def run(self):
+        """The turn loop. Each step returns None to go on, _NEXT for the next turn, or
+        the run's result."""
+        while True:
+            for step in self._STEPS:
+                r = step(self)
+                if r is _NEXT:
+                    break
+                if r is not None:
+                    return r
 
-    # Reviewer-role persistence signal.  Reviewers rarely commit code; their
-    # persistent outputs are `gh pr review` verdicts and appends to
-    # CICD/reviews.md.  Tracked separately so completion signals are honored
-    # once a verdict has actually landed.
-    _has_reviewer_persisted = False
-
-    # Track whether any file has been written/edited.  If no edit by turn 30,
-    # inject a nudge telling the agent to start coding or declare null result.
-    _has_edited = False
-    _EDIT_DEADLINE_TURN = 20
-    _edit_nudge_sent = False
-    # Open-task reminder fires at most once per cycle (at completion signal or
-    # grace-period exhaustion) to surface remaining task_tracker items.
-    _open_task_nudge_sent = False
-
-    # Per-session tools list — starts as a copy of the module-level tools so
-    # we can add end_cycle without mutating the shared list across sessions.
-    _session_tools = list(tools)
-    # Lazy tools: what this session loaded before (a resume, an earlier turn), then what
-    # the task text asks for by name or a clear match, all before the first request.
-    _apply_tool_loads(_session_tools, log, initial=True)
-    if _TOOLS_CFG.get("preload_from_prompt", True):
-        _preload_text = next((m.get("content") for m in reversed(conversation_history)
-                              if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
-        _preloaded = _registry.preload_from_text(_preload_text)
-        if _preloaded:
-            log.info("tools.preloaded %s", ", ".join(_preloaded))
-        _apply_tool_loads(_session_tools, log)
-    # Skills: the first message of the session is judged now (nothing is cached yet);
-    # later ones on a worker thread. Queued loads join the newest message at the turn.
-    _skills_on_entry(conversation_history, log)
-    # end_cycle is unlocked (appended to _session_tools) after the first nudge
-    # fires so the agent can't skip the cycle by calling it before doing work.
-    _end_cycle_unlocked = not _END_CYCLE_ENABLED  # off (the default): never offered
-    if _prompt_caching_backend() and not _end_cycle_unlocked and not any(
-            (t.get("function") or {}).get("name") == "end_cycle" for t in _session_tools):
-        # P4.4: tools render FIRST in the request, so adding one mid-run invalidates the
-        # whole cached prompt. Offer end_cycle from turn 1. It is NOT gated on the
-        # first-nudge unlock: a model that finishes cleanly is never nudged, and live it
-        # had its correct end_cycle refused. The success-check / phase / CICD gates still
-        # apply, and ending this way is what a text-only finish would do anyway.
-        _session_tools.append(_end_cycle_tool.definition)
-
-    # Reviewer sessions rarely make code edits (they verify and merge), so the
-    # edit-deadline nudge is a false positive for that role.  Detect by
-    # scanning the initial prompt for the reviewer-template marker.
-    # WS1: explicit --role wins; prompt string-matching is the legacy fallback.
-    global _active_phase_engine
-    if _explicit_role is not None:
-        _is_reviewer_role = _explicit_role == "reviewer"
-    else:
-        _is_reviewer_role = any(
-            isinstance(m.get("content"), str) and "CICD Reviewer" in m["content"]
-            for m in conversation_history[:2]
-        )
-        if _is_reviewer_role:
-            log.debug("role detected by prompt string-match (legacy) — prefer --role")
-
-    # WS1: PhaseEngine — inert unless config opts in (cycle.profile/phases).
-    from phase_engine import build_phase_engine
-    _phase_engine = build_phase_engine(_config, log)
-    _active_phase_engine = _phase_engine
-    if _phase_engine is not None:
-        log.info("PhaseEngine active: profile=%s", _phase_engine.profile)
-
-    # cycle 86 (issue #425): CICD-specific guards (e.g. cycle 44 requiring
-    # `Closes #N`) only apply in the self-improvement builder loop, not in
-    # general agent sessions on other repos.  Detect by the same strategy as
-    # _is_reviewer_role — the builder template always opens with
-    # "CICD Improvement Loop — Builder".
-    if _explicit_role is not None:
-        # builder flag semantically means "CICD session" — reviewers carry it
-        # too (see WS8.2 note in _validate_tool_call); creature = neither.
-        _is_cicd_builder = _explicit_role in ("builder", "reviewer")
-    else:
-        _is_cicd_builder = any(
-            isinstance(m.get("content"), str) and "CICD Improvement Loop" in m["content"]
-            for m in conversation_history[:2]
-        )
-
-    # Detect tool-call loops: same command signature repeated N times.
-    _recent_tool_sigs = []  # list of (frozenset of (name, args_hash)) tuples
-    _TOOL_LOOP_THRESHOLD = 3  # inject correction after 3 identical batches
-
-    # Semantic result-loop detection: same tool returning same result despite
-    # different arguments.  Catches cases where the batch-signature detector
-    # misses because args vary slightly each time.
-    _recent_tool_results = []  # list of (func_name, result_hash) tuples
-    _RESULT_LOOP_WINDOW = 8
-    _RESULT_LOOP_THRESHOLD = 3
-
-    # Per-call dedup cache. Maps (func_name, args_md5) → {
-    #   "call_idx": int, "summary": str (first 80 chars), "tokens": int
-    # }. On exact-duplicate call within _DEDUP_WINDOW calls, return a synthetic
-    # tool result and skip dispatch — saves 30-40% of token budget per long
-    # cycle (a field audit: `cat focus.json` x3, `git log -5` x5 in one
-    # session, a field-observed run Orphan Paradox audit-rewrite-audit loop). Only applied
-    # to tools that are SAFE to dedup (pure reads, no network/wallclock); see
-    # _is_dedupable_call() for the policy.
-    _call_dedup_cache = {}
-    _DEDUP_WINDOW = 8
-    _call_idx_counter = 0  # monotonic per-tool-call counter
-
-    # Session-wide identical-call frequency for search_files / find_symbol.
-    # The dedup cache only covers _DEDUP_WINDOW=8 calls; the model can evade it
-    # by inserting other tool calls between retries.  This counter persists for
-    # the full session and fires a forced-think after _SEARCH_REPEAT_THRESHOLD
-    # real (non-deduped) dispatches of the same (func, args) pair.
-    _search_sig_counts: dict = {}   # (func_name, args_md5) → dispatch count
-    _SEARCH_REPEAT_THRESHOLD = 3
-
-    # Per-path write tracker for the write-loop detector. Each entry maps
-    # `target_path` → list of call_idx values where it was written. On 3rd+
-    # write within _WRITE_LOOP_WINDOW, append a system reminder to that
-    # turn's tool result. The canonical observed loop: 3 write-audit-rewrite
-    # passes on state/memories/context.json in one cycle.
-    _write_path_history = {}
-    _WRITE_LOOP_WINDOW = 8
-    _WRITE_LOOP_THRESHOLD = 3
-
-    # Tier 5 — per-session patch-effectiveness counters. Mirrors the
-    # telemetry.record_patch_event calls so a verbose cycle-end log line
-    # gives the operator local visibility without grepping the OTEL/Grafana
-    # dashboard. Keys match the patch identifiers in telemetry docs.
-    _patch_telemetry = {
-        "harmony_reject": 0,        # T1.1 — Harmony control tokens in tool args
-        "dedup": 0,                  # T1.2 — exact-duplicate read calls deduped
-        "write_loop": 0,             # T1.2 — write-loop detector tripped
-        "indent_guard": 0,           # T4.10 — slice-write indent mismatch rejected
-        "schema_warning": 0,         # T4.11 — JSON overwrite dropped top-level keys
-        "think_launder": 0,          # T2.7 — think prompt re-included recent context
-        "stall_abort": 0,            # T3.8 — stream stall guard fired
-        "bootstrap_create": 0,       # T3.9 — placeholder file auto-created
-        "edit_nudge": 0,             # T5.14 — heredoc-write hint emitted
-        "summary_fired": 0,          # T5.13 — async summary launched
-        "summary_gated": 0,          # T5.13 — summary skipped (under threshold)
-    }
-
-    # CICD phase tracking — module-level globals so _build_context_message()
-    # can inject them into every context window, surviving summary compression.
-    global _cicd_phase_state, _cicd_issue_number, _cicd_pr_number, _cicd_branch, _cicd_edited_files, _cicd_worktree_path
-    _cicd_phase_state = {
-        "perceive": False,
-        "probe": False,
-        "decide": False,
-        "plan": False,
-        "implement": False,
-        "verify": False,
-        "track": False,
-    }
-    _cicd_issue_number = None
-    _cicd_pr_number = None
-    _cicd_branch = None
-    _cicd_think_used = False  # reset each cycle; set True when think() is called
-    _cicd_edited_files = set()  # reset each cycle
-    _cicd_worktree_path = None  # reset each cycle
-    _cicd_pr_ready_called = False  # tracks whether `gh pr ready` was called before merge
-    _cicd_issue_view_called = False  # tracks whether `gh issue view` was called before merge (PRE-MERGE CHECK)
-
-    _async_summarizer = async_summarizer
-    _SUMMARY_IDLE["run"] = {"history": conversation_history, "state": summary_state, "summarizer": async_summarizer,
-                            "initial_files": initial_files, "ctx_size": ctx_size, "max_tokens": max_tokens}
-
-    # T5.15 — stall-retry budget (across the cycle, not per-turn). When the
-    # streaming stall guard (T3.8) trips, the framework adjusts sampling for
-    # the NEXT request and continues to retry. Two retries by default —
-    # first with -0.3 temp / +0.05 repeat_penalty; second with an additional
-    # -0.2 temp / +0.05 penalty (deeper escalation). Clears automatically
-    # once a turn produces deltas, so a single stall in a healthy session
-    # doesn't permanently degrade sampling for the rest of the cycle.
-    _stall_retries_budget = int(os.environ.get("AGENT_STALL_RETRIES", "2"))
-    _stall_retries_remaining = _stall_retries_budget
-    _stall_sampling_override = None  # set when stall detected; cleared on success
-
-    # Gateway-timeout recovery: when every retry on a turn returns 504, inject a
-    # size-reduction hint and retry the turn rather than immediately aborting.
-    # Capped at 2 recoveries per cycle so a persistently slow model doesn't loop forever.
-    _gateway_timeout_recovery_count = 0
-    _GATEWAY_TIMEOUT_RECOVERY_MAX = 2
-
-    # Action-inertia detection: count consecutive turns where the model only reads
-    # files without writing or executing anything. After the threshold, inject a
-    # nudge to commit to the fix rather than reading more files.
-    _read_only_turns = 0
-    _READ_ONLY_NUDGE_THRESHOLD = 5
-    _cur_req_sig = None       # _request_signature of the request being sent (see _CACHE_REQ)
-    _READ_ONLY_NUDGE_THRESHOLD = 5
-    # F7 — repeat-read stall signature (one nudge per unique call key, latched)
-    try:
-        _rr_cfg = (_config.get("cycle") or {}).get("repeat_read_nudge") or {}
-        _REPEAT_READ_N = int(_rr_cfg.get("n", 3)) if isinstance(_rr_cfg, dict) else 3
-        _REPEAT_READ_WINDOW = int(_rr_cfg.get("window", 6)) if isinstance(_rr_cfg, dict) else 6
-    except Exception:
-        _REPEAT_READ_N, _REPEAT_READ_WINDOW = 3, 6
-    _repeat_seen, _repeat_latched, _repeat_msg = {}, set(), None
-    # F4 — goal anchoring + deliverable guard state (config or --goal/--deliverable; derived
-    # from the prompt stanza by run_agent_interactive when the contract is armed)
-    _goal = str((_config.get("cycle") or {}).get("goal") or "") if isinstance((_config.get("cycle") or {}).get("goal"), str) else ""
-    _deliverables = [str(d) for d in ((_config.get("cycle") or {}).get("deliverables") or []) if isinstance(d, str)] \
-        if isinstance((_config.get("cycle") or {}).get("deliverables"), list) else []
-    _anchor_fracs = [f for f in ((_config.get("cycle") or {}).get("goal_anchor_fracs") or []) if isinstance(f, (int, float))] \
-        if isinstance((_config.get("cycle") or {}).get("goal_anchor_fracs"), list) else []
-    _anchor_fired = set()
-    _deliverable_blocks = 0
-    _turn_had_action = False  # set True when write/edit/exec called this turn
-
-    # Consecutive edit_file failures per path — after 2 consecutive failures on
-    # the same file, inject a user turn telling the model to stop and rewrite.
-    _edit_fail_counts: dict = {}
-
-    # "Agent:" header discipline (field report 2026-08-14): the label marks the
-    # START of a contiguous agent-output run and prints once per run — lazily,
-    # on the first TEXT token (a tool-only response never earns a bare label).
-    # A queued user message folded in mid-burst starts a new run, so the label
-    # re-appears after it as a continuation marker.
-    _agent_header_owed = True
-
-    while True:
-        turn += 1
+    def _begin_turn(self):
+        self.turn += 1
         # Grind escalation (turn-budget): once per cycle, if a success_check is
         # configured and the model has burned most of its budget with the check
         # still red, it is grinding (distinct actions, no convergence) — the
         # failure mode that trips no loop/stall/gate detector. Runs the check at
         # most once (latch); suggest-only, so the glm call stays model-gated.
         _grind_turn_hit = (_MAX_TURNS > 0
-                           and turn >= int(_GRIND_TURN_FRACTION * _MAX_TURNS))
-        _grind_time_hit = (_GRIND_ELAPSED_S > 0
-                           and (time.monotonic() - _grind_t0) >= _GRIND_ELAPSED_S)
+                           and self.turn >= int(self._GRIND_TURN_FRACTION * _MAX_TURNS))
+        _grind_time_hit = (self._GRIND_ELAPSED_S > 0
+                           and (time.monotonic() - self._grind_t0) >= self._GRIND_ELAPSED_S)
         # No-progress gate: only escalate if the model hasn't mutated a file in
         # the last N turns (genuinely stuck), not merely slow-but-converging.
         # Left OUT of the latch when it blocks, so the check re-fires if the run
         # later goes stuck (edits then spins) — escalate on stall, not on clock.
-        _grind_no_progress = (_GRIND_NO_PROGRESS_TURNS <= 0
-                              or (turn - _last_mutation_turn) >= _GRIND_NO_PROGRESS_TURNS)
-        if (not _grind_checked and _success_check_cmd
+        _grind_no_progress = (self._GRIND_NO_PROGRESS_TURNS <= 0
+                              or (self.turn - self._last_mutation_turn) >= self._GRIND_NO_PROGRESS_TURNS)
+        if (not self._grind_checked and self._success_check_cmd
                 and (_grind_turn_hit or _grind_time_hit) and _grind_no_progress):
-            _grind_checked = True
+            self._grind_checked = True
             try:
-                _g_rc, _g_out = _run_success_check(_success_check_cmd, log)
+                _g_rc, _g_out = _run_success_check(self._success_check_cmd, self.log)
                 if _g_rc != 0:
-                    _grind_msg = _maybe_advisor_nudge(source="grind",
+                    _grind_msg = self._maybe_advisor_nudge(source="grind",
                                                       context=_g_out)
                     if _grind_msg:
-                        conversation_history.append(
+                        self.conversation_history.append(
                             {"role": "user", "content": _grind_msg})
             except Exception as _grind_e:
-                log.debug("grind escalation check skipped: %s", _grind_e)
+                self.log.debug("grind escalation check skipped: %s", _grind_e)
         # Update read-only counter from the previous turn
-        if turn > 1:
-            if _turn_had_action:
-                _read_only_turns = 0
+        if self.turn > 1:
+            if self._turn_had_action:
+                self._read_only_turns = 0
             else:
-                _read_only_turns += 1
-        _turn_had_action = False  # reset for this turn
-        _turn_t0 = time.monotonic()
-        _turn_in_tokens = 0
-        _turn_out_tokens = 0
-        _harvested_this_turn = False   # a harvested summary rewrites the lead message: one expected miss
+                self._read_only_turns += 1
+        self._turn_had_action = False  # reset for this turn
+        self._turn_t0 = time.monotonic()
+        self._turn_in_tokens = 0
+        self._turn_out_tokens = 0
+        self._harvested_this_turn = False   # a harvested summary rewrites the lead message: one expected miss
 
         # ── Memory pressure management (tiers 2 + 3) ──
         # Tier 2: force gc + glibc malloc_trim so pymalloc arenas freed during
@@ -6957,104 +6985,104 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         # return value is currently unused (callers only react to the hard
         # exit path); wired as side-effect-only so the dead-locals guard
         # (cycle 0013) doesn't complain.
-        _release_memory(log)
-        _check_memory_watermark(log)
+        _release_memory(self.log)
+        _check_memory_watermark(self.log)
 
         # ── Edit deadline nudge ──
         # Reviewers don't edit — suppress the nudge for that role.
-        if (turn == _EDIT_DEADLINE_TURN and not _has_edited
-                and not _edit_nudge_sent and _NUDGE_ENABLED
-                and not _is_reviewer_role
-                and _is_cicd_builder):  # only meaningful for CICD builder sessions
-            _edit_nudge_sent = True
+        if (self.turn == self._EDIT_DEADLINE_TURN and not self._has_edited
+                and not self._edit_nudge_sent and _NUDGE_ENABLED
+                and not self._is_reviewer_role
+                and self._is_cicd_builder):  # only meaningful for CICD builder sessions
+            self._edit_nudge_sent = True
             _edit_nudge = (
-                f"[SYSTEM: You have spent {turn} turns without making a code change. "
+                f"[SYSTEM: You have spent {self.turn} turns without making a code change. "
                 f"Create your worktree NOW and make your edit, or declare a null result. "
                 f"Do not continue investigating — act immediately.]"
             )
-            conversation_history.append({"role": "user", "content": _edit_nudge})
-            log.warning("Edit deadline: %d turns with no file edit — nudging", turn)
+            self.conversation_history.append({"role": "user", "content": _edit_nudge})
+            self.log.warning("Edit deadline: %d turns with no file edit — nudging", self.turn)
 
         # ── Wind-down and overtime warnings ──
-        remaining = _MAX_TURNS - turn
-        wind_down_msg = None
+        remaining = _MAX_TURNS - self.turn
+        self.wind_down_msg = None
         if 0 < remaining <= _WIND_DOWN_TURNS:
-            wind_down_msg = (
+            self.wind_down_msg = (
                 f"[SYSTEM: {remaining} turns remaining before overtime. "
                 f"Begin wrapping up — save your progress (CONSOLIDATE), "
                 f"commit your work (PERSIST), and stop. "
                 f"Do not start new tasks.]"
             )
-            log.info("Wind-down: %d turns remaining", remaining)
+            self.log.info("Wind-down: %d turns remaining", remaining)
         elif remaining <= 0:
             overtime = -remaining
-            wind_down_msg = (
+            self.wind_down_msg = (
                 f"[SYSTEM: You are {overtime} turns past the turn limit. "
                 f"Finish what you are doing immediately — CONSOLIDATE and PERSIST now. "
                 f"Do not start anything new.]"
             )
-            log.warning("Overtime: %d turns past limit (%d)", overtime, _MAX_TURNS)
+            self.log.warning("Overtime: %d turns past limit (%d)", overtime, _MAX_TURNS)
             # Hard cap: never exceed 2x the turn limit regardless of state
             if overtime >= _MAX_TURNS:
-                log.error("Hard overtime cap reached (%d turns) — force stopping", turn)
+                self.log.error("Hard overtime cap reached (%d turns) — force stopping", self.turn)
                 return "done"
         # F9 — capability-refusal stop. N turns after a tool refused for an ungranted capability,
         # a run still issuing tool calls is not working: it is building a substitute for the
         # thing it was refused. Same mechanism as the deadline below — tool calls refused, ONE
         # more turn for the final result, a second such turn ends the run. Placed before the
         # deadline block so that when both apply the deadline message wins.
-        if (_refusal_first_turn is not None and _REFUSAL_MAX_TURNS > 0 and not _refusal_hard
-                and turn - _refusal_first_turn >= _REFUSAL_MAX_TURNS):
-            _refusal_hard = True
-            log.error("CAPABILITY REFUSAL STOP at turn %d: %s refused at turn %d and the run is still "
+        if (self._refusal_first_turn is not None and self._REFUSAL_MAX_TURNS > 0 and not self._refusal_hard
+                and self.turn - self._refusal_first_turn >= self._REFUSAL_MAX_TURNS):
+            self._refusal_hard = True
+            self.log.error("CAPABILITY REFUSAL STOP at turn %d: %s refused at turn %d and the run is still "
                       "issuing tool calls %d turn(s) later — tool calls refused, forcing the final result",
-                      turn, _refusal_tool, _refusal_first_turn, turn - _refusal_first_turn)
-            _emit("on_notice", "warn", f"[Capability refusal stop: {_refusal_tool} — final result required]")
-            wind_down_msg = (
-                f"[SYSTEM: CAPABILITY REFUSAL STOP. {_refusal_tool} refused for an ungranted capability at "
-                f"turn {_refusal_first_turn} ({(_LAST_REFUSAL or {}).get('head', '')}) and {_REFUSAL_MAX_TURNS} "
+                      self.turn, self._refusal_tool, self._refusal_first_turn, self.turn - self._refusal_first_turn)
+            _emit("on_notice", "warn", f"[Capability refusal stop: {self._refusal_tool} — final result required]")
+            self.wind_down_msg = (
+                f"[SYSTEM: CAPABILITY REFUSAL STOP. {self._refusal_tool} refused for an ungranted capability at "
+                f"turn {self._refusal_first_turn} ({(_LAST_REFUSAL or {}).get('head', '')}) and {self._REFUSAL_MAX_TURNS} "
                 f"turn(s) have passed. Tool calls are now REFUSED. Reply with your FINAL RESULT now: a result "
                 f"block with \"status\": \"blocked\" naming the tool and its exit code, what was examined, "
                 f"and what was not covered.]")
-        if _refusal_hard:
-            _refusal_hard_turns += 1
-            if _refusal_hard_turns > 2:
-                log.error("REFUSAL STOP: no final result after %d post-stop turns — stopping",
-                          _refusal_hard_turns - 1)
+        if self._refusal_hard:
+            self._refusal_hard_turns += 1
+            if self._refusal_hard_turns > 2:
+                self.log.error("REFUSAL STOP: no final result after %d post-stop turns — stopping",
+                          self._refusal_hard_turns - 1)
                 return "done"
         # F1 — the wall-clock twin of the ladder above. Rides the same message channel; when
         # both apply on one turn the deadline message wins (it is the one with a hard stop
         # behind it). At 100% the run gets ONE more model turn for its final result; a tool
         # call on that turn is refused (dispatcher below), a second such turn ends the run.
-        if _DEADLINE_S > 0:
-            _dl_msg, _dl_hard = _deadline_step(time.monotonic() - _deadline_t0, _DEADLINE_S,
-                                               _deadline_fired, _deadline_fracs)
-            if _dl_hard and not _deadline_hard:
-                _deadline_hard = True
-                _set_exit(EXIT_DEADLINE, f"wall-clock deadline {int(_DEADLINE_S)}s reached at turn {turn}")
-                log.error("DEADLINE reached (%.0fs) at turn %d — tool calls refused, forcing final result",
-                          _DEADLINE_S, turn)
-                _emit("on_notice", "warn", f"[Deadline {int(_DEADLINE_S)}s reached — forcing the final result]")
-            if _deadline_hard:
-                _deadline_hard_turns += 1
-                if _deadline_hard_turns > 2:
-                    log.error("DEADLINE: no final result after %d post-deadline turns — stopping",
-                              _deadline_hard_turns - 1)
+        if self._DEADLINE_S > 0:
+            _dl_msg, _dl_hard = _deadline_step(time.monotonic() - self._deadline_t0, self._DEADLINE_S,
+                                               self._deadline_fired, self._deadline_fracs)
+            if _dl_hard and not self._deadline_hard:
+                self._deadline_hard = True
+                _set_exit(EXIT_DEADLINE, f"wall-clock deadline {int(self._DEADLINE_S)}s reached at turn {self.turn}")
+                self.log.error("DEADLINE reached (%.0fs) at turn %d — tool calls refused, forcing final result",
+                          self._DEADLINE_S, self.turn)
+                _emit("on_notice", "warn", f"[Deadline {int(self._DEADLINE_S)}s reached — forcing the final result]")
+            if self._deadline_hard:
+                self._deadline_hard_turns += 1
+                if self._deadline_hard_turns > 2:
+                    self.log.error("DEADLINE: no final result after %d post-deadline turns — stopping",
+                              self._deadline_hard_turns - 1)
                     return "done"
             if _dl_msg:
-                wind_down_msg = _dl_msg
-                log.warning("deadline: %s", _dl_msg[:90])
+                self.wind_down_msg = _dl_msg
+                self.log.warning("deadline: %s", _dl_msg[:90])
         # F4 — goal anchor: at each fraction (of the deadline, else of the turn budget) inject
         # the stated goal, the deliverables, and the mechanical "not there yet" list. Cheap:
         # one glob sweep, no model call. Rides as a system message on this turn.
-        if (_goal or _deliverables) and _anchor_fracs:
-            _prog = ((time.monotonic() - _deadline_t0) / _DEADLINE_S) if _DEADLINE_S > 0 \
-                else (turn / float(_MAX_TURNS) if _MAX_TURNS > 0 else 0.0)
-            _due = [f for f in sorted(_anchor_fracs) if _prog >= f and f not in _anchor_fired]
+        if (self._goal or self._deliverables) and self._anchor_fracs:
+            _prog = ((time.monotonic() - self._deadline_t0) / self._DEADLINE_S) if self._DEADLINE_S > 0 \
+                else (self.turn / float(_MAX_TURNS) if _MAX_TURNS > 0 else 0.0)
+            _due = [f for f in sorted(self._anchor_fracs) if _prog >= f and f not in self._anchor_fired]
             if _due:
                 for f in _due:
-                    _anchor_fired.add(f)
-                _missing = _missing_deliverables(_deliverables)
+                    self._anchor_fired.add(f)
+                self._missing = _missing_deliverables(self._deliverables)
                 # USER ROLE, NOT SYSTEM — this message is appended MID-HISTORY, and many chat
                 # templates accept system messages only in the LEADING position. Qwen3's
                 # rejects a later one outright: "Jinja Exception: System message must be at the
@@ -7066,8 +7094,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # leading could reproduce it, which is most probes anyone would think to write.
                 # The anchor is a reminder injected into the conversation, not a system-level
                 # instruction, so `user` is both portable and the honest description of it.
-                conversation_history.append({"role": "user", "content": "[GOAL ANCHOR] " +
-                    _goal_anchor_message(_goal, _deliverables, _missing, _due[-1])})
+                self.conversation_history.append({"role": "user", "content": "[GOAL ANCHOR] " +
+                    _goal_anchor_message(self._goal, self._deliverables, self._missing, _due[-1])})
                 # WARNING, not info: this fires rarely and matters when diagnosing a run, and
                 # at info it is invisible in every captured log I have (harnesses commonly
                 # capture warning and above). Establishing whether the anchor had fired in four
@@ -7076,8 +7104,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # was below the capture threshold. The deadline ladder already reports at this
                 # level for the same reason; an injection into the conversation should be as
                 # visible as a notice about the clock.
-                log.warning("goal anchor FIRED at %.0f%% (user role): %d deliverable(s), %d missing",
-                            _due[-1] * 100, len(_deliverables), len(_missing))
+                self.log.warning("goal anchor FIRED at %.0f%% (user role): %d deliverable(s), %d missing",
+                            _due[-1] * 100, len(self._deliverables), len(self._missing))
                 telemetry.record_patch_event("goal_anchor", kind="fired")
 
         # ── Mid-burst "btw" injection ──
@@ -7089,19 +7117,20 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         # followed by a user turn). If a tool_call is pending, the queued item
         # waits for the next boundary. The turn caps above still bound the loop,
         # so a chatty monitor cannot prevent exit.
-        if monitor_bus.has_pending() and not _has_pending_tool_calls(conversation_history):
-            if _drain_monitor_injections(conversation_history, framing=_BTW_FRAMING):
-                log.debug("mid-burst monitor injection delivered at turn %d", turn)
+        if monitor_bus.has_pending() and not _has_pending_tool_calls(self.conversation_history):
+            if _drain_monitor_injections(self.conversation_history, framing=_BTW_FRAMING):
+                self.log.debug("mid-burst monitor injection delivered at turn %d", self.turn)
                 # A user message interrupted the output run — the next text the
                 # agent streams starts a new run and re-earns its header.
-                _agent_header_owed = True
+                self._agent_header_owed = True
 
         # Harvest any completed async summary before building context
-        if _async_summarizer and _async_summarizer.harvest(summary_state):
-            log.info("Harvested async summary")
-            _harvested_this_turn = True
+        if self._async_summarizer and self._async_summarizer.harvest(self.summary_state):
+            self.log.info("Harvested async summary")
+            self._harvested_this_turn = True
             _emit("on_summary_ready")
 
+    def _request(self):
         # Build context window, with overflow reduction loop
         _ctx_max_messages = None  # None = use context_window.MAX_CONTEXT_MESSAGES
         _CTX_REDUCE_MAX = 10     # max number of message-reduction attempts
@@ -7110,26 +7139,26 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         _skill_suggestion = ""   # the picker's line for this turn's note, kept across attempts
 
         for _ctx_attempt in range(_CTX_REDUCE_MAX + 1):
-            telemetry.record_context_size(ctx_size)
-            _ready = _async_summarizer.pending_up_to() if _async_summarizer else None
-            summary_state["_ready_up_to"] = _ready if isinstance(_ready, int) else None
-            messages_to_send, oldest_idx = _build_context(
-                conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
+            telemetry.record_context_size(self.ctx_size)
+            _ready = self._async_summarizer.pending_up_to() if self._async_summarizer else None
+            self.summary_state["_ready_up_to"] = _ready if isinstance(_ready, int) else None
+            self.messages_to_send, oldest_idx = _build_context(
+                self.conversation_history, self.summary_state, self.initial_files, self.ctx_size, self.max_tokens, self.log,
                 max_messages_override=_ctx_max_messages)
 
-            _collapsed_now = summary_state.pop("_collapse_summarize", False)
-            _evicted_now = summary_state.pop("_evict_summarize", False)
+            _collapsed_now = self.summary_state.pop("_collapse_summarize", False)
+            _evicted_now = self.summary_state.pop("_evict_summarize", False)
             if _collapsed_now or _evicted_now:
                 # The window head moved (collapse or eviction): the summary of what left
                 # goes into this request, ready, waited for or skipped as summary.wait_s
                 # says (_fold_summary_at_head_move). The rebuilt context keeps the new head.
-                _why = "cache collapse" if _collapsed_now else "eviction"
-                if _fold_summary_at_head_move(conversation_history, summary_state, oldest_idx, log, _why,
-                                              _async_summarizer):
-                    messages_to_send, oldest_idx = _build_context(
-                        conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
+                self._why = "cache collapse" if _collapsed_now else "eviction"
+                if _fold_summary_at_head_move(self.conversation_history, self.summary_state, oldest_idx, self.log, self._why,
+                                              self._async_summarizer):
+                    self.messages_to_send, oldest_idx = _build_context(
+                        self.conversation_history, self.summary_state, self.initial_files, self.ctx_size, self.max_tokens, self.log,
                         max_messages_override=_ctx_max_messages)
-                    summary_state.pop("_evict_summarize", None)   # the rebuild may move the head again
+                    self.summary_state.pop("_evict_summarize", None)   # the rebuild may move the head again
 
             # Summarize dropped messages: async (background) or sync (blocking).
             # T5.13 — gate the message-count trigger on actual context utilization
@@ -7137,13 +7166,13 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # of all tool calls were summary fires, many at ~25% context usage).
             # Both thresholds must be met: enough new messages AND enough
             # context pressure. Env-tunable for backend-specific calibration.
-            if _async_summarizer:
-                unsummarized = oldest_idx - summary_state["up_to"]
+            if self._async_summarizer:
+                unsummarized = oldest_idx - self.summary_state["up_to"]
                 _summary_util_threshold = float(os.environ.get(
                     "AGENT_SUMMARY_UTIL_THRESHOLD", "0.6"))
-                _ctx_tokens_used = sum(_cw.estimate_tokens(m) for m in messages_to_send)
+                _ctx_tokens_used = sum(_cw.estimate_tokens(m) for m in self.messages_to_send)
                 _ctx_utilization = ((_ctx_tokens_used * float(_cw.TOKEN_CAL.get("ratio", 1.0) or 1.0))
-                                    / ctx_size if ctx_size else 0.0)
+                                    / self.ctx_size if self.ctx_size else 0.0)
                 # On a prompt-caching backend messages leave the window only by chunk
                 # eviction (P4.2), which already means the window was full — and right
                 # after one the window sits at ~20% of ctx, so a utilization gate would
@@ -7153,55 +7182,55 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # the next 14 minutes ran without a summary (measured 2026-10-30).
                 _msg_threshold_met = unsummarized >= _SUMMARY_THRESHOLD or (
                     _prompt_caching_backend() and unsummarized > 0
-                    and bool(summary_state.get("_head_moved")))
+                    and bool(self.summary_state.get("_head_moved")))
                 _util_threshold_met = (_prompt_caching_backend()
                                        or _ctx_utilization >= _summary_util_threshold)
                 if (
                     _msg_threshold_met
                     and _util_threshold_met
-                    and not _async_summarizer.is_running
+                    and not self._async_summarizer.is_running
                 ):
-                    new_messages = conversation_history[summary_state["up_to"]:oldest_idx]
+                    new_messages = self.conversation_history[self.summary_state["up_to"]:oldest_idx]
                     if new_messages:
-                        _async_summarizer.kick(summary_state["text"], new_messages, oldest_idx)
-                        log.info(
+                        self._async_summarizer.kick(self.summary_state["text"], new_messages, oldest_idx)
+                        self.log.info(
                             "Kicked async summary for %d messages (util=%.2f, threshold=%.2f)",
                             len(new_messages), _ctx_utilization, _summary_util_threshold,
                         )
                         telemetry.record_patch_event("summary_fired", kind="fired")
-                        _patch_telemetry["summary_fired"] += 1
+                        self._patch_telemetry["summary_fired"] += 1
                         _emit("on_notice", "info", "[background summarization started]")
                 elif _msg_threshold_met and not _util_threshold_met:
                     # Would have fired pre-T5.13; gating skipped it. Telemetry-
                     # only — no log noise, since this is the COMMON case now.
                     telemetry.record_patch_event("summary_gated", kind="skipped")
-                    _patch_telemetry["summary_gated"] += 1
-                _ahead_edge = summary_state.pop("_ahead_edge", None)
-                if (isinstance(_ahead_edge, int) and _ahead_edge > summary_state["up_to"]
-                        and not _async_summarizer.is_running and _async_summarizer.pending_up_to() is None):
+                    self._patch_telemetry["summary_gated"] += 1
+                _ahead_edge = self.summary_state.pop("_ahead_edge", None)
+                if (isinstance(_ahead_edge, int) and _ahead_edge > self.summary_state["up_to"]
+                        and not self._async_summarizer.is_running and self._async_summarizer.pending_up_to() is None):
                     # summary.ahead: the window is nearly full and these messages are certain
                     # to leave at the next eviction; their summary is held until then.
-                    _ahead_msgs = conversation_history[summary_state["up_to"]:_ahead_edge]
-                    if _ahead_msgs and _async_summarizer.kick(summary_state["text"], _ahead_msgs, _ahead_edge,
+                    _ahead_msgs = self.conversation_history[self.summary_state["up_to"]:_ahead_edge]
+                    if _ahead_msgs and self._async_summarizer.kick(self.summary_state["text"], _ahead_msgs, _ahead_edge,
                                                               kind="ahead"):
-                        log.info("summary.ahead kick up_to=%d edge=%d (%d messages, window ~%d tokens)",
-                                 summary_state["up_to"], _ahead_edge, len(_ahead_msgs), _ctx_tokens_used)
+                        self.log.info("summary.ahead kick up_to=%d edge=%d (%d messages, window ~%d tokens)",
+                                 self.summary_state["up_to"], _ahead_edge, len(_ahead_msgs), _ctx_tokens_used)
                         telemetry.record_patch_event("summary_ahead", kind="fired")
                         _emit("on_notice", "info",
                               f"[summarizing {len(_ahead_msgs)} messages ahead of the next eviction]")
-            elif _maybe_resummarize(conversation_history, summary_state, oldest_idx, log):
-                messages_to_send, oldest_idx = _build_context(
-                    conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
+            elif _maybe_resummarize(self.conversation_history, self.summary_state, oldest_idx, self.log):
+                self.messages_to_send, oldest_idx = _build_context(
+                    self.conversation_history, self.summary_state, self.initial_files, self.ctx_size, self.max_tokens, self.log,
                     max_messages_override=_ctx_max_messages)
-            summary_state.pop("_ahead_edge", None)
-            summary_state.pop("_ready_up_to", None)
+            self.summary_state.pop("_ahead_edge", None)
+            self.summary_state.pop("_ready_up_to", None)
 
             # Inject wind-down as a system message at the end of context
-            if wind_down_msg:
-                messages_to_send.append({"role": "user", "content": wind_down_msg})
+            if self.wind_down_msg:
+                self.messages_to_send.append({"role": "user", "content": self.wind_down_msg})
 
-            log.info("--- Turn %d/%d | sending %d messages (history has %d total)",
-                     turn, _MAX_TURNS, len(messages_to_send), len(conversation_history))
+            self.log.info("--- Turn %d/%d | sending %d messages (history has %d total)",
+                     self.turn, _MAX_TURNS, len(self.messages_to_send), len(self.conversation_history))
 
             # Per-turn time-of-now injection. Prepended as a system message to
             # the OUTGOING REQUEST only (not the persistent messages_to_send
@@ -7210,9 +7239,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # "2025-05-22T10:00:00Z" anchors — the framework owns the clock,
             # the model owns the work.
             _now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            _apply_tool_loads(_session_tools, log)   # loads asked for last turn join the list here
+            _apply_tool_loads(self._session_tools, self.log)   # loads asked for last turn join the list here
             # A retried attempt keeps the suggestion the first one harvested.
-            _skill_suggestion = _skills_at_boundary(conversation_history, messages_to_send, oldest_idx, log) or _skill_suggestion
+            _skill_suggestion = _skills_at_boundary(self.conversation_history, self.messages_to_send, oldest_idx, self.log) or _skill_suggestion
             # The per-turn lines, their order and the static/dynamic split are
             # system_prompt.py's; the side effects of consuming a restart record and a
             # repeat-read nudge stay here.
@@ -7227,16 +7256,16 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 skill_catalog=_skills.catalog_line() if _catalog_on else None,
                 skill_suggestion=_skill_suggestion,
                 restart=_rs,
-                phase_line=_phase_engine.checkpoint_line() if _phase_engine is not None else None,
+                phase_line=self._phase_engine.checkpoint_line() if self._phase_engine is not None else None,
                 cicd_line=_cicd_checkpoint_text() if _prompt_caching_backend() else None,
                 tool_hints=bool(_config.get("preferences", {}).get("tool_selection_hints")),
-                read_only_turns=_read_only_turns, read_only_threshold=_READ_ONLY_NUDGE_THRESHOLD,
-                repeat_msg=_repeat_msg)
-            if _repeat_msg:
+                read_only_turns=self._read_only_turns, read_only_threshold=self._READ_ONLY_NUDGE_THRESHOLD,
+                repeat_msg=self._repeat_msg)
+            if self._repeat_msg:
                 # F7: the SAME read repeated, set by the tool dispatcher; delivered once.
-                log.warning("repeat-read stall: %s", _repeat_msg[:100])
+                self.log.warning("repeat-read stall: %s", self._repeat_msg[:100])
                 telemetry.record_patch_event("repeat_read_nudge", kind="fired")
-                _repeat_msg = None
+                self._repeat_msg = None
             _static_lines, _dynamic_lines = _sp.split(
                 _system_lines, caching=_prompt_caching_backend(),
                 user_prompt=_config.get("preferences", {}).get("system_prompt"))
@@ -7244,29 +7273,29 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # P4.1: the note is STORED in history (once per turn), so the next request
                 # extends this one exactly and the server's last-message cache point hits.
                 # Wind-down rides in the same note rather than as an unstored message.
-                if wind_down_msg and messages_to_send and messages_to_send[-1].get("content") == wind_down_msg:
-                    messages_to_send.pop()
-                    _dynamic_lines.append(wind_down_msg)
-                _persist_runtime_note(conversation_history, messages_to_send, _dynamic_lines, turn)
+                if self.wind_down_msg and self.messages_to_send and self.messages_to_send[-1].get("content") == self.wind_down_msg:
+                    self.messages_to_send.pop()
+                    _dynamic_lines.append(self.wind_down_msg)
+                _persist_runtime_note(self.conversation_history, self.messages_to_send, _dynamic_lines, self.turn)
                 _dynamic_lines = []
-            _outgoing_messages = _sp.outgoing(_static_lines, messages_to_send, _dynamic_lines)
+            self._outgoing_messages = _sp.outgoing(_static_lines, self.messages_to_send, _dynamic_lines)
 
             # Unlock end_cycle after the first nudge so the agent can exit cleanly
             # without calling it before doing any real work.
-            if _total_nudges >= 1 and not _end_cycle_unlocked:
-                _end_cycle_unlocked = True
-                if not any((t.get("function") or {}).get("name") == "end_cycle" for t in _session_tools):
-                    _session_tools.append(_end_cycle_tool.definition)
-                log.info("end_cycle tool unlocked (nudges=%d)", _total_nudges)
+            if self._total_nudges >= 1 and not self._end_cycle_unlocked:
+                self._end_cycle_unlocked = True
+                if not any((t.get("function") or {}).get("name") == "end_cycle" for t in self._session_tools):
+                    self._session_tools.append(_end_cycle_tool.definition)
+                self.log.info("end_cycle tool unlocked (nudges=%d)", self._total_nudges)
                 telemetry.record_patch_event("end_cycle_unlocked", kind="fired")
 
             # Call the model (streaming).
             # Plan task 1.5: model comes from the main backend.
             # After a gateway timeout recovery, cap max_tokens to force shorter
             # individual responses so each write fits within the server timeout.
-            _effective_max_tokens = max_tokens
-            if _gateway_timeout_recovery_count > 0:
-                _effective_max_tokens = min(max_tokens, 1024)
+            _effective_max_tokens = self.max_tokens
+            if self._gateway_timeout_recovery_count > 0:
+                _effective_max_tokens = min(self.max_tokens, 1024)
 
             # Some gateways silently drop role:"system" — the preamble bundle,
             # goal-stack hydration and the per-turn steering block above would
@@ -7274,24 +7303,24 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # those backends. No-op where system is honoured (local llama.cpp).
             try:
                 from llm_backend import maybe_fold_system
-                _outgoing_messages = maybe_fold_system(
-                    _outgoing_messages, _main_backend, log)
+                self._outgoing_messages = maybe_fold_system(
+                    self._outgoing_messages, _main_backend, self.log)
             except Exception as _fe:
-                log.debug("system-fold skipped: %s", _fe)
+                self.log.debug("system-fold skipped: %s", _fe)
 
-            request_body = {
+            self.request_body = {
                 "model": _main_backend.model or _config["llm"]["model"],
-                "messages": _outgoing_messages,
-                "temperature": temperature,
-                "top_p": top_p,
-                "top_k": top_k,
-                "presence_penalty": presence_penalty,
+                "messages": self._outgoing_messages,
+                "temperature": self.temperature,
+                "top_p": self.top_p,
+                "top_k": self.top_k,
+                "presence_penalty": self.presence_penalty,
                 "max_tokens": _effective_max_tokens,
                 "chat_template_kwargs": {
                     "enable_thinking": _config["generation"].get("enable_thinking", False)},
                 **_generation_request_extras(),   # F8a: seed when configured
                 "cache_prompt": True,
-                "tools": _session_tools,
+                "tools": self._session_tools,
                 "tool_choice": "auto",
                 "stream": True,
                 # OpenAI streaming protocol (which llama.cpp implements) only
@@ -7303,15 +7332,15 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 "stream_options": {"include_usage": True},
             }
             # Fingerprint what is sent, so a miss can be told apart from a prefix we changed.
-            _cur_req_sig = (_request_signature(_outgoing_messages, _session_tools)
+            self._cur_req_sig = (_request_signature(self._outgoing_messages, self._session_tools)
                             if _prompt_caching_backend() else None)
 
             if (
                 getattr(_main_backend, "kind", None) == "bedrock"
                 and _config.get("bedrock", {}).get("adaptive_max_tokens", True)
             ):
-                _complexity = _classify_turn_complexity(messages_to_send)
-                request_body["max_tokens"] = _get_adaptive_max_tokens(_main_backend.model, _complexity)
+                _complexity = _classify_turn_complexity(self.messages_to_send)
+                self.request_body["max_tokens"] = _get_adaptive_max_tokens(_main_backend.model, _complexity)
 
             # Issue #1007 Bug 2: llama.cpp degeneration loops eat the streaming
             # deadline when repetition is unpenalised. The OpenAI-compatible
@@ -7319,45 +7348,45 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # would 400 on them, so gate on backend kind.
             if getattr(_main_backend, "kind", None) == "llamacpp":
                 _llama_gen = _config.get("llamacpp", {}).get("generation", {})
-                request_body.setdefault("repeat_penalty", _llama_gen.get("repeat_penalty", 1.1))
-                request_body.setdefault("repeat_last_n", _llama_gen.get("repeat_last_n", 256))
+                self.request_body.setdefault("repeat_penalty", _llama_gen.get("repeat_penalty", 1.1))
+                self.request_body.setdefault("repeat_last_n", _llama_gen.get("repeat_last_n", 256))
 
             # T5.15 — apply stall-retry sampling override (set when a prior
             # turn stalled). The override is per-cycle, escalates on each
             # retry, and clears when a turn produces deltas successfully.
-            if _stall_sampling_override:
-                _orig_temp = request_body.get("temperature")
-                _orig_rp = request_body.get("repeat_penalty")
-                request_body.update(_stall_sampling_override)
-                log.warning(
+            if self._stall_sampling_override:
+                _orig_temp = self.request_body.get("temperature")
+                _orig_rp = self.request_body.get("repeat_penalty")
+                self.request_body.update(self._stall_sampling_override)
+                self.log.warning(
                     "Stall-retry sampling active: temp %s→%s, repeat_penalty %s→%s "
                     "(retries_remaining=%d, escalation_level=%d)",
-                    _orig_temp, request_body.get("temperature"),
-                    _orig_rp, request_body.get("repeat_penalty"),
-                    _stall_retries_remaining,
-                    _stall_sampling_override.get("_escalation_level", 1),
+                    _orig_temp, self.request_body.get("temperature"),
+                    _orig_rp, self.request_body.get("repeat_penalty"),
+                    self._stall_retries_remaining,
+                    self._stall_sampling_override.get("_escalation_level", 1),
                 )
                 # Strip internal-tracking keys before sending
-                request_body.pop("_escalation_level", None)
+                self.request_body.pop("_escalation_level", None)
 
             if _prompt_caching_backend():
                 # What the keepalive re-sends while the agent waits for input: a snapshot,
                 # since the history's messages may be compressed in place later.
                 try:
-                    _LAST_REQUEST["body"] = json.dumps(request_body, default=str)
+                    _LAST_REQUEST["body"] = json.dumps(self.request_body, default=str)
                 except (TypeError, ValueError):
                     _LAST_REQUEST["body"] = None
             try:
-                response = _llm_request(log, json=request_body, stream=True, timeout=(30, 300))
+                self.response = _llm_request(self.log, json=self.request_body, stream=True, timeout=(30, 300))
                 # Only the legacy Response shape exposes ``status_code``;
                 # a generator (Bedrock backend) doesn't. Skip the log line in
                 # that case — the backend emits its own latency/ok telemetry.
-                if hasattr(response, "status_code"):
-                    log.info("Response status: %d", response.status_code)
+                if hasattr(self.response, "status_code"):
+                    self.log.info("Response status: %d", self.response.status_code)
                 break  # success — exit the reduction loop
             except ContextOverflowError:
                 if _ctx_attempt >= _CTX_REDUCE_MAX:
-                    log.error("Context overflow: still failing after %d reductions", _CTX_REDUCE_MAX)
+                    self.log.error("Context overflow: still failing after %d reductions", _CTX_REDUCE_MAX)
                     _emit("on_error", "Error: context overflow — could not fit in server context window")
                     _note_error_kind("context")
                     return "error"
@@ -7368,10 +7397,10 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # floor) so repeated overflows bite progressively smaller payloads. Only
                 # when a pass finds NOTHING left to spill does stage 2 (trimming) run.
                 _spill_thr = max(_SPILL_MIN_THRESHOLD, _SPILL_THRESHOLD >> _ctx_spill_passes)
-                _n_spilled = _spill_oversized_tool_results(conversation_history, log, _spill_thr)
+                _n_spilled = _spill_oversized_tool_results(self.conversation_history, self.log, _spill_thr)
                 if _n_spilled:
                     _ctx_spill_passes += 1
-                    log.warning(
+                    self.log.warning(
                         "Context overflow (attempt %d/%d): spilled %d bulk tool result(s) "
                         "to %s at threshold %d chars — retrying WITHOUT dropping messages",
                         _ctx_attempt + 1, _CTX_REDUCE_MAX, _n_spilled, _SPILL_DIR, _spill_thr)
@@ -7379,31 +7408,31 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                           f"[Context overflow — moved {_n_spilled} bulk tool output(s) to "
                           f"{_SPILL_DIR}/ and left references; retrying]")
                     continue
-                current_count = len(messages_to_send)
+                current_count = len(self.messages_to_send)
                 if current_count <= 2:
                     # Already at minimum messages — aggressively truncate the summary
                     # instead of trying to reduce messages further
-                    if summary_state["text"]:
-                        old_len = len(summary_state["text"])
-                        summary_state["text"] = summary_state["text"][:old_len // 2]
-                        log.warning("Context overflow (attempt %d/%d): at min messages, "
+                    if self.summary_state["text"]:
+                        old_len = len(self.summary_state["text"])
+                        self.summary_state["text"] = self.summary_state["text"][:old_len // 2]
+                        self.log.warning("Context overflow (attempt %d/%d): at min messages, "
                                     "truncating summary from %d to %d chars",
-                                    _ctx_attempt + 1, _CTX_REDUCE_MAX, old_len, len(summary_state["text"]))
+                                    _ctx_attempt + 1, _CTX_REDUCE_MAX, old_len, len(self.summary_state["text"]))
                         _emit("on_notice", "info", "[Context overflow — truncating summary to fit]")
                     else:
-                        log.error("Context overflow with no summary and minimal messages — cannot reduce further")
+                        self.log.error("Context overflow with no summary and minimal messages — cannot reduce further")
                         _emit("on_error", "Error: context overflow — cannot reduce further")
                         _note_error_kind("context")
                         return "error"
                 else:
                     # Reduce: cap messages to current count minus 2 (drop oldest pair)
                     _ctx_max_messages = max(2, current_count - 2)
-                    log.warning("Context overflow (attempt %d/%d): reducing from %d to max %d messages",
+                    self.log.warning("Context overflow (attempt %d/%d): reducing from %d to max %d messages",
                                 _ctx_attempt + 1, _CTX_REDUCE_MAX, current_count, _ctx_max_messages)
                     _emit("on_context_recovery")
                     # The dropped messages are summarized (now, or by the worker: summary.wait_s)
-                    _fold_summary_at_head_move(conversation_history, summary_state, oldest_idx, log,
-                                               "context overflow", _async_summarizer)
+                    _fold_summary_at_head_move(self.conversation_history, self.summary_state, oldest_idx, self.log,
+                                               "context overflow", self._async_summarizer)
                 continue
             except (BedrockBudgetExceeded, ConfigError) as e:
                 # Not retryable within this run (failover already declined or failed):
@@ -7413,26 +7442,26 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 if isinstance(e, BedrockBudgetExceeded):
                     # The message is already the notice (llm_backend.allowance_notice):
                     # one readable line for the person, the same line in the log.
-                    log.error("Stopped: %s", e)
+                    self.log.error("Stopped: %s", e)
                     _emit("on_error", f"Stopped: {e}")
                 else:
-                    log.error("Backend refused the request: %s: %s", type(e).__name__, e)
+                    self.log.error("Backend refused the request: %s: %s", type(e).__name__, e)
                     _emit("on_error", f"Error calling server: {e}")
                 _note_error_kind("backend")
                 return "error"
             except requests.exceptions.RequestException as e:
                 err_str = str(e)
-                if "504" in err_str and _gateway_timeout_recovery_count < _GATEWAY_TIMEOUT_RECOVERY_MAX:
-                    _gateway_timeout_recovery_count += 1
-                    log.warning(
+                if "504" in err_str and self._gateway_timeout_recovery_count < self._GATEWAY_TIMEOUT_RECOVERY_MAX:
+                    self._gateway_timeout_recovery_count += 1
+                    self.log.warning(
                         "Gateway timeout (504) after all retries — injecting size-reduction hint "
                         "(recovery %d/%d)",
-                        _gateway_timeout_recovery_count, _GATEWAY_TIMEOUT_RECOVERY_MAX,
+                        self._gateway_timeout_recovery_count, self._GATEWAY_TIMEOUT_RECOVERY_MAX,
                     )
                     _emit("on_notice", "warn",
                           f"[Gateway timeout — response may be too large; retrying with size-reduction hint "
-                          f"({_gateway_timeout_recovery_count}/{_GATEWAY_TIMEOUT_RECOVERY_MAX})]")
-                    conversation_history.append({
+                          f"({self._gateway_timeout_recovery_count}/{self._GATEWAY_TIMEOUT_RECOVERY_MAX})]")
+                    self.conversation_history.append({
                         "role": "user",
                         "content": (
                             "[SYSTEM: The previous response timed out at the gateway — likely because "
@@ -7446,11 +7475,11 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     })
                     _gateway_timeout_recovered = True
                     break
-                log.error("Request failed after retries: %s", e)
+                self.log.error("Request failed after retries: %s", e)
                 telemetry.record_error(kind=type(e).__name__)
-                _dumped = _dump_failed_request(conversation_history, e)
+                _dumped = _dump_failed_request(self.conversation_history, e)
                 if _dumped:
-                    log.error("request shape that failed -> %s", _dumped)
+                    self.log.error("request shape that failed -> %s", _dumped)
                     _emit("on_notice", "warn",
                           f"[Backend failed after retries; wrote the failing request's shape to "
                           f"{_dumped} — role order, sizes and heads, no payload]")
@@ -7459,13 +7488,14 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 return "error"
 
         if _gateway_timeout_recovered:
-            continue  # restart this turn with size-reduction hint in history
+            return _NEXT  # restart this turn with size-reduction hint in history
 
+    def _stream(self):
         # Accumulate streamed response
-        content_parts = []
-        tool_calls_by_index = {}
+        self.content_parts = []
+        self.tool_calls_by_index = {}
         printed_header = False
-        receiving_tools = False
+        self.receiving_tools = False
         _stream_t0 = time.monotonic()
         _stream_deadline = _stream_t0 + 600  # 10 minute wall-clock cap
         # Per-turn text cap: if a text-only response (no tool calls) exceeds this
@@ -7482,12 +7512,12 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         _MAX_POST_TOOL_TEXT_CHARS = int(
             _config.get("preferences", {}).get("max_post_tool_text_chars", 2000)
         )
-        _text_cap_exceeded = False
-        _text_cap_limit_fired = _MAX_TEXT_RESPONSE_CHARS  # updated when post-tool cap fires
-        _finish_reason = None      # the stream's own finish_reason, when it sends one
-        _wall_cut = False          # the 600 s wall broke the stream off mid-response
-        _turn_thinking = None      # Anthropic thinking blocks to send back with this turn
-        _turn_reasoning = []       # streamed thinking text: kept off screen, logged at DEBUG (H5)
+        self._text_cap_exceeded = False
+        self._text_cap_limit_fired = _MAX_TEXT_RESPONSE_CHARS  # updated when post-tool cap fires
+        self._finish_reason = None      # the stream's own finish_reason, when it sends one
+        self._wall_cut = False          # the 600 s wall broke the stream off mid-response
+        self._turn_thinking = None      # Anthropic thinking blocks to send back with this turn
+        self._turn_reasoning = []       # streamed thinking text: kept off screen, logged at DEBUG (H5)
         # Stall detection: per a field audit, long latencies with zero
         # deltas (e.g. session_20260513_010952.log Turn 14: latency_ms=78377
         # deltas=0) are strongly correlated with corrupted/garbled output.
@@ -7504,27 +7534,27 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         _STALL_BASE_S = float(os.environ.get("AGENT_STALL_TIMEOUT_S", "60"))
         # Over the window actually sent, not the stored history (which is unbounded on a
         # caching backend: measured 264k estimated vs 95k real at turn 300).
-        _est_prompt_tokens = ((_cw.TOOLS_TOKENS or 0) + sum(_cw.estimate_tokens(m) for m in messages_to_send)) \
+        _est_prompt_tokens = ((_cw.TOOLS_TOKENS or 0) + sum(_cw.estimate_tokens(m) for m in self.messages_to_send)) \
             * float(_cw.TOKEN_CAL.get("ratio", 1.0) or 1.0)
         _STALL_TIMEOUT_S = _stall_budget_s(_STALL_BASE_S, _est_prompt_tokens, _PREFILL_TPS_FLOOR)
         if _STALL_TIMEOUT_S > _STALL_BASE_S:
-            log.info("stall budget widened %.0fs -> %.0fs for ~%d prompt tokens (prefill floor %.0f t/s)",
+            self.log.info("stall budget widened %.0fs -> %.0fs for ~%d prompt tokens (prefill floor %.0f t/s)",
                      _STALL_BASE_S, _STALL_TIMEOUT_S, _est_prompt_tokens, _PREFILL_TPS_FLOOR)
-        _deltas_received = 0
+        self._deltas_received = 0
         _stall_detected = False
-        status = StreamStatus(emit=_emit)
+        self.status = StreamStatus(emit=_emit)
         # Sky-blue header — the aurora family's complement to the violet
         # "You:" prompt (NO_COLOR-safe; the PT spinner label strips ANSI).
         # DEFERRED to the first text token: a tool-only response shows only
         # its tool status, never a bare label; once a run has its header,
         # later iterations skip it (pt_header=False) until a queued user
         # message resets the run (field report 2026-08-14).
-        if _agent_header_owed:
-            status.start("\n" + theme.c(theme.SKY, "Agent:", bold=True) + " ",
+        if self._agent_header_owed:
+            self.status.start("\n" + theme.c(theme.SKY, "Agent:", bold=True) + " ",
                          defer_header=True)
         else:
-            status.start("\nAgent: ", pt_header=False)
-        renderer = _ReasoningRenderer(lambda t: _emit("on_stream_chunk", t))
+            self.status.start("\nAgent: ", pt_header=False)
+        self.renderer = _ReasoningRenderer(lambda t: _emit("on_stream_chunk", t))
 
         # TESTING NOTES: mock _llm_request to return one of:
         #   (a) Response-style (legacy): `resp.iter_lines.return_value = [f"data: {json.dumps(body)}".encode(), b"data: [DONE]"]`
@@ -7538,22 +7568,22 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         #   summary_state must be initialized as {"text": "", "up_to": 0}
         try:
             with cancellable():
-                for chunk in _iter_stream_chunks(response):
+                for chunk in _iter_stream_chunks(self.response):
                     check_cancelled()
                     if time.monotonic() > _stream_deadline:
-                        log.warning("Streaming wall-clock deadline exceeded (600s) — aborting response")
-                        _safe_close(response)
-                        _wall_cut = True
+                        self.log.warning("Streaming wall-clock deadline exceeded (600s) — aborting response")
+                        _safe_close(self.response)
+                        self._wall_cut = True
                         break
                     # Stall guard: abort fast if no deltas arrive within the
                     # configured timeout. Cuts the 78-second-to-corrupted-
                     # output failure mode (a field audit) by ~10x.
                     if (
                         _STALL_TIMEOUT_S > 0
-                        and _deltas_received == 0
+                        and self._deltas_received == 0
                         and (time.monotonic() - _stream_t0) > _STALL_TIMEOUT_S
                     ):
-                        log.warning(
+                        self.log.warning(
                             "Model stall: 0 deltas after %.1fs — aborting "
                             "(AGENT_STALL_TIMEOUT_S=%.1f). High-latency / "
                             "zero-deltas streams are strongly correlated with "
@@ -7563,45 +7593,45 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         )
                         telemetry.record_error(kind="model_stall")
                         telemetry.record_patch_event("stall_abort", kind="fired")
-                        _patch_telemetry["stall_abort"] += 1
+                        self._patch_telemetry["stall_abort"] += 1
                         # T5.15 — set stricter sampling for the NEXT request.
                         # Escalation: each retry deeper. Level 1: temp -0.3,
                         # rp +0.05. Level 2+: additional temp -0.2, rp +0.05.
-                        if _stall_retries_remaining > 0:
-                            _stall_retries_remaining -= 1
-                            _prior_level = (_stall_sampling_override or {}).get("_escalation_level", 0)
+                        if self._stall_retries_remaining > 0:
+                            self._stall_retries_remaining -= 1
+                            _prior_level = (self._stall_sampling_override or {}).get("_escalation_level", 0)
                             _new_level = _prior_level + 1
                             if _new_level == 1:
-                                _new_temp = max(0.1, (request_body.get("temperature") or 0.6) - 0.3)
-                                _new_rp = max(1.15, (request_body.get("repeat_penalty") or 1.1) + 0.05)
+                                self._new_temp = max(0.1, (self.request_body.get("temperature") or 0.6) - 0.3)
+                                self._new_rp = max(1.15, (self.request_body.get("repeat_penalty") or 1.1) + 0.05)
                             else:
                                 # Build on prior override, escalate further
-                                _new_temp = max(0.1,
-                                    (_stall_sampling_override.get("temperature") or 0.6) - 0.2)
-                                _new_rp = max(1.15,
-                                    (_stall_sampling_override.get("repeat_penalty") or 1.1) + 0.05)
-                            _stall_sampling_override = {
-                                "temperature": _new_temp,
-                                "repeat_penalty": _new_rp,
+                                self._new_temp = max(0.1,
+                                    (self._stall_sampling_override.get("temperature") or 0.6) - 0.2)
+                                self._new_rp = max(1.15,
+                                    (self._stall_sampling_override.get("repeat_penalty") or 1.1) + 0.05)
+                            self._stall_sampling_override = {
+                                "temperature": self._new_temp,
+                                "repeat_penalty": self._new_rp,
                                 "_escalation_level": _new_level,
                             }
-                            log.warning(
+                            self.log.warning(
                                 "Stall-retry queued (level=%d, remaining=%d): "
                                 "next turn temp=%.2f, repeat_penalty=%.2f",
-                                _new_level, _stall_retries_remaining,
-                                _new_temp, _new_rp,
+                                _new_level, self._stall_retries_remaining,
+                                self._new_temp, self._new_rp,
                             )
                         else:
-                            log.warning(
+                            self.log.warning(
                                 "Stall-retry budget exhausted (budget was %d); "
                                 "next turn uses default sampling — investigate via telemetry "
                                 "if stalls persist (likely backend / model-config issue, "
                                 "not a sampling pathology).",
-                                _stall_retries_budget,
+                                self._stall_retries_budget,
                             )
                         _emit("on_notice", "warn",
                               f"[model stalled — aborted after {_STALL_TIMEOUT_S:.0f}s of zero deltas]")
-                        _safe_close(response)
+                        _safe_close(self.response)
                         _stall_detected = True
                         break
 
@@ -7616,22 +7646,22 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # Record before the no-choices skip below so we don't drop it.
                     _usage = chunk.get("usage") if isinstance(chunk, dict) else None
                     if _usage:
-                        _u_model = request_body.get("model") or ""
+                        _u_model = self.request_body.get("model") or ""
                         _u_in = _usage.get("prompt_tokens") or _usage.get("input_tokens") or 0
                         _u_out = _usage.get("completion_tokens") or _usage.get("output_tokens") or 0
                         _u_backend = getattr(_main_backend, "kind", None)
                         if _u_in:
                             telemetry.record_tokens(_u_model, "prompt", int(_u_in), backend=_u_backend)
-                            _turn_in_tokens += int(_u_in)
+                            self._turn_in_tokens += int(_u_in)
                             # F3b: what we ESTIMATED for this exact request vs what the server counted
                             try:
-                                _est_sent = (_cw.TOOLS_TOKENS or 0) + sum(_cw.estimate_tokens(_m) for _m in _outgoing_messages)
-                                _cw.update_token_calibration(_est_sent, int(_u_in), log)
+                                _est_sent = (_cw.TOOLS_TOKENS or 0) + sum(_cw.estimate_tokens(_m) for _m in self._outgoing_messages)
+                                _cw.update_token_calibration(_est_sent, int(_u_in), self.log)
                             except Exception as _cal_e:  # never let accounting break a turn
-                                log.debug("token calibration skipped: %s", _cal_e)
+                                self.log.debug("token calibration skipped: %s", _cal_e)
                         if _u_out:
                             telemetry.record_tokens(_u_model, "completion", int(_u_out), backend=_u_backend)
-                            _turn_out_tokens += int(_u_out)
+                            self._turn_out_tokens += int(_u_out)
                         for _ck, _kind in (("cache_read_input_tokens", "cache_read"),
                                            ("cache_creation_input_tokens", "cache_write")):
                             if _usage.get(_ck):   # E5: hit rate chartable from the token counter
@@ -7644,14 +7674,14 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             _c_read = int(_usage.get("cache_read_input_tokens") or 0)
                             _c_write = int(_usage.get("cache_creation_input_tokens") or 0)
                             _c_unc = int(_usage.get("input_tokens") or 0)
-                            _head_moved = bool(summary_state.pop("_head_moved", False))
-                            _collapsed = bool(summary_state.pop("_collapsed", False))
-                            _rewrote = bool(summary_state.pop("_rewrote_window", False))
+                            _head_moved = bool(self.summary_state.pop("_head_moved", False))
+                            _collapsed = bool(self.summary_state.pop("_collapsed", False))
+                            _rewrote = bool(self.summary_state.pop("_rewrote_window", False))
                             _lead_placed = bool(_LEAD.pop("replaced", False))
-                            _harvested_this_turn = _harvested_this_turn or bool(summary_state.pop("_lead_changed", False))
+                            self._harvested_this_turn = self._harvested_this_turn or bool(self.summary_state.pop("_lead_changed", False))
                             _c_total = _c_read + _c_write + _c_unc
                             _prev_req_sig = _CACHE_REQ["prev_sig"]
-                            _prefix_same = _prefix_unchanged(_prev_req_sig, _cur_req_sig)
+                            _prefix_same = _prefix_unchanged(_prev_req_sig, self._cur_req_sig)
                             _gap_s = ((time.time() - _CACHE_REQ["last_at"])
                                       if _CACHE_REQ["last_at"] > 0 else None)
                             # `idle` is judged against what the lifetime record knows of
@@ -7667,9 +7697,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 # An unchanged prefix after a known gap is evidence about
                                 # the lifetime either way; the record decides what counts.
                                 try:
-                                    _cache_lifetime_record_request(_gap_s, _c_read * 2 >= _c_total, log)
+                                    _cache_lifetime_record_request(_gap_s, _c_read * 2 >= _c_total, self.log)
                                 except Exception as _lt_e:   # the record never breaks a turn
-                                    log.debug("cache.lifetime record skipped: %s", _lt_e)
+                                    self.log.debug("cache.lifetime record skipped: %s", _lt_e)
                             if _c_total and _c_read * 2 < _c_total:
                                 # `idle`/`provider`: the previous request is resent byte for byte
                                 # as the head of this one, so nothing on our side explains the
@@ -7679,7 +7709,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                            "model-switch" if _switched else
                                            "collapse" if _collapsed else
                                            "eviction" if _head_moved else
-                                           "summary-harvest" if _harvested_this_turn else
+                                           "summary-harvest" if self._harvested_this_turn else
                                            "lead-reread" if _lead_placed else
                                            "history-rewrite" if _rewrote else
                                            ("idle" if _idle else "provider") if _prefix_same
@@ -7688,28 +7718,28 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 if _reason in ("unknown", "history-rewrite"):
                                     # Name the message that broke the prefix: index, role and
                                     # the head of its current content.
-                                    _where = _prefix_diff(_prev_req_sig, _cur_req_sig)
+                                    _where = _prefix_diff(_prev_req_sig, self._cur_req_sig)
                                     _changed = " changed=" + _where
                                     if _where.startswith("msg "):
                                         try:
-                                            _cm = _outgoing_messages[int(_where.split()[1].split("/")[0])]
-                                            _head = str(_cm.get("content") or _cm.get("tool_calls") or "")
-                                            _changed += " role=%s head=%r" % (_cm.get("role"), _head[:80])
+                                            _cm = self._outgoing_messages[int(_where.split()[1].split("/")[0])]
+                                            self._head = str(_cm.get("content") or _cm.get("tool_calls") or "")
+                                            _changed += " role=%s head=%r" % (_cm.get("role"), self._head[:80])
                                         except Exception:
                                             pass
-                                log.info("cache.miss turn=%d reason=%s read=%d write=%d uncached=%d%s",
-                                         turn, _reason, _c_read, _c_write, _c_unc, _changed)
+                                self.log.info("cache.miss turn=%d reason=%s read=%d write=%d uncached=%d%s",
+                                         self.turn, _reason, _c_read, _c_write, _c_unc, _changed)
                             _CACHE_REQ["n"] += 1
-                            _CACHE_REQ["prev_sig"] = _cur_req_sig
+                            _CACHE_REQ["prev_sig"] = self._cur_req_sig
                             _CACHE_REQ["last_at"] = time.time()
                             _CACHE_REQ["prev_model"] = _u_model
                     if isinstance(chunk, dict) and chunk.get(_THINKING_KEY):
-                        _turn_thinking = chunk[_THINKING_KEY]
+                        self._turn_thinking = chunk[_THINKING_KEY]
                     choices = chunk.get("choices")
                     if not choices:
                         continue  # skip usage/stats chunks
                     if choices[0].get("finish_reason"):
-                        _finish_reason = choices[0]["finish_reason"]
+                        self._finish_reason = choices[0]["finish_reason"]
                     delta = choices[0].get("delta", {}) or {}
 
                     # Thinking deltas (reasoning_content — e.g. Qwen3 on
@@ -7723,78 +7753,78 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # with no output.) Not rendered here — thinking stays out of
                     # the visible answer stream by default; it only counts.
                     if delta.get("reasoning_content"):
-                        _deltas_received += 1
-                        _turn_reasoning.append(delta["reasoning_content"])
+                        self._deltas_received += 1
+                        self._turn_reasoning.append(delta["reasoning_content"])
 
                     if delta.get("content"):
                         if not printed_header:
-                            status.first_token()   # prints the deferred header
+                            self.status.first_token()   # prints the deferred header
                             printed_header = True
-                            _agent_header_owed = False
-                        renderer.feed(delta["content"])
-                        content_parts.append(delta["content"])
+                            self._agent_header_owed = False
+                        self.renderer.feed(delta["content"])
+                        self.content_parts.append(delta["content"])
                         _content_chars += len(delta["content"])
-                        if receiving_tools:
+                        if self.receiving_tools:
                             _post_tool_chars += len(delta["content"])
-                        status.count_token()
-                        _deltas_received += 1
+                        self.status.count_token()
+                        self._deltas_received += 1
                         # Pre-tool text cap: if nudge is enabled and the model is
                         # generating pure prose (no tool calls yet) and exceeds the
                         # per-turn character limit, truncate to prevent context overflow.
                         if (_NUDGE_ENABLED
-                                and not receiving_tools
+                                and not self.receiving_tools
                                 and _content_chars > _MAX_TEXT_RESPONSE_CHARS):
-                            log.warning(
+                            self.log.warning(
                                 "Text-only response cap: %d chars exceeds limit %d — truncating",
                                 _content_chars, _MAX_TEXT_RESPONSE_CHARS,
                             )
-                            _text_cap_exceeded = True
+                            self._text_cap_exceeded = True
                             telemetry.record_patch_event("text_cap", kind="fired",
                                                          value=_content_chars)
-                            _safe_close(response)
+                            _safe_close(self.response)
                             break
                         # Post-tool text cap: when nudge is enabled, prose generated
                         # AFTER tool calls is also capped — prevents a field-observed run
                         # pattern where garbled tool calls set receiving_tools=True
                         # then 50K chars of spiral prose followed with no cap applied.
                         if (_NUDGE_ENABLED
-                                and receiving_tools
+                                and self.receiving_tools
                                 and _post_tool_chars > _MAX_POST_TOOL_TEXT_CHARS):
-                            log.warning(
+                            self.log.warning(
                                 "Post-tool text cap: %d chars after tools exceeds limit %d — truncating",
                                 _post_tool_chars, _MAX_POST_TOOL_TEXT_CHARS,
                             )
-                            _text_cap_exceeded = True
-                            _text_cap_limit_fired = _MAX_POST_TOOL_TEXT_CHARS
+                            self._text_cap_exceeded = True
+                            self._text_cap_limit_fired = _MAX_POST_TOOL_TEXT_CHARS
                             telemetry.record_patch_event("text_cap", kind="fired_post_tool",
                                                          value=_post_tool_chars)
-                            _safe_close(response)
+                            _safe_close(self.response)
                             break
 
                     if delta.get("tool_calls"):
-                        _deltas_received += 1
-                        if not receiving_tools:
-                            receiving_tools = True
+                        self._deltas_received += 1
+                        if not self.receiving_tools:
+                            self.receiving_tools = True
                             if printed_header:
                                 # Complete the streamed block BEFORE any status
                                 # line: the renderer's tag-parsing holdback can
                                 # still own the tail of the last sentence, and
                                 # printing stats first split the block around
                                 # them (field report 2026-08-14).
-                                renderer.flush()
+                                self.renderer.flush()
                                 _emit("on_notice", "info", "")
-                                status.finish()  # stop old spinner cleanly before reusing var
-                                status = StreamStatus(emit=_emit)
-                                status.start(f"{DIM}  preparing tool calls ")
+                                self.status.finish()  # stop old spinner cleanly before reusing var
+                                self.status = StreamStatus(emit=_emit)
+                                self.status.start(f"{DIM}  preparing tool calls ")
                         for tc_delta in delta["tool_calls"]:
                             idx = tc_delta["index"]
-                            if idx not in tool_calls_by_index:
-                                tool_calls_by_index[idx] = {
+                            if idx not in self.tool_calls_by_index:
+                                self.tool_calls_by_index[idx] = {
                                     "id": tc_delta.get("id", ""),
                                     "type": "function",
                                     "function": {"name": "", "arguments": ""},
                                 }
-                            tc = tool_calls_by_index[idx]
+                            tc = self.tool_calls_by_index[idx]
                             if tc_delta.get("id"):
                                 tc["id"] = tc_delta["id"]
                             if tc_delta.get("function", {}).get("name"):
@@ -7802,103 +7832,104 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             if tc_delta.get("function", {}).get("arguments"):
                                 tc["function"]["arguments"] += tc_delta["function"]["arguments"]
         except CancelledError:
-            renderer.flush()
-            status.finish()
-            _safe_close(response)
+            self.renderer.flush()
+            self.status.finish()
+            _safe_close(self.response)
             _emit("on_cancelled", "streaming")
-            log.info(
+            self.log.info(
                 "cancel.latency_ms latency_ms=%d site=backend.stream_chat backend=%s",
                 int((time.monotonic() - _stream_t0) * 1000),
                 _main_backend.kind,
             )
-            log.info("CANCELLED during streaming")
+            self.log.info("CANCELLED during streaming")
             # Keep partial history so caller can inject user guidance
             return "cancelled"
         except requests.exceptions.RequestException as e:
-            renderer.flush()
-            status.finish()
-            _safe_close(response)
-            log.error("Streaming connection lost: %s", e)
+            self.renderer.flush()
+            self.status.finish()
+            _safe_close(self.response)
+            self.log.error("Streaming connection lost: %s", e)
             telemetry.record_error(kind=type(e).__name__)
             _emit("on_error", f"Streaming error: {e}")
             # Treat as empty response — the text-only handler will nudge or stop
         except Exception as e:
-            renderer.flush()
-            status.finish()
-            _safe_close(response)
-            log.error("Unexpected error during streaming: %s", e, exc_info=True)
+            self.renderer.flush()
+            self.status.finish()
+            _safe_close(self.response)
+            self.log.error("Unexpected error during streaming: %s", e, exc_info=True)
             telemetry.record_error(kind=type(e).__name__)
             _emit("on_error", f"Streaming error: {e}")
             # F6 (review finding 3): three consecutive streaming failures with nothing produced
             # is a backend failure, not a completed run — exit 15, never 0 "completed".
-            _stream_errors += 1
-            if _stream_errors >= 3:
-                log.error("Streaming failed %d times in a row — ending the run as a backend error", _stream_errors)
+            self._stream_errors += 1
+            if self._stream_errors >= 3:
+                self.log.error("Streaming failed %d times in a row — ending the run as a backend error", self._stream_errors)
                 _note_error_kind("backend")
                 return "error"
 
-        renderer.flush()
-        if content_parts and not receiving_tools:
+    def _record_response(self):
+        self.renderer.flush()
+        if self.content_parts and not self.receiving_tools:
             _emit("on_notice", "info", "")
-        status.finish()
+        self.status.finish()
 
         # T5.15 — if this turn produced deltas successfully (and a stall
         # override was active from a prior turn), clear the override so the
         # next turn returns to default sampling. A single stall in an
         # otherwise-healthy session shouldn't permanently degrade quality.
-        if _deltas_received > 0:
-            _stream_errors = 0   # a productive turn resets the consecutive streaming-failure count
-        if _deltas_received > 0 and _stall_sampling_override is not None:
-            log.info(
+        if self._deltas_received > 0:
+            self._stream_errors = 0   # a productive turn resets the consecutive streaming-failure count
+        if self._deltas_received > 0 and self._stall_sampling_override is not None:
+            self.log.info(
                 "Stall-retry succeeded: turn produced %d deltas — clearing "
                 "sampling override (was level=%d, temp=%.2f, rp=%.2f).",
-                _deltas_received,
-                _stall_sampling_override.get("_escalation_level", 0),
-                _stall_sampling_override.get("temperature", 0),
-                _stall_sampling_override.get("repeat_penalty", 0),
+                self._deltas_received,
+                self._stall_sampling_override.get("_escalation_level", 0),
+                self._stall_sampling_override.get("temperature", 0),
+                self._stall_sampling_override.get("repeat_penalty", 0),
             )
-            _stall_sampling_override = None
+            self._stall_sampling_override = None
             # Restore retry budget for any FUTURE stall in this cycle
-            _stall_retries_remaining = _stall_retries_budget
+            self._stall_retries_remaining = self._stall_retries_budget
 
-        full_content = _THINK_TAG_RE.sub('', "".join(content_parts)).strip()
-        _emit("on_assistant_text", full_content)
-        tool_calls = [tool_calls_by_index[i] for i in sorted(tool_calls_by_index)] if tool_calls_by_index else []
+        self.full_content = _THINK_TAG_RE.sub('', "".join(self.content_parts)).strip()
+        _emit("on_assistant_text", self.full_content)
+        self.tool_calls = [self.tool_calls_by_index[i] for i in sorted(self.tool_calls_by_index)] if self.tool_calls_by_index else []
 
         # A response cut off by max_tokens or the wall leaves its last tool call with
         # half-written arguments. Executing it would act on a fragment, and storing it
         # would poison every later request (aicommons-integration.md §7 H4). Drop it
         # and tell the model why, so it re-issues the work in smaller pieces.
         _cut_tool_names = []
-        if tool_calls and (_finish_reason == "length" or _wall_cut):
-            _kept = [tc for tc in tool_calls if _tool_args_complete(tc)]
-            _cut_tool_names = [tc["function"].get("name") or "?" for tc in tool_calls if tc not in _kept]
+        if self.tool_calls and (self._finish_reason == "length" or self._wall_cut):
+            _kept = [tc for tc in self.tool_calls if _tool_args_complete(tc)]
+            _cut_tool_names = [tc["function"].get("name") or "?" for tc in self.tool_calls if tc not in _kept]
             if _cut_tool_names:
-                log.warning("Response cut off (%s) mid tool call — dropping %d incomplete call(s): %s",
-                            "wall" if _wall_cut else "max_tokens", len(_cut_tool_names), _cut_tool_names)
-                tool_calls = _kept
+                self.log.warning("Response cut off (%s) mid tool call — dropping %d incomplete call(s): %s",
+                            "wall" if self._wall_cut else "max_tokens", len(_cut_tool_names), _cut_tool_names)
+                self.tool_calls = _kept
 
         # M3: a refusal (model or gateway guardrail; stop_reason "refusal") is not a
         # text-only turn to nudge — re-sending the same history gets the same answer.
         # Keep the partial text out of history and end the run as a backend error.
-        if _finish_reason == "content_filter":
-            log.error("Model refused the request (stop_reason=refusal); partial text not stored: %r",
-                      full_content[:300])
+        if self._finish_reason == "content_filter":
+            self.log.error("Model refused the request (stop_reason=refusal); partial text not stored: %r",
+                      self.full_content[:300])
             telemetry.record_error(kind="refusal")
             _emit("on_error", "The model declined this request (refusal / guardrail). Ending the run.")
             _note_error_kind("refusal")
             return "error"
 
-        assistant_msg = {"role": "assistant", "content": full_content}
-        if tool_calls:
-            assistant_msg["tool_calls"] = tool_calls
-        if _turn_thinking and tool_calls:
+        assistant_msg = {"role": "assistant", "content": self.full_content}
+        if self.tool_calls:
+            assistant_msg["tool_calls"] = self.tool_calls
+        if self._turn_thinking and self.tool_calls:
             # Bedrock needs this turn's signed thinking before its tool_use when the
             # turn is sent back; other backends ignore the key.
-            assistant_msg[_THINKING_KEY] = _turn_thinking
-        conversation_history.append(assistant_msg)
+            assistant_msg[_THINKING_KEY] = self._turn_thinking
+        self.conversation_history.append(assistant_msg)
         if _cut_tool_names:
-            conversation_history.append({"role": "user", "content": (
+            self.conversation_history.append({"role": "user", "content": (
                 f"[SYSTEM: your response was cut off before the arguments of "
                 f"{', '.join(_cut_tool_names)} were complete, so that call was NOT run. "
                 f"Split the work: write a large file in several smaller calls (create it, "
@@ -7908,11 +7939,11 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         # it was cut off and must use a tool next.  This fires AFTER the
         # assistant message is appended so the correction is a separate user
         # turn (not a modification of the truncated content).
-        if _text_cap_exceeded:
+        if self._text_cap_exceeded:
             _emit("on_notice", "warn",
-                  f"[text cap: response truncated at {_text_cap_limit_fired} chars — injecting tool nudge]")
+                  f"[text cap: response truncated at {self._text_cap_limit_fired} chars — injecting tool nudge]")
             _cap_correction = (
-                f"[SYSTEM: your response was cut off at {_text_cap_limit_fired} characters because it exceeded "
+                f"[SYSTEM: your response was cut off at {self._text_cap_limit_fired} characters because it exceeded "
                 f"the per-turn text limit. Text walls fill the context window and crash the session "
                 f"(this happened in C206/C207: prose spirals caused 10 context-overflow errors). "
                 f"Analysis belongs in short decisions, not prose. "
@@ -7920,13 +7951,13 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 f"task_tracker(action='done', description='PERCEIVE') or task_tracker(action='done', task_id=1). "
                 f"If reading a file: read_file(path='...')]"
             )
-            conversation_history.append({"role": "user", "content": _cap_correction})
-            _consecutive_text_only = 0  # reset so the model gets a full nudge budget
+            self.conversation_history.append({"role": "user", "content": _cap_correction})
+            self._consecutive_text_only = 0  # reset so the model gets a full nudge budget
 
-        if full_content:
-            log.debug("ASSISTANT: %s", full_content)
-        if _turn_reasoning:
-            log.debug("THINKING (%d chars): %s", sum(map(len, _turn_reasoning)), "".join(_turn_reasoning)[:4000])
+        if self.full_content:
+            self.log.debug("ASSISTANT: %s", self.full_content)
+        if self._turn_reasoning:
+            self.log.debug("THINKING (%d chars): %s", sum(map(len, self._turn_reasoning)), "".join(self._turn_reasoning)[:4000])
 
         # Verbose-only per-turn telemetry — fires once per turn iteration after
         # the assistant response is processed, BEFORE any early-return branches
@@ -7936,22 +7967,22 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         if telemetry.verbose_enabled():
             telemetry.record_turn(
                 role="main",
-                duration_s=time.monotonic() - _turn_t0,
-                tool_calls=len(tool_calls),
-                in_tokens=_turn_in_tokens,
-                out_tokens=_turn_out_tokens,
+                duration_s=time.monotonic() - self._turn_t0,
+                tool_calls=len(self.tool_calls),
+                in_tokens=self._turn_in_tokens,
+                out_tokens=self._turn_out_tokens,
                 model=(_main_backend.model or _config["llm"]["model"]),
             )
         # Detect degenerate text loops (model repeating itself)
-        if full_content:
-            _text_hash = hashlib.md5(full_content.encode()).hexdigest()
-            _recent_text_hashes.append(_text_hash)
+        if self.full_content:
+            _text_hash = hashlib.md5(self.full_content.encode()).hexdigest()
+            self._recent_text_hashes.append(_text_hash)
             # Keep only recent entries
-            if len(_recent_text_hashes) > 10:
-                _recent_text_hashes[:] = _recent_text_hashes[-10:]
-            _repeat_count = sum(1 for h in _recent_text_hashes if h == _text_hash)
-            if _repeat_count >= _TEXT_LOOP_THRESHOLD:
-                log.warning("Text loop detected: same output %d times — stopping",
+            if len(self._recent_text_hashes) > 10:
+                self._recent_text_hashes[:] = self._recent_text_hashes[-10:]
+            _repeat_count = sum(1 for h in self._recent_text_hashes if h == _text_hash)
+            if _repeat_count >= self._TEXT_LOOP_THRESHOLD:
+                self.log.warning("Text loop detected: same output %d times — stopping",
                             _repeat_count)
                 _emit("on_text_loop_detected", _repeat_count)
                 return "done"
@@ -7959,13 +7990,14 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         # Hard cap on post-persist drift.  After cycle persisted (git push),
         # the agent must wrap TRACK within _CYCLE_HARD_STOP_TURNS.  Longer
         # runs mean it started a second PERCEIVE — ignore and stop.
-        if _cycle_persisted:
-            _grace_used = turn - (_cycle_persisted_turn or turn)
-            if _grace_used >= _CYCLE_HARD_STOP_TURNS:
-                log.info("Stopping: cycle persisted %d turns ago, hard cap reached", _grace_used)
+        if self._cycle_persisted:
+            _grace_used = self.turn - (self._cycle_persisted_turn or self.turn)
+            if _grace_used >= self._CYCLE_HARD_STOP_TURNS:
+                self.log.info("Stopping: cycle persisted %d turns ago, hard cap reached", _grace_used)
                 return "done"
 
-        if not tool_calls:
+    def _text_only(self):
+        if not self.tool_calls:
             # Background-monitor injection (turn-complete boundary): if a
             # monitor queued output while the model was working, feed it as a
             # new user turn and keep going instead of stopping. Placed at the
@@ -7978,22 +8010,22 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # eventual exit. Last message here is the model's text response, so
             # appending a user turn yields the safe assistant->user->assistant
             # shape (never spliced between a tool call and its result).
-            if _drain_monitor_injections(conversation_history):
-                _consecutive_text_only = 0
-                _recent_text_hashes.clear()
-                log.debug("monitor injection consumed at turn-complete; continuing")
-                continue
+            if _drain_monitor_injections(self.conversation_history):
+                self._consecutive_text_only = 0
+                self._recent_text_hashes.clear()
+                self.log.debug("monitor injection consumed at turn-complete; continuing")
+                return _NEXT
 
             # Q.01 guard: fires regardless of _NUDGE_ENABLED.  In no-nudge
             # mode the session stops immediately on any text-only response,
             # so this must run before that early exit.  Budget: 2 retries
             # via _consecutive_text_only (incremented here so the loop
             # terminates if the model keeps writing text walls).
-            if full_content and _NUDGE_ENABLED:
-                _q01_blocks = len(re.findall(r'```', full_content)) // 2
-                if _q01_blocks >= 1 and _consecutive_text_only < 2:
-                    _consecutive_text_only += 1
-                    conversation_history.append({
+            if self.full_content and _NUDGE_ENABLED:
+                _q01_blocks = len(re.findall(r'```', self.full_content)) // 2
+                if _q01_blocks >= 1 and self._consecutive_text_only < 2:
+                    self._consecutive_text_only += 1
+                    self.conversation_history.append({
                         "role": "user",
                         "content": (
                             "You wrote code blocks in text but did not call any "
@@ -8005,25 +8037,25 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             "tool calls now, one action at a time."
                         ),
                     })
-                    log.info(
+                    self.log.info(
                         "Q.01 guard: plan-in-text (%d code blocks), "
                         "retry %d/2",
-                        _q01_blocks, _consecutive_text_only,
+                        _q01_blocks, self._consecutive_text_only,
                     )
                     telemetry.record_patch_event("q01_plan_in_text", kind="fired")
-                    continue
+                    return _NEXT
 
             if not _NUDGE_ENABLED:
-                if (not _has_committed
+                if (not self._has_committed
                         and _config.get("preferences", {}).get("persist_nudge")
-                        and _consecutive_text_only < 2):
+                        and self._consecutive_text_only < 2):
                     _gs = subprocess.run(
                         ["git", "status", "--porcelain"],
                         capture_output=True, text=True, cwd=os.getcwd(),
                     )
                     if _gs.returncode == 0 and _gs.stdout.strip():
-                        _consecutive_text_only += 1
-                        conversation_history.append({
+                        self._consecutive_text_only += 1
+                        self.conversation_history.append({
                             "role": "user",
                             "content": (
                                 "You have uncommitted changes but have not run PERSIST. "
@@ -8031,25 +8063,25 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 "commit with the C{N} message format, and push."
                             ),
                         })
-                        log.info("persist_nudge: dirty tree, no commit — nudging (%d/2)",
-                                 _consecutive_text_only)
+                        self.log.info("persist_nudge: dirty tree, no commit — nudging (%d/2)",
+                                 self._consecutive_text_only)
                         telemetry.record_patch_event("persist_nudge", kind="fired")
-                        continue
-                if _success_gate_blocks_exit("textonly_stop"):
-                    continue
-                if _result_contract_blocks_exit("textonly_stop", full_content):
-                    continue
-                if _deliverable_guard_blocks_exit("textonly_stop", full_content):
-                    continue
-                _cvt_blk, _claim_trace_blocks = _claim_vs_trace_block(
-                    full_content, _ran_verification, _has_committed,
-                    _claim_trace_blocks, _CLAIM_TRACE_MAX_BLOCKS)
-                if _cvt_blk:
-                    continue
-                log.info("Stopping: text-only response (no tool calls)")
-                if _async_summarizer:
-                    _async_summarizer.harvest(summary_state)
-                _save_checkpoint(conversation_history, summary_state, turn, initial_files,
+                        return _NEXT
+                if self._success_gate_blocks_exit("textonly_stop"):
+                    return _NEXT
+                if self._result_contract_blocks_exit("textonly_stop", self.full_content):
+                    return _NEXT
+                if self._deliverable_guard_blocks_exit("textonly_stop", self.full_content):
+                    return _NEXT
+                self._cvt_blk, self._claim_trace_blocks = self._claim_vs_trace_block(
+                    self.full_content, self._ran_verification, self._has_committed,
+                    self._claim_trace_blocks, self._CLAIM_TRACE_MAX_BLOCKS)
+                if self._cvt_blk:
+                    return _NEXT
+                self.log.info("Stopping: text-only response (no tool calls)")
+                if self._async_summarizer:
+                    self._async_summarizer.harvest(self.summary_state)
+                _save_checkpoint(self.conversation_history, self.summary_state, self.turn, self.initial_files,
                                  clean_exit=True)
                 return "done"
 
@@ -8069,9 +8101,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # Completion signals are trusted after a commit OR a successful
             # merge (reviewer role).  _cicd_phase_state["track"] is set when
             # `gh pr merge` exits 0.
-            _has_persisted_work = (_has_committed
+            _has_persisted_work = (self._has_committed
                                     or _cicd_phase_state.get("track", False)
-                                    or _has_reviewer_persisted)
+                                    or self._has_reviewer_persisted)
             # Cycle 39: regex patterns for natural paraphrases ("cycle 249 is complete")
             _completion_signal_patterns = (
                 r"cycle\s+\S+\s+is\s+(now\s+)?complete",  # "cycle 249 is complete", "cycle N is now complete"
@@ -8079,22 +8111,22 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 r"improvement\s+cycle\s+\S*\s*is\s+complete",  # "improvement cycle is complete"
                 r"cycle\s+\w+\s+complete",  # "cycle 543 complete" (without "is")
             )
-            _fc_lower = full_content.lower() if full_content else ""
+            _fc_lower = self.full_content.lower() if self.full_content else ""
             _completion_matched = (
-                (full_content and any(s in _fc_lower for s in _completion_signals))
-                or (full_content and any(re.search(p, _fc_lower) for p in _completion_signal_patterns))
+                (self.full_content and any(s in _fc_lower for s in _completion_signals))
+                or (self.full_content and any(re.search(p, _fc_lower) for p in _completion_signal_patterns))
             )
             if _has_persisted_work and _completion_matched:
-                if _NUDGE_ENABLED and not _open_task_nudge_sent:
-                    _open_reminder = _build_open_task_nudge()
-                    if _open_reminder:
-                        _open_task_nudge_sent = True
-                        _total_nudges += 1
-                        conversation_history.append({"role": "user", "content": _open_reminder})
-                        log.info("open-task nudge: completion signal intercepted, %d nudges used",
-                                 _total_nudges)
+                if _NUDGE_ENABLED and not self._open_task_nudge_sent:
+                    self._open_reminder = _build_open_task_nudge()
+                    if self._open_reminder:
+                        self._open_task_nudge_sent = True
+                        self._total_nudges += 1
+                        self.conversation_history.append({"role": "user", "content": self._open_reminder})
+                        self.log.info("open-task nudge: completion signal intercepted, %d nudges used",
+                                 self._total_nudges)
                         telemetry.record_patch_event("open_task_nudge", kind="fired")
-                        continue
+                        return _NEXT
                 # WS10.c SIBLING-PATH FIX (2026-07-12): the success-check
                 # gate originally hooked ONLY the end_cycle tool — but
                 # telemetry showed replay/creature runs terminate via THIS
@@ -8104,100 +8136,100 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # patch events across all replay sessions). Guard on one
                 # exit path, missing on the sibling — same defect class the
                 # guards in _validate_tool_call had (WS8.1).
-                if _success_gate_blocks_exit("completion_signal"):
-                    continue
-                if _result_contract_blocks_exit("completion_signal", full_content):
-                    continue
-                if _deliverable_guard_blocks_exit("completion_signal", full_content):
-                    continue
-                _cvt_blk, _claim_trace_blocks = _claim_vs_trace_block(
-                    full_content, _ran_verification, _has_committed,
-                    _claim_trace_blocks, _CLAIM_TRACE_MAX_BLOCKS)
-                if _cvt_blk:
-                    continue
-                log.info("Stopping: model signalled cycle completion (work persisted)")
+                if self._success_gate_blocks_exit("completion_signal"):
+                    return _NEXT
+                if self._result_contract_blocks_exit("completion_signal", self.full_content):
+                    return _NEXT
+                if self._deliverable_guard_blocks_exit("completion_signal", self.full_content):
+                    return _NEXT
+                self._cvt_blk, self._claim_trace_blocks = self._claim_vs_trace_block(
+                    self.full_content, self._ran_verification, self._has_committed,
+                    self._claim_trace_blocks, self._CLAIM_TRACE_MAX_BLOCKS)
+                if self._cvt_blk:
+                    return _NEXT
+                self.log.info("Stopping: model signalled cycle completion (work persisted)")
                 return "done"
             if not _has_persisted_work and _completion_matched:
-                log.info("Ignoring completion signal — no persisted work yet, nudging to continue")
+                self.log.info("Ignoring completion signal — no persisted work yet, nudging to continue")
 
             # If the cycle already persisted (git push happened), allow a few
             # grace turns for TRACK work, then stop on text-only response.
-            if _cycle_persisted:
-                grace_used = turn - (_cycle_persisted_turn or turn)
-                if grace_used >= _CYCLE_GRACE_TURNS:
-                    if _NUDGE_ENABLED and not _open_task_nudge_sent:
-                        _open_reminder = _build_open_task_nudge()
-                        if _open_reminder:
-                            _open_task_nudge_sent = True
-                            _total_nudges += 1
-                            conversation_history.append({"role": "user", "content": _open_reminder})
-                            log.info("open-task nudge: grace period intercepted, %d nudges used",
-                                     _total_nudges)
+            if self._cycle_persisted:
+                grace_used = self.turn - (self._cycle_persisted_turn or self.turn)
+                if grace_used >= self._CYCLE_GRACE_TURNS:
+                    if _NUDGE_ENABLED and not self._open_task_nudge_sent:
+                        self._open_reminder = _build_open_task_nudge()
+                        if self._open_reminder:
+                            self._open_task_nudge_sent = True
+                            self._total_nudges += 1
+                            self.conversation_history.append({"role": "user", "content": self._open_reminder})
+                            self.log.info("open-task nudge: grace period intercepted, %d nudges used",
+                                     self._total_nudges)
                             telemetry.record_patch_event("open_task_nudge", kind="fired")
-                            continue
-                    if _claim_gate_blocks_textonly_exit():
-                        continue
-                    log.info("Stopping: cycle persisted %d turns ago, grace period exhausted", grace_used)
+                            return _NEXT
+                    if self._claim_gate_blocks_textonly_exit():
+                        return _NEXT
+                    self.log.info("Stopping: cycle persisted %d turns ago, grace period exhausted", grace_used)
                     return "done"
-                log.info("Cycle persisted but grace period active (%d/%d turns) — nudging for TRACK work",
-                        grace_used, _CYCLE_GRACE_TURNS)
+                self.log.info("Cycle persisted but grace period active (%d/%d turns) — nudging for TRACK work",
+                        grace_used, self._CYCLE_GRACE_TURNS)
             # Past turn limit + no tool use = end cycle immediately
-            if turn > _MAX_TURNS:
-                if _claim_gate_blocks_textonly_exit():
-                    continue
-                log.warning("Overtime + text-only response — ending cycle")
+            if self.turn > _MAX_TURNS:
+                if self._claim_gate_blocks_textonly_exit():
+                    return _NEXT
+                self.log.warning("Overtime + text-only response — ending cycle")
                 _emit("on_overtime", "text_only")
                 return "done"
 
-            _consecutive_text_only += 1
+            self._consecutive_text_only += 1
 
             # Total nudge budget across the session.
-            _total_nudges += 1
-            if _total_nudges >= _MAX_TOTAL_NUDGES:
-                if _claim_gate_blocks_textonly_exit():
-                    continue
-                log.info("Stopping: total nudge budget exhausted (%d/%d)",
-                         _total_nudges, _MAX_TOTAL_NUDGES)
+            self._total_nudges += 1
+            if self._total_nudges >= _MAX_TOTAL_NUDGES:
+                if self._claim_gate_blocks_textonly_exit():
+                    return _NEXT
+                self.log.info("Stopping: total nudge budget exhausted (%d/%d)",
+                         self._total_nudges, _MAX_TOTAL_NUDGES)
                 return "done"
 
-            if _consecutive_text_only >= _MAX_TEXT_ONLY:
-                if _claim_gate_blocks_textonly_exit():
-                    continue
-                log.info("Stopping: %d consecutive text-only responses", _consecutive_text_only)
+            if self._consecutive_text_only >= _MAX_TEXT_ONLY:
+                if self._claim_gate_blocks_textonly_exit():
+                    return _NEXT
+                self.log.info("Stopping: %d consecutive text-only responses", self._consecutive_text_only)
                 return "done"
 
             # First text-only response: strip it from context and retry silently.
             # Leaving hallucinated content in history poisons subsequent turns —
             # the model builds on its fabricated answer instead of using tools.
-            if _consecutive_text_only == 1:
+            if self._consecutive_text_only == 1:
                 # Completion signal takes priority even on the first text-only.
                 # When work has already been persisted (git push) and the model
                 # says "cycle NNN complete" / "committed and pushed", stripping
                 # and retrying causes the agent to start the NEXT cycle rather
                 # than exit cleanly.  Check here before the unconditional strip.
                 if _has_persisted_work and _completion_matched:
-                    if _NUDGE_ENABLED and not _open_task_nudge_sent:
-                        _open_reminder = _build_open_task_nudge()
-                        if _open_reminder:
-                            _open_task_nudge_sent = True
-                            _total_nudges += 1
-                            conversation_history.append({"role": "user", "content": _open_reminder})
-                            log.info("open-task nudge (first text-only): completion signal, %d nudges used",
-                                     _total_nudges)
+                    if _NUDGE_ENABLED and not self._open_task_nudge_sent:
+                        self._open_reminder = _build_open_task_nudge()
+                        if self._open_reminder:
+                            self._open_task_nudge_sent = True
+                            self._total_nudges += 1
+                            self.conversation_history.append({"role": "user", "content": self._open_reminder})
+                            self.log.info("open-task nudge (first text-only): completion signal, %d nudges used",
+                                     self._total_nudges)
                             telemetry.record_patch_event("open_task_nudge", kind="fired")
-                            continue
-                    if _success_gate_blocks_exit("first_textonly_completion"):
-                        continue
-                    if _result_contract_blocks_exit("first_textonly_completion", full_content):
-                        continue
-                    if _deliverable_guard_blocks_exit("first_textonly_completion", full_content):
-                        continue
-                    _cvt_blk, _claim_trace_blocks = _claim_vs_trace_block(
-                        full_content, _ran_verification, _has_committed,
-                        _claim_trace_blocks, _CLAIM_TRACE_MAX_BLOCKS)
-                    if _cvt_blk:
-                        continue
-                    log.info("Stopping: first-text-only completion signal with persisted work")
+                            return _NEXT
+                    if self._success_gate_blocks_exit("first_textonly_completion"):
+                        return _NEXT
+                    if self._result_contract_blocks_exit("first_textonly_completion", self.full_content):
+                        return _NEXT
+                    if self._deliverable_guard_blocks_exit("first_textonly_completion", self.full_content):
+                        return _NEXT
+                    self._cvt_blk, self._claim_trace_blocks = self._claim_vs_trace_block(
+                        self.full_content, self._ran_verification, self._has_committed,
+                        self._claim_trace_blocks, self._CLAIM_TRACE_MAX_BLOCKS)
+                    if self._cvt_blk:
+                        return _NEXT
+                    self.log.info("Stopping: first-text-only completion signal with persisted work")
                     telemetry.record_patch_event("completion_signal_first_textonly", kind="fired")
                     return "done"
 
@@ -8209,16 +8241,16 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # sees it. Catch it here at first occurrence and correct (don't
                 # strip). Fires only on a real unsupported claim, so honest terse
                 # and plan-in-text responses fall through to Q.01 + strip unchanged.
-                if _claim_gate_blocks_textonly_exit():
-                    continue
+                if self._claim_gate_blocks_textonly_exit():
+                    return _NEXT
 
                 # Q.01 guard: if the response contains 2+ fenced code blocks, the
                 # model wrote bash/python in text instead of calling tools ("plan-
                 # in-text").  Stripping silently causes another identical wall on
                 # retry; instead keep the message and inject a targeted correction.
-                _q01_code_blocks = len(re.findall(r'```', full_content)) // 2
+                _q01_code_blocks = len(re.findall(r'```', self.full_content)) // 2
                 if _q01_code_blocks >= 2:
-                    nudge = (
+                    self.nudge = (
                         "You wrote code blocks in text but did not call any tools. "
                         "You MUST execute each action by calling the appropriate "
                         "tool directly — exec_command for shell commands, "
@@ -8226,32 +8258,32 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         "JSONL appends. Do not describe work in markdown — do the "
                         "work with tool calls now, one action at a time."
                     )
-                    conversation_history.append({"role": "user", "content": nudge})
-                    log.info(
+                    self.conversation_history.append({"role": "user", "content": self.nudge})
+                    self.log.info(
                         "Q.01 guard: plan-in-text detected (%d code blocks) — nudging to execute",
                         _q01_code_blocks,
                     )
-                    _emit("on_auto_nudge", _consecutive_text_only, _MAX_TEXT_ONLY)
+                    _emit("on_auto_nudge", self._consecutive_text_only, _MAX_TEXT_ONLY)
                     telemetry.record_patch_event("q01_plan_in_text", kind="fired")
-                    continue
-                conversation_history.pop()  # remove the hallucinated assistant msg
-                log.info("Hallucination guard: stripped text-only response, retrying")
+                    return _NEXT
+                self.conversation_history.pop()  # remove the hallucinated assistant msg
+                self.log.info("Hallucination guard: stripped text-only response, retrying")
                 _emit("on_hallucination_stripped", "text_only")
                 telemetry.record_hallucination()
-                continue
+                return _NEXT
 
             # Detect hallucinated file reads: model claims to have read a file
             # but _accessed_files doesn't show it.  Give a targeted correction.
-            _hallucinated_read = _detect_hallucinated_read(full_content)[0]
+            _hallucinated_read = _detect_hallucinated_read(self.full_content)[0]
             if _hallucinated_read:
                 # Strip the hallucinated message and give a pointed correction
-                conversation_history.pop()
-                nudge = (
+                self.conversation_history.pop()
+                self.nudge = (
                     "You did NOT actually read that file — you hallucinated its contents. "
                     "You MUST call the file tool with action='read' to see what a file contains. "
                     "Do not guess or fabricate file contents. Use the tool now."
                 )
-                log.info("Hallucination guard: detected fabricated file read, correcting")
+                self.log.info("Hallucination guard: detected fabricated file read, correcting")
                 _emit("on_hallucination_stripped", "file_read")
                 telemetry.record_hallucination()
             elif (_cicd_branch and _cicd_edited_files
@@ -8263,9 +8295,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 # widened from `_cycle_persisted` to `_cicd_edited_files` so the
                 # nudge fires for both the "edits-but-no-commit" and "pushed-but-
                 # no-PR" branches of the same failure.
-                if _cycle_persisted:
-                    _missing = "PR open"
-                    _next_cmds = (
+                if self._cycle_persisted:
+                    self._missing = "PR open"
+                    self._next_cmds = (
                         f"  cat > /tmp/pr-body-{_cicd_issue_number}.md << 'EOF'\n"
                         f"  Closes #{_cicd_issue_number}\n"
                         f"  <one-paragraph summary of what changed>\n"
@@ -8275,8 +8307,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         f"    --body \"$(cat /tmp/pr-body-{_cicd_issue_number}.md)\"\n"
                     )
                 else:
-                    _missing = "commit + push + PR open"
-                    _next_cmds = (
+                    self._missing = "commit + push + PR open"
+                    self._next_cmds = (
                         f"  cd <WORKTREE_ROOT>/{_cicd_branch.split('/', 1)[-1] if '/' in _cicd_branch else _cicd_branch}\n"
                         f"  git add <edited files>\n"
                         f"  git commit -m 'CICD <N> (#{_cicd_issue_number}): <what>'\n"
@@ -8289,57 +8321,49 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         f"    --title 'CICD: <slug> (#{_cicd_issue_number})' \\\n"
                         f"    --body \"$(cat /tmp/pr-body-{_cicd_issue_number}.md)\"\n"
                     )
-                nudge = (
-                    f"You edited files in worktree on `{_cicd_branch}` but {_missing} "
+                self.nudge = (
+                    f"You edited files in worktree on `{_cicd_branch}` but {self._missing} "
                     f"is incomplete (step 8 of MANDATORY IMPLEMENTATION WORKFLOW). "
                     f"Tests passing is NOT the cycle ending — the cycle ends when "
                     f"the PR is open with `Closes #{_cicd_issue_number}`. Run these "
-                    f"commands as your next tool calls:\n{_next_cmds}"
+                    f"commands as your next tool calls:\n{self._next_cmds}"
                     f"Do not say you're done until `gh pr create` exits 0."
                 )
-                log.info("Auto-nudge (cycle 82): edits/push without PR — directing builder to %s", _missing)
+                self.log.info("Auto-nudge (cycle 82): edits/push without PR — directing builder to %s", self._missing)
             else:
                 # Generic nudge
-                nudge = (
+                self.nudge = (
                     "Continue — use your tools to take the next action. "
                     "Empirical > theoretical: if you suspect a bug, verify it "
                     "with a tool before trying to fix it. "
                     "Do not repeat your analysis, just act."
                 )
-            conversation_history.append({"role": "user", "content": nudge})
-            log.info("Auto-nudge (%d/%d, total %d/%d): text-only response, prompting to continue",
-                    _consecutive_text_only, _MAX_TEXT_ONLY, _total_nudges, _MAX_TOTAL_NUDGES)
-            _emit("on_auto_nudge", _consecutive_text_only, _MAX_TEXT_ONLY)
-            continue
+            self.conversation_history.append({"role": "user", "content": self.nudge})
+            self.log.info("Auto-nudge (%d/%d, total %d/%d): text-only response, prompting to continue",
+                    self._consecutive_text_only, _MAX_TEXT_ONLY, self._total_nudges, _MAX_TOTAL_NUDGES)
+            _emit("on_auto_nudge", self._consecutive_text_only, _MAX_TEXT_ONLY)
+            return _NEXT
 
+    def _tool_guard(self):
         # Fix 2: Only reset consecutive counter on substantive tool calls.
         # Read-only tools (search, think, read_pdf) don't count as progress —
         # they let the model oscillate between "I'm done" and a weak grep
         # indefinitely.  file(action='read') is also read-only but uses the
         # generic "file" tool name, so we check the action arg.
-        def _get_tc_args(tc):
-            raw = tc.function.arguments if hasattr(tc, 'function') else tc["function"]["arguments"]
-            try:
-                parsed = json.loads(raw) if isinstance(raw, str) else raw
-                return parsed if isinstance(parsed, dict) else {}
-            except (json.JSONDecodeError, TypeError):
-                return {}
 
-        def _get_tc_name(tc):
-            return tc.function.name if hasattr(tc, 'function') else tc["function"]["name"]
 
-        _tool_names = {_get_tc_name(tc) for tc in tool_calls}
+        _tool_names = {_get_tc_name(tc) for tc in self.tool_calls}
 
         _is_read_only_file = (_tool_names == {"file"} and all(
             _get_tc_args(tc).get("action") == "read"
-            for tc in tool_calls if _get_tc_name(tc) == "file"
+            for tc in self.tool_calls if _get_tc_name(tc) == "file"
         ))
         _is_read_only_exec = (_tool_names == {"exec_command"} and all(
             _is_read_only_command(_get_tc_args(tc).get("command", ""))
-            for tc in tool_calls if _get_tc_name(tc) == "exec_command"
+            for tc in self.tool_calls if _get_tc_name(tc) == "exec_command"
         ))
         _substantive = not (
-            _tool_names <= _READ_ONLY_TOOLS
+            _tool_names <= self._READ_ONLY_TOOLS
             or _is_read_only_file
             or _is_read_only_exec
         )
@@ -8348,21 +8372,21 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         # its own files for its final minutes). A substantive batch (edit/write/exec) resets the
         # window — the model acted on what it read. The latch survives: one nudge per key.
         if not _substantive:
-            for _tc in tool_calls:
+            for _tc in self.tool_calls:
                 _k = _read_call_key(_get_tc_name(_tc), _get_tc_args(_tc))
-                if _repeat_read_check(_repeat_seen, _k, turn, _REPEAT_READ_N, _REPEAT_READ_WINDOW, _repeat_latched):
-                    _repeat_msg = (f"[SYSTEM NOTICE: you have issued the same read — {_k[0]} with the same "
-                                   f"arguments — {_REPEAT_READ_N} times in the last {_REPEAT_READ_WINDOW} turns "
+                if _repeat_read_check(self._repeat_seen, _k, self.turn, self._REPEAT_READ_N, self._REPEAT_READ_WINDOW, self._repeat_latched):
+                    self._repeat_msg = (f"[SYSTEM NOTICE: you have issued the same read — {_k[0]} with the same "
+                                   f"arguments — {self._REPEAT_READ_N} times in the last {self._REPEAT_READ_WINDOW} turns "
                                    f"without acting on it. Re-reading will not change it. Decide and act: "
                                    f"edit, run, or report blocked with what you found.]")
-                    if _success_check_cmd:
-                        _adv = _maybe_advisor_nudge(source="stall", context=f"repeated read: {_k[0]} {_k[1][:200]}")
+                    if self._success_check_cmd:
+                        _adv = self._maybe_advisor_nudge(source="stall", context=f"repeated read: {_k[0]} {_k[1][:200]}")
                         if _adv:
-                            conversation_history.append({"role": "user", "content": _adv})
+                            self.conversation_history.append({"role": "user", "content": _adv})
         else:
-            _repeat_seen.clear()
+            self._repeat_seen.clear()
         if _substantive:
-            _consecutive_text_only = 0
+            self._consecutive_text_only = 0
 
         # Detect tool-call loops: if the same set of tool calls (by name +
         # args hash) repeats N times, the model is stuck.  Inject a correction
@@ -8371,22 +8395,22 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             (_get_tc_name(tc), hashlib.md5(
                 json.dumps(_get_tc_args(tc), sort_keys=True).encode()
             ).hexdigest()[:8])
-            for tc in tool_calls
+            for tc in self.tool_calls
         )
-        _recent_tool_sigs.append(_batch_sig)
-        if len(_recent_tool_sigs) > _TOOL_LOOP_THRESHOLD + 2:
-            _recent_tool_sigs.pop(0)
+        self._recent_tool_sigs.append(_batch_sig)
+        if len(self._recent_tool_sigs) > self._TOOL_LOOP_THRESHOLD + 2:
+            self._recent_tool_sigs.pop(0)
         # Count consecutive identical signatures at the tail
         _repeat = 0
-        for _sig in reversed(_recent_tool_sigs):
+        for _sig in reversed(self._recent_tool_sigs):
             if _sig == _batch_sig:
                 _repeat += 1
             else:
                 break
-        if _repeat >= _TOOL_LOOP_THRESHOLD:
-            log.warning("Tool-call loop detected: same batch repeated %d times", _repeat)
+        if _repeat >= self._TOOL_LOOP_THRESHOLD:
+            self.log.warning("Tool-call loop detected: same batch repeated %d times", _repeat)
             # Remove the assistant message that requested these tool calls
-            conversation_history.pop()
+            self.conversation_history.pop()
             _loop_redirect = (
                 "STOP — you have repeated the exact same tool call(s) "
                 f"{_repeat} times with no effect. The approach is not working. "
@@ -8399,10 +8423,10 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             # this cycle gets escalated to a system-invoked think on the
             # loop evidence (beewatcher: "the injection message doesn't
             # always redirect" — run 114 died at rung 1).
-            _loop_interventions += 1
-            if _loop_interventions >= 2 and "think" in MAP_FN:
+            self._loop_interventions += 1
+            if self._loop_interventions >= 2 and "think" in MAP_FN:
                 try:
-                    _fk = MAP_FN["think"](prompt=(
+                    self._fk = MAP_FN["think"](prompt=(
                         f"MANDATORY REFLECTION: the same tool batch has now "
                         f"looped {_repeat}x AND a previous redirect this "
                         f"cycle was ignored. Batch signature: "
@@ -8412,93 +8436,95 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         f"answer is: mark this step failed and move to "
                         f"CONSOLIDATE/PERSIST."))
                     _loop_redirect += ("\n\nFORCED REFLECTION (system-invoked "
-                                       "think):\n" + str(_fk)[:1500])
+                                       "think):\n" + str(self._fk)[:1500])
                     telemetry.record_patch_event("loop_forced_think", kind="fired")
                 except Exception as _fe:
-                    log.warning("forced think failed: %s", _fe)
+                    self.log.warning("forced think failed: %s", _fe)
                 # Stall-side advisor escalation (batch-loop site): same stuck
                 # signal as the semantic-result-loop site — repeated batch +
                 # ignored redirect. Once-per-cycle latch dedupes across sites.
-                _adv_nudge = _maybe_advisor_nudge(source="stall",
+                self._adv_nudge = self._maybe_advisor_nudge(source="stall",
                                                   context=_loop_redirect)
-                if _adv_nudge:
-                    _loop_redirect += "\n\n" + _adv_nudge
-            conversation_history.append({"role": "user", "content": _loop_redirect})
-            _recent_tool_sigs.clear()
-            continue
+                if self._adv_nudge:
+                    _loop_redirect += "\n\n" + self._adv_nudge
+            self.conversation_history.append({"role": "user", "content": _loop_redirect})
+            self._recent_tool_sigs.clear()
+            return _NEXT
 
+    def _dispatch(self):
+        global _LAST_REFUSAL, _cicd_branch, _cicd_issue_number, _cicd_pr_number, _cicd_worktree_path
         # Execute tool calls
-        log.debug("Executing %d tool calls", len(tool_calls))
-        _emit("on_tool_batch_start", len(tool_calls))
-        _garbled_count = 0  # track garbled tool calls for retry
+        self.log.debug("Executing %d tool calls", len(self.tool_calls))
+        _emit("on_tool_batch_start", len(self.tool_calls))
+        self._garbled_count = 0  # track garbled tool calls for retry
         _tool_exec_t0 = time.monotonic()
-        if _deadline_hard or _refusal_hard:
+        if self._deadline_hard or self._refusal_hard:
             # F1/F9 hard stops are STRUCTURAL: past them no tool runs. Every call still gets a
             # paired tool result (strict templates reject an unanswered tool_call) saying why,
             # so the model's next turn is the final result the run is waiting for.
-            _why = (f"the wall-clock deadline ({int(_DEADLINE_S)}s) has passed" if _deadline_hard
-                    else f"{_refusal_tool} refused for an ungranted capability {_REFUSAL_MAX_TURNS}+ turn(s) ago")
-            _ask = ("what was done, what was not, artifact paths" if _deadline_hard
+            self._why = (f"the wall-clock deadline ({int(self._DEADLINE_S)}s) has passed" if self._deadline_hard
+                    else f"{self._refusal_tool} refused for an ungranted capability {self._REFUSAL_MAX_TURNS}+ turn(s) ago")
+            _ask = ("what was done, what was not, artifact paths" if self._deadline_hard
                     else "a result block with \"status\": \"blocked\" naming the tool and its exit code")
-            for tool_call in tool_calls:
+            for tool_call in self.tool_calls:
                 _tc_id = tool_call.id if hasattr(tool_call, "id") else tool_call.get("id")
                 _tc_name = _get_tc_name(tool_call)
-                conversation_history.append({
+                self.conversation_history.append({
                     "role": "tool", "tool_call_id": _tc_id, "name": _tc_name,
-                    "content": f"REFUSED: {_why} — no tool runs now. Reply with your FINAL RESULT: {_ask}."})
-            log.warning("%s: refused %d tool call(s) on post-stop turn %d",
-                        "deadline" if _deadline_hard else "refusal stop", len(tool_calls),
-                        _deadline_hard_turns if _deadline_hard else _refusal_hard_turns)
-            _emit("on_notice", "warn", f"[{'Deadline' if _deadline_hard else 'Refusal stop'}: {len(tool_calls)} tool call(s) refused — final result required]")
-            continue
+                    "content": f"REFUSED: {self._why} — no tool runs now. Reply with your FINAL RESULT: {_ask}."})
+            self.log.warning("%s: refused %d tool call(s) on post-stop turn %d",
+                        "deadline" if self._deadline_hard else "refusal stop", len(self.tool_calls),
+                        self._deadline_hard_turns if self._deadline_hard else self._refusal_hard_turns)
+            _emit("on_notice", "warn", f"[{'Deadline' if self._deadline_hard else 'Refusal stop'}: {len(self.tool_calls)} tool call(s) refused — final result required]")
+            return _NEXT
         try:
             with cancellable():
-                for tool_call in tool_calls:
+                for tool_call in self.tool_calls:
                     check_cancelled()
                     try:
                         if hasattr(tool_call, 'function'):
-                            func_name = tool_call.function.name
-                            raw_args = tool_call.function.arguments
-                            tool_id = tool_call.id
+                            self.func_name = tool_call.function.name
+                            self.raw_args = tool_call.function.arguments
+                            self.tool_id = tool_call.id
                         else:
-                            func_name = tool_call["function"]["name"]
-                            raw_args = tool_call["function"]["arguments"]
-                            tool_id = tool_call["id"]
+                            self.func_name = tool_call["function"]["name"]
+                            self.raw_args = tool_call["function"]["arguments"]
+                            self.tool_id = tool_call["id"]
                         # A name from another harness (bash, grep, Read) means a tool here.
-                        _alias_note = ""
-                        if func_name not in MAP_FN:
-                            _resolved = _registry.resolve(func_name)
-                            if _resolved and _resolved != func_name:
-                                _alias_note = f"({func_name} is {_resolved} here; use that name.) "
-                                log.info("tool.alias %s->%s", func_name, _resolved)
+                        self._alias_note = ""
+                        if self.func_name not in MAP_FN:
+                            _resolved = _registry.resolve(self.func_name)
+                            if _resolved and _resolved != self.func_name:
+                                self._alias_note = f"({self.func_name} is {_resolved} here; use that name.) "
+                                self.log.info("tool.alias %s->%s", self.func_name, _resolved)
                                 telemetry.record_patch_event("tool_alias", kind="fired")
-                                func_name = _resolved
-                        func_args = json.loads(raw_args)
+                                self.func_name = _resolved
+                        self.func_args = json.loads(self.raw_args)
                         # Coerce non-dict JSON values (null, [], 42, "str") to {}
                         # so that **-unpack never raises TypeError (#859).
                         # Consistent with _get_tc_args (line ~3218).
-                        if not isinstance(func_args, dict):
-                            func_args = {}
+                        if not isinstance(self.func_args, dict):
+                            self.func_args = {}
                         # Sanitize garbled Gemma 4 args that parsed as valid JSON
                         # e.g. {"action": "write**,content:"} — valid JSON but bogus values
-                        func_args = _sanitize_tool_args(func_name, func_args, log)
+                        self.func_args = _sanitize_tool_args(self.func_name, self.func_args, self.log)
                     except json.JSONDecodeError:
                         # Repair the JSON (truncation, a trailing comma, single quotes),
                         # else salvage the garbled shapes (e.g. "write**,content:")
-                        func_args = _repair_tool_args(func_name, raw_args, log)
-                        if func_args is None:
-                            log.error("Unsalvageable tool args: %s | raw: %s", func_name, raw_args)
-                            _garbled_count += 1
-                            conversation_history.append({
-                                "role": "tool", "tool_call_id": tool_id,
-                                "name": func_name,
+                        self.func_args = _repair_tool_args(self.func_name, self.raw_args, self.log)
+                        if self.func_args is None:
+                            self.log.error("Unsalvageable tool args: %s | raw: %s", self.func_name, self.raw_args)
+                            self._garbled_count += 1
+                            self.conversation_history.append({
+                                "role": "tool", "tool_call_id": self.tool_id,
+                                "name": self.func_name,
                                 "content": f"Error: malformed arguments — could not parse. "
                                            f"Use separate JSON keys: {{\"action\": \"write\", \"path\": \"...\", \"content\": \"...\"}}"
                             })
                             continue
                     except Exception as e:
-                        log.error("Error parsing tool call: %s | raw: %s", e, tool_call)
-                        _garbled_count += 1
+                        self.log.error("Error parsing tool call: %s | raw: %s", e, tool_call)
+                        self._garbled_count += 1
                         continue
 
                     # Reject any tool call whose args contain Harmony/ChatML
@@ -8509,28 +8535,28 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # leaked into file path → file written with tokens in NAME →
                     # git-committed → every cycle's `ls` re-injects them). Surface
                     # as a tool-error so the model self-corrects; do NOT dispatch.
-                    _harmony_hit = _detect_harmony_token(func_args)
+                    _harmony_hit = _detect_harmony_token(self.func_args)
                     if _harmony_hit:
                         key_path, token = _harmony_hit
-                        log.warning(
+                        self.log.warning(
                             "Rejecting %s call: chat-template token %r in arg %r",
-                            func_name, token, key_path or "(top-level)",
+                            self.func_name, token, key_path or "(top-level)",
                         )
-                        telemetry.record_tool_call(func_name + ":rejected_harmony_token")
+                        telemetry.record_tool_call(self.func_name + ":rejected_harmony_token")
                         telemetry.record_patch_event("harmony_reject", kind="rejected")
-                        _patch_telemetry["harmony_reject"] += 1
-                        _garbled_count += 1
-                        conversation_history.append({
-                            "role": "tool", "tool_call_id": tool_id,
-                            "name": func_name,
+                        self._patch_telemetry["harmony_reject"] += 1
+                        self._garbled_count += 1
+                        self.conversation_history.append({
+                            "role": "tool", "tool_call_id": self.tool_id,
+                            "name": self.func_name,
                             "content": (
                                 f"Error: tool call rejected — chat-template control token "
                                 f"{token!r} appeared in arg {key_path or '(top-level)'}. "
                                 f"Your JSON was garbled (the end-of-tool-call delimiter leaked "
                                 f"into an argument value). Make ONE clean tool call now with "
                                 f"simple quoted string arguments. "
-                                f"Example for {func_name}: "
-                                + _harmony_retry_hint(func_name)
+                                f"Example for {self.func_name}: "
+                                + _harmony_retry_hint(self.func_name)
                             ),
                         })
                         continue
@@ -8543,21 +8569,21 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # Framework owns the conversation history; check on the way
                     # in, refuse on hit, force the model to frame the question
                     # itself instead of the background.
-                    if func_name == "think" and isinstance(func_args, dict):
-                        _think_text = (func_args.get("prompt", "") or "") + "\n\n" + (func_args.get("context", "") or "")
-                        _launder = _detect_context_laundering(_think_text, conversation_history)
+                    if self.func_name == "think" and isinstance(self.func_args, dict):
+                        _think_text = (self.func_args.get("prompt", "") or "") + "\n\n" + (self.func_args.get("context", "") or "")
+                        _launder = _detect_context_laundering(_think_text, self.conversation_history)
                         if _launder:
                             offender, src_idx = _launder
-                            log.warning(
+                            self.log.warning(
                                 "Rejecting think call: %d-char verbatim overlap with msg[%d]: %r",
                                 len(offender), src_idx, offender[:80],
                             )
                             telemetry.record_tool_call("think:rejected_laundering")
                             telemetry.record_patch_event("think_launder", kind="rejected")
-                            _patch_telemetry["think_launder"] += 1
-                            conversation_history.append({
-                                "role": "tool", "tool_call_id": tool_id,
-                                "name": func_name,
+                            self._patch_telemetry["think_launder"] += 1
+                            self.conversation_history.append({
+                                "role": "tool", "tool_call_id": self.tool_id,
+                                "name": self.func_name,
                                 "content": (
                                     f"Error: think call rejected — your prompt/context "
                                     f"re-includes a {len(offender)}-char verbatim chunk "
@@ -8575,14 +8601,14 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
 
                     # Validate required fields — catch cases where sanitizer
                     # extracted the action but lost required params (empty garble)
-                    if func_name == "file" and isinstance(func_args, dict):
-                        action = func_args.get("action", "")
-                        if action in ("read", "write", "insert", "append", "delete") and "path" not in func_args:
-                            log.warning("Sanitized file call missing 'path' — returning error")
-                            _garbled_count += 1
-                            conversation_history.append({
-                                "role": "tool", "tool_call_id": tool_id,
-                                "name": func_name,
+                    if self.func_name == "file" and isinstance(self.func_args, dict):
+                        action = self.func_args.get("action", "")
+                        if action in ("read", "write", "insert", "append", "delete") and "path" not in self.func_args:
+                            self.log.warning("Sanitized file call missing 'path' — returning error")
+                            self._garbled_count += 1
+                            self.conversation_history.append({
+                                "role": "tool", "tool_call_id": self.tool_id,
+                                "name": self.func_name,
                                 "content": (
                                     f"Error: file({action!r}) call is missing the 'path' argument. "
                                     f"Call with separate string arguments: "
@@ -8598,15 +8624,15 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # A poll of a background session (session_id, optional wait, no
                     # command) is the tool's own documented form, not garbage: it
                     # passes (found live 2026-11-02: a correct poll was refused).
-                    if func_name == "exec_command" and isinstance(func_args, dict):
-                        _cmd_val = func_args.get("command")
-                        _sid_val = func_args.get("session_id")
+                    if self.func_name == "exec_command" and isinstance(self.func_args, dict):
+                        _cmd_val = self.func_args.get("command")
+                        _sid_val = self.func_args.get("session_id")
                         _is_poll = (_cmd_val is None and isinstance(_sid_val, str) and _sid_val.strip())
                         if not _is_poll and (_cmd_val is None or not isinstance(_cmd_val, str)):
-                            _garbled_count += 1
-                            conversation_history.append({
-                                "role": "tool", "tool_call_id": tool_id,
-                                "name": func_name,
+                            self._garbled_count += 1
+                            self.conversation_history.append({
+                                "role": "tool", "tool_call_id": self.tool_id,
+                                "name": self.func_name,
                                 "content": (
                                     "Error: exec_command received garbled arguments "
                                     "(missing or non-string 'command' value). "
@@ -8614,8 +8640,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                     "exec_command(command='your shell command here')."
                                 ),
                             })
-                            log.warning("G.01-exec: garbled exec_command — keys=%r",
-                                        list(func_args.keys())[:3])
+                            self.log.warning("G.01-exec: garbled exec_command — keys=%r",
+                                        list(self.func_args.keys())[:3])
                             telemetry.record_patch_event("g01_exec", kind="fired")
                             continue
 
@@ -8623,49 +8649,49 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # The model confuses Python CLI tools with the Node-based
                     # discord/email skills that live nearby.  Intercept before
                     # dispatch and return a clear correction.
-                    if func_name == "exec_command" and isinstance(func_args, dict):
-                        _r01_cmd = func_args.get("command") or ""
+                    if self.func_name == "exec_command" and isinstance(self.func_args, dict):
+                        _r01_cmd = self.func_args.get("command") or ""
                         if isinstance(_r01_cmd, str) and re.match(r'\bnode\b.*\.py\b', _r01_cmd):
-                            _garbled_count += 1
-                            conversation_history.append({
-                                "role": "tool", "tool_call_id": tool_id,
-                                "name": func_name,
+                            self._garbled_count += 1
+                            self.conversation_history.append({
+                                "role": "tool", "tool_call_id": self.tool_id,
+                                "name": self.func_name,
                                 "content": (
                                     f"Error: used 'node' to run a Python file. "
                                     f"Python scripts must be run with 'python3', not 'node'. "
                                     f"Replace 'node' with 'python3' and retry."
                                 ),
                             })
-                            log.warning("R.01: node used on .py file — %r", _r01_cmd[:80])
+                            self.log.warning("R.01: node used on .py file — %r", _r01_cmd[:80])
                             continue
 
-                    log.debug("TOOL CALL: %s(%s) [id=%s]", func_name, json.dumps(func_args), tool_id)
-                    telemetry.record_tool_call(func_name)
+                    self.log.debug("TOOL CALL: %s(%s) [id=%s]", self.func_name, json.dumps(self.func_args), self.tool_id)
+                    telemetry.record_tool_call(self.func_name)
 
                     # Track whether this turn has any "action" (write/exec) tool calls
                     # for the action-inertia nudge (fires after _READ_ONLY_NUDGE_THRESHOLD
                     # consecutive read-only turns).
                     _ACTION_TOOLS = {"write_file", "edit_file", "append_file", "delete_file",
                                      "exec_command", "gh_wrapper"}
-                    if func_name in _ACTION_TOOLS or (
-                        func_name == "file" and isinstance(func_args, dict)
-                        and func_args.get("action") in ("write", "insert", "append", "delete", "create")
+                    if self.func_name in _ACTION_TOOLS or (
+                        self.func_name == "file" and isinstance(self.func_args, dict)
+                        and self.func_args.get("action") in ("write", "insert", "append", "delete", "create")
                     ):
-                        _turn_had_action = True
+                        self._turn_had_action = True
                     # Progress signal for the grind no-progress gate: a file
                     # MUTATION (not exec/read) = the model is changing the
                     # codebase = converging. exec_command is excluded (it's
                     # usually re-running the check, i.e. spinning, not progress).
-                    if func_name in ("write_file", "edit_file", "append_file",
+                    if self.func_name in ("write_file", "edit_file", "append_file",
                                      "delete_file") or (
-                        func_name == "file" and isinstance(func_args, dict)
-                        and func_args.get("action") in ("write", "insert",
+                        self.func_name == "file" and isinstance(self.func_args, dict)
+                        and self.func_args.get("action") in ("write", "insert",
                                                         "append", "delete", "create")
                     ):
-                        _last_mutation_turn = turn
+                        self._last_mutation_turn = self.turn
                         # An edit invalidates any prior test run: the current
                         # state is unverified until the tests re-run (claim gate).
-                        _ran_verification = False
+                        self._ran_verification = False
 
                     # Per-call dedup: if this exact (tool_name, args) was dispatched
                     # within the last _DEDUP_WINDOW calls AND the tool is safe to
@@ -8673,45 +8699,45 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # with a synthetic result. Massive token-budget savings on the
                     # PERCEIVE-boilerplate pattern two independent field audits
                     # flagged as the #1 friction source.
-                    _call_idx_counter += 1
+                    self._call_idx_counter += 1
                     _dedup_sig = None
-                    if _is_dedupable_call(func_name, func_args):
+                    if _is_dedupable_call(self.func_name, self.func_args):
                         try:
-                            _args_md5 = hashlib.md5(
-                                json.dumps(func_args, sort_keys=True, default=str).encode()
+                            self._args_md5 = hashlib.md5(
+                                json.dumps(self.func_args, sort_keys=True, default=str).encode()
                             ).hexdigest()
                         except Exception:
-                            _args_md5 = None
-                        if _args_md5 is not None:
-                            _dedup_sig = (func_name, _args_md5)
-                            _cached = _call_dedup_cache.get(_dedup_sig)
-                            if _cached is not None and (_call_idx_counter - _cached["call_idx"]) <= _DEDUP_WINDOW:
-                                _gap = _call_idx_counter - _cached["call_idx"]
+                            self._args_md5 = None
+                        if self._args_md5 is not None:
+                            _dedup_sig = (self.func_name, self._args_md5)
+                            _cached = self._call_dedup_cache.get(_dedup_sig)
+                            if _cached is not None and (self._call_idx_counter - _cached["call_idx"]) <= self._DEDUP_WINDOW:
+                                _gap = self._call_idx_counter - _cached["call_idx"]
                                 _synthetic = (
-                                    f"[deduped: identical {func_name} call was issued {_gap} "
+                                    f"[deduped: identical {self.func_name} call was issued {_gap} "
                                     f"tool-call(s) ago — result was ~{_cached['tokens']} tokens, "
                                     f"starting with: {_cached['summary']!r}. If state may have "
                                     f"changed since, vary the arguments meaningfully and retry; "
                                     f"otherwise act on the cached result.]"
                                 )
-                                conversation_history.append({
-                                    "role": "tool", "tool_call_id": tool_id,
-                                    "name": func_name,
+                                self.conversation_history.append({
+                                    "role": "tool", "tool_call_id": self.tool_id,
+                                    "name": self.func_name,
                                     "content": _synthetic,
                                 })
-                                log.info(
+                                self.log.info(
                                     "Deduped %s call (last issued %d calls ago, sig %s)",
-                                    func_name, _gap, _args_md5[:8],
+                                    self.func_name, _gap, self._args_md5[:8],
                                 )
-                                telemetry.record_tool_call(func_name + ":deduped")
+                                telemetry.record_tool_call(self.func_name + ":deduped")
                                 # Approximate tokens saved = the cached result's token estimate
                                 telemetry.record_patch_event("dedup", kind="saved", value=_cached.get("tokens", 1))
-                                _patch_telemetry["dedup"] += 1
+                                self._patch_telemetry["dedup"] += 1
                                 continue
 
                     # Track think tool usage for CICD phase-gate enforcement
-                    if func_name == "think":
-                        _cicd_think_used = True
+                    if self.func_name == "think":
+                        self._cicd_think_used = True
 
                     # Tools that do their own streaming (think) handle
                     # their own console output — don't wrap them in a spinner.
@@ -8721,27 +8747,27 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # line. Skip the spinner entirely in that mode.
                     _STREAMING_TOOLS = {"think"}
                     use_spinner = (
-                        func_name not in _STREAMING_TOOLS
+                        self.func_name not in _STREAMING_TOOLS
                         and not theme._no_color()
                     )
 
                     if use_spinner:
-                        tool_status = StreamStatus(emit=_emit)
-                        if func_name == "exec_command":
+                        self.tool_status = StreamStatus(emit=_emit)
+                        if self.func_name == "exec_command":
                             # Full first line of the command — width fitting
                             # happens at render time now (StreamStatus middle-
                             # truncates every frame against the live terminal
                             # width), so no fixed budget that assumed a "9.9s"
                             # counter and broke past 100s.
-                            _cmd_preview = func_args.get("command", "").split("\n", 1)[0]
-                            prefix = f"  -> exec_command ({_cmd_preview}) "
+                            self._cmd_preview = self.func_args.get("command", "").split("\n", 1)[0]
+                            self.prefix = f"  -> exec_command ({self._cmd_preview}) "
                         else:
-                            prefix = f"  -> {func_name} "
+                            self.prefix = f"  -> {self.func_name} "
                         # pt_header=False: in live-input mode the toolbar
                         # spinner carries this status; the scrollback header
                         # is printed once by on_tool_start after the tool
                         # completes (printing both duplicated every line).
-                        tool_status.start(prefix, pt_header=False)
+                        self.tool_status.start(self.prefix, pt_header=False)
 
                     # T5.18 — pre-write content snapshot for similarity
                     # detection. Captured before dispatch so the post-write
@@ -8750,14 +8776,14 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # small (state JSON / focus JSON), bounded by tool
                     # result truncation cap when not.
                     _prewrite_content = None
-                    if (func_name in ("write_file", "file")
-                            and isinstance(func_args, dict)
-                            and (func_name == "write_file" or func_args.get("action") == "write")
-                            and isinstance(func_args.get("path"), str)
-                            and isinstance(func_args.get("content"), str)):
+                    if (self.func_name in ("write_file", "file")
+                            and isinstance(self.func_args, dict)
+                            and (self.func_name == "write_file" or self.func_args.get("action") == "write")
+                            and isinstance(self.func_args.get("path"), str)
+                            and isinstance(self.func_args.get("content"), str)):
                         try:
                             import os as _os_t518
-                            _pw_path = func_args["path"]
+                            _pw_path = self.func_args["path"]
                             if _os_t518.path.isfile(_pw_path):
                                 with open(_pw_path, "r", encoding="utf-8",
                                           errors="replace") as _pf:
@@ -8779,15 +8805,15 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # (results/progress/review files, git/gh, end_cycle)
                     # still runs. Hard cap at :_CYCLE_HARD_STOP_TURNS unchanged.
                     _grace_exhausted_block = False
-                    if (_cycle_persisted
-                            and (turn - (_cycle_persisted_turn or turn)) >= _CYCLE_GRACE_TURNS
-                            and not _is_track_scope_call(func_name, func_args)):
+                    if (self._cycle_persisted
+                            and (self.turn - (self._cycle_persisted_turn or self.turn)) >= self._CYCLE_GRACE_TURNS
+                            and not _is_track_scope_call(self.func_name, self.func_args)):
                         _grace_exhausted_block = True
-                        _grace_tool_blocks += 1
-                        log.info("Grace exhausted: non-TRACK tool call blocked (%s, block #%d)",
-                                 func_name, _grace_tool_blocks)
+                        self._grace_tool_blocks += 1
+                        self.log.info("Grace exhausted: non-TRACK tool call blocked (%s, block #%d)",
+                                 self.func_name, self._grace_tool_blocks)
                         telemetry.record_patch_event("grace_tool_block", kind="fired")
-                        result_str = (
+                        self.result_str = (
                             "Error: this cycle already persisted its work and the "
                             "post-persist grace window is exhausted — this call is "
                             "outside TRACK scope and was NOT executed. Do NOT start "
@@ -8795,36 +8821,36 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             "(results file, progress row, issue comment) and call "
                             "end_cycle."
                         )
-                        _cicd_blocked, cicd_error = False, None
+                        self._cicd_blocked, self.cicd_error = False, None
                     else:
-                        _cicd_blocked, cicd_error = _validate_tool_call(func_name, func_args, _cicd_issue_view_called, log, _is_cicd_builder, _is_reviewer_role)
+                        self._cicd_blocked, self.cicd_error = _validate_tool_call(self.func_name, self.func_args, self._cicd_issue_view_called, self.log, self._is_cicd_builder, self._is_reviewer_role)
                     # WS1: PhaseEngine pre-dispatch gate (per-phase tool
                     # rules). Only consulted when an engine is active.
                     _phase_blocked = False
-                    if (_phase_engine is not None and not _grace_exhausted_block
-                            and not _cicd_blocked):
-                        _ph_ok, _ph_msg = _phase_engine.allow(func_name, func_args)
+                    if (self._phase_engine is not None and not _grace_exhausted_block
+                            and not self._cicd_blocked):
+                        _ph_ok, _ph_msg = self._phase_engine.allow(self.func_name, self.func_args)
                         if not _ph_ok:
                             _phase_blocked = True
-                            result_str = _ph_msg
+                            self.result_str = _ph_msg
                             telemetry.record_patch_event("phase_gate_block", kind="fired")
                     # WS10.c: success-check gate on end_cycle. After
                     # _SUCCESS_CHECK_MAX_BLOCKS failed attempts the gate
                     # stands aside (a gate that can deadlock a weak model is
                     # worse than none — turn caps still bound the cycle).
                     _sc_blocked = False
-                    if (func_name == "end_cycle" and _success_check_cmd
+                    if (self.func_name == "end_cycle" and self._success_check_cmd
                             and not _grace_exhausted_block and not _phase_blocked
-                            and not _cicd_blocked
-                            and _success_check_blocks < _SUCCESS_CHECK_MAX_BLOCKS):
-                        _sc_rc, _sc_out = _run_success_check(_success_check_cmd, log)
+                            and not self._cicd_blocked
+                            and self._success_check_blocks < self._SUCCESS_CHECK_MAX_BLOCKS):
+                        _sc_rc, _sc_out = _run_success_check(self._success_check_cmd, self.log)
                         if _sc_rc != 0:
                             _sc_blocked = True
-                            _success_check_blocks += 1
-                            log.info("success_check FAILED (rc=%d) — end_cycle blocked (%d/%d)",
-                                     _sc_rc, _success_check_blocks, _SUCCESS_CHECK_MAX_BLOCKS)
+                            self._success_check_blocks += 1
+                            self.log.info("success_check FAILED (rc=%d) — end_cycle blocked (%d/%d)",
+                                     _sc_rc, self._success_check_blocks, self._SUCCESS_CHECK_MAX_BLOCKS)
                             telemetry.record_patch_event("success_check_block", kind="fired")
-                            result_str = (
+                            self.result_str = (
                                 "Error: end_cycle blocked — the declared success "
                                 "check still FAILS (exit=" + str(_sc_rc) + "). The "
                                 "work is NOT complete. Check output tail:\n"
@@ -8832,186 +8858,186 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 "\nFix what the check reports, re-run it yourself "
                                 "to confirm, commit, then call end_cycle again."
                             )
-                            _adv_msg = _maybe_advisor_nudge()
+                            _adv_msg = self._maybe_advisor_nudge()
                             if _adv_msg:
-                                result_str += "\n\n" + _adv_msg
+                                self.result_str += "\n\n" + _adv_msg
                         else:
-                            log.info("success_check PASSED — end_cycle permitted")
+                            self.log.info("success_check PASSED — end_cycle permitted")
                     if _grace_exhausted_block or _phase_blocked or _sc_blocked:
                         pass  # result_str already holds the redirect
-                    elif _cicd_blocked:
-                        result_str = cicd_error
-                    elif func_name == "end_cycle" and not _END_CYCLE_ENABLED:
-                        result_str = ("Error: end_cycle is off for this agent (it is opt-in: "
+                    elif self._cicd_blocked:
+                        self.result_str = self.cicd_error
+                    elif self.func_name == "end_cycle" and not _END_CYCLE_ENABLED:
+                        self.result_str = ("Error: end_cycle is off for this agent (it is opt-in: "
                                       "preferences.end_cycle_tool in .agent/config.json). "
                                       "Stop when you are done; do not try to end the session.")
-                    elif func_name not in MAP_FN:
-                        _sugg = _registry.suggest(func_name, func_args)
-                        result_str = (f"Error: Unknown tool '{func_name}'."
+                    elif self.func_name not in MAP_FN:
+                        _sugg = _registry.suggest(self.func_name, self.func_args)
+                        self.result_str = (f"Error: Unknown tool '{self.func_name}'."
                                       + (f" Closest: {_sugg}." if _sugg else "")
                                       + " Use tool_search to find and load tools.")
                         telemetry.record_patch_event("tool_unknown", kind="fired")
-                    elif func_name in _registry.DEFINITIONS and not _registry.available(func_name):
-                        result_str = f"Error: {func_name} is not available in this session."
-                        log.info("tool.unavailable name=%s", func_name)
-                    elif (func_name in _registry.DEFINITIONS
-                          and func_name not in _session_tool_names(_session_tools)
+                    elif self.func_name in _registry.DEFINITIONS and not _registry.available(self.func_name):
+                        self.result_str = f"Error: {self.func_name} is not available in this session."
+                        self.log.info("tool.unavailable name=%s", self.func_name)
+                    elif (self.func_name in _registry.DEFINITIONS
+                          and self.func_name not in _session_tool_names(self._session_tools)
                           and not (_TOOLS_CFG.get("implicit_run", True)
-                                   and _registry.args_fit(func_name, func_args))):
+                                   and _registry.args_fit(self.func_name, self.func_args))):
                         # A deferred or hidden tool called from memory with arguments that do
                         # not fit (or implicit runs are off): load it, answer with its schema.
-                        _registry.request_load(func_name)
-                        result_str = (f"Error: {func_name} is not loaded and these arguments do not fit it. "
-                                      f"Its schema: {json.dumps(_registry.DEFINITIONS[func_name].get('function'))}. "
+                        _registry.request_load(self.func_name)
+                        self.result_str = (f"Error: {self.func_name} is not loaded and these arguments do not fit it. "
+                                      f"Its schema: {json.dumps(_registry.DEFINITIONS[self.func_name].get('function'))}. "
                                       "It is loaded now; call it again with arguments that fit.")
-                        log.info("tool.schema_returned name=%s", func_name)
+                        self.log.info("tool.schema_returned name=%s", self.func_name)
                     else:
                         # A MAP_FN entry outside the registry (harness-internal, or a test's
                         # stand-in) runs as it always did; a registered tool not yet in the
                         # session's list is loaded for the next turn.
-                        if func_name in _registry.DEFINITIONS and func_name not in _session_tool_names(_session_tools):
-                            _registry.request_load(func_name)
-                            log.info("tool.implicit_load name=%s", func_name)
+                        if self.func_name in _registry.DEFINITIONS and self.func_name not in _session_tool_names(self._session_tools):
+                            _registry.request_load(self.func_name)
+                            self.log.info("tool.implicit_load name=%s", self.func_name)
                         try:
                             # Last check before dispatch: an esc-esc that
                             # landed during argument parsing / gate checks
                             # should stop the batch here, not after another
                             # long tool run.
                             check_cancelled()
-                            result_str = str(MAP_FN[func_name](**func_args))
-                            if _alias_note:
-                                result_str = _alias_note + result_str
-                            if func_name == "tool_search":
+                            self.result_str = str(MAP_FN[self.func_name](**self.func_args))
+                            if self._alias_note:
+                                self.result_str = self._alias_note + self.result_str
+                            if self.func_name == "tool_search":
                                 telemetry.record_patch_event("tool_search", kind="fired")
                         except CircuitBreakerError as e:
                             # Tool temporarily unavailable - return graceful degradation
-                            result_str = f"Tool {func_name} temporarily unavailable: {e}"
+                            self.result_str = f"Tool {self.func_name} temporarily unavailable: {e}"
                         except CancelledError:
                             # Propagate to outer handler to return 'cancelled'
                             raise
                         except Exception as e:
-                            result_str = f"Error executing tool: {str(e)}"
-                            telemetry.record_tool_error(func_name, "execution_error")
+                            self.result_str = f"Error executing tool: {str(e)}"
+                            telemetry.record_tool_error(self.func_name, "execution_error")
                         # WS1: PhaseEngine observation — advance on
                         # task_tracker phase-done markers, count verify
                         # calls; may return a gate message to inject
                         # (DECIDE verification gate).
-                        if _phase_engine is not None:
-                            _gate_msg = _phase_engine.observe(func_name, func_args, result_str)
+                        if self._phase_engine is not None:
+                            _gate_msg = self._phase_engine.observe(self.func_name, self.func_args, self.result_str)
                             if _gate_msg:
-                                conversation_history.append(
+                                self.conversation_history.append(
                                     {"role": "user", "content": _gate_msg})
                                 telemetry.record_patch_event(
                                     "phase_verify_gate", kind="fired")
                         # end_cycle sentinel — agent requested clean exit.
-                        if result_str == _end_cycle_tool.SENTINEL:
-                            _summary = func_args.get("summary", "") if isinstance(func_args, dict) else ""
-                            log.info("end_cycle called — exiting cleanly: %s",
-                                     _summary or "(no summary)")
+                        if self.result_str == _end_cycle_tool.SENTINEL:
+                            self._summary = self.func_args.get("summary", "") if isinstance(self.func_args, dict) else ""
+                            self.log.info("end_cycle called — exiting cleanly: %s",
+                                     self._summary or "(no summary)")
                             telemetry.record_patch_event("end_cycle", kind="fired")
                             # Answer the tool_call before leaving: an interactive
                             # session keeps this history, and an assistant
                             # tool_call with no tool message is rejected by
                             # strict APIs on the next turn.
-                            conversation_history.append({
+                            self.conversation_history.append({
                                 "role": "tool",
-                                "tool_call_id": tool_id,
-                                "name": func_name,
+                                "tool_call_id": self.tool_id,
+                                "name": self.func_name,
                                 "content": "Cycle ended.",
                             })
                             return "done"
                         # Conversational tool recovery: on error, try to fix params
-                        if result_str.startswith("Error"):
+                        if self.result_str.startswith("Error"):
                             try:
                                 from tool_recovery import attempt_recovery
                                 recovered = attempt_recovery(
-                                    func_name, func_args, result_str,
+                                    self.func_name, self.func_args, self.result_str,
                                     map_fn=MAP_FN,
-                                    llm_call_fn=_recovery_llm_call(log),
-                                    config=_config, log=log,
+                                    llm_call_fn=_recovery_llm_call(self.log),
+                                    config=_config, log=self.log,
                                 )
                                 if recovered is not None:
-                                    result_str = recovered
-                                    _emit("on_tool_recovery", func_name, 1)
-                                    _emit("on_notice", "info", f"[recovered: {func_name} succeeded]")
+                                    self.result_str = recovered
+                                    _emit("on_tool_recovery", self.func_name, 1)
+                                    _emit("on_notice", "info", f"[recovered: {self.func_name} succeeded]")
                             except Exception as e:
-                                log.debug("Tool recovery unavailable: %s", e)
+                                self.log.debug("Tool recovery unavailable: %s", e)
 
                     if use_spinner:
-                        tool_status.first_token()
-                        tool_status.finish()
-                    _emit("on_tool_start", func_name, func_args)
+                        self.tool_status.first_token()
+                        self.tool_status.finish()
+                    _emit("on_tool_start", self.func_name, self.func_args)
 
                     # Cycle 77 — verify gh pr/issue mutations against real state.
                     # Appends a SUPERVISION note when the tool output references
                     # a PR/issue that does not exist or is not in the claimed state.
-                    if func_name == "exec_command" and isinstance(func_args, dict):
-                        _cmd_str = func_args.get("command", "")
+                    if self.func_name == "exec_command" and isinstance(self.func_args, dict):
+                        _cmd_str = self.func_args.get("command", "")
                         if _cmd_str:
-                            result_str = _cicd_verify_gh_mutation(_cmd_str, result_str, log)
+                            self.result_str = _cicd_verify_gh_mutation(_cmd_str, self.result_str, self.log)
 
                     # F3: an oversized tool result is SPILLED to a file and replaced by a
                     # reference + excerpt (lossless — the old head/tail truncation threw the
                     # middle away, and a data-heavy run died echoing bulk into a 196k window).
                     # limits.tool_result_max_chars, 0 = legacy truncation only.
                     _spill_cap = _tool_result_spill_cap()
-                    if _spill_cap > 0 and len(result_str) > _spill_cap and not result_str.startswith(_SPILL_MARKER):
-                        _ref = _spill_tool_result(turn, func_name, result_str, log)
+                    if _spill_cap > 0 and len(self.result_str) > _spill_cap and not self.result_str.startswith(_SPILL_MARKER):
+                        _ref = _spill_tool_result(self.turn, self.func_name, self.result_str, self.log)
                         if _ref is not None:
-                            log.info("F3 spill: %s result of %d chars -> file (cap %d)", func_name, len(result_str), _spill_cap)
-                            telemetry.record_patch_event("tool_result_spill", kind=func_name)
-                            result_str = _ref
-                    if len(result_str) > _MAX_TOOL_RESULT_CHARS:
+                            self.log.info("F3 spill: %s result of %d chars -> file (cap %d)", self.func_name, len(self.result_str), _spill_cap)
+                            telemetry.record_patch_event("tool_result_spill", kind=self.func_name)
+                            self.result_str = _ref
+                    if len(self.result_str) > _MAX_TOOL_RESULT_CHARS:
                         half = _MAX_TOOL_RESULT_CHARS // 2
-                        result_str = (
-                            result_str[:half]
-                            + f"\n\n... [{len(result_str) - _MAX_TOOL_RESULT_CHARS} chars truncated] ...\n\n"
-                            + result_str[-half:]
+                        self.result_str = (
+                            self.result_str[:half]
+                            + f"\n\n... [{len(self.result_str) - _MAX_TOOL_RESULT_CHARS} chars truncated] ...\n\n"
+                            + self.result_str[-half:]
                         )
 
                     # F9 — capability refusal: the tool said the run was never granted something
                     # it needs. Say so ONCE, inside the result the model is about to read, and
                     # start the clock; the turn-top stop is what makes the window bounded.
-                    if _REFUSAL_MAX_TURNS > 0:
-                        _rf = _classify_tool_refusal(func_name, result_str)
+                    if self._REFUSAL_MAX_TURNS > 0:
+                        _rf = _classify_tool_refusal(self.func_name, self.result_str)
                         if _rf is not None:
                             _rf_code, _rf_head = _rf
-                            _rf_cmd = (str(func_args.get("command") or "")[:120]
-                                       if isinstance(func_args, dict) else "")
-                            if _refusal_first_turn is None:
-                                _refusal_first_turn, _refusal_tool = turn, func_name
-                                _LAST_REFUSAL = {"tool": func_name, "cmd": _rf_cmd, "exit": _rf_code,
-                                                 "head": _rf_head, "turn": turn}
-                                log.warning("capability refusal at turn %d: %s %s exit=%s — %s (blocked "
-                                            "result due within %d turn(s))", turn, func_name, _rf_cmd,
-                                            _rf_code, _rf_head, _REFUSAL_MAX_TURNS)
+                            _rf_cmd = (str(self.func_args.get("command") or "")[:120]
+                                       if isinstance(self.func_args, dict) else "")
+                            if self._refusal_first_turn is None:
+                                self._refusal_first_turn, self._refusal_tool = self.turn, self.func_name
+                                _LAST_REFUSAL = {"tool": self.func_name, "cmd": _rf_cmd, "exit": _rf_code,
+                                                 "head": _rf_head, "turn": self.turn}
+                                self.log.warning("capability refusal at turn %d: %s %s exit=%s — %s (blocked "
+                                            "result due within %d turn(s))", self.turn, self.func_name, _rf_cmd,
+                                            _rf_code, _rf_head, self._REFUSAL_MAX_TURNS)
                                 _emit("on_notice", "warn",
-                                      f"[Capability refusal: {func_name} exit={_rf_code} — blocked result "
-                                      f"due within {_REFUSAL_MAX_TURNS} turn(s)]")
-                                telemetry.record_patch_event("capability_refusal", kind=func_name)
-                                result_str += "\n\n" + _refusal_notice(func_name, _rf_cmd, _rf_code,
-                                                                          _rf_head, _REFUSAL_MAX_TURNS)
+                                      f"[Capability refusal: {self.func_name} exit={_rf_code} — blocked result "
+                                      f"due within {self._REFUSAL_MAX_TURNS} turn(s)]")
+                                telemetry.record_patch_event("capability_refusal", kind=self.func_name)
+                                self.result_str += "\n\n" + _refusal_notice(self.func_name, _rf_cmd, _rf_code,
+                                                                          _rf_head, self._REFUSAL_MAX_TURNS)
                             else:
-                                log.warning("capability refusal AGAIN at turn %d: %s %s exit=%s",
-                                            turn, func_name, _rf_cmd, _rf_code)
+                                self.log.warning("capability refusal AGAIN at turn %d: %s %s exit=%s",
+                                            self.turn, self.func_name, _rf_cmd, _rf_code)
                     # Store in dedup cache if this call was eligible (see
                     # _is_dedupable_call). The synthetic result returned by a
                     # later duplicate references this entry's `call_idx` and
                     # summary; storing after truncation keeps the summary
                     # consistent with what the model originally saw.
                     if _dedup_sig is not None:
-                        _call_dedup_cache[_dedup_sig] = {
-                            "call_idx": _call_idx_counter,
-                            "summary": result_str[:80].replace("\n", " "),
-                            "tokens": max(1, len(result_str) // 4),
+                        self._call_dedup_cache[_dedup_sig] = {
+                            "call_idx": self._call_idx_counter,
+                            "summary": self.result_str[:80].replace("\n", " "),
+                            "tokens": max(1, len(self.result_str) // 4),
                         }
                         # Prune entries older than the window so the cache
                         # doesn't grow without bound across long sessions.
-                        if len(_call_dedup_cache) > 256:
-                            _stale = [k for k, v in _call_dedup_cache.items()
-                                      if (_call_idx_counter - v["call_idx"]) > _DEDUP_WINDOW * 4]
+                        if len(self._call_dedup_cache) > 256:
+                            _stale = [k for k, v in self._call_dedup_cache.items()
+                                      if (self._call_idx_counter - v["call_idx"]) > self._DEDUP_WINDOW * 4]
                             for k in _stale:
-                                _call_dedup_cache.pop(k, None)
+                                self._call_dedup_cache.pop(k, None)
 
                     # Write-loop detector: if this tool wrote to a path that
                     # we've already written 2+ times in the recent window,
@@ -9021,7 +9047,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # in one cycle because the model's mental model of the
                     # audit tool was wrong. Framework-side detection makes the
                     # loop visible without relying on model self-noticing.
-                    _write_target = _extract_write_target(func_name, func_args)
+                    _write_target = _extract_write_target(self.func_name, self.func_args)
                     if _write_target:
                         # T5.14 Option A — heredoc→state-file write nudge.
                         # When the model writes a tracked state file via
@@ -9033,8 +9059,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         # heredoc-style state-file rewrite. Only fires once
                         # per session per file to avoid noise.
                         _heredoc_write = (
-                            func_name == "exec_command"
-                            and "<<" in func_args.get("command", "")
+                            self.func_name == "exec_command"
+                            and "<<" in self.func_args.get("command", "")
                             and _write_target.endswith(".json")
                         )
                         if _heredoc_write:
@@ -9042,7 +9068,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 run_agent_single._edit_nudges_emitted = set()
                             if _write_target not in run_agent_single._edit_nudges_emitted:
                                 run_agent_single._edit_nudges_emitted.add(_write_target)
-                                result_str = result_str + (
+                                self.result_str = self.result_str + (
                                     f"\n\n[suggestion] You wrote to {_write_target!r} via "
                                     f"a heredoc. For surgical changes to an existing file, "
                                     f"file(action='edit', path=..., old_string=..., "
@@ -9054,7 +9080,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                     f"single-field updates, prefer edit."
                                 )
                                 telemetry.record_patch_event("edit_nudge", kind="fired")
-                                _patch_telemetry["edit_nudge"] += 1
+                                self._patch_telemetry["edit_nudge"] += 1
 
                         # T5.18 — file(action='write') high-similarity rewrite
                         # nudge. The model has been bypassing the heredoc
@@ -9071,12 +9097,12 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         _similar_rewrite = (
                             not _heredoc_write
                             and _prewrite_content is not None
-                            and func_name in ("file", "write_file")
-                            and isinstance(func_args, dict)
-                            and (func_name == "write_file" or func_args.get("action") == "write")
+                            and self.func_name in ("file", "write_file")
+                            and isinstance(self.func_args, dict)
+                            and (self.func_name == "write_file" or self.func_args.get("action") == "write")
                         )
                         if _similar_rewrite:
-                            _new_content = func_args.get("content", "")
+                            _new_content = self.func_args.get("content", "")
                             _old_lines = set(_prewrite_content.splitlines())
                             _new_lines = set(_new_content.splitlines())
                             if _old_lines and _new_lines:
@@ -9097,7 +9123,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                         run_agent_single._edit_nudges_emitted = set()
                                     if _write_target not in run_agent_single._edit_nudges_emitted:
                                         run_agent_single._edit_nudges_emitted.add(_write_target)
-                                        result_str = result_str + (
+                                        self.result_str = self.result_str + (
                                             f"\n\n[suggestion] You used "
                                             f"write_file to rewrite "
                                             f"{_write_target!r}, but {int(_sim*100)}% "
@@ -9114,7 +9140,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                         )
                                         telemetry.record_patch_event(
                                             "edit_nudge", kind="similar_rewrite")
-                                        _patch_telemetry["edit_nudge"] += 1
+                                        self._patch_telemetry["edit_nudge"] += 1
 
                         # T5.18-log — file(action='write') on a .log file destroys
                         # all prior entries.  Field-audited agents treat logs as episodic
@@ -9125,9 +9151,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         # file per session to avoid noise.
                         _log_overwrite = (
                             not _heredoc_write
-                            and func_name in ("file", "write_file")
-                            and isinstance(func_args, dict)
-                            and (func_name == "write_file" or func_args.get("action") == "write")
+                            and self.func_name in ("file", "write_file")
+                            and isinstance(self.func_args, dict)
+                            and (self.func_name == "write_file" or self.func_args.get("action") == "write")
                             and _write_target.endswith(".log")
                         )
                         if _log_overwrite:
@@ -9135,7 +9161,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 run_agent_single._edit_nudges_emitted = set()
                             if _write_target not in run_agent_single._edit_nudges_emitted:
                                 run_agent_single._edit_nudges_emitted.add(_write_target)
-                                result_str = result_str + (
+                                self.result_str = self.result_str + (
                                     f"\n\n[suggestion] write_file on "
                                     f"{_write_target!r} overwrote all prior log "
                                     f"content. Log files are append-only — use "
@@ -9143,20 +9169,20 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                     f"content=...) to add new entries without "
                                     f"destroying history."
                                 )
-                                log.warning(
+                                self.log.warning(
                                     "T5.18-log: write on log file %r — nudging append",
                                     _write_target,
                                 )
                                 telemetry.record_patch_event("log_write_nudge", kind="fired")
-                                _patch_telemetry["edit_nudge"] += 1
+                                self._patch_telemetry["edit_nudge"] += 1
 
-                        _hist = _write_path_history.setdefault(_write_target, [])
-                        _hist.append(_call_idx_counter)
+                        _hist = self._write_path_history.setdefault(_write_target, [])
+                        _hist.append(self._call_idx_counter)
                         # Prune outside window
-                        _write_path_history[_write_target] = [
-                            t for t in _hist if (_call_idx_counter - t) <= _WRITE_LOOP_WINDOW
+                        self._write_path_history[_write_target] = [
+                            t for t in _hist if (self._call_idx_counter - t) <= self._WRITE_LOOP_WINDOW
                         ]
-                        _n_writes = len(_write_path_history[_write_target])
+                        _n_writes = len(self._write_path_history[_write_target])
                         # Single-object state files — ones an agent rewrites
                         # wholesale on a schedule rather than appending to — are
                         # SUPPOSED to be written repeatedly. One agent's
@@ -9169,45 +9195,45 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                                     "focus.json",
                                                     "context.json"))
                         )
-                        _effective_threshold = 5 if _is_single_object_state else _WRITE_LOOP_THRESHOLD
+                        _effective_threshold = 5 if _is_single_object_state else self._WRITE_LOOP_THRESHOLD
                         if _n_writes >= _effective_threshold:
-                            result_str = result_str + (
+                            self.result_str = self.result_str + (
                                 f"\n\n[write-loop-detector] You have written to {_write_target!r} "
-                                f"{_n_writes} times in the last {_WRITE_LOOP_WINDOW} tool calls. "
+                                f"{_n_writes} times in the last {self._WRITE_LOOP_WINDOW} tool calls. "
                                 f"If your incremental edits are being clobbered by full rewrites, "
                                 f"use edit_file(...) to apply a surgical change instead "
                                 f"of rewriting the whole file. If you've genuinely needed this many "
                                 f"writes, ignore this note — but consider whether your mental model "
                                 f"of the file's state matches what's actually on disk."
                             )
-                            log.info(
+                            self.log.info(
                                 "Write-loop detector tripped: %s written %d times in last %d calls",
-                                _write_target, _n_writes, _WRITE_LOOP_WINDOW,
+                                _write_target, _n_writes, self._WRITE_LOOP_WINDOW,
                             )
-                            telemetry.record_tool_call(func_name + ":write_loop")
+                            telemetry.record_tool_call(self.func_name + ":write_loop")
                             telemetry.record_patch_event("write_loop", kind="fired")
-                            _patch_telemetry["write_loop"] += 1
+                            self._patch_telemetry["write_loop"] += 1
 
-                    conversation_history.append({
+                    self.conversation_history.append({
                         "role": "tool",
-                        "tool_call_id": tool_id,
-                        "name": func_name,
-                        "content": result_str,
+                        "tool_call_id": self.tool_id,
+                        "name": self.func_name,
+                        "content": self.result_str,
                     })
                     if _prompt_caching_backend():
                         # The sent window (from the cache head) must stay byte-identical:
                         # gate on ITS pressure and never rewrite inside it. Below the head
                         # nothing is sent again, so head+tail only — no model round trip.
-                        _head = summary_state.get("_cache_head") or 0
+                        self._head = self.summary_state.get("_cache_head") or 0
                         _rewritten = _compress_repeated_tool_results(
-                            conversation_history, func_name, log,
-                            pressure=_history_pressure(conversation_history, start=_head),
-                            protect_from=_head, local_only=True)
-                        if any(i >= _head for i in _rewritten):
-                            summary_state["_rewrote_window"] = True   # alarm for the cache.miss log
+                            self.conversation_history, self.func_name, self.log,
+                            pressure=_history_pressure(self.conversation_history, start=self._head),
+                            protect_from=self._head, local_only=True)
+                        if any(i >= self._head for i in _rewritten):
+                            self.summary_state["_rewrote_window"] = True   # alarm for the cache.miss log
                     else:
-                        _compress_repeated_tool_results(conversation_history, func_name, log,
-                                                        pressure=_history_pressure(conversation_history))
+                        _compress_repeated_tool_results(self.conversation_history, self.func_name, self.log,
+                                                        pressure=_history_pressure(self.conversation_history))
 
                     # Consecutive edit_file failure guard: after 2 consecutive
                     # old_string-not-found failures on the same file, inject a
@@ -9215,59 +9241,59 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # existing error hint says "re-read the file" but models
                     # often ignore it and retry with equally-wrong content.
                     _is_edit_fail = (
-                        func_name in ("edit_file", "file")
-                        and "`old_string` not found" in result_str
-                        and isinstance(func_args, dict)
+                        self.func_name in ("edit_file", "file")
+                        and "`old_string` not found" in self.result_str
+                        and isinstance(self.func_args, dict)
                     )
                     if _is_edit_fail:
-                        _epath = func_args.get("path", "")
-                        _edit_fail_counts[_epath] = _edit_fail_counts.get(_epath, 0) + 1
-                        if _edit_fail_counts[_epath] >= 2:
-                            conversation_history.append({
+                        self._epath = self.func_args.get("path", "")
+                        self._edit_fail_counts[self._epath] = self._edit_fail_counts.get(self._epath, 0) + 1
+                        if self._edit_fail_counts[self._epath] >= 2:
+                            self.conversation_history.append({
                                 "role": "user",
                                 "content": (
-                                    f"[SYSTEM: edit_file has failed {_edit_fail_counts[_epath]} "
-                                    f"consecutive times for '{_epath}' — the old_string does not "
+                                    f"[SYSTEM: edit_file has failed {self._edit_fail_counts[self._epath]} "
+                                    f"consecutive times for '{self._epath}' — the old_string does not "
                                     f"match the actual file content. STOP using edit_file for this "
-                                    f"file. Instead: call read_file(path='{_epath}') to get the "
+                                    f"file. Instead: call read_file(path='{self._epath}') to get the "
                                     f"EXACT current content, then use write_file to rewrite the "
                                     f"relevant section, or use exec_command with a Python script "
                                     f"to patch it in-place. Do not attempt edit_file again for "
-                                    f"'{_epath}' until you have read the file.]"
+                                    f"'{self._epath}' until you have read the file.]"
                                 ),
                             })
-                    elif func_name in ("edit_file", "file", "write_file") and isinstance(func_args, dict):
+                    elif self.func_name in ("edit_file", "file", "write_file") and isinstance(self.func_args, dict):
                         # Successful edit or full rewrite — reset failure counter for this path.
                         # write_file changes file content entirely so prior old_string mismatches
                         # are no longer relevant for the new version.
-                        _epath = func_args.get("path", "")
-                        _edit_fail_counts.pop(_epath, None)
+                        self._epath = self.func_args.get("path", "")
+                        self._edit_fail_counts.pop(self._epath, None)
 
                     # Track file edits (file tool with action=write/create, or new per-action tools)
-                    if isinstance(func_args, dict) and (
-                        (func_name == "file" and func_args.get("action") in ("write", "create"))
-                        or func_name in ("write_file", "edit_file")
+                    if isinstance(self.func_args, dict) and (
+                        (self.func_name == "file" and self.func_args.get("action") in ("write", "create"))
+                        or self.func_name in ("write_file", "edit_file")
                     ):
-                        _has_edited, _has_reviewer_persisted = _handle_cicd_file_edit(
-                            func_args, conversation_history, _cicd_worktree_path, _cicd_phase_state, 
-                            _cicd_edited_files, _has_edited, _has_reviewer_persisted, turn, log
+                        self._has_edited, self._has_reviewer_persisted = _handle_cicd_file_edit(
+                            self.func_args, self.conversation_history, _cicd_worktree_path, _cicd_phase_state, 
+                            _cicd_edited_files, self._has_edited, self._has_reviewer_persisted, self.turn, self.log
                         )
                     # Track commits and pushes through exec_command
-                    if func_name == "exec_command" and isinstance(func_args, dict):
-                        _cmd = func_args.get("command", "")
+                    if self.func_name == "exec_command" and isinstance(self.func_args, dict):
+                        _cmd = self.func_args.get("command", "")
                         _cmd_normalized = re.sub(r"\\\n", " ", _cmd)  # Cycle 36: collapse shell line-continuations before all checks
                         # Claim-vs-trace: a real test/verify run supports a later
                         # "I ran the tests / verified" completion claim.
                         if any(_vt in _cmd_normalized.lower() for _vt in _VERIFY_CMD_TOKENS):
-                            _ran_verification = True
+                            self._ran_verification = True
                         if _cmd_has(_cmd, "git commit"):  # WS8.1: anchored, heredoc/quote-blind
-                            _has_committed = True
-                            _has_edited = True  # commit implies edit happened
-                            log.info("Commit detected — completion signals now allowed")
+                            self._has_committed = True
+                            self._has_edited = True  # commit implies edit happened
+                            self.log.info("Commit detected — completion signals now allowed")
                             _cicd_phase_state["implement"] = True
                             # Cycle 61: if commit fails with nothing staged, builder never wrote test code
-                            if "no changes added to commit" in result_str:
-                                conversation_history.append({
+                            if "no changes added to commit" in self.result_str:
+                                self.conversation_history.append({
                                     "role": "user",
                                     "content": (
                                         "[SYSTEM: git commit failed — no test files were staged. "
@@ -9278,22 +9304,22 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                         "git add tests/test_<name>.py && git commit -m '<message>'.]"
                                     ),
                                 })
-                        if _cmd_has(_cmd, "git push") and "exit=0" in result_str:  # Cycle 35+36 anchoring; WS8.1: heredoc/quote-blind (a doc line `&& git push` must not fake-persist the cycle)
-                            if not _cycle_persisted:
-                                log.info("Cycle persist detected (git push exit=0) — auto-nudge disabled")
+                        if _cmd_has(_cmd, "git push") and "exit=0" in self.result_str:  # Cycle 35+36 anchoring; WS8.1: heredoc/quote-blind (a doc line `&& git push` must not fake-persist the cycle)
+                            if not self._cycle_persisted:
+                                self.log.info("Cycle persist detected (git push exit=0) — auto-nudge disabled")
                             # Interactive sessions keep working after a push: the
                             # grace/hard-stop gates are for -a cycles only.
                             if _AUTO_MODE:
-                                _cycle_persisted = True
-                                _cycle_persisted_turn = _cycle_persisted_turn or turn
+                                self._cycle_persisted = True
+                                self._cycle_persisted_turn = self._cycle_persisted_turn or self.turn
                             _cicd_phase_state["verify"] = True
-                            if _phase_engine is not None:
-                                _phase_engine.mark_persisted("git push")
+                            if self._phase_engine is not None:
+                                self._phase_engine.mark_persisted("git push")
                             # Cycle 37: block direct push to main — builder must use feature branches.
                             # Only enforce for CICD builder sessions; regular agents push to main normally.
-                            if _is_cicd_builder and re.search(r"git\s+push\b.*\borigin\s+main\b", _cmd_normalized):
-                                log.warning("CICD: git push origin main — builder pushed directly to main")
-                                conversation_history.append({
+                            if self._is_cicd_builder and re.search(r"git\s+push\b.*\borigin\s+main\b", _cmd_normalized):
+                                self.log.warning("CICD: git push origin main — builder pushed directly to main")
+                                self.conversation_history.append({
                                     "role": "user",
                                     "content": (
                                         "[SYSTEM: CRITICAL: You just pushed directly to origin/main. "
@@ -9310,9 +9336,9 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         # use `git add -A` which silently picks up __pycache__ and
                         # *.pyc files, polluting git history.
                         if (re.search(r"git\s+add\b", _cmd_normalized)
-                                and ("__pycache__" in result_str or ".pyc" in result_str)):
-                            log.warning("git add staged __pycache__/.pyc files — injecting cleanup hint")
-                            conversation_history.append({
+                                and ("__pycache__" in self.result_str or ".pyc" in self.result_str)):
+                            self.log.warning("git add staged __pycache__/.pyc files — injecting cleanup hint")
+                            self.conversation_history.append({
                                 "role": "user",
                                 "content": (
                                     "[SYSTEM: Your git add staged Python cache files "
@@ -9332,10 +9358,10 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 or "cat " in _cmd or "grep " in _cmd):
                             if _cicd_phase_state["perceive"]:
                                 _cicd_phase_state["probe"] = True
-                        if _cmd_has(_cmd, "gh issue create") and "exit=0" in result_str:  # Cycles 36/55 anchoring; WS8.1: heredoc/quote-blind
-                            if not _cicd_think_used:
-                                log.warning("CICD: gh issue create without think — injecting reminder")
-                                conversation_history.append({
+                        if _cmd_has(_cmd, "gh issue create") and "exit=0" in self.result_str:  # Cycles 36/55 anchoring; WS8.1: heredoc/quote-blind
+                            if not self._cicd_think_used:
+                                self.log.warning("CICD: gh issue create without think — injecting reminder")
+                                self.conversation_history.append({
                                     "role": "user",
                                     "content": "[SYSTEM: You filed an issue without using the think tool first. "
                                     "Per MANDATORY THINK before DECIDE, you must call think() to evaluate "
@@ -9344,10 +9370,10 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             # Cycle 33: require --label in-progress on gh issue create.
                             # Cycle 41: use flag-specific regex (body text can contain "in-progress").
                             if not re.search(r"--label[= ]in-progress", _cmd):
-                                log.warning("CICD: gh issue create without --label in-progress — injecting reminder")
-                                _issue_num_m = re.search(r'issues/(\d+)|#(\d+)|Issue\s+#(\d+)', result_str)
+                                self.log.warning("CICD: gh issue create without --label in-progress — injecting reminder")
+                                _issue_num_m = re.search(r'issues/(\d+)|#(\d+)|Issue\s+#(\d+)', self.result_str)
                                 _issue_num = next((g for g in _issue_num_m.groups() if g), "?") if _issue_num_m else "?"
-                                conversation_history.append({
+                                self.conversation_history.append({
                                     "role": "user",
                                     "content": (
                                         f"[SYSTEM: Issue #{_issue_num} was filed without `--label in-progress` "
@@ -9359,23 +9385,23 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                     ),
                                 })
                             _cicd_phase_state["decide"] = True
-                            _cicd_think_used = False  # reset for next gate (verdict)
+                            self._cicd_think_used = False  # reset for next gate (verdict)
                             # Extract issue number from gh output
                             _issue_match = re.search(
-                                r'issues/(\d+)|#(\d+)|Issue #(\d+)', result_str
+                                r'issues/(\d+)|#(\d+)|Issue #(\d+)', self.result_str
                             )
                             if _issue_match:
                                 _cicd_issue_number = next(
                                     g for g in _issue_match.groups() if g
                                 )
-                                log.info("CICD phase: issue #%s filed",
+                                self.log.info("CICD phase: issue #%s filed",
                                          _cicd_issue_number)
-                        if _cmd_has(_cmd, "git worktree add") and "exit=0" in result_str:  # WS8.1 (run 114: heredoc match here mis-captured the worktree path → guard-misdirection loop, turns 18-77)
+                        if _cmd_has(_cmd, "git worktree add") and "exit=0" in self.result_str:  # WS8.1 (run 114: heredoc match here mis-captured the worktree path → guard-misdirection loop, turns 18-77)
                             _cicd_phase_state["implement"] = True
                             _wt_path_match = re.search(r'git\s+worktree\s+add\s+(?:-b\s+\S+\s+|--?[-\w]+\s+)*(\S+)', _strip_noncommand_text(_cmd))
                             if _wt_path_match:
                                 _cicd_worktree_path = _wt_path_match.group(1)
-                                log.info("CICD: worktree path captured: %s", _cicd_worktree_path)
+                                self.log.info("CICD: worktree path captured: %s", _cicd_worktree_path)
                             _branch_match = re.search(r'-b\s+(\S+)', _cmd)
                             if _branch_match:
                                 _cicd_branch = _branch_match.group(1)
@@ -9386,16 +9412,16 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         # this gap: builder used `gh issue view 397`, which
                         # never set `_cicd_issue_number`, so cycle 82's elif
                         # condition `and _cicd_issue_number` was always False.
-                        if (not _cicd_issue_number) and "exit=0" in result_str:
+                        if (not _cicd_issue_number) and "exit=0" in self.result_str:
                             _existing_match = re.search(
                                 r'^gh\s+issue\s+(?:view|edit|comment)\s+(\d+)\b',
                                 _cmd.lstrip(),
                             )
                             if _existing_match:
                                 _cicd_issue_number = _existing_match.group(1)
-                                log.info("CICD phase: issue #%s claimed (existing)",
+                                self.log.info("CICD phase: issue #%s claimed (existing)",
                                          _cicd_issue_number)
-                        if _cmd_has(_cmd, "gh pr create") and "exit=0" in result_str:  # WS8.1
+                        if _cmd_has(_cmd, "gh pr create") and "exit=0" in self.result_str:  # WS8.1
                             # cycle 87 (run 192 false-positive): only recognise a
                             # real PR URL (`pull/NNN`) as proof the PR was created.
                             # The old `#(\d+)` fallback fired on `Closes #424`
@@ -9407,18 +9433,18 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             # command silently failed and we should NOT set a PR
                             # number (which would suppress the reviewer's "no open
                             # PRs" early-exit and cause confusing downstream state).
-                            _pr_match = re.search(r'pull/(\d+)', result_str)
+                            _pr_match = re.search(r'pull/(\d+)', self.result_str)
                             if _pr_match:
                                 _cicd_pr_number = _pr_match.group(1)
-                                log.info("CICD phase: PR #%s opened",
+                                self.log.info("CICD phase: PR #%s opened",
                                          _cicd_pr_number)
                             # Guard: PR body must contain `Closes #N` trailer
                             # so the linked issue auto-closes on merge. Missing
                             # trailer is a recurring builder failure that
                             # causes the reviewer to CLOSE the PR.
                             if not re.search(r'Closes\s+#\d+', _cmd, re.IGNORECASE) and _cicd_pr_number:
-                                log.warning("CICD: gh pr create without `Closes #N` trailer — injecting reminder")
-                                conversation_history.append({
+                                self.log.warning("CICD: gh pr create without `Closes #N` trailer — injecting reminder")
+                                self.conversation_history.append({
                                     "role": "user",
                                     "content": (
                                         f"[SYSTEM: PR #{_cicd_pr_number} was created without a `Closes #<issue>` "
@@ -9432,40 +9458,40 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 and ("--request-changes" in _cmd
                                      or "--approve" in _cmd
                                      or "--comment" in _cmd)
-                                and "exit=0" in result_str):
-                            if not _has_reviewer_persisted:
-                                log.info("Reviewer persistence detected (gh pr review) — completion signals now allowed")
-                            _has_reviewer_persisted = True
+                                and "exit=0" in self.result_str):
+                            if not self._has_reviewer_persisted:
+                                self.log.info("Reviewer persistence detected (gh pr review) — completion signals now allowed")
+                            self._has_reviewer_persisted = True
                         if ("reviews.md" in _cmd
                                 and (">>" in _cmd or "tee -a" in _cmd or "tee --append" in _cmd)
-                                and "exit=0" in result_str):
-                            if not _has_reviewer_persisted:
-                                log.info("Reviewer persistence detected (reviews.md append) — completion signals now allowed")
-                            _has_reviewer_persisted = True
+                                and "exit=0" in self.result_str):
+                            if not self._has_reviewer_persisted:
+                                self.log.info("Reviewer persistence detected (reviews.md append) — completion signals now allowed")
+                            self._has_reviewer_persisted = True
                         if _cmd_has(_cmd, "gh pr review") and "--approve" in _cmd:  # WS8.1
-                            if not _cicd_think_used:
-                                log.warning("CICD: gh pr review --approve without think — injecting reminder")
-                                conversation_history.append({
+                            if not self._cicd_think_used:
+                                self.log.warning("CICD: gh pr review --approve without think — injecting reminder")
+                                self.conversation_history.append({
                                     "role": "user",
                                     "content": "[SYSTEM: You approved a PR without using the think tool first. "
                                     "Per MANDATORY THINK before VERDICT, call think() to check: "
                                     "did tests pass? was the metric measured? is the issue reference valid? "
                                     "is the diff in-scope? Proceed with merge only after thinking.]",
                                 })
-                            if ("exit=0" not in result_str
-                                    and "approve your own pull request" in result_str.lower()):
-                                log.warning("CICD: self-approve failed — injecting skip-approval reminder")
-                                conversation_history.append({
+                            if ("exit=0" not in self.result_str
+                                    and "approve your own pull request" in self.result_str.lower()):
+                                self.log.warning("CICD: self-approve failed — injecting skip-approval reminder")
+                                self.conversation_history.append({
                                     "role": "user",
                                     "content": "[SYSTEM: You cannot approve your own PR (same-account setup). "
                                     "SKIP the approval step entirely. Go directly to: "
                                     "`gh pr ready <N>` (separate command), then "
                                     "`gh pr merge <N> --squash` (separate command).]",
                                 })
-                        if _cmd_has(_cmd, "gh pr ready") and "exit=0" in result_str:  # WS8.1
-                            _cicd_pr_ready_called = True
-                            log.info("CICD: gh pr ready called")
-                        if _cmd_has(_cmd, "gh issue view") and ("exit=0" in result_str or "--json" in _cmd):  # WS8.1
+                        if _cmd_has(_cmd, "gh pr ready") and "exit=0" in self.result_str:  # WS8.1
+                            self._cicd_pr_ready_called = True
+                            self.log.info("CICD: gh pr ready called")
+                        if _cmd_has(_cmd, "gh issue view") and ("exit=0" in self.result_str or "--json" in _cmd):  # WS8.1
                             # Cycle 25: validate state + labels in the gh issue view result.
                             # Calling gh issue view is necessary but not sufficient — the
                             # issue must be OPEN and carry cicd + in-progress (or cicd-cycle-*)
@@ -9474,7 +9500,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             _premerge_ok = False
                             try:
                                 import json as _json_mod
-                                _json_body = result_str.split("exit=0", 1)[-1].strip()
+                                _json_body = self.result_str.split("exit=0", 1)[-1].strip()
                                 _json_start = _json_body.find("{")
                                 if _json_start >= 0:
                                     _issue_data = _json_mod.loads(_json_body[_json_start:])
@@ -9491,12 +9517,12 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                     elif _istate.upper() == "OPEN" and _has_valid_labels:
                                         _premerge_ok = True
                                     else:
-                                        log.warning(
+                                        self.log.warning(
                                             "CICD: PRE-MERGE CHECK FAILED — state=%s labels=%s "
                                             "(need OPEN + cicd/in-progress[-bot-N] label)",
                                             _istate, _lnames,
                                         )
-                                        conversation_history.append({
+                                        self.conversation_history.append({
                                             "role": "user",
                                             "content": (
                                                 "[SYSTEM: PRE-MERGE CHECK FAILED. gh issue view returned "
@@ -9510,16 +9536,16 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             except Exception:
                                 _premerge_ok = True  # parse error: don't block on format change
                             if _premerge_ok:
-                                _cicd_issue_view_called = True
-                                log.info("CICD: gh issue view called (PRE-MERGE CHECK satisfied)")
+                                self._cicd_issue_view_called = True
+                                self.log.info("CICD: gh issue view called (PRE-MERGE CHECK satisfied)")
                         # Match `gh pr merge` as an actual top-level invocation — not inside
                         # heredoc/cat content where the string may appear as documentation.
                         # Matches at line start or after a shell separator (&&, ;, |, ||, \n).
                         if re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+merge\b", _cmd):
                             # Guard: PRE-MERGE CHECK — must view linked issue first (reviewer.md §4)
-                            if not _cicd_issue_view_called:
-                                log.warning("CICD: gh pr merge without PRE-MERGE CHECK — injecting reminder")
-                                conversation_history.append({
+                            if not self._cicd_issue_view_called:
+                                self.log.warning("CICD: gh pr merge without PRE-MERGE CHECK — injecting reminder")
+                                self.conversation_history.append({
                                     "role": "user",
                                     "content": "[SYSTEM: PRE-MERGE CHECK SKIPPED. You must complete these steps "
                                     "IN ORDER before retrying gh pr merge: "
@@ -9531,25 +9557,25 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 })
                             # Guard: must use --squash (NOT --delete-branch — builder worktree holds branch)
                             if "--squash" not in _cmd:
-                                log.warning("CICD: gh pr merge without --squash — injecting reminder")
-                                conversation_history.append({
+                                self.log.warning("CICD: gh pr merge without --squash — injecting reminder")
+                                self.conversation_history.append({
                                     "role": "user",
                                     "content": "[SYSTEM: You MUST use `gh pr merge --squash`. "
                                     "Never use --merge or --rebase. Never use --delete-branch. Retry with --squash only.]",
                                 })
                             # Guard: must call `gh pr ready` first (draft PRs)
-                            if not _cicd_pr_ready_called and "exit=0" not in result_str:
-                                if "still a draft" in result_str.lower():
-                                    log.warning("CICD: gh pr merge on draft — need gh pr ready first")
-                                    conversation_history.append({
+                            if not self._cicd_pr_ready_called and "exit=0" not in self.result_str:
+                                if "still a draft" in self.result_str.lower():
+                                    self.log.warning("CICD: gh pr merge on draft — need gh pr ready first")
+                                    self.conversation_history.append({
                                         "role": "user",
                                         "content": "[SYSTEM: The PR is still a draft. You must run "
                                         "`gh pr ready <N>` FIRST, then run `gh pr merge <N> --squash` "
                                         "as a SEPARATE command. Do NOT chain them. Do NOT add --delete-branch.]",
                                     })
-                            if not _cicd_think_used and "exit=0" not in result_str:
-                                log.warning("CICD: gh pr merge without think — injecting reminder")
-                                conversation_history.append({
+                            if not self._cicd_think_used and "exit=0" not in self.result_str:
+                                self.log.warning("CICD: gh pr merge without think — injecting reminder")
+                                self.conversation_history.append({
                                     "role": "user",
                                     "content": "[SYSTEM: You attempted to merge without using the think tool first. "
                                     "Per MANDATORY THINK before VERDICT, you must call think() to verify "
@@ -9557,8 +9583,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 })
                             # Cycle 34: detect || echo / || true which mask merge errors.
                             if re.search(r"gh\s+pr\s+merge\b.*\|\|\s*(echo|true|exit\s+0)", _cmd):
-                                log.warning("CICD: gh pr merge with || suppressor — injecting reminder")
-                                conversation_history.append({
+                                self.log.warning("CICD: gh pr merge with || suppressor — injecting reminder")
+                                self.conversation_history.append({
                                     "role": "user",
                                     "content": (
                                         "[SYSTEM: You used `|| echo` (or `|| true`) with `gh pr merge`. "
@@ -9570,29 +9596,29 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                         "and clean up locally with `git branch -D <branch>` if needed.]"
                                     ),
                                 })
-                            if "exit=0" in result_str:
+                            if "exit=0" in self.result_str:
                                 _cicd_phase_state["track"] = True
                         # Detect plan file writes via exec_command (cat/heredoc)
                         if ("improvements/" in _cmd
                                 and ("cat >" in _cmd or "cat >>" in _cmd
                                      or "echo" in _cmd or "tee" in _cmd)
-                                and "exit=0" in result_str):
+                                and "exit=0" in self.result_str):
                             _cicd_phase_state["plan"] = True
-                            log.info("CICD phase: plan written via exec_command")
+                            self.log.info("CICD phase: plan written via exec_command")
                         # Record cycle timestamp automatically
                         if _tracker:
                             try:
                                 with open(_state_path("current-state.json"), encoding="utf-8", errors="replace") as _sf:
-                                    _cycle = json.load(_sf).get("cycle", 0)
+                                    self._cycle = json.load(_sf).get("cycle", 0)
                             except Exception:
-                                _cycle = 0
+                                self._cycle = 0
                             try:
                                 timestamp = _tracker.auto_record(agent_id="e1")
-                                log.debug("Cycle %s recorded: %s", _cycle, timestamp)
+                                self.log.debug("Cycle %s recorded: %s", self._cycle, timestamp)
                             except Exception as e:
-                                log.error("Failed to record cycle timestamp: %s", e)
+                                self.log.error("Failed to record cycle timestamp: %s", e)
 
-                    log.debug("TOOL RESULT [%s]: %s", func_name, result_str)
+                    self.log.debug("TOOL RESULT [%s]: %s", self.func_name, self.result_str)
 
                     # Search/find slow-loop detector.
                     # The dedup cache catches close-range repeats (within
@@ -9600,16 +9626,16 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # inserting other tool calls between retries.  Count real
                     # (non-deduped) dispatches of the same (func, args) and
                     # fire a forced-think when the count hits the threshold.
-                    if func_name in ("search_files", "find_symbol") and _dedup_sig is not None:
-                        _search_sig_counts[_dedup_sig] = _search_sig_counts.get(_dedup_sig, 0) + 1
-                        _search_n = _search_sig_counts[_dedup_sig]
-                        if _search_n >= _SEARCH_REPEAT_THRESHOLD:
+                    if self.func_name in ("search_files", "find_symbol") and _dedup_sig is not None:
+                        self._search_sig_counts[_dedup_sig] = self._search_sig_counts.get(_dedup_sig, 0) + 1
+                        _search_n = self._search_sig_counts[_dedup_sig]
+                        if _search_n >= self._SEARCH_REPEAT_THRESHOLD:
                             _s_think_prompt = (
-                                f"MANDATORY REFLECTION: I have dispatched {func_name} with "
+                                f"MANDATORY REFLECTION: I have dispatched {self.func_name} with "
                                 f"the same arguments {_search_n} times this session "
                                 f"(the dedup cache also blocked earlier repeats).\n\n"
-                                f"Arguments: {json.dumps(func_args)}\n"
-                                f"Last result: {result_str[:200]}\n\n"
+                                f"Arguments: {json.dumps(self.func_args)}\n"
+                                f"Last result: {self.result_str[:200]}\n\n"
                                 f"I MUST answer:\n"
                                 f"1. Why is this search not finding what I need?\n"
                                 f"2. Have I already confirmed the answer is not here — "
@@ -9618,15 +9644,15 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 f"path, or direct file read) would actually make progress?\n"
                                 f"4. Should I accept this target does not exist and move on?"
                             )
-                            log.warning(
+                            self.log.warning(
                                 "Search slow-loop: %s with same args dispatched %d times — forcing think",
-                                func_name, _search_n,
+                                self.func_name, _search_n,
                             )
-                            _emit("on_forced_think", func_name, _search_n)
+                            _emit("on_forced_think", self.func_name, _search_n)
                             if "think" in MAP_FN:
                                 _s_think_result = MAP_FN["think"](prompt=_s_think_prompt)
-                                _s_think_id = f"forced_think_search_{turn}_{_search_n}"
-                                conversation_history.append({
+                                _s_think_id = f"forced_think_search_{self.turn}_{_search_n}"
+                                self.conversation_history.append({
                                     "role": "assistant",
                                     "content": None,
                                     "tool_calls": [{
@@ -9638,24 +9664,24 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                         }
                                     }]
                                 })
-                                conversation_history.append({
+                                self.conversation_history.append({
                                     "role": "tool",
                                     "tool_call_id": _s_think_id,
                                     "name": "think",
                                     "content": str(_s_think_result),
                                 })
                             # Reset after intervention — allow one fresh attempt.
-                            _search_sig_counts[_dedup_sig] = 0
+                            self._search_sig_counts[_dedup_sig] = 0
 
                     # Track repeated tool results (errors and identical results)
-                    _result_sig = (func_name, result_str[:100])
-                    _recent_tool_errors.append(_result_sig)
-                    _result_repeats = sum(1 for e in _recent_tool_errors if e == _result_sig)
+                    _result_sig = (self.func_name, self.result_str[:100])
+                    self._recent_tool_errors.append(_result_sig)
+                    _result_repeats = sum(1 for e in self._recent_tool_errors if e == _result_sig)
 
                     # Past turn limit + same tool result 3 times = end cycle
-                    if turn > _MAX_TURNS and _result_repeats >= 3:
-                        log.warning("Overtime + repeated tool result (%s x%d) — ending cycle",
-                                    func_name, _result_repeats)
+                    if self.turn > _MAX_TURNS and _result_repeats >= 3:
+                        self.log.warning("Overtime + repeated tool result (%s x%d) — ending cycle",
+                                    self.func_name, _result_repeats)
                         _emit("on_overtime", "repeated_result")
                         return "done"
 
@@ -9666,40 +9692,40 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     # false-positive after 3 consecutive silent commands.
                     # _EXIT_ONLY_RE is compiled at module scope.
                     _result_is_noise = (
-                        not result_str.strip()
-                        or bool(_EXIT_ONLY_RE.match(result_str.strip()))
+                        not self.result_str.strip()
+                        or bool(_EXIT_ONLY_RE.match(self.result_str.strip()))
                     )
                     if not _result_is_noise:
                         _res_hash = hashlib.md5(
-                            result_str[:200].encode()
+                            self.result_str[:200].encode()
                         ).hexdigest()[:8]
-                        _tool_result_key = (func_name, _res_hash)
-                        _recent_tool_results.append(_tool_result_key)
-                        if len(_recent_tool_results) > _RESULT_LOOP_WINDOW:
-                            _recent_tool_results.pop(0)
+                        self._tool_result_key = (self.func_name, _res_hash)
+                        self._recent_tool_results.append(self._tool_result_key)
+                        if len(self._recent_tool_results) > self._RESULT_LOOP_WINDOW:
+                            self._recent_tool_results.pop(0)
                     _same_result_count = sum(
-                        1 for k in _recent_tool_results[-6:]
-                        if k == _tool_result_key
+                        1 for k in self._recent_tool_results[-6:]
+                        if k == self._tool_result_key
                     ) if not _result_is_noise else 0
-                    if _same_result_count >= _RESULT_LOOP_THRESHOLD:
-                        log.warning(
+                    if _same_result_count >= self._RESULT_LOOP_THRESHOLD:
+                        self.log.warning(
                             "Semantic result loop: %s returned same result %d times",
-                            func_name, _same_result_count)
-                        if func_name == "exec_command":
-                            _cmd_preview = ""
-                            if isinstance(func_args, dict):
-                                _cmd_preview = str(func_args.get("command", ""))[:120]
-                            _hint = (
+                            self.func_name, _same_result_count)
+                        if self.func_name == "exec_command":
+                            self._cmd_preview = ""
+                            if isinstance(self.func_args, dict):
+                                self._cmd_preview = str(self.func_args.get("command", ""))[:120]
+                            self._hint = (
                                 f"SYSTEM: exec_command has returned the same output "
-                                f"{_same_result_count} times (e.g. `{_cmd_preview}`). "
+                                f"{_same_result_count} times (e.g. `{self._cmd_preview}`). "
                                 f"If you are re-verifying a check (tests, lint, gh status), "
                                 f"the prior output is authoritative — do not re-run it. "
                                 f"Move to the next step (commit, push, open PR) or take a "
                                 f"materially different action."
                             )
                         else:
-                            _hint = (
-                                f"SYSTEM: The {func_name} tool has returned the "
+                            self._hint = (
+                                f"SYSTEM: The {self.func_name} tool has returned the "
                                 f"same result {_same_result_count} times despite "
                                 f"different arguments. Your approach is not working. "
                                 f"Either try a completely different method, or accept "
@@ -9708,65 +9734,65 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                         # WS10.e rung 2: escalate repeat interventions to a
                         # system-invoked think (same ladder as the batch-loop
                         # site above).
-                        _loop_interventions += 1
-                        if _loop_interventions >= 2 and "think" in MAP_FN:
+                        self._loop_interventions += 1
+                        if self._loop_interventions >= 2 and "think" in MAP_FN:
                             try:
-                                _fk = MAP_FN["think"](prompt=(
-                                    f"MANDATORY REFLECTION: {func_name} has "
+                                self._fk = MAP_FN["think"](prompt=(
+                                    f"MANDATORY REFLECTION: {self.func_name} has "
                                     f"returned the same result "
                                     f"{_same_result_count}x and a previous "
                                     f"redirect this cycle was ignored. Result "
-                                    f"tail: {result_str[:300]}. Answer: (1) "
+                                    f"tail: {self.result_str[:300]}. Answer: (1) "
                                     f"what is this result actually telling "
                                     f"me? (2) ONE materially different next "
                                     f"action; (3) if none, mark the step "
                                     f"failed and move to CONSOLIDATE/PERSIST."))
-                                _hint += ("\n\nFORCED REFLECTION (system-"
-                                          "invoked think):\n" + str(_fk)[:1500])
+                                self._hint += ("\n\nFORCED REFLECTION (system-"
+                                          "invoked think):\n" + str(self._fk)[:1500])
                                 telemetry.record_patch_event(
                                     "loop_forced_think", kind="fired")
                             except Exception as _fe:
-                                log.warning("forced think failed: %s", _fe)
+                                self.log.warning("forced think failed: %s", _fe)
                             # Stall-side advisor escalation: the model repeated a
                             # failing action AND ignored a prior redirect — the
                             # cognitively-stuck mode the gate-block trigger never
                             # sees (a stuck model never cleanly declares done).
                             # Offer the heavyweight advisor alongside the forced
                             # self-think; once-per-cycle, budget- and config-gated.
-                            _adv_nudge = _maybe_advisor_nudge(source="stall",
-                                                              context=_hint)
-                            if _adv_nudge:
-                                _hint += "\n\n" + _adv_nudge
-                        conversation_history.append({
+                            self._adv_nudge = self._maybe_advisor_nudge(source="stall",
+                                                              context=self._hint)
+                            if self._adv_nudge:
+                                self._hint += "\n\n" + self._adv_nudge
+                        self.conversation_history.append({
                             "role": "user",
-                            "content": _hint,
+                            "content": self._hint,
                         })
 
-                    if result_str.startswith("Error"):
+                    if self.result_str.startswith("Error"):
                         consecutive = _result_repeats
-                        if consecutive >= _REPEAT_THRESHOLD * 2:
+                        if consecutive >= self._REPEAT_THRESHOLD * 2:
                             # Model is stuck even after forced thinks — skip this step
-                            log.warning("Hard bail: %s failed %d times — skipping",
-                                        func_name, consecutive)
-                            _emit("on_tool_skip", func_name, consecutive)
-                            conversation_history.append({
+                            self.log.warning("Hard bail: %s failed %d times — skipping",
+                                        self.func_name, consecutive)
+                            _emit("on_tool_skip", self.func_name, consecutive)
+                            self.conversation_history.append({
                                 "role": "user",
                                 "content": (
-                                    f"SYSTEM: The {func_name} tool has failed {consecutive} times "
+                                    f"SYSTEM: The {self.func_name} tool has failed {consecutive} times "
                                     f"with the same error. This step is being SKIPPED. "
                                     f"Use exec_command with cat/heredoc to write files instead, "
                                     f"or move on to the next step."
                                 ),
                             })
-                            _recent_tool_errors[:] = [e for e in _recent_tool_errors if e[0] != func_name]
+                            self._recent_tool_errors[:] = [e for e in self._recent_tool_errors if e[0] != self.func_name]
                             break
-                        elif consecutive >= _REPEAT_THRESHOLD:
+                        elif consecutive >= self._REPEAT_THRESHOLD:
                             # Force a think call to break the loop
                             think_prompt = (
-                                f"MANDATORY REFLECTION: I have called {func_name} "
+                                f"MANDATORY REFLECTION: I have called {self.func_name} "
                                 f"{consecutive} times and gotten the same error each time.\n\n"
-                                f"The error is: {result_str[:300]}\n\n"
-                                f"My last arguments were: {json.dumps(func_args) if isinstance(func_args, dict) else str(func_args)}\n\n"
+                                f"The error is: {self.result_str[:300]}\n\n"
+                                f"My last arguments were: {json.dumps(self.func_args) if isinstance(self.func_args, dict) else str(self.func_args)}\n\n"
                                 f"I MUST answer these questions:\n"
                                 f"1. What exactly is the error telling me?\n"
                                 f"2. What parameter am I missing or getting wrong?\n"
@@ -9775,14 +9801,14 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                 f"4. Should I just skip this step and move on to "
                                 f"CONSOLIDATE and PERSIST?"
                             )
-                            log.warning("Loop detected: %s x%d — forcing think",
-                                        func_name, consecutive)
-                            _emit("on_forced_think", func_name, consecutive)
+                            self.log.warning("Loop detected: %s x%d — forcing think",
+                                        self.func_name, consecutive)
+                            _emit("on_forced_think", self.func_name, consecutive)
                             if "think" in MAP_FN:
                                 think_result = MAP_FN["think"](prompt=think_prompt)
                                 # Inject as assistant thought + tool response
-                                think_id = f"forced_think_{turn}_{consecutive}"
-                                conversation_history.append({
+                                think_id = f"forced_think_{self.turn}_{consecutive}"
+                                self.conversation_history.append({
                                     "role": "assistant",
                                     "content": None,
                                     "tool_calls": [{
@@ -9794,59 +9820,60 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                                         }
                                     }]
                                 })
-                                conversation_history.append({
+                                self.conversation_history.append({
                                     "role": "tool",
                                     "tool_call_id": think_id,
                                     "name": "think",
                                     "content": str(think_result),
                                 })
-                                log.info("FORCED THINK RESULT: %s", think_result)
+                                self.log.info("FORCED THINK RESULT: %s", think_result)
                     else:
                         # Successful call — reset tracker for this tool
-                        _recent_tool_errors[:] = [e for e in _recent_tool_errors if e[0] != func_name]
-                    _emit("on_tool_result", func_name, func_args, result_str,
-                          result_str.startswith("Error"))
+                        self._recent_tool_errors[:] = [e for e in self._recent_tool_errors if e[0] != self.func_name]
+                    _emit("on_tool_result", self.func_name, self.func_args, self.result_str,
+                          self.result_str.startswith("Error"))
         except CancelledError:
             _emit("on_cancelled", "tool_execution")
-            log.info(
+            self.log.info(
                 "cancel.latency_ms latency_ms=%d site=tool_execution backend=%s",
                 int((time.monotonic() - _tool_exec_t0) * 1000),
                 _main_backend.kind,
             )
-            log.info("CANCELLED during tool execution")
-            if _async_summarizer:
-                _async_summarizer.drain()
-                _async_summarizer.harvest(summary_state)
-            _save_checkpoint(conversation_history, summary_state, turn, initial_files)
+            self.log.info("CANCELLED during tool execution")
+            if self._async_summarizer:
+                self._async_summarizer.drain()
+                self._async_summarizer.harvest(self.summary_state)
+            _save_checkpoint(self.conversation_history, self.summary_state, self.turn, self.initial_files)
             return "cancelled"
 
+    def _end_turn(self):
         # If ALL tool calls in this turn were garbled, retry the turn once
         # by removing the assistant message + error responses and re-requesting.
-        if _garbled_count > 0 and _garbled_count >= len(tool_calls):
+        if self._garbled_count > 0 and self._garbled_count >= len(self.tool_calls):
             _garble_retries = getattr(run_agent_single, '_garble_retries', 0)
             if _garble_retries < 1:
-                log.warning("All %d tool call(s) garbled — retrying turn %d", _garbled_count, turn)
+                self.log.warning("All %d tool call(s) garbled — retrying turn %d", self._garbled_count, self.turn)
                 # Remove the assistant message and all error tool responses from this turn
                 # The assistant message is right before the tool responses
-                _to_remove = 1 + _garbled_count  # assistant + tool error responses
-                conversation_history[-_to_remove:] = []
+                _to_remove = 1 + self._garbled_count  # assistant + tool error responses
+                self.conversation_history[-_to_remove:] = []
                 run_agent_single._garble_retries = _garble_retries + 1
-                continue  # retry the same turn
+                return _NEXT  # retry the same turn
             else:
-                log.warning("Garble retry exhausted — proceeding with error responses")
+                self.log.warning("Garble retry exhausted — proceeding with error responses")
                 run_agent_single._garble_retries = 0
         else:
             run_agent_single._garble_retries = 0
 
-        _apply_tool_loads(_session_tools, log)   # one list change per turn, before the checkpoint
+        _apply_tool_loads(self._session_tools, self.log)   # one list change per turn, before the checkpoint
         # Save checkpoint after each turn so -c can resume from here
-        if _async_summarizer:
-            _async_summarizer.harvest(summary_state)
-        _save_checkpoint(conversation_history, summary_state, turn, initial_files)
+        if self._async_summarizer:
+            self._async_summarizer.harvest(self.summary_state)
+        _save_checkpoint(self.conversation_history, self.summary_state, self.turn, self.initial_files)
         if _RESTART["requested"]:
             # The restart tool answered this turn; its result is in the history and the
             # checkpoint. The session loop ends on the flag and main() re-executes.
-            log.info("restart requested by %s (%s): ending the turn for the re-exec",
+            self.log.info("restart requested by %s (%s): ending the turn for the re-exec",
                      _RESTART["by"], _RESTART["reason"] or "no reason")
             return "restart"
 
@@ -9854,11 +9881,27 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         # when at least one counter is non-zero (no fires = no log noise).
         # Cumulative within the session; OTEL metrics carry the per-event
         # detail for cross-session aggregation on the telemetry server.
-        if any(v > 0 for v in _patch_telemetry.values()):
-            _summary = " | ".join(
-                f"{k}={v}" for k, v in _patch_telemetry.items() if v > 0
+        if any(v > 0 for v in self._patch_telemetry.values()):
+            self._summary = " | ".join(
+                f"{k}={v}" for k, v in self._patch_telemetry.items() if v > 0
             )
-            log.info("[patch-telemetry] %s", _summary)
+            self.log.info("[patch-telemetry] %s", self._summary)
+
+    _STEPS = (_begin_turn, _request, _stream, _record_response, _text_only, _tool_guard, _dispatch, _end_turn)
+
+
+def _run_agent_single_impl(conversation_history: list, summary_state: dict, initial_files,
+                     log: logging.Logger,
+                     temperature=_DEFAULT_CONFIG["generation"]["temperature"],
+                     top_p=_DEFAULT_CONFIG["generation"]["top_p"],
+                     top_k=_DEFAULT_CONFIG["generation"]["top_k"],
+                     presence_penalty=_DEFAULT_CONFIG["generation"]["presence_penalty"],
+                     max_tokens=_DEFAULT_CONFIG["context"]["max_tokens"],
+                     ctx_size=_DEFAULT_CONFIG["context"]["ctx_size"],
+                     start_turn=0, async_summarizer=None):
+    """Run the agentic loop with turn limits and wind-down."""
+    return _Run(conversation_history, summary_state, initial_files, log, temperature, top_p,
+                top_k, presence_penalty, max_tokens, ctx_size, start_turn, async_summarizer).run()
 
 
 # Make the cycle_status wrapper (run_agent_single, defined above with a bare
