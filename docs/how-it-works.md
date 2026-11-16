@@ -69,6 +69,7 @@ wizard_ui.py          # Radio lists and checkboxes for the wizards
 commands.py           # Slash-command dispatcher
 skills.py             # Skills: SKILL.md discovery, the catalog line, the picker (see "Skills")
 lead.py               # `@file` references, identity files and the lead of a trimmed window
+context_window.py     # The window a request carries, and the token accounting behind it
 restart_state.py      # The state behind /restart and the restart tool
 tui.py                # prompt_toolkit front end
 transcript.py         # Session record, reprinted on terminal resize

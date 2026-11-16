@@ -116,13 +116,14 @@ class TestBuildContextFootnoteDeduplicated(unittest.TestCase):
 
     @classmethod
     def _build_context_body(cls):
-        """Extract the source text of _build_context from agent.py."""
-        src_path = os.path.join(os.path.dirname(__file__), "..", "agent.py")
+        """Extract the source text of build_context from context_window.py (the builder
+        moved there from agent.py on 2026-11-16; it calls the footnote through DEPS)."""
+        src_path = os.path.join(os.path.dirname(__file__), "..", "context_window.py")
         with open(src_path) as f:
             src = f.read()
-        # Capture from 'def _build_context(' to the next top-level 'def '
+        # Capture from 'def build_context(' to the next top-level 'def '
         m = re.search(
-            r"def _build_context\b.*?(?=\ndef [a-zA-Z_]|\Z)",
+            r"def build_context\b.*?(?=\ndef [a-zA-Z_]|\Z)",
             src,
             re.DOTALL,
         )
@@ -133,7 +134,7 @@ class TestBuildContextFootnoteDeduplicated(unittest.TestCase):
         helper owns that list.  Before cycle 0032 this count was 2 (one
         in the normal path, one in the condensed path); after it must be 0."""
         body = self._build_context_body()
-        self.assertTrue(body, "Could not locate _build_context in agent.py")
+        self.assertTrue(body, "Could not locate build_context in context_window.py")
         count = body.count("parts = []")
         self.assertEqual(
             count,
@@ -146,11 +147,11 @@ class TestBuildContextFootnoteDeduplicated(unittest.TestCase):
     def test_build_context_calls_footnote_helper(self):
         """_build_context must call _build_context_footnote at least once."""
         body = self._build_context_body()
-        self.assertTrue(body, "Could not locate _build_context in agent.py")
+        self.assertTrue(body, "Could not locate build_context in context_window.py")
         self.assertIn(
-            "_build_context_footnote(",
+            'DEPS["footnote"](',
             body,
-            "_build_context must call _build_context_footnote — helper was removed?",
+            "build_context must build the lead through the footnote helper agent.py hands it",
         )
 
 

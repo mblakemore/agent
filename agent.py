@@ -94,7 +94,7 @@ except ImportError:
     class CircuitBreakerError(Exception):
         pass
 from spinner import StreamStatus
-from token_utils import count_tokens_from_message, count_tools_tokens
+from token_utils import count_tokens_from_message
 from tools import MAP_FN, tools, load_extra_tools
 import tools as _registry
 import skills as _skills
@@ -432,6 +432,7 @@ def _emit(method, *args, **kwargs):
     return safe_cb(_cb, method, *args, log=_cb_log, **kwargs)
 
 
+import context_window as _cw
 import lead as _lead
 from lead import RUNTIME_NOTE_HEAD as _RUNTIME_NOTE_HEAD
 _EXIT_ONLY_RE = re.compile(r'^\[session:[^\]]+\]\s+exit=0\s*$')
@@ -1638,10 +1639,15 @@ _MAX_FULL_LINES = _config["context"]["max_full_lines"]
 _PREVIEW_LINES = _config["context"]["preview_lines"]
 _SUMMARY_THRESHOLD = _sane_summary_threshold(_config["context"])
 _SUMMARY_MAX_CHARS = _config["context"]["summary_max_chars"]
-_lead.configure(max_full_lines=_MAX_FULL_LINES, preview_lines=_PREVIEW_LINES,
-                model_guards=_config["context"].get("model_guards", True),
-                emit=_emit)
-_MAX_CONTEXT_MESSAGES = _config["context"]["max_context_messages"]
+# A second execution of this file as a script while the imported `agent` module is
+# live (a test runner's runpy) must not re-register the modules' hooks from its own
+# throwaway namespace: the hooks would then read that namespace's state, not the
+# module's that the tests patch.
+_FIRST_LOAD = not (__name__ == "__main__" and "agent" in sys.modules)
+if _FIRST_LOAD:
+    _lead.configure(max_full_lines=_MAX_FULL_LINES, preview_lines=_PREVIEW_LINES,
+                    model_guards=_config["context"].get("model_guards", True),
+                    emit=_emit)
 
 _LLM_MAX_RETRIES = _config["retry"]["max_retries"]
 _LLM_BASE_DELAY = _config["retry"]["base_delay_seconds"]
@@ -2510,7 +2516,11 @@ def _prefix_diff(prev_sig, cur_sig):
 # P4.2 — on a prompt-caching backend, evict down to this fraction of the window
 # in one step, then grow append-only again: one cache miss per eviction instead
 # of one per turn.
-_CACHE_EVICT_TO_FRAC = 0.6
+
+
+_CACHE_EVICT_TO_FRAC = _cw.CACHE_EVICT_TO_FRAC
+_ALIGN_BAND = _cw.ALIGN_BAND
+_cache_collapse_due = _cw.collapse_due
 
 
 def _cache_collapse_frac():
@@ -2519,19 +2529,6 @@ def _cache_collapse_frac():
         return max(0.0, min(1.0, float(_config.get("context", {}).get("cache_collapse_frac", 0) or 0)))
     except (TypeError, ValueError):
         return 0.0
-
-
-def _cache_collapse_due(gap_s, alive_s, frac, window_tokens, budget):
-    """Pure: whether the next request should be rebuilt small. The prefix is dead
-    when the gap since the last request outlives what the record has proven, and
-    everything sent then is billed uncached (measured 2026-10-31 on AI Commons: 21x
-    the cached rate), so the window is worth rebuilding only when it would shrink:
-    a window already under one and a half times the collapsed size is sent as is."""
-    if not frac or gap_s is None or alive_s is None:
-        return False
-    if gap_s <= alive_s:
-        return False
-    return window_tokens > budget * frac * 1.5
 
 
 def _summary_wait_s():
@@ -2556,7 +2553,6 @@ def _summary_ahead_frac():
     return v if 0.0 < v < 1.0 else 0.0
 
 
-_ALIGN_BAND = (0.75, 1.25)   # an aligned window may be this much smaller or larger than a greedy one
 
 
 class _CompletionResponse:
@@ -3360,17 +3356,16 @@ def _salvage_tool_args(func_name, raw_args, log):
 
 
 # ── Token estimation ───────────────────────────────────────────────────
-
-def _estimate_tokens(msg):
-    return count_tokens_from_message(msg)
-
+# The estimator, the calibration ratio and the tool-schema size live in context_window.py
+# and are read from there at call time (`_cw.estimate_tokens`, `_cw.TOKEN_CAL`,
+# `_cw.TOOLS_TOKENS`): one value, wherever it is set.
+_update_token_calibration, _calibrated_budget = _cw.update_token_calibration, _cw.calibrated_budget
 
 # F3b — drift-free context accounting. The estimator (token_utils) is a fixed tokenizer /
 # chars-per-token guess; every streamed turn returns the server's REAL prompt_tokens for what
 # was actually sent. Keep an observed ratio (actual / estimated) and budget the next window
 # with it. The heuristic is the first guess, not a permanent assumption; a tokenizer mismatch
 # between the estimator and the served model shows up here as a ratio far from 1.0.
-_TOKEN_CAL = {"ratio": 1.0, "n": 0, "last_logged": 1.0}
 _PREFILL_TPS_FLOOR = float(os.environ.get("AGENT_PREFILL_TPS_FLOOR", "500") or 500)
 # Cache-miss attribution state, for the PROCESS, not the run: the server's cache does
 # not know that a new user prompt started a new run_agent_single, so neither may the
@@ -3723,40 +3718,6 @@ def _stall_budget_s(base_s, est_prompt_tokens, prefill_tps_floor):
     if est <= 0 or floor <= 0:
         return base_s
     return max(base_s, est / floor)
-_TOKEN_CAL_ALPHA = 0.3        # EMA weight of the newest observation
-_TOKEN_CAL_MIN, _TOKEN_CAL_MAX = 0.25, 4.0   # a single absurd reading cannot wreck the budget
-
-
-def _update_token_calibration(estimated_tokens, actual_prompt_tokens, log=None, cal=None):
-    """Pure enough to test: feed (estimate we sent, tokens the server counted) and get the
-    updated ratio. Ignores readings that cannot be right (zero/negative, or outside the clamp
-    after smoothing). Logs when the ratio moves by more than 10% since the last log line."""
-    cal = _TOKEN_CAL if cal is None else cal
-    try:
-        est, act = float(estimated_tokens), float(actual_prompt_tokens)
-    except (TypeError, ValueError):
-        return cal["ratio"]
-    if est <= 0 or act <= 0:
-        return cal["ratio"]
-    obs = act / est
-    if not (_TOKEN_CAL_MIN <= obs <= _TOKEN_CAL_MAX):
-        if log:
-            log.debug("token calibration: ignored implausible ratio %.2f (est %d, actual %d)", obs, est, act)
-        return cal["ratio"]
-    new = obs if cal["n"] == 0 else (1 - _TOKEN_CAL_ALPHA) * cal["ratio"] + _TOKEN_CAL_ALPHA * obs
-    cal["ratio"] = min(_TOKEN_CAL_MAX, max(_TOKEN_CAL_MIN, new))
-    cal["n"] += 1
-    if log and abs(cal["ratio"] - cal["last_logged"]) / max(cal["last_logged"], 1e-9) > 0.10:
-        log.info("token calibration: observed/estimated ratio now %.2f (n=%d, this turn %.2f) — "
-                 "context budget scales by 1/ratio", cal["ratio"], cal["n"], obs)
-        cal["last_logged"] = cal["ratio"]
-    return cal["ratio"]
-
-
-def _calibrated_budget(budget, cal=None):
-    """Tokens the estimator may spend so that the SERVER sees at most `budget`."""
-    cal = _TOKEN_CAL if cal is None else cal
-    return int(budget / cal["ratio"]) if cal.get("n", 0) > 0 and cal["ratio"] > 0 else int(budget)
 
 
 _EXTENDED_KEYWORDS = frozenset({
@@ -3824,14 +3785,6 @@ def _get_adaptive_max_tokens(model: str, complexity: str) -> int:
     return _COMPLEXITY_MAX_TOKENS["_default"][complexity]
 
 
-_TOOLS_TOKENS = None
-
-
-def _estimate_tools_tokens():
-    global _TOOLS_TOKENS
-    if _TOOLS_TOKENS is None:
-        _TOOLS_TOKENS = count_tools_tokens(tools)
-    return _TOOLS_TOKENS
 
 
 # ── File reference expansion and the lead (lead.py) ───────────────────────────
@@ -4117,8 +4070,8 @@ def _history_pressure(conversation_history, start=0):
     if ctx <= 0:
         return 0.0
     window = conversation_history[start:] if start else conversation_history
-    est = ((_TOOLS_TOKENS or 0) + sum(_estimate_tokens(m) for m in window)) \
-        * float(_TOKEN_CAL.get("ratio", 1.0) or 1.0)
+    est = ((_cw.TOOLS_TOKENS or 0) + sum(_cw.estimate_tokens(m) for m in window)) \
+        * float(_cw.TOKEN_CAL.get("ratio", 1.0) or 1.0)
     return est / ctx
 
 
@@ -4656,295 +4609,37 @@ def _spill_oversized_tool_results(conversation_history, log, threshold):
     return spilled
 
 
-_TRIMMED_LEAD = "\n\n[Earlier conversation trimmed. Continue.]"
 
 
-def _build_initial_files_msg(initial_files):
-    """The lead message of a trimmed window when there is no summary yet: the identity
-    file(s) the run started with (@AGENT.md / @CLAUDE.md). Byte-stable between calls —
-    it heads the request, so any per-turn text here would re-bill the whole history."""
-    return {"role": "user", "content": initial_files + _TRIMMED_LEAD}
 
 
-def _context_budget(ctx_size, max_tokens):
-    """The token budget of one request's window: the context less the tools, the
-    reserved output and a safety margin (ctx_size//4: chat-template overhead the
-    tokenizer does not count), calibrated to what the server actually counts (F3b)."""
-    global _TOOLS_TOKENS
-    if _TOOLS_TOKENS is None:
-        _TOOLS_TOKENS = _estimate_tools_tokens()
-    reserved_output = min(max_tokens, ctx_size // 2)
-    budget = ctx_size - _TOOLS_TOKENS - reserved_output - max(512, ctx_size // 4)
-    return _calibrated_budget(budget)
+# ── Context window (context_window.py) ────────────────────────────────────────
+# The builder keeps its old names here for the loop and the tests; the shared state
+# (estimate_tokens, TOKEN_CAL, TOOLS_TOKENS, MAX_CONTEXT_MESSAGES) is read through
+# the module at call time, never through a copy.
+_TRIMMED_LEAD = _cw.TRIMMED_LEAD
+_build_initial_files_msg, _context_budget = _cw.build_initial_files_msg, _cw.context_budget
+_fill_window, _evicted_edge, _aligned_head = _cw.fill_window, _cw.evicted_edge, _cw.aligned_head
+_lead_tokens, _collapse_edge, _log_lead = _cw.lead_tokens, _cw.collapse_edge, _cw.log_lead
+_build_context = _cw.build_context
 
 
-def _fill_window(history, fill_budget, fill_max, context_tokens):
-    """Pure: the greedy fill from the newest message back, stopping at `fill_max`
-    messages or `fill_budget` tokens, with `context_tokens` reserved for the lead
-    whenever the window would not start at message 0. Returns (oldest_idx, used):
-    where the window starts (len(history) when nothing fits) and its tokens."""
-    used, n, oldest = 0, 0, len(history)
-    for i in range(len(history) - 1, -1, -1):
-        if n >= fill_max:
-            break
-        t = _estimate_tokens(history[i])
-        if used + t + (context_tokens if i > 0 else 0) > fill_budget:
-            break
-        used += t
-        n += 1
-        oldest = i
-    return oldest, used
+def _cache_alive_s():
+    """The proven cache lifetime of the current backend, for the window builder."""
+    alive, _ = _cache_lifetime_estimate(_cache_lifetimes(), _cache_lifetime_key())
+    return alive
 
 
-def _evicted_edge(history, head, used, budget, n_max, ahead, lead=0):
-    """Pure: the index up to which the next eviction is certain to drop messages, or
-    None while the window stands under `ahead` of both limits. An eviction keeps the
-    newest _CACHE_EVICT_TO_FRAC of the budget (and of the message cap), so at least
-    the other share of the window as it stands now leaves at the next one, and its
-    summary can be made now and be ready then. `lead` is the lead message's tokens:
-    the eviction fires when window and lead together outgrow the budget, so the line
-    is measured on both (a lead of a quarter of the budget kept the window alone under
-    80% right up to every eviction, and nothing was ever kicked ahead: 2026-11-14).
-    The kept share stays `used` less the leaving share of the budget: with the growth
-    still to come before the eviction it lands on the same window a greedy rebuild
-    makes, lead or no lead."""
-    if not ahead or head is None or head >= len(history):
-        return None
-    n = len(history) - head
-    keep = _CACHE_EVICT_TO_FRAC
-    by_tokens = used + lead >= budget * ahead
-    by_count = n >= n_max * ahead
-    if not (by_tokens or by_count):
-        return None
-    keep_budget = int(used - budget * (1.0 - keep)) if by_tokens else budget
-    keep_max = (n - (n_max + 1 - max(2, int(n_max * keep)))) if by_count else n_max
-    if keep_budget <= 0 or keep_max <= 0:
-        return None
-    edge, _ = _fill_window(history, keep_budget, keep_max, 0)
-    return edge if head < edge < len(history) else None
+def _last_request_at():
+    return _CACHE_REQ["last_at"]
 
 
-def _aligned_head(history, ready, head, fill_budget, fill_max, n_max, budget, context_tokens):
-    """Pure: when a summary is ready up to `ready`, past the current `head`, and the
-    window from there is within _ALIGN_BAND of the one a greedy rebuild would make,
-    that is the new head: nothing leaves unsummarized and nothing is waited for. A
-    summary made for a collapse is never taken at an eviction, nor the reverse: the
-    band rejects a window a quarter smaller or larger than the greedy one."""
-    if not isinstance(ready, int) or head is None or ready <= head or ready >= len(history):
-        return None
-    n = len(history) - ready
-    used = sum(_estimate_tokens(m) for m in history[ready:])
-    if n > n_max or used + context_tokens > budget:
-        return None
-    g_idx, g_used = _fill_window(history, fill_budget, fill_max, context_tokens)
-    g_n = len(history) - g_idx
-    if not g_n:
-        # The greedy rebuild keeps no message (a lead larger than the share): a summary
-        # that ends within a message or two of the end is the whole of it.
-        return ready if n <= 2 else None
-    if not g_used:
-        return None
-    lo, hi = _ALIGN_BAND
-    if used > g_used * hi:
-        return None
-    if used >= g_used * lo or n >= g_n * lo:
-        return ready
-    return None
-
-
-def _lead_tokens(summary_state, initial_files):
-    """The tokens of the lead message a trimmed window would carry right now."""
-    if summary_state.get("text"):
-        return _estimate_tokens(_build_context_footnote(summary_state["text"], initial_files))
-    if initial_files:
-        return _estimate_tokens(_build_initial_files_msg(initial_files))
-    return 0
-
-
-def _collapse_edge(history, summary_state, initial_files, ctx_size, max_tokens):
-    """The head a cache collapse would rebuild the window to if it happened now, or
-    None when it would not happen (collapse off, no kept head, the window already
-    small: the same test as _cache_collapse_due) or nothing new would leave. The
-    head may be the end of the history: a lead larger than the collapsed share
-    leaves the rebuilt window with no message at all (the builder does the same),
-    and the summary of everything is what that collapse needs."""
-    frac = _cache_collapse_frac()
-    head = summary_state.get("_cache_head")
-    if not frac or not isinstance(head, int) or not (0 <= head < len(history)):
-        return None
-    budget = _context_budget(ctx_size, max_tokens)
-    lead = _lead_tokens(summary_state, initial_files)
-    used = sum(_estimate_tokens(m) for m in history[head:]) + (lead if head > 0 else 0)
-    if not used > budget * frac * 1.5:
-        return None
-    edge, _ = _fill_window(history, int(budget * frac), max(2, int(_MAX_CONTEXT_MESSAGES * frac)), lead)
-    return edge if edge > summary_state.get("up_to", 0) and edge <= len(history) else None
-
-
-_LEAD_LOGGED = {"tokens": None}   # the last context.lead line's size (one per process)
-
-
-def _log_lead(tokens, summary_state, initial_files, log):
-    """One INFO line with the lead's size, again when it moves by more than a tenth. The
-    lead (the identity files and the summary, as the footnote carries them) rides in every
-    trimmed request and sets what a cache collapse can keep; a trim of the identity file
-    should be measured here, not estimated from a chars-per-token ratio (2026-11-15: a
-    lead of 12.5k tokens in a 56.6k budget was found on the debug line by accident)."""
-    last = _LEAD_LOGGED["tokens"]
-    if last is not None and abs(tokens - last) <= last // 10:
-        return
-    _LEAD_LOGGED["tokens"] = tokens
-    text = summary_state.get("text") or ""
-    files = _estimate_tokens({"role": "user", "content": initial_files}) if initial_files else 0
-    summary = _estimate_tokens({"role": "user", "content": text}) if text else 0
-    log.info("context.lead tokens=%d files=%d summary=%d", tokens, files, summary)
-
-
-def _build_context(conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
-                    max_messages_override=None):
-    """Build the context window dynamically based on token budget.
-
-    When messages are dropped and a summary exists, a synthetic user message
-    is prepended containing the initial file contents and the progress summary.
-
-    Args:
-        max_messages_override: If set, cap messages to this count (used for
-            context reduction on 500 errors).
-
-    Returns (messages_to_send, oldest_included_idx).
-    """
-    budget = _context_budget(ctx_size, max_tokens)
-    effective_max = max_messages_override if max_messages_override else _MAX_CONTEXT_MESSAGES
-
-    context_msg = None
-    context_tokens = 0
-    if summary_state["text"]:
-        context_msg = _build_context_footnote(summary_state["text"], initial_files)
-        context_tokens = _estimate_tokens(context_msg)
-
-        # If summary takes a large share of the budget, reduce message count
-        # rather than truncating the summary — the summary IS the agent's memory
-        # of all prior work and must be preserved intact.
-        if context_tokens > budget * 0.8:
-            # Summary alone exceeds the budget — condense it
-            log.warning("Summary exceeds 80%% of budget (%d/%d tokens) — condensing", context_tokens, budget)
-            summary_state["text"] = _condense_summary(summary_state["text"], log)
-            # Rebuild context_msg with condensed summary
-            context_msg = _build_context_footnote(summary_state["text"], initial_files)
-            context_tokens = _estimate_tokens(context_msg)
-            log.info("Condensed summary, context now %d tokens", context_tokens)
-    elif initial_files:
-        # No summary yet (or none ever, on a backend whose window evicts in chunks):
-        # the identity file still leads any window that no longer starts at message 0.
-        # Measured before this: the first eviction dropped CLAUDE.md six minutes into a
-        # 2.5 h run and the agent re-read fragments of it from the shell 18 times.
-        context_msg = _build_initial_files_msg(initial_files)
-        context_tokens = _estimate_tokens(context_msg)
-    if context_msg:
-        _log_lead(context_tokens, summary_state, initial_files, log)
-        if context_tokens > budget * 0.5:
-            # Summary is large — reduce message count to make room
-            remaining_budget = budget - context_tokens
-            avg_msg_tokens = 150  # rough estimate per message
-            max_msgs = max(2, int(remaining_budget / avg_msg_tokens))
-            if max_msgs < effective_max:
-                log.info("Summary uses %d/%d tokens — reducing messages from %d to %d",
-                         context_tokens, budget, effective_max, max_msgs)
-                effective_max = max_msgs
-
-    used = 0
-    selected = []
-    oldest_idx = len(conversation_history)
-    head = summary_state.get("_cache_head") if _prompt_caching_backend() and not max_messages_override else None
-    fill_frac = None
-    if head is not None and 0 <= head < len(conversation_history):
-        # P4.2: keep the window's head where it is while everything from it still
-        # fits, so this request extends the previous one byte for byte.
-        window = conversation_history[head:]
-        used = sum(_estimate_tokens(m) for m in window)
-        extra = context_tokens if (context_msg and head > 0) else 0
-        gap_s = (time.time() - _CACHE_REQ["last_at"]) if _CACHE_REQ["last_at"] > 0 else None
-        alive_s, _ = _cache_lifetime_estimate(_cache_lifetimes(), _cache_lifetime_key())
-        collapse_frac = _cache_collapse_frac()
-        if _cache_collapse_due(gap_s, alive_s, collapse_frac, used + extra, budget):
-            # The cached prefix outlived its recorded lifetime while the agent was
-            # idle, so this request is billed uncached whatever it holds: rebuild it
-            # small, behind a summary of what leaves (folded in by the run loop).
-            log.info("cache collapse: idle %ds > lifetime %ds; window of %d messages (~%d tokens) "
-                     "rebuilt to %d%% of the budget", int(gap_s), int(alive_s), len(window),
-                     used + extra, int(collapse_frac * 100))
-            summary_state["_collapsed"] = True            # read by the cache.miss log
-            summary_state["_collapse_summarize"] = True   # read by the run loop
-            fill_frac = collapse_frac
-            used = 0
-        elif len(window) <= effective_max and used + extra <= budget:
-            selected, oldest_idx = list(window), head
-        else:
-            used = 0
-    if not selected:
-        # Greedy fill from the newest message back. On a caching backend, fill only
-        # to a fraction of the limits, so the new head then holds for many turns.
-        frac = fill_frac or (_CACHE_EVICT_TO_FRAC if (_prompt_caching_backend() and not max_messages_override) else 1.0)
-        fill_budget = int(budget * frac) if frac < 1.0 else budget
-        fill_max = max(2, int(effective_max * frac)) if frac < 1.0 else effective_max
-        aligned = None
-        if frac < 1.0 and head is not None:
-            # A summary made ahead of this head move (summary.ahead, or the idle watcher
-            # before a collapse) ends at _ready_up_to: start the window there when that
-            # is about the size a greedy rebuild would make, so the summary is complete
-            # and nothing waits.
-            aligned = _aligned_head(conversation_history, summary_state.get("_ready_up_to"), head,
-                                    fill_budget, fill_max, effective_max, budget, context_tokens)
-        if aligned is not None:
-            oldest_idx = aligned
-            used = sum(_estimate_tokens(m) for m in conversation_history[aligned:])
-            log.info("summary.align: window head %s -> %d, where the ready summary ends (%d messages, ~%d tokens)",
-                     head, aligned, len(conversation_history) - aligned, used)
-            telemetry.record_patch_event("summary_align", kind="fired")
-        else:
-            oldest_idx, used = _fill_window(conversation_history, fill_budget, fill_max,
-                                            context_tokens if context_msg else 0)
-        selected = list(conversation_history[oldest_idx:])
-        if frac < 1.0:
-            if summary_state.get("_cache_head") not in (None, oldest_idx):
-                log.info("cache-friendly eviction: window head %s -> %d (%d messages, ~%d tokens)",
-                         summary_state.get("_cache_head"), oldest_idx, len(selected), used)
-                summary_state["_head_moved"] = True   # read by the cache.miss log, then cleared
-                # The prefix after the lead is dead on this request anyway, so the lead
-                # may change at no extra cost: the run loop summarises what left the
-                # window before sending, instead of harvesting it two turns later as a
-                # second miss (measured 2026-11-02 on kimi: 11 harvest misses, 220k
-                # uncached tokens, in 40 minutes of tool-heavy work).
-                summary_state["_evict_summarize"] = True
-            summary_state["_cache_head"] = oldest_idx
-
-    window_used = used
-    if oldest_idx > 0 and context_msg:
-        selected.insert(0, context_msg)
-        used += context_tokens
-    else:
-        context_msg = None   # nothing leads an untrimmed window (the log line reports what was sent)
-    ahead = _summary_ahead_frac() if (_prompt_caching_backend() and not max_messages_override) else 0.0
-    if ahead and oldest_idx < len(conversation_history):
-        # Read by the run loop: the worker summarizes up to the edge now, the eviction
-        # then aligns to it (above) and goes out with its summary at no wait.
-        edge = _evicted_edge(conversation_history, oldest_idx, window_used, budget, effective_max, ahead,
-                             context_tokens if context_msg else 0)
-        if edge is not None and edge > summary_state.get("up_to", 0):
-            summary_state["_ahead_edge"] = edge
-    if context_msg is None and not any(m["role"] == "user" for m in selected):
-        if initial_files:
-            selected.insert(0, {"role": "user", "content": initial_files + "\n\nContinue."})
-        else:
-            for i in range(oldest_idx - 1, -1, -1):
-                if conversation_history[i]["role"] == "user":
-                    selected.insert(0, conversation_history[i])
-                    break
-
-    summary_state["_head"] = oldest_idx   # read by AsyncSummarizer.harvest: a summary past it is held
-    log.debug("Context budget: %d/%d tokens, %d messages, oldest_idx=%d, has_context_msg=%s",
-              used, budget, len(selected), oldest_idx, context_msg is not None)
-    return selected, oldest_idx
+if _FIRST_LOAD:
+    _cw.configure(max_context_messages=_config["context"]["max_context_messages"], tool_list=tools,
+                  footnote=_build_context_footnote, condense_summary=_condense_summary,
+                  prompt_caching=_prompt_caching_backend, summary_ahead_frac=_summary_ahead_frac,
+                  collapse_frac=_cache_collapse_frac, cache_alive_s=_cache_alive_s,
+                  last_request_at=_last_request_at)
 
 
 def _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=False):
@@ -5555,9 +5250,9 @@ def _list_available_models(base_url, timeout=3):
 
 def _render_context_bar(history, summary_state, ctx_size, width=30):
     """Return a multi-line string showing current context usage with a bar."""
-    body_tokens = sum(_estimate_tokens(m) for m in history) if history else 0
+    body_tokens = sum(_cw.estimate_tokens(m) for m in history) if history else 0
     summary_text = summary_state.get("text", "") or ""
-    summary_tokens = _estimate_tokens({"role": "system", "content": summary_text}) if summary_text else 0
+    summary_tokens = _cw.estimate_tokens({"role": "system", "content": summary_text}) if summary_text else 0
     total = body_tokens + summary_tokens
     pct = total / ctx_size if ctx_size else 0.0
     bar = theme.bar(pct, width=width)
@@ -5688,10 +5383,11 @@ def _apply_setup_updates(updates):
         for gname, key in (("_MAX_FULL_LINES", "max_full_lines"),
                            ("_PREVIEW_LINES", "preview_lines"),
                            ("_SUMMARY_THRESHOLD", "summary_threshold"),
-                           ("_SUMMARY_MAX_CHARS", "summary_max_chars"),
-                           ("_MAX_CONTEXT_MESSAGES", "max_context_messages")):
+                           ("_SUMMARY_MAX_CHARS", "summary_max_chars")):
             if key in c:
                 globals()[gname] = c[key]
+        if "max_context_messages" in c:
+            _cw.MAX_CONTEXT_MESSAGES = int(c["max_context_messages"])
         if "summary_threshold" in c or "max_context_messages" in c:
             globals()["_SUMMARY_THRESHOLD"] = _sane_summary_threshold(c)
         rebuilt.append("context knobs (ctx_size budget: next start)")
@@ -6226,7 +5922,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 config=_config,
                 ctx_size=ctx_size,
                 cb=_cb,
-                estimate_tokens=_estimate_tokens,
+                estimate_tokens=_cw.estimate_tokens,
                 enable_cancel_key=_live_input,
             )
             _cb = _tuimod.TuiCallbacks(tui_session, verbose=getattr(_cb, "verbose", False))
@@ -7877,7 +7573,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             _emit("on_summary_ready")
 
         # Build context window, with overflow reduction loop
-        _ctx_max_messages = None  # None = use default _MAX_CONTEXT_MESSAGES
+        _ctx_max_messages = None  # None = use context_window.MAX_CONTEXT_MESSAGES
         _CTX_REDUCE_MAX = 10     # max number of message-reduction attempts
         _ctx_spill_passes = 0    # spill-to-file passes taken this turn (stage 1)
         _gateway_timeout_recovered = False
@@ -7915,8 +7611,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                 unsummarized = oldest_idx - summary_state["up_to"]
                 _summary_util_threshold = float(os.environ.get(
                     "AGENT_SUMMARY_UTIL_THRESHOLD", "0.6"))
-                _ctx_tokens_used = sum(_estimate_tokens(m) for m in messages_to_send)
-                _ctx_utilization = ((_ctx_tokens_used * float(_TOKEN_CAL.get("ratio", 1.0) or 1.0))
+                _ctx_tokens_used = sum(_cw.estimate_tokens(m) for m in messages_to_send)
+                _ctx_utilization = ((_ctx_tokens_used * float(_cw.TOKEN_CAL.get("ratio", 1.0) or 1.0))
                                     / ctx_size if ctx_size else 0.0)
                 # On a prompt-caching backend messages leave the window only by chunk
                 # eviction (P4.2), which already means the window was full — and right
@@ -8345,8 +8041,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
         _STALL_BASE_S = float(os.environ.get("AGENT_STALL_TIMEOUT_S", "60"))
         # Over the window actually sent, not the stored history (which is unbounded on a
         # caching backend: measured 264k estimated vs 95k real at turn 300).
-        _est_prompt_tokens = ((_TOOLS_TOKENS or 0) + sum(_estimate_tokens(m) for m in messages_to_send)) \
-            * float(_TOKEN_CAL.get("ratio", 1.0) or 1.0)
+        _est_prompt_tokens = ((_cw.TOOLS_TOKENS or 0) + sum(_cw.estimate_tokens(m) for m in messages_to_send)) \
+            * float(_cw.TOKEN_CAL.get("ratio", 1.0) or 1.0)
         _STALL_TIMEOUT_S = _stall_budget_s(_STALL_BASE_S, _est_prompt_tokens, _PREFILL_TPS_FLOOR)
         if _STALL_TIMEOUT_S > _STALL_BASE_S:
             log.info("stall budget widened %.0fs -> %.0fs for ~%d prompt tokens (prefill floor %.0f t/s)",
@@ -8466,8 +8162,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                             _turn_in_tokens += int(_u_in)
                             # F3b: what we ESTIMATED for this exact request vs what the server counted
                             try:
-                                _est_sent = (_TOOLS_TOKENS or 0) + sum(_estimate_tokens(_m) for _m in _outgoing_messages)
-                                _update_token_calibration(_est_sent, int(_u_in), log)
+                                _est_sent = (_cw.TOOLS_TOKENS or 0) + sum(_cw.estimate_tokens(_m) for _m in _outgoing_messages)
+                                _cw.update_token_calibration(_est_sent, int(_u_in), log)
                             except Exception as _cal_e:  # never let accounting break a turn
                                 log.debug("token calibration skipped: %s", _cal_e)
                         if _u_out:

@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 import agent
+import context_window
 import logging
 
 # Setup logger to avoid errors during tests
@@ -22,9 +23,9 @@ def test_build_context_initial_files_coverage():
     ctx_size = 8192
     max_tokens = 4096
     
-    agent._TOOLS_TOKENS = None  # reset so the mock below takes effect
-    with patch('agent._estimate_tools_tokens', return_value=100), \
-         patch('agent._estimate_tokens', return_value=10):
+    context_window.TOOLS_TOKENS = None  # reset so the mock below takes effect
+    with patch('context_window.estimate_tools_tokens', return_value=100), \
+         patch('context_window.estimate_tokens', return_value=10):
 
         selected, oldest_idx = agent._build_context(
             conversation_history, summary_state, initial_files, ctx_size, max_tokens, log
@@ -56,9 +57,9 @@ def test_build_context_fallback_user_msg_coverage():
     
     # max_messages_override=2 caps selection to [Response 1, Response 2] (no user);
     # fallback loop then inserts [Initial request] from earlier in history.
-    agent._TOOLS_TOKENS = None  # reset so the mock below takes effect
-    with patch('agent._estimate_tools_tokens', return_value=100), \
-         patch('agent._estimate_tokens', side_effect=[10, 10, 10]):
+    context_window.TOOLS_TOKENS = None  # reset so the mock below takes effect
+    with patch('context_window.estimate_tools_tokens', return_value=100), \
+         patch('context_window.estimate_tokens', side_effect=[10, 10, 10]):
 
         selected, oldest_idx = agent._build_context(
             conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
@@ -83,9 +84,9 @@ def test_build_context_no_fallback_coverage():
     ctx_size = 8192
     max_tokens = 4096
     
-    agent._TOOLS_TOKENS = None  # reset so the mock below takes effect
-    with patch('agent._estimate_tools_tokens', return_value=100), \
-         patch('agent._estimate_tokens', return_value=10):
+    context_window.TOOLS_TOKENS = None  # reset so the mock below takes effect
+    with patch('context_window.estimate_tools_tokens', return_value=100), \
+         patch('context_window.estimate_tokens', return_value=10):
 
         selected, oldest_idx = agent._build_context(
             conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
@@ -170,9 +171,9 @@ def test_build_context_fallback_no_user_msg_coverage():
     ctx_size = 8192
     max_tokens = 4096
     
-    agent._TOOLS_TOKENS = None
-    with patch('agent._estimate_tools_tokens', return_value=100), \
-         patch('agent._estimate_tokens', return_value=10):
+    context_window.TOOLS_TOKENS = None
+    with patch('context_window.estimate_tools_tokens', return_value=100), \
+         patch('context_window.estimate_tokens', return_value=10):
         
         selected, oldest_idx = agent._build_context(
             conversation_history, summary_state, initial_files, ctx_size, max_tokens, log,
@@ -195,9 +196,9 @@ def test_build_context_with_summary_and_no_initial_files():
     ctx_size = 8192
     max_tokens = 4096
 
-    agent._TOOLS_TOKENS = None
-    with patch('agent._estimate_tools_tokens', return_value=100), \
-         patch('agent._estimate_tokens', return_value=10):
+    context_window.TOOLS_TOKENS = None
+    with patch('context_window.estimate_tools_tokens', return_value=100), \
+         patch('context_window.estimate_tokens', return_value=10):
         selected, oldest_idx = agent._build_context(
             conversation_history, summary_state, initial_files, ctx_size, max_tokens, log
         )

@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import agent
+import context_window
 from agent import AsyncSummarizer
 
 log = logging.getLogger("test_summary_async")
@@ -104,8 +105,8 @@ class TestHarvestHold:
         assert any(c.args[0].startswith("summary.harvest") and c.args[2] == "late" for c in lg.info.call_args_list)
 
     def test_the_window_builder_records_its_head(self, monkeypatch):
-        monkeypatch.setattr(agent, "_TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
-        monkeypatch.setattr(agent, "_TOOLS_TOKENS", 0)
+        monkeypatch.setattr(context_window, "TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
+        monkeypatch.setattr(context_window, "TOOLS_TOKENS", 0)
         monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="llamacpp"))
         state = {"text": "", "up_to": 0}
         _, oldest = agent._build_context(_hist(6), state, "", 100000, 100, log)
@@ -254,12 +255,12 @@ def _turn_with_usage(tid, read, uncached):
 
 
 def _evicting_run(agent_loop_mocks, monkeypatch, summarizer, n=50):
-    monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 100)
-    monkeypatch.setattr(agent, "_TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
-    monkeypatch.setattr(agent, "_TOOLS_TOKENS", 0)
+    monkeypatch.setattr(context_window, "MAX_CONTEXT_MESSAGES", 100)
+    monkeypatch.setattr(context_window, "TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
+    monkeypatch.setattr(context_window, "TOOLS_TOKENS", 0)
     monkeypatch.setattr(agent, "_main_backend",
                         MagicMock(kind="aicommons", model="moonshotai-kimi-k3", honours_system=True, base_url="http://x"))
-    monkeypatch.setattr(agent, "_estimate_tokens", lambda m: 10)
+    monkeypatch.setattr(context_window, "estimate_tokens", lambda m: 10)
     monkeypatch.setattr(agent, "_CACHE_REQ", {"n": 5, "prev_sig": None, "last_at": time.time() - 60})
     agent_loop_mocks.stub_tool("read_file", "contents")
     sent = []
@@ -320,32 +321,32 @@ def test_a_ready_summary_makes_the_eviction_free(agent_loop_mocks, monkeypatch):
 @pytest.fixture
 def small_budget(monkeypatch):
     """ctx 1000 / max_tokens 100 → budget 388; every message and the lead cost 10."""
-    monkeypatch.setattr(agent, "_TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
-    monkeypatch.setattr(agent, "_TOOLS_TOKENS", 0)
-    monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 100)
-    monkeypatch.setattr(agent, "_estimate_tokens", lambda m: 10)
+    monkeypatch.setattr(context_window, "TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
+    monkeypatch.setattr(context_window, "TOOLS_TOKENS", 0)
+    monkeypatch.setattr(context_window, "MAX_CONTEXT_MESSAGES", 100)
+    monkeypatch.setattr(context_window, "estimate_tokens", lambda m: 10)
     monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="aicommons", model="moonshotai-kimi-k3"))
     monkeypatch.setattr(agent, "_CACHE_REQ", {"n": 5, "prev_sig": None, "last_at": time.time() - 60})
 
 
 class TestFillWindow:
     def test_is_the_greedy_fill_the_window_builder_used(self, monkeypatch):
-        monkeypatch.setattr(agent, "_TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
-        monkeypatch.setattr(agent, "_TOOLS_TOKENS", 0)
-        monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 100)
+        monkeypatch.setattr(context_window, "TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
+        monkeypatch.setattr(context_window, "TOOLS_TOKENS", 0)
+        monkeypatch.setattr(context_window, "MAX_CONTEXT_MESSAGES", 100)
         monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="llamacpp"))
         sizes = {}
-        monkeypatch.setattr(agent, "_estimate_tokens", lambda m: sizes.get(id(m), 10))
+        monkeypatch.setattr(context_window, "estimate_tokens", lambda m: sizes.get(id(m), 10))
         h = _hist(60)
         for m in h[::7]:
             sizes[id(m)] = 40
         state = {"text": "a summary", "up_to": 0}
         _, oldest = agent._build_context(h, state, "", 1000, 100, log)
-        lead = agent._estimate_tokens(agent._build_context_footnote("a summary", ""))
+        lead = context_window.estimate_tokens(agent._build_context_footnote("a summary", ""))
         assert agent._fill_window(h, agent._context_budget(1000, 100), 100, lead)[0] == oldest > 0
 
     def test_stops_at_the_message_cap_and_reserves_the_lead(self, monkeypatch):
-        monkeypatch.setattr(agent, "_estimate_tokens", lambda m: 10)
+        monkeypatch.setattr(context_window, "estimate_tokens", lambda m: 10)
         h = _hist(20)
         assert agent._fill_window(h, 1000, 5, 0) == (16, 50)
         assert agent._fill_window(h, 55, 100, 10) == (17, 40), "40 + the lead 10 fits 55, 50 + 10 does not"
@@ -359,14 +360,14 @@ class TestEvictedEdge:
         assert agent._evicted_edge(h, 1, 350, 388, 100, 0.0) is None, "off"
 
     def test_the_oldest_share_beyond_what_an_eviction_keeps(self, monkeypatch):
-        monkeypatch.setattr(agent, "_estimate_tokens", lambda m: 10)
+        monkeypatch.setattr(context_window, "estimate_tokens", lambda m: 10)
         h = _hist(36)   # 37 messages, window of 36 from head 1 = 360 tokens, 93% of 388
         edge = agent._evicted_edge(h, 1, 360, 388, 100, 0.8)
         # keeps 360 - 0.4*388 = 204 → the newest 20; the 16 older ones are certain to go
         assert edge == 37 - 20 == 17
 
     def test_by_message_count_too(self, monkeypatch):
-        monkeypatch.setattr(agent, "_estimate_tokens", lambda m: 1)
+        monkeypatch.setattr(context_window, "estimate_tokens", lambda m: 1)
         h = _hist(26)   # 26 in the window from head 1, cap 30: 87% by count, ~7% by tokens
         edge = agent._evicted_edge(h, 1, 26, 388, 30, 0.8)
         # an eviction at 31 keeps 18, drops 13: the 13 oldest of the window now
@@ -411,7 +412,7 @@ class TestEvictedEdge:
 
 class TestAlignedHead:
     def _h(self, monkeypatch):
-        monkeypatch.setattr(agent, "_estimate_tokens", lambda m: 10)
+        monkeypatch.setattr(context_window, "estimate_tokens", lambda m: 10)
         return _hist(51)   # 52 messages; a greedy eviction keeps 22 (fill 232 with a 10-token lead)
 
     def test_within_the_band_of_the_greedy_window(self, monkeypatch):
@@ -539,13 +540,13 @@ class TestIdleWatcher:
 
 def _big_lead(monkeypatch):
     """Every message costs 10, the lead (a footnote carrying the summary BIGLEAD) 100."""
-    monkeypatch.setattr(agent, "_estimate_tokens",
+    monkeypatch.setattr(context_window, "estimate_tokens",
                         lambda m: 100 if "BIGLEAD" in str(m.get("content", "")) else 10)
 
 
 class TestTheLeadCountsTowardTheEvictionLine:
     def test_the_edge_measures_window_and_lead_together(self, monkeypatch):
-        monkeypatch.setattr(agent, "_estimate_tokens", lambda m: 10)
+        monkeypatch.setattr(context_window, "estimate_tokens", lambda m: 10)
         h = _hist(22)   # 23 messages, window of 22 from head 1 = 220 tokens, 57% of 388
         assert agent._evicted_edge(h, 1, 220, 388, 100, 0.8) is None
         # with a 100-token lead the request stands at 320 of 388: over the line; the kept
@@ -597,15 +598,15 @@ class TestTheLeadIsLoggedOnce:
     """context.lead: one INFO line with the lead's size, again when it moves by a tenth."""
 
     def _build(self, monkeypatch, state, files="FILES " * 50):
-        monkeypatch.setattr(agent, "_TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
-        monkeypatch.setattr(agent, "_TOOLS_TOKENS", 0)
+        monkeypatch.setattr(context_window, "TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
+        monkeypatch.setattr(context_window, "TOOLS_TOKENS", 0)
         monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="llamacpp"))
         lg = MagicMock()
         agent._build_context(_hist(6), state, files, 100000, 100, lg)
         return [c.args for c in lg.info.call_args_list if c.args[0].startswith("context.lead")]
 
     def test_one_line_with_the_parts_then_silence(self, monkeypatch):
-        monkeypatch.setattr(agent, "_LEAD_LOGGED", {"tokens": None})
+        monkeypatch.setattr(context_window, "LEAD_LOGGED", {"tokens": None})
         state = {"text": "a summary of what went before", "up_to": 0}
         (line,) = self._build(monkeypatch, state)
         fmt, tokens, files, summary = line
@@ -614,12 +615,12 @@ class TestTheLeadIsLoggedOnce:
         assert self._build(monkeypatch, state) == []           # the same lead again: quiet
 
     def test_a_lead_that_grows_by_more_than_a_tenth_is_logged_again(self, monkeypatch):
-        monkeypatch.setattr(agent, "_LEAD_LOGGED", {"tokens": None})
+        monkeypatch.setattr(context_window, "LEAD_LOGGED", {"tokens": None})
         state = {"text": "short", "up_to": 0}
         assert len(self._build(monkeypatch, state)) == 1
         state["text"] = "a much longer summary " * 40
         assert len(self._build(monkeypatch, state)) == 1
 
     def test_no_lead_no_line(self, monkeypatch):
-        monkeypatch.setattr(agent, "_LEAD_LOGGED", {"tokens": None})
+        monkeypatch.setattr(context_window, "LEAD_LOGGED", {"tokens": None})
         assert self._build(monkeypatch, {"text": "", "up_to": 0}, files="") == []

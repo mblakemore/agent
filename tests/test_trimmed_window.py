@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import agent
-
+import context_window
 log = logging.getLogger("test_trimmed_window")
 
 
@@ -41,8 +41,8 @@ def _tool_hist(n):
 
 @pytest.fixture
 def uncalibrated(monkeypatch):
-    monkeypatch.setattr(agent, "_TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
-    monkeypatch.setattr(agent, "_TOOLS_TOKENS", 0)
+    monkeypatch.setattr(context_window, "TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
+    monkeypatch.setattr(context_window, "TOOLS_TOKENS", 0)
 
 
 # ── summary_threshold is a message count ────────────────────────────────────
@@ -73,7 +73,7 @@ def _kick_fires(monkeypatch, kind, util_threshold):
     summarizer.is_running = False
     resp = MagicMock()
     resp.iter_lines.return_value = [b"data: [DONE]"]
-    monkeypatch.setattr(agent, "_TOOLS_TOKENS", None)
+    monkeypatch.setattr(context_window, "TOOLS_TOKENS", None)
     monkeypatch.setattr(agent, "_main_backend",
                         MagicMock(kind=kind, model="m", honours_system=True, base_url="http://x"))
     with patch("agent._llm_request", return_value=resp), patch("agent._emit"), \
@@ -103,7 +103,7 @@ class TestTrimmedWindowLead:
         assert a == b and a["role"] == "user" and a["content"].startswith("IDENTITY")
 
     def test_identity_file_leads_a_trimmed_window_without_a_summary(self, monkeypatch):
-        monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 10)
+        monkeypatch.setattr(context_window, "MAX_CONTEXT_MESSAGES", 10)
         h = _hist(40)
         sel, oldest = agent._build_context(h, {"text": "", "up_to": 0}, "IDENTITY FILE", 1_000_000, 4096, log)
         assert oldest > 0
@@ -118,9 +118,9 @@ class TestTrimmedWindowLead:
 
     def test_lead_tokens_count_on_the_greedy_fill_and_on_the_cached_head_path(self, monkeypatch, uncalibrated):
         # ctx 1000, max_tokens 100 → budget 388 estimator tokens; messages cost 10, the lead 100.
-        monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 100)
+        monkeypatch.setattr(context_window, "MAX_CONTEXT_MESSAGES", 100)
         monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="aicommons"))
-        monkeypatch.setattr(agent, "_estimate_tokens",
+        monkeypatch.setattr(context_window, "estimate_tokens",
                             lambda m: 100 if str(m.get("content", "")).startswith("IDENTITY") else 10)
         h, state = _hist(60), {"text": "", "up_to": 0}
         sel, first = agent._build_context(h, state, "IDENTITY FILE", 1000, 100, log)
@@ -142,7 +142,7 @@ class TestTrimmedWindowLead:
 class TestCompressionOnACachingBackend:
     def test_pressure_is_over_the_window_not_the_stored_history(self, monkeypatch, uncalibrated):
         monkeypatch.setitem(agent._config["context"], "ctx_size", 1000)
-        monkeypatch.setattr(agent, "_estimate_tokens", lambda m: 100)
+        monkeypatch.setattr(context_window, "estimate_tokens", lambda m: 100)
         h = [{"role": "user", "content": "x"} for _ in range(20)]
         assert agent._history_pressure(h) == pytest.approx(2.0)
         assert agent._history_pressure(h, start=15) == pytest.approx(0.5)
@@ -168,7 +168,7 @@ class TestCompressionOnACachingBackend:
 
     def test_an_eviction_raises_the_head_moved_flag(self, monkeypatch):
         monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="aicommons"))
-        monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 10)
+        monkeypatch.setattr(context_window, "MAX_CONTEXT_MESSAGES", 10)
         state, h = {"text": "", "up_to": 0}, _hist(40)
         _, first = agent._build_context(h, state, "", 1_000_000, 4096, log)
         assert "_head_moved" not in state, "the first window is not an eviction"
@@ -283,7 +283,7 @@ def test_every_harvest_site_marks_the_lead_change(monkeypatch):
     s = agent.AsyncSummarizer({"summary": {"max_wait_on_save": 1}}, MagicMock())
     s._pending_result, s._pending_up_to = "new summary", 7
     state = {"text": "", "up_to": 0}
-    with patch("agent._condense_summary", lambda t, lg: t):
+    with patch.dict(context_window.DEPS, {"condense_summary": lambda t, lg: t}):
         assert s.harvest(state) is True
     assert state["_lead_changed"] is True and state["up_to"] == 7
     assert s.harvest(state) is False, "nothing pending: no second harvest"
@@ -386,7 +386,7 @@ def _kick_after(monkeypatch, kind, head_moved, threshold=100):
     summarizer.is_running = False
     resp = MagicMock()
     resp.iter_lines.return_value = [b"data: [DONE]"]
-    monkeypatch.setattr(agent, "_TOOLS_TOKENS", None)
+    monkeypatch.setattr(context_window, "TOOLS_TOKENS", None)
     monkeypatch.setattr(agent, "_main_backend",
                         MagicMock(kind=kind, model="m", honours_system=True, base_url="http://x"))
     with patch("agent._llm_request", return_value=resp), patch("agent._emit"), \

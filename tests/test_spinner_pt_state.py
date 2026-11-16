@@ -157,8 +157,8 @@ class TestToolbarStaysStable(unittest.TestCase):
     def test_toolbar_shows_cwd_and_model_only(self):
         sess = self._session()
         out = sess._toolbar()
-        self.assertNotIn("msgs", out.value)
-        self.assertNotIn("ctx", out.value)
+        self.assertNotIn(" msgs ", out.value)
+        self.assertNotRegex(out.value, r"\bctx ~?\d+%")   # the cwd name may contain "ctx"
         self.assertIn("esc·esc cancel", out.value)
 
     def test_toolbar_still_valid_html_with_hostile_model_name(self):

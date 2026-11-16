@@ -4,7 +4,7 @@ import os
 import tempfile
 from unittest.mock import patch, MagicMock
 import agent
-
+import context_window
 log = logging.getLogger(__name__)
 
 def test_auto_increment_focus_write_exception():
@@ -53,7 +53,7 @@ def test_run_agent_single_async_summarizer_kick():
     resp = MagicMock()
     resp.iter_lines.return_value = [b"data: [DONE]"]
     
-    agent._TOOLS_TOKENS = None
+    context_window.TOOLS_TOKENS = None
     with patch('agent._llm_request', return_value=resp), \
          patch('agent._emit'), \
          patch('agent._save_checkpoint'), \

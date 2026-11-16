@@ -14,14 +14,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import agent
-
+import context_window
 log = logging.getLogger("test_cache_collapse")
 
 
 @pytest.fixture
 def uncalibrated(monkeypatch):
-    monkeypatch.setattr(agent, "_TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
-    monkeypatch.setattr(agent, "_TOOLS_TOKENS", 0)
+    monkeypatch.setattr(context_window, "TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
+    monkeypatch.setattr(context_window, "TOOLS_TOKENS", 0)
 
 
 def _hist(n):
@@ -58,9 +58,9 @@ class TestWindowBuilder:
     messages (300) fits on its kept head, far over the collapsed size (58)."""
 
     def _setup(self, monkeypatch, gap):
-        monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 100)
+        monkeypatch.setattr(context_window, "MAX_CONTEXT_MESSAGES", 100)
         monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="aicommons", model="moonshotai-kimi-k3"))
-        monkeypatch.setattr(agent, "_estimate_tokens", lambda m: 10)
+        monkeypatch.setattr(context_window, "estimate_tokens", lambda m: 10)
         monkeypatch.setattr(agent, "_CACHE_REQ", {"n": 5, "prev_sig": None, "last_at": time.time() - gap})
         h = _hist(30)
         state = {"text": "", "up_to": 0, "_cache_head": 1}
@@ -113,12 +113,12 @@ def _turn_with_usage(tid, read, uncached):
 
 
 def _collapsed_run(agent_loop_mocks, monkeypatch, summarizer=None, gap=3000, n=30):
-    monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 100)
-    monkeypatch.setattr(agent, "_TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
-    monkeypatch.setattr(agent, "_TOOLS_TOKENS", 0)
+    monkeypatch.setattr(context_window, "MAX_CONTEXT_MESSAGES", 100)
+    monkeypatch.setattr(context_window, "TOKEN_CAL", {"ratio": 1.0, "n": 0, "last_logged": 1.0})
+    monkeypatch.setattr(context_window, "TOOLS_TOKENS", 0)
     monkeypatch.setattr(agent, "_main_backend",
                         MagicMock(kind="aicommons", model="moonshotai-kimi-k3", honours_system=True, base_url="http://x"))
-    monkeypatch.setattr(agent, "_estimate_tokens", lambda m: 10)
+    monkeypatch.setattr(context_window, "estimate_tokens", lambda m: 10)
     monkeypatch.setattr(agent, "_CACHE_REQ", {"n": 5, "prev_sig": None, "last_at": time.time() - gap})
     agent_loop_mocks.stub_tool("read_file", "contents")
     sent = []
@@ -171,9 +171,9 @@ def test_a_running_async_summary_is_left_to_the_next_harvest(agent_loop_mocks, m
 
 class TestEvictionFoldsItsSummary:
     def _setup(self, monkeypatch):
-        monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 100)
+        monkeypatch.setattr(context_window, "MAX_CONTEXT_MESSAGES", 100)
         monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="aicommons", model="moonshotai-kimi-k3"))
-        monkeypatch.setattr(agent, "_estimate_tokens", lambda m: 10)
+        monkeypatch.setattr(context_window, "estimate_tokens", lambda m: 10)
         monkeypatch.setattr(agent, "_CACHE_REQ", {"n": 5, "prev_sig": None, "last_at": time.time() - 60})
 
     def test_the_window_builder_asks_for_a_summary_when_the_head_moves(self, monkeypatch, uncalibrated):

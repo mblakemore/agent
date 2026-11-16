@@ -2,6 +2,7 @@ import pytest
 import json
 import os
 from unittest.mock import patch, mock_open
+import context_window
 from agent import _extract_pinned, _is_read_only_command, _calculate_retry_delay, _load_config, _build_context
 
 def test_extract_pinned_no_pinned():
@@ -126,7 +127,7 @@ def test_list_available_models_failure():
         assert _list_available_models("http://api") == []
 
 def test_render_context_bar():
-    with patch("agent._estimate_tokens", return_value=10):
+    with patch("context_window.estimate_tokens", return_value=10):
         history = [{"role": "user", "content": "test"}]
         summary_state = {"text": "sum"}
         ctx_size = 100
@@ -149,7 +150,7 @@ def test_render_context_bar():
 ])
 def test_build_context_logic(history, budget_size, summary_text, initial_files, expected_first_msg_role):
     # _TOOLS_TOKENS=0: the real tool schemas now cost ~9k tokens, which would swallow this tiny budget
-    with patch("agent._estimate_tokens", return_value=10), patch("agent._TOOLS_TOKENS", 0):
+    with patch("context_window.estimate_tokens", return_value=10), patch("context_window.TOOLS_TOKENS", 0):
         summary_state = {"text": summary_text}
         ctx_size = budget_size + 10000 
         # Use a mock for the logger (context manager, so a failed assert cannot leak the patch)

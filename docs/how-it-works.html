@@ -32,7 +32,7 @@
   <main id="main">
     <p class="eyebrow">How it works</p>
 <h1>How it works</h1>
-<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/how-it-works.md"><code>docs/how-it-works.md</code></a> · last changed 2026-11-16 (5c50f1b)</p>
+<p class="srcline">Source: <a href="https://github.com/mblakemore/agent/blob/main/docs/how-it-works.md"><code>docs/how-it-works.md</code></a> · last changed 2026-11-16 (2e50b64)</p>
 <h2 id="the-turn-loop">The turn loop</h2>
 <p>Each cycle is a turn loop:</p>
 <ol>
@@ -93,6 +93,7 @@ wizard_ui.py          # Radio lists and checkboxes for the wizards
 commands.py           # Slash-command dispatcher
 skills.py             # Skills: SKILL.md discovery, the catalog line, the picker (see &quot;Skills&quot;)
 lead.py               # `@file` references, identity files and the lead of a trimmed window
+context_window.py     # The window a request carries, and the token accounting behind it
 restart_state.py      # The state behind /restart and the restart tool
 tui.py                # prompt_toolkit front end
 transcript.py         # Session record, reprinted on terminal resize

@@ -5,6 +5,7 @@ import pytest
 import requests
 from unittest.mock import patch, MagicMock
 import agent
+import context_window
 from agent import (
     _llm_request, _ReasoningRenderer,
     _check_api_health, _detect_ctx_size, _list_available_models,
@@ -550,7 +551,7 @@ def test_build_context_summary_exceeds_half_budget():
     ]
     summary_state = {"text": large_summary, "up_to": 0}
     log = MagicMock()
-    with patch('agent._condense_summary', return_value=large_summary), \
+    with patch.dict(context_window.DEPS, {'condense_summary': lambda t, lg: large_summary}), \
          patch('agent._emit'):
         msgs, oldest_idx = _build_context(
             history, summary_state, initial_files=None,

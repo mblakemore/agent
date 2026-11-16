@@ -206,8 +206,8 @@ class TestTuiSessionToolbar(unittest.TestCase):
             summary_text=None,
         )
         html = sess._toolbar()
-        self.assertNotIn("ctx", str(html.value))
-        self.assertNotIn("msgs", str(html.value))
+        self.assertNotRegex(str(html.value), r"\bctx ~?\d+%")   # the cwd name may contain "ctx"
+        self.assertNotIn(" msgs ", str(html.value))
 
 
     def test_toolbar_uses_unicode_separator(self):

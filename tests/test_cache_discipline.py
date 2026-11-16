@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import agent
+import context_window
 from anthropic_wire import openai_to_anthropic
 
 log = logging.getLogger("test_cache_discipline")
@@ -139,7 +140,7 @@ def _history(n):
 
 def test_window_head_moves_in_chunks(monkeypatch):
     monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="aicommons"))
-    monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 30)
+    monkeypatch.setattr(context_window, "MAX_CONTEXT_MESSAGES", 30)
     state = {"text": "", "up_to": 0}
     hist = _history(40)
     heads = []
@@ -159,7 +160,7 @@ def test_compression_under_pressure_never_breaks_the_window_prefix(caching, monk
     one of them missed the cache. Here the pass runs on EVERY turn (gate at 0) and the
     only requests allowed to break the prefix are the chunk evictions."""
     mocks, sent = caching
-    monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 12)
+    monkeypatch.setattr(context_window, "MAX_CONTEXT_MESSAGES", 12)
     monkeypatch.setattr(agent, "_TOOL_RESULT_COMPRESS_PRESSURE", 0.0)
     monkeypatch.setattr(agent, "_summarize_for_compression",
                         MagicMock(side_effect=AssertionError("model compression on a caching backend")))
@@ -182,7 +183,7 @@ def test_compression_under_pressure_never_breaks_the_window_prefix(caching, monk
 
 def test_other_backends_keep_the_sliding_window(monkeypatch):
     monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="llamacpp"))
-    monkeypatch.setattr(agent, "_MAX_CONTEXT_MESSAGES", 30)
+    monkeypatch.setattr(context_window, "MAX_CONTEXT_MESSAGES", 30)
     state = {"text": "", "up_to": 0}
     hist = _history(40)
     heads = []
