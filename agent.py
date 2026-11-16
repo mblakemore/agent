@@ -3789,6 +3789,840 @@ def _maybe_first_run_wizard(auto, initial_prompt, continue_mode, force=False):
     return False
 
 
+_END = object()   # a session step's answer: the session is over
+
+
+class _Session:
+    """One interactive session: the boot, the backends, the resume, the front end, the
+    first prompt, the input loop and the shutdown as steps run in order. The locals of
+    the former single function that cross a step are attributes under their old names;
+    the step-local ones stayed locals."""
+
+    def __init__(self, initial_prompt, auto, continue_mode, cb, tui, verbose, result_file):
+        self.initial_prompt = initial_prompt
+        self.auto = auto
+        self.continue_mode = continue_mode
+        self.cb = cb
+        self.tui = tui
+        self.verbose = verbose
+        self.result_file = result_file
+
+    def run(self):
+        """The session: each step in order, until one ends it with _END."""
+        for step in self._STEPS:
+            if step(self) is _END:
+                return
+
+    def _boot(self):
+        """The first-run wizard, the config knobs, the logger, telemetry, the UI callback."""
+        global _FORCE_SETUP_WIZARD, _cb, _cb_log
+        # First-run wizard (plan/setup-command.md Phase 2) — BEFORE the ctx_size
+        # read so a first-run calibration applies to THIS session, not the next.
+        # --setup forces it even when a config exists (one-shot, then cleared).
+        _maybe_first_run_wizard(self.auto, self.initial_prompt, self.continue_mode,
+                                force=_FORCE_SETUP_WIZARD)
+        _FORCE_SETUP_WIZARD = False
+
+        self.ctx_size = _config["context"]["ctx_size"]
+        self.max_tokens = _config["context"]["max_tokens"]
+        self.gen = _config["generation"]
+
+        self.log, self.log_path, self.error_log_path = _setup_logger()
+
+        # OTLP telemetry: init once per session (no-op if disabled / SDK missing).
+        self._telemetry_on = telemetry.init()
+        self.t0 = time.time()
+
+        # Install the UI callback handle for this session
+        _cb = self.cb if self.cb is not None else TerminalCallbacks(verbose=self.verbose)
+        _cb_log = self.log
+        # Hand the boot-line count to the callback so on_session_start can
+        # erase it (along with the on_boot_progress lines below) before the
+        # banner. Setattr instead of constructor arg keeps TerminalCallbacks
+        # / TuiCallbacks signatures stable.
+        if _BOOT_LINES_PRINTED:
+            try:
+                _cb._boot_lines_printed += _BOOT_LINES_PRINTED
+            except AttributeError:
+                pass
+
+        # Wire think tool's output through the callback system (D12 compliance).
+        # _emit("on_stream_chunk", text) routes through safe_cb so a buggy UI hook
+        # can never crash the think tool.  The default (_output = print) is kept
+        # as a safe fallback for standalone/test use outside the agent loop.
+        import tools.think as _think_mod
+        _think_mod._output = lambda text: _emit("on_stream_chunk", text)
+
+    def _backends(self):
+        """The main backend's health and context size, the summary and advisor backends."""
+        model_name = _main_backend.model or _config["llm"]["model"]
+        _emit(
+            "on_boot_progress",
+            f"checking main backend — {_display_backend_kind(getattr(_main_backend, 'kind', ''), getattr(_main_backend, 'base_url', ''))} {model_name}",
+        )
+        self.ok, self.detail = _main_backend.health(timeout=_startup_health_timeout())
+
+        # Auto-detect the model name from /v1/models so requests and the TUI carry the
+        # server's real model. A single listed model always wins; with several, only
+        # an unset model takes the first (a configured one is left alone).
+        if self.ok and getattr(_main_backend, "kind", None) == "llamacpp":
+            _detected_models = _main_backend.list_models(timeout=3)
+            if len(_detected_models) == 1 or (_detected_models and not _main_backend.model):
+                _main_backend.model = _detected_models[0]
+                _config["llm"]["model"] = _detected_models[0]
+                self.log.info("Auto-detected main model name from /v1/models: %s", _detected_models[0])
+
+        # Backend banner (plan task 1.5) — one-line log noting which kinds are active.
+        self.log.info(
+            "backends: main=%s(%s@%s) summary=%s(%s@%s)",
+            _main_backend.kind, _main_backend.model, _main_backend.base_url,
+            _summary_backend.kind, _summary_backend.model, _summary_backend.base_url,
+        )
+
+        # Warn if the main llamacpp backend's chat template doesn't support tool calls.
+        # Symptom: the model's native tool-call tokens appear as content text, get
+        # stripped, and no tools ever fire. Fix: a template that supports tools.
+        if getattr(_main_backend, 'kind', '') == 'llamacpp':
+            caps = _main_backend.check_tool_caps()
+            if caps and not caps.get('supports_tool_calls', True):
+                self.log.warning(
+                    "TOOL CALLS DISABLED: main backend chat template does not support tool calls "
+                    "(chat_template_caps.supports_tool_calls=false). Tools will not execute. "
+                    "Start llama-server with --jinja and a chat template that supports tool calls "
+                    "(--chat-template-file <template>; docs/setup.md covers this)."
+                )
+
+        # Auto-detect context size from the main backend. Apply 85% buffer,
+        # then hard-cap at 85K to avoid llama_decode crashes.
+        # If the agent's config.json sets context.ctx_size to a value lower than
+        # the default (114688), that value is used as an additional cap — letting
+        # operators trade context depth for less fill pressure per turn.
+        _CTX_HARD_CAP = 85_000
+        _CTX_CONFIG_CAP = _config["context"]["ctx_size"]  # explicit agent cap (may be default 114688)
+        detected = _main_backend.detect_ctx_size()
+        if detected and getattr(_main_backend, "kind", None) == "aicommons":
+            # detect_ctx_size() is already tokens, already capped by
+            # aicommons.max_context_tokens — the 85% / 85K llama_decode guards don't
+            # apply. Only an explicitly LOWERED context.ctx_size still caps it (M7).
+            _explicit = _CTX_CONFIG_CAP if _CTX_CONFIG_CAP != _DEFAULT_CTX_SIZE else None
+            self.ctx_size = min(int(detected), _explicit or int(detected))
+            _config["context"]["ctx_size"] = self.ctx_size
+            self.log.info("AI Commons context: model window capped to %d tokens, using ctx_size=%d",
+                     detected, self.ctx_size)
+        elif detected:
+            self.ctx_size = min(int(detected * 0.85), _CTX_HARD_CAP, _CTX_CONFIG_CAP)
+            _config["context"]["ctx_size"] = self.ctx_size
+            self.log.info("Auto-detected main model n_ctx=%d, using ctx_size=%d (85%% / cap %dk / config cap %d)",
+                     detected, self.ctx_size, _CTX_HARD_CAP // 1000, _CTX_CONFIG_CAP)
+
+        # Probe summary health BEFORE on_session_start so the banner can
+        # render main + summary indicators together in a single header.
+        self.summary_cfg = _config["summary"]
+        self.summary_ok = False
+        self.summary_detail = "disabled"
+        self.summary_url = getattr(_summary_backend, "base_url", "") if _summary_backend else ""
+        if self.summary_cfg["enabled"]:
+            _emit(
+                "on_boot_progress",
+                f"checking summary backend — {_display_backend_kind(getattr(_summary_backend, 'kind', ''), self.summary_url)} {getattr(_summary_backend, 'model', '?')}",
+            )
+            try:
+                self.summary_ok, self.summary_detail = _summary_backend.health(timeout=_startup_health_timeout())
+            except (requests.ConnectionError, requests.Timeout):
+                self.summary_ok, self.summary_detail = False, "unreachable"
+            if self.summary_ok and getattr(_summary_backend, "kind", None) == "llamacpp":
+                _det = _summary_backend.list_models(timeout=3)
+                if len(_det) == 1 or (_det and not _summary_backend.model):
+                    _summary_backend.model = _det[0]
+                    self.log.info("Auto-detected summary model name from /v1/models: %s", _det[0])
+
+        # Probe the advisor (GLM) endpoint. If it is unreachable, remove the tool
+        # from the registry so the model never sees it in the schema — avoids
+        # wasted escalation attempts against a server that isn't running.
+        advisor_cfg = _config.get("advisor", {}) or {}
+        # Default-ON with main fallback: advisor_active/_read_role own the rule
+        # (explicit enabled wins; else the advisor self-consults main's endpoint).
+        try:
+            from tools.consult_advisor import (advisor_active as _advisor_active,
+                                               _read_role as _advisor_read_role)
+            self.advisor_enabled = _advisor_active(_config)
+            self._adv_eff = _advisor_read_role("advisor")
+        except Exception:
+            self.advisor_enabled = advisor_cfg.get("enabled",
+                                              bool(advisor_cfg.get("base_url")))
+            self._adv_eff = advisor_cfg
+        self.advisor_ok = False
+        self.advisor_detail = "disabled"
+        if self.advisor_enabled and getattr(_main_backend, "kind", "") == "fake":
+            # F8b: the fake backend promises "never opens a socket" — the advisor probe is a
+            # socket. Under the fake, the advisor is unloaded without probing (review finding 2).
+            self.advisor_enabled = False
+            self.advisor_detail = "disabled (fake backend active — no probe)"
+            try:
+                from tools import remove_tool as _remove_tool_fake
+                _remove_tool_fake("consult_advisor")
+            except Exception:  # noqa: BLE001
+                pass
+            self.log.info("Advisor probe skipped: fake backend active")
+        if self.advisor_enabled:
+            _emit("on_boot_progress",
+                  f"checking advisor backend — "
+                  f"{self._adv_eff.get('base_url') or _display_backend_kind(self._adv_eff.get('kind') or '?', '')} "
+                  f"{self._adv_eff.get('model') or '(served model)'}")
+            try:
+                from tools.consult_advisor import startup_check as _advisor_check
+                self.advisor_ok, self.advisor_detail = _advisor_check(
+                    timeout_s=_startup_health_timeout())
+            except Exception as _e:
+                self.advisor_ok, self.advisor_detail = False, f"{type(_e).__name__}: {_e}"
+            if not self.advisor_ok:
+                from tools import remove_tool as _remove_tool
+                _remove_tool("consult_advisor")
+                self.log.warning(
+                    "Advisor endpoint unavailable (%s) — consult_advisor tool unloaded",
+                    self.advisor_detail,
+                )
+            else:
+                self.log.info("Advisor endpoint healthy — consult_advisor tool active")
+
+        # Footer ↔ banner parity: the banner uses _main_backend.model, the TUI
+        # footer reads _config["llm"]["model"]. Sync them before the banner renders
+        # and before the TuiSession is built so both show the active model name.
+        _sync_config_model(_main_backend, _config)
+
+    def _announce(self):
+        """The session-start event and log lines."""
+        # Live-input mode reprints what the session showed when the terminal is
+        # resized (TuiSession); recording starts here so the banner is part of it.
+        self._recorder = None
+        if self.tui and not self.auto:
+            _ivr = _config.get("interactive") if isinstance(_config, dict) else None
+            if not isinstance(_ivr, dict) or _ivr.get("live_input", True):
+                import transcript as _transcript
+                self._recorder = _transcript.install()
+
+        _emit("on_session_start", {
+            "version": __version__,
+            "sha": _git_short_sha(),
+            "api_ok": self.ok,
+            "api_detail": self.detail,
+            "base_url": getattr(_main_backend, "base_url", None) or BASE_URL,
+            "model": _main_backend.model or _config["llm"]["model"],
+            "main_kind": _display_backend_kind(getattr(_main_backend, "kind", ""), getattr(_main_backend, "base_url", "")),
+            "summary_enabled": self.summary_cfg["enabled"],
+            "summary_ok": self.summary_ok,
+            "summary_detail": self.summary_detail,
+            "summary_base_url": self.summary_url,
+            "summary_model": getattr(_summary_backend, "model", "") if _summary_backend else "",
+            "summary_kind": _display_backend_kind(getattr(_summary_backend, "kind", ""), self.summary_url) if _summary_backend else "",
+            "advisor_enabled": self.advisor_enabled,
+            "advisor_ok": self.advisor_ok,
+            "advisor_detail": self.advisor_detail,
+            "ctx_size": self.ctx_size,
+            "max_turns": _MAX_TURNS,
+            "log_path": self.log_path,
+            "error_log_path": self.error_log_path,
+        })
+
+        self.log.info("Session started | ctx_size=%d max_turns=%d temperature=%.1f max_tokens=%d",
+                 self.ctx_size, _MAX_TURNS, self.gen["temperature"], self.max_tokens)
+        if _CWD_CANONICALIZED:
+            # F5: say what was rewritten at import (logging was not configured yet then).
+            self.log.info("Working directory canonicalized: %s -> %s (pass --no-realpath-cwd to keep "
+                     "the symlinked view)", _CWD_CANONICALIZED[0], _CWD_CANONICALIZED[1])
+        if self.gen.get("seed") is not None:
+            self.log.info("Generation seed=%s (F8a)", self.gen["seed"])
+        self.log.info("Tools registered: %s", [t["function"]["name"] for t in tools])
+
+    def _summarizer(self):
+        """The background summarizer, when the summary backend answers."""
+        # Instantiate the async summarizer from the already-probed state above.
+        self._async_summarizer = None
+        if self.summary_cfg["enabled"]:
+            if self.summary_ok:
+                # Auto-detect summary model context size
+                summary_ctx = _summary_backend.detect_ctx_size()
+                if summary_ctx:
+                    _config["summary"]["ctx_size"] = int(summary_ctx * 0.85)
+                    self.log.info("Auto-detected summary model n_ctx=%d, using %d (85%%)",
+                             summary_ctx, _config["summary"]["ctx_size"])
+                self._async_summarizer = _summ.AsyncSummarizer(_config, self.log)
+                self.log.debug("Async summarizer enabled → %s", self.summary_url)
+                _emit("on_summarizer_status", "online", self.summary_url)
+            elif self.summary_detail in ("unreachable", "timeout"):
+                # Connection-level failure → "offline" (matches pre-refactor).
+                self.log.warning("Summary endpoint unreachable at %s, using main model for summaries",
+                            self.summary_url)
+                _emit("on_summarizer_status", "offline", self.summary_url)
+            else:
+                self.log.warning("Summary endpoint unhealthy (%s), using main model for summaries",
+                            self.summary_detail)
+                _emit("on_summarizer_status", "unhealthy", self.summary_detail)
+
+    def _resume(self):
+        """Continue mode: the checkpoint, the lead files, a held summary; then the task seed.
+        Ends the session after the resumed run in auto mode."""
+        # ── Continue mode: resume from checkpoint ──
+        self.start_turn = 0
+        if self.continue_mode:
+            cp = _load_checkpoint()
+            if cp:
+                self.conversation_history, self.summary_state, self.start_turn, self.initial_files, _clean_exit = cp
+                _CKPT_TURN["turn"] = self.start_turn
+                self.log.info("CONTINUE: resuming from checkpoint (turn %d, %d messages, clean_exit=%s)",
+                         self.start_turn, len(self.conversation_history), _clean_exit)
+                if _RESTART["resumed"]:
+                    self.log.info("CONTINUE: after a restart by %s (%s)", _RESTART["resumed"].get("by"),
+                             _RESTART["resumed"].get("reason") or "no reason given")
+                _cp_lead = self.initial_files
+                self.initial_files = _lead_reload(self.initial_files, self.log)
+                # The disk copy takes its place in the history too: an untrimmed window
+                # sends the history, not the lead slot, so without this an edit made
+                # between sessions reached the model only once the window trimmed.
+                _LEAD.pop("replaced", None)
+                if _lead_place(self.conversation_history, self.initial_files, self.log, old=_cp_lead) \
+                        and _LEAD.get("replaced"):
+                    self.log.info("lead files placed in the history on resume (changed since the checkpoint)")
+                # Cap summary from old checkpoints that may have bloated summaries
+                if self.summary_state.get("text"):
+                    self.summary_state["text"] = _summ.condense_summary(self.summary_state["text"], self.log)
+                _emit("on_continue_resumed", self.start_turn, len(self.conversation_history))
+                if self.auto:
+                    _seed_phase_tasks(_config, self.log)
+                    self.result = run_agent_single(self.conversation_history, self.summary_state, self.initial_files, self.log,
+                                              self.gen["temperature"], self.gen["top_p"], self.gen["top_k"],
+                                              self.gen["presence_penalty"], self.max_tokens, self.ctx_size,
+                                              start_turn=self.start_turn,
+                                              async_summarizer=self._async_summarizer)
+                    cleanup_temp_sessions()
+                    self.log.info("Session ended (continue mode) | %d messages", len(self.conversation_history))
+                    if self._telemetry_on:
+                        telemetry.record_cycle(status="continue_completed", duration_s=time.time() - self.t0)
+                        telemetry.shutdown()
+                    _log_bedrock_session_spend(self.log)
+                    return _END
+                # Non-auto: restore state and fall through to interactive loop
+            else:
+                _emit("on_continue_none")
+                self.log.debug("CONTINUE: no checkpoint found, starting fresh")
+
+        if not self.continue_mode:
+            # Check if the current cycle was already committed — bump if so
+            _auto_increment_cycle(self.log)
+
+        self.conversation_history = self.conversation_history if self.continue_mode and self.start_turn > 0 else []
+        self.summary_state = self.summary_state if self.continue_mode and self.start_turn > 0 else {"text": "", "up_to": 0}
+        self.initial_files = self.initial_files if self.continue_mode and self.start_turn > 0 else None
+        _held = self.summary_state.pop("_pending", None)
+        if (self._async_summarizer is not None and isinstance(_held, dict) and _held.get("text")
+                and isinstance(_held.get("up_to"), int)):
+            # A summary made ahead of an eviction that had not happened when the checkpoint
+            # was written: held again here, applied when the head moves past it.
+            self._async_summarizer.seed(_held["text"], _held["up_to"], _held.get("kind") or "resumed")
+            self.log.info("summary.resume: a finished summary up to message %d rides along from the checkpoint",
+                     _held["up_to"])
+
+        # AC3/AC4 of #1028 — close ephemeral tasks left open from a prior session
+        # and build a [Session resume] preamble for the first user message.
+        # Skipped on continue-mode resumes (start_turn > 0) since the whole
+        # point of continue is to pick up the prior session intact. Runs
+        # BEFORE _seed_phase_tasks so idempotent seeding sees the post-close
+        # state, not stale ephemeral tasks from the previous abandoned cycle.
+        self._session_resume_summary = (
+            _auto_close_ephemeral_tasks(self.log)
+            if not (self.continue_mode and self.start_turn > 0)
+            else None
+        )
+
+        _seed_phase_tasks(_config, self.log)
+
+    def _front_end(self):
+        """The prompt_toolkit session and its callbacks, persistent monitors and schedules,
+        the resume prompt after a restart."""
+        global _cb
+        # ── TUI front-end (default in interactive mode) ──
+        # Now that history / summary / initial_files have stable identities,
+        # instantiate the prompt_toolkit session and swap the UI callback.
+        # If prompt_toolkit isn't installed we fall back silently to plain
+        # input() with a one-line notice so the default TUI path doesn't
+        # break environments that haven't installed the optional dependency.
+        self.tui_session = None
+        # Concurrent always-live input is the DEFAULT in interactive (TUI) mode:
+        # the input line stays usable while the agent works; typed lines and monitor
+        # pings queue and are delivered at the next natural boundary. Opt OUT with
+        # config.interactive.live_input=false (falls back to the blocking prompt
+        # loop). No effect under -a, or under --no-tui / no prompt_toolkit (plain
+        # input(), which cannot host a concurrent line).
+        _iv = _config.get("interactive") if isinstance(_config, dict) else None
+        self._live_input = bool(_iv.get("live_input", True)) if isinstance(_iv, dict) else True
+        if self.tui and not self.auto:
+            import tui as _tuimod
+            if _tuimod._AVAILABLE and self._live_input:
+                # Disable CPR (cursor-position requests) BEFORE the session is
+                # built: prompt_toolkit's Renderer caches CPR support at
+                # construction (renderer.py CPR_Support), so this must precede
+                # TuiSession(). Why: on CPR-capable terminals every streamed
+                # line's run_in_terminal cycle awaits outstanding CPR responses
+                # with the input detached — a response landing in that window is
+                # lost, after which every redraw stalls in
+                # wait_for_cpr_responses: the prompt/spinner freezes and
+                # streamed text lands BELOW the stale paint (field report
+                # 2026-08-13). The CPR-less relative-positioning path renders
+                # the same stream correctly (verified via pyte replay both
+                # ways). Cost: the bottom toolbar needs height-known and stops
+                # rendering — the working indicator lives on the prompt line,
+                # which every terminal renders. Blocking / --no-tui modes never
+                # set this.
+                os.environ["PROMPT_TOOLKIT_NO_CPR"] = "1"
+            if _tuimod._AVAILABLE:
+                self.tui_session = _tuimod.TuiSession(
+                    history=self.conversation_history,
+                    summary_state=self.summary_state,
+                    config=_config,
+                    ctx_size=self.ctx_size,
+                    cb=_cb,
+                    estimate_tokens=_cw.estimate_tokens,
+                    enable_cancel_key=self._live_input,
+                )
+                _cb = _tuimod.TuiCallbacks(self.tui_session, verbose=getattr(_cb, "verbose", False))
+                # Idle-wake (app.exit from a monitor thread) is only for the default
+                # blocking loop. Concurrent mode consumes monitor pings from the
+                # queue directly (queue.get wakes on any enqueue), so registering
+                # the wake notifier there would fire app.exit on the always-running
+                # input prompt — do NOT register it in live-input mode.
+                if not self._live_input:
+                    monitor_bus.set_notifier(self.tui_session.wake)
+            else:
+                _emit("on_notice", "warn",
+                      "prompt_toolkit not installed — using plain prompt. "
+                      "`pip install prompt_toolkit` (or pass --no-tui to silence).")
+
+        try:
+            _restored = monitor_bus.restore_persisted()
+            if _restored:
+                self.log.info("re-armed persistent monitors: %s", ", ".join(_restored))
+            _sched = schedule_bus.restore()
+            if _sched:
+                self.log.info("schedules active: %s", ", ".join(_sched))
+        except Exception:
+            self.log.debug("restore_persisted failed", exc_info=True)
+
+        # A restart the model asked for comes back to work, not to the prompt: the configured
+        # text (preferences.restart_resume_prompt) goes in as the user's message and one turn
+        # runs before the input loop, as an initial prompt would. A keyboard /restart returns
+        # to the prompt. Auto mode resumes its run anyway.
+        _resume_text = _restart_resume_prompt() if (self.continue_mode and self.start_turn > 0 and not self.auto) else ""
+        if _resume_text:
+            _emit("on_user_message", _resume_text)
+            self.conversation_history.append({"role": "user", "content": _resume_text})
+            self.log.info("RESTART: resuming with the configured prompt (%d chars)", len(_resume_text))
+            run_agent_single(self.conversation_history, self.summary_state, self.initial_files, self.log,
+                             self.gen["temperature"], self.gen["top_p"], self.gen["top_k"],
+                             self.gen["presence_penalty"], self.max_tokens, self.ctx_size,
+                             async_summarizer=self._async_summarizer)
+
+    def _first_prompt(self):
+        """The initial prompt's turn; in auto mode the whole run, the result file and the exit."""
+        global _pinned_instructions
+        if self.initial_prompt and not (self.continue_mode and self.start_turn > 0):
+            _emit("on_user_message", self.initial_prompt)
+            try:
+                self.expanded, self.files, self.err = _expand_file_refs(self.initial_prompt)
+                if self.err:
+                    _emit("on_error", self.err)
+                    return _END
+            except Exception as e:
+                _emit("on_error", f"Unexpected error expanding initial prompt: {e}")
+                return _END
+            if self.files:
+                self.initial_files, self.expanded = _lead_absorb(self.conversation_history, self.initial_files,
+                                                      self.expanded, self.files, self.log)
+            # Extract <pinned>...</pinned> blocks — these survive summarization
+            self.expanded, pinned = _extract_pinned(self.expanded)
+            if pinned:
+                _pinned_instructions = pinned
+                self.log.info("Pinned instructions extracted (%d chars)", len(pinned))
+
+            # Bootstrap-template check (T3.9): create empty placeholders for files the
+            # agent's AGENT.md/CLAUDE.md references but which don't exist on disk, when
+            # they are declared under `bootstrap` in config. Eliminates a repeated
+            # "missing file" error loop at startup. Fresh starts only (not continue_mode);
+            # a no-op unless declared.
+            _bootstrap_actions = _bootstrap_template_check(self.log)
+            if _bootstrap_actions:
+                self.log.info(
+                    "Bootstrap-template: %d placeholder(s) auto-created — %s",
+                    len(_bootstrap_actions),
+                    ", ".join(f"{p} ({a})" for p, a in _bootstrap_actions),
+                )
+                for _ in _bootstrap_actions:
+                    telemetry.record_patch_event("bootstrap_create", kind="created")
+
+            # PERCEIVE preamble bundle (.agent/preamble.json): auto-load and inject
+            # before the user's initial prompt. Saves the 6-8 boilerplate tool calls
+            # both audits flagged as the #1 friction source. Only on fresh starts;
+            # continue_mode picks up where it left off and shouldn't re-inject.
+            _preamble = _load_preamble_bundle(self.log)
+            if _preamble:
+                self.conversation_history.append({"role": "system", "content": _preamble})
+
+            # F2: the contract instruction exists only when armed — creative/interactive sessions
+            # never see it. Injected as a system message on fresh starts (continue_mode resumes a
+            # history that already carries it).
+            if _result_contract_armed():
+                self.conversation_history.append({"role": "system", "content": _result_contract_instruction(
+                    _RESULT_CONTRACT_SCHEMA or RESULT_CONTRACT_DEFAULT_SCHEMA)})
+                self.log.info("Result contract armed (%s)", "built-in schema" if _RESULT_CONTRACT_SCHEMA in (None, RESULT_CONTRACT_DEFAULT_SCHEMA) else "custom schema")
+                # F4 auto-arm: with the contract armed, a recognizable GOAL: / DELIVERABLE: stanza
+                # in the initial prompt fills cycle.goal / cycle.deliverables when they are unset.
+                # Only the guard's CORRECTION is ever armed this way, never a hard block.
+                _cyc = _config.setdefault("cycle", {})
+                if not _cyc.get("goal") or not _cyc.get("deliverables"):
+                    _dg, _dd = _derive_goal_and_deliverables(self.expanded if isinstance(self.expanded, str) else "")
+                    if _dg and not _cyc.get("goal"):
+                        _cyc["goal"] = _dg
+                    if _dd and not _cyc.get("deliverables"):
+                        _cyc["deliverables"] = _dd
+                    if _dg or _dd:
+                        self.log.info("F4 derived from the prompt: goal=%r deliverables=%s", _dg[:80], _dd)
+            # F4 launch check: a deliverable glob that already matches nothing is fine (it is to be
+            # produced) — but a pattern with a typo is caught by warning ONCE what is absent now,
+            # so a 45-minute run does not end on a misspelled path.
+            _dels_now = (_config.get("cycle") or {}).get("deliverables") or []
+            if isinstance(_dels_now, list) and _dels_now:
+                _absent = _missing_deliverables([d for d in _dels_now if isinstance(d, str)])
+                self.log.info("F4 deliverables at launch: %d named, %d not yet present: %s",
+                         len(_dels_now), len(_absent), _absent[:8])
+
+            # WS2: goal-stack hydration — independent of preamble.json. If
+            # state/goals.json has active goals, inject "goal → next actionable
+            # step" so multi-cycle work resumes without re-derivation from git
+            # log. Token-capped inside preamble_summary (~600 tokens).
+            try:
+                from tools.goal import preamble_summary as _goal_summary
+                _goals_txt = _goal_summary()
+                if _goals_txt:
+                    self.conversation_history.append(
+                        {"role": "system", "content": _goals_txt})
+                    self.log.info("Goal stack hydrated into preamble (%d chars)",
+                             len(_goals_txt))
+            except Exception as _ge:
+                self.log.debug("goal-stack hydration skipped: %s", _ge)
+
+            # AC4 of #1028 — prepend [Session resume] block to the first user
+            # message so the agent immediately sees what was auto-closed and
+            # what persistent work remains, without an extra task_tracker call.
+            if self._session_resume_summary:
+                self.expanded = f"{self._session_resume_summary}\n\n---\n\n{self.expanded}"
+
+            # F3a: inbound bulk spills too. A spec with a data blob pasted in, or a log dumped
+            # into the initial prompt, goes to a file with a reference — bulk belongs in files,
+            # references in context, in both directions. Same cap as tool results.
+            self.expanded = _spill_initial_prompt(self.expanded, self.files, self.log)
+            self.conversation_history.append({"role": "user", "content": self.expanded})
+            self.log.debug("USER: %s", self.expanded)
+            self.result = run_agent_single(self.conversation_history, self.summary_state, self.initial_files, self.log,
+                                      self.gen["temperature"], self.gen["top_p"], self.gen["top_k"],
+                                      self.gen["presence_penalty"], self.max_tokens, self.ctx_size,
+                                      async_summarizer=self._async_summarizer)
+
+            if self.auto:
+                if self.result == "cancelled":
+                    self.result = _handle_auto_guidance(self.conversation_history, self.summary_state, self.initial_files, self.log,
+                                                   self.gen, self.max_tokens, self.ctx_size, self._async_summarizer,
+                                                   self._telemetry_on, self.t0)
+                monitor_bus.stop_all()
+                cleanup_temp_sessions()
+                self.log.info("Session ended (auto mode) | %d messages in history", len(self.conversation_history))
+                if self._telemetry_on:
+                    telemetry.record_cycle(status="auto_completed", duration_s=time.time() - self.t0)
+                    telemetry.shutdown()
+                _log_bedrock_session_spend(self.log)
+                # F6: classify the terminal value for the supervisor; main() emits and exits with it.
+                # Classified BEFORE the result file is written so the exit rides inside the JSON (F2).
+                _code, _detail = _classify_auto_result(self.result, _LAST_ERROR_KIND, _LAST_EXIT)
+                if _code == EXIT_OK and not _last_assistant_text(self.conversation_history):
+                    # review finding 3: a run that produced NO assistant output is not 'completed'
+                    _code, _detail = EXIT_ERROR, "run produced no assistant output"
+                _info = _set_exit(_code, _detail)
+                if self.result_file:
+                    _obj, _synth = _write_result_file(self.result_file, self.conversation_history, exit_info=_info)
+                    if _synth:
+                        # F2: no valid result block — the caller still gets valid JSON; the exit code
+                        # says the contract was not met unless a harder stop already owns the code.
+                        self.log.warning("result contract: synthesized failed record written to %s", self.result_file)
+                        if _info["code"] == EXIT_OK:
+                            _info = _set_exit(EXIT_CONTRACT, "no valid result block emitted; failed record synthesized")
+                            _obj["exit"] = dict(_info)
+                            with open(self.result_file, "w", encoding="utf-8") as f:
+                                json.dump(_obj, f, indent=1, ensure_ascii=False)
+                                f.write("\n")
+                return _END
+
+    def _live_loop(self):
+        """The always-live input: the prompt thread, this consumer loop, slash commands."""
+        # ── Concurrent always-live input (opt-in: config.interactive.live_input) ──
+        # A background thread runs the prompt continuously so the operator can type
+        # while the agent works; each entered line is queued (put_user) and
+        # delivered at the next natural boundary by the same mid-burst drain a
+        # monitor ping uses. The main thread here is the SINGLE consumer: it blocks
+        # on the shared queue, so a typed line OR a monitor ping wakes it — this
+        # supersedes the app.exit idle-wake (not registered in this mode). A
+        # process-wide patch_stdout held in the input thread routes all streaming /
+        # tool output above the live input line (probe-verified: a bg-thread app is
+        # visible to the main thread via the shared default AppSession). esc-esc
+        # requests cancellation of a running turn.
+        self._skip_blocking = self.tui_session is not None and self._live_input
+        if self._skip_blocking:
+            _EXIT_MARK = _live.EXIT_MARK
+            # The prompt thread, the exit/borrow marks and the terminal borrow live in
+            # live_input.py; this loop is the bus's single consumer.
+            self._live_in = _live.LiveInput(self.tui_session, monitor_bus, self.log, recorder=self._recorder,
+                                       cancel=cancel_request)
+
+            def _dispatch_slash(_ui):
+                def _refresh_cb_log(new_log):
+                    globals()["_cb_log"] = new_log
+                ctx = SimpleNamespace(
+                    conversation_history=self.conversation_history, summary_state=self.summary_state,
+                    initial_files=self.initial_files, async_summarizer=self._async_summarizer, cb=_cb,
+                    log=self.log, log_path=self.log_path, ctx_size=self.ctx_size, config=_config,
+                    base_url=getattr(_main_backend, "base_url", None) or BASE_URL,
+                    summary_base_url=getattr(_summary_backend, "base_url", None),
+                    setup_logger=_setup_logger, pick_model=_pick_model_interactive,
+                    set_model=_set_model_for_role, set_system_prompt=_set_system_prompt,
+                    get_effort=_get_effort_for_role, set_effort=_set_effort_for_role,
+                    render_context_bar=_render_context_bar,
+                    refresh_cb_log=_refresh_cb_log, apply_setup=_apply_setup_updates, request_restart=_request_restart)
+                with self._live_in.borrowed_terminal():
+                    handled = _commands.handle_command(_ui, ctx)
+                if handled:
+                    self.initial_files = ctx.initial_files
+                    self.log = ctx.log
+                    self._live_in.log = self.log
+                    self.log_path = ctx.log_path
+                    return True
+                return False
+
+            set_tui_mode(True)   # input app owns the keyboard continuously
+            _SLASH_HOLD["active"] = True   # the consumer below dispatches slash lines
+            self._live_in.start()
+            try:
+                # Items on this bus are (kind, str). Anything else is a defect in whatever
+                # produced it, and the consumer below cannot safely act on one: the exit-marker
+                # comparison silently returns False for a non-str while .startswith() may return
+                # a truthy object, so a malformed item falls through into the dispatcher and the
+                # loop spins on it forever. Validate here rather than trust the producer -- an
+                # unbounded spin is a far worse failure than a dropped item, and it is the shape
+                # that takes the whole machine down rather than just this loop.
+                _bad_items = 0
+                _MAX_BAD_ITEMS = 10
+                while not _RESTART["requested"]:
+                    try:
+                        self._item = monitor_bus.get_blocking()
+                    except KeyboardInterrupt:
+                        break
+                    if self._item is None:
+                        continue
+                    if (not isinstance(self._item, tuple) or len(self._item) != 2
+                            or not isinstance(self._item[1], str)):
+                        _bad_items += 1
+                        self.log.error("live-input: dropping malformed bus item (%r); "
+                                  "expected a (kind, str) pair", type(self._item).__name__)
+                        if _bad_items >= _MAX_BAD_ITEMS:
+                            # Bounded rather than infinite: a producer emitting nothing but
+                            # malformed items is broken, and continuing to drain it accomplishes
+                            # nothing while costing memory on every pass.
+                            self.log.error("live-input: %d consecutive malformed items — ending live "
+                                      "input instead of spinning", _bad_items)
+                            break
+                        continue
+                    _bad_items = 0
+                    _kind, _text = self._item
+                    if _kind == "user" and _text == _EXIT_MARK:
+                        break
+                    if _kind == "user":
+                        if _text.lower() in ("exit", "quit"):
+                            break
+                        if _text.startswith("/") and _dispatch_slash(_text):
+                            continue
+                        _expanded, _files, _err = _expand_file_refs(_text)
+                        if _err:
+                            _emit("on_error", _err)
+                            continue
+                        if _files:
+                            self.initial_files, _expanded = _lead_absorb(
+                                self.conversation_history, self.initial_files, _expanded, _files, self.log)
+                        self._body = _expanded
+                        self.log.debug("USER (live): %s", _expanded[:200])
+                    else:
+                        # A monitor ping consumed while idle IS the task (raw text).
+                        self._body = _text
+                    # Either way the agent is waking: the gate's held digests ride along
+                    # instead of earning a wake of their own later.
+                    _digests = monitor_bus.take_held_digests()
+                    if _digests:
+                        self._body = self._body + "\n\n" + "\n\n".join(_digests)
+                    self.conversation_history.append({"role": "user", "content": self._body})
+                    # Cancel-flag reset happens at run_agent_single entry (the
+                    # turn boundary — single authority for tui_mode flag
+                    # lifetime); here we only drop the toolbar's cancelling
+                    # feedback segment before the new turn starts.
+                    self.tui_session.clear_cancelling()
+                    run_agent_single(self.conversation_history, self.summary_state, self.initial_files, self.log,
+                                     self.gen["temperature"], self.gen["top_p"], self.gen["top_k"],
+                                     self.gen["presence_penalty"], self.max_tokens, self.ctx_size,
+                                     async_summarizer=self._async_summarizer)
+            finally:
+                self._live_in.stop()
+                # Stop the input app cleanly so prompt_toolkit erases its render
+                # and the terminal is left on a fresh line, not mid-paint. Two
+                # attempts cover the narrow window where the thread was between
+                # prompts (exit_app no-ops) when the first shot fired.
+                for _ in range(2):
+                    self.tui_session.exit_app()
+                    self._live_in.join(timeout=1.0)
+                    if not self._live_in.alive:
+                        break
+                _SLASH_HOLD["active"] = False
+                set_tui_mode(False)
+                if self._live_in.alive:
+                    # Could not stop the app — best-effort scrub of the painted
+                    # prompt/toolbar rows so the shell doesn't land mid-screen.
+                    sys.stdout.write("\033[0J")
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+
+    def _blocking_loop(self):
+        """The blocking prompt loop (no TUI, or live input off)."""
+        while not self._skip_blocking and not _RESTART["requested"]:
+            # Monitor idle-wake pre-check (TUI only): if a monitor queued output
+            # while we were between prompts, inject and run it before blocking on
+            # input — closes the race where output lands just before prompt() starts.
+            if self.tui_session is not None and monitor_bus.has_pending():
+                if _drain_monitor_injections(self.conversation_history):
+                    run_agent_single(self.conversation_history, self.summary_state, self.initial_files, self.log,
+                                     self.gen["temperature"], self.gen["top_p"], self.gen["top_k"],
+                                     self.gen["presence_penalty"], self.max_tokens, self.ctx_size,
+                                     async_summarizer=self._async_summarizer)
+                continue
+            try:
+                if self.tui_session is not None:
+                    self.user_input = self.tui_session.prompt()
+                else:
+                    self.user_input = input("\nYou: ").strip()
+            except EOFError:
+                break
+            except KeyboardInterrupt:
+                _emit("on_notice", "info", "\n\nGoodbye!\n")
+                break
+
+            # An idle prompt woken by a monitor returns the WAKE sentinel: drain
+            # the bus and run, rather than treating it as typed text (so monitor
+            # output never hits the slash-command / file-ref paths).
+            if self.tui_session is not None and self.user_input is self.tui_session.WAKE:
+                if _drain_monitor_injections(self.conversation_history):
+                    run_agent_single(self.conversation_history, self.summary_state, self.initial_files, self.log,
+                                     self.gen["temperature"], self.gen["top_p"], self.gen["top_k"],
+                                     self.gen["presence_penalty"], self.max_tokens, self.ctx_size,
+                                     async_summarizer=self._async_summarizer)
+                continue
+
+            if not self.user_input:
+                continue
+            if self.user_input.lower() in ["exit", "quit"]:
+                _emit("on_notice", "info", "Goodbye!\n")
+                break
+            if self.user_input.startswith("/"):
+                def _refresh_cb_log(new_log):
+                    globals()["_cb_log"] = new_log
+                ctx = SimpleNamespace(
+                    conversation_history=self.conversation_history,
+                    summary_state=self.summary_state,
+                    initial_files=self.initial_files,
+                    async_summarizer=self._async_summarizer,
+                    cb=_cb,
+                    log=self.log,
+                    log_path=self.log_path,
+                    ctx_size=self.ctx_size,
+                    config=_config,
+                    # Point /model at the active main backend (e.g. the configured
+                    # gateway), not the hardcoded llama-server default — otherwise
+                    # the picker probes 127.0.0.1:8080 and lists nothing.
+                    base_url=getattr(_main_backend, "base_url", None) or BASE_URL,
+                    # Summary backend's URL so /model summary lists from (and uses
+                    # the auth of) the summary backend, mirroring main listing.
+                    summary_base_url=getattr(_summary_backend, "base_url", None),
+                    setup_logger=_setup_logger,
+                    pick_model=_pick_model_interactive,
+                    # Applies a chosen model to a role (main/summary): updates the
+                    # in-memory config + live backend object, then persists to
+                    # .agent/config.json. Keeps commands.py free of business logic.
+                    set_model=_set_model_for_role,
+                    set_system_prompt=_set_system_prompt,
+                    get_effort=_get_effort_for_role,
+                    set_effort=_set_effort_for_role,
+                    render_context_bar=_render_context_bar,
+                    refresh_cb_log=_refresh_cb_log,
+                    apply_setup=_apply_setup_updates, request_restart=_request_restart,
+                )
+                if _commands.handle_command(self.user_input, ctx):
+                    # /clear may have rotated log and initial_files — pull them back
+                    self.initial_files = ctx.initial_files
+                    self.log = ctx.log
+                    self.log_path = ctx.log_path
+                    continue
+
+            self.expanded, self.files, self.err = _expand_file_refs(self.user_input)
+            if self.err:
+                _emit("on_error", self.err)
+                continue
+            if self.files:
+                self.initial_files, self.expanded = _lead_absorb(self.conversation_history, self.initial_files,
+                                                      self.expanded, self.files, self.log)
+
+            self.conversation_history.append({"role": "user", "content": self.expanded})
+            self.log.debug("USER: %s", self.expanded)
+
+            run_agent_single(self.conversation_history, self.summary_state, self.initial_files, self.log,
+                             self.gen["temperature"], self.gen["top_p"], self.gen["top_k"],
+                             self.gen["presence_penalty"], self.max_tokens, self.ctx_size,
+                             async_summarizer=self._async_summarizer)
+
+    def _shutdown(self):
+        """The restart checkpoint, the front end, the monitors, the logs, the result file."""
+        if _RESTART["requested"]:
+            # The checkpoint the re-exec resumes from: the history as it stands at this
+            # boundary (a /restart typed before any turn overwrites a stale file with an
+            # empty one, so -c starts fresh rather than resuming an older session).
+            if self._async_summarizer:
+                self._async_summarizer.harvest(self.summary_state)
+            _save_checkpoint(self.conversation_history, self.summary_state, _CKPT_TURN["turn"], self.initial_files)
+            _emit("on_notice", "info",
+                  f"Restarting with -c ({_RESTART['by']}{': ' + _RESTART['reason'] if _RESTART['reason'] else ''})")
+            self.log.info("RESTART: by %s (%s); checkpoint at turn %d, %d messages",
+                     _RESTART["by"], _RESTART["reason"] or "no reason", _CKPT_TURN["turn"],
+                     len(self.conversation_history))
+        if self.tui_session is not None:
+            self.tui_session.close()
+        monitor_bus.clear_notifier()
+        monitor_bus.stop_all()
+        cleanup_temp_sessions()
+        self.log.info("Session ended | %d messages in history", len(self.conversation_history))
+        if self._telemetry_on:
+            telemetry.record_cycle(status="completed", duration_s=time.time() - self.t0)
+        _log_bedrock_session_spend(self.log)
+
+        if self.result_file:
+            # raw text unless the contract is armed (F2) — interactive sessions leave it off
+            _write_result_file(self.result_file, self.conversation_history)
+
+        if self._telemetry_on:
+            telemetry.shutdown()
+
+    _STEPS = (_boot, _backends, _announce, _summarizer, _resume, _front_end, _first_prompt, _live_loop, _blocking_loop, _shutdown)
+
+
 def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, *, cb=None, tui=False, verbose=False, result_file=None):
     """Interactive agent that maintains conversation history.
 
@@ -3798,791 +4632,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     is optional — if prompt_toolkit isn't installed, a clean ImportError
     is raised at TuiSession construction time.
     """
-
-    # First-run wizard (plan/setup-command.md Phase 2) — BEFORE the ctx_size
-    # read so a first-run calibration applies to THIS session, not the next.
-    # --setup forces it even when a config exists (one-shot, then cleared).
-    global _FORCE_SETUP_WIZARD
-    _maybe_first_run_wizard(auto, initial_prompt, continue_mode,
-                            force=_FORCE_SETUP_WIZARD)
-    _FORCE_SETUP_WIZARD = False
-
-    ctx_size = _config["context"]["ctx_size"]
-    max_tokens = _config["context"]["max_tokens"]
-    gen = _config["generation"]
-
-    log, log_path, error_log_path = _setup_logger()
-
-    # OTLP telemetry: init once per session (no-op if disabled / SDK missing).
-    _telemetry_on = telemetry.init()
-    t0 = time.time()
-
-    # Install the UI callback handle for this session
-    global _cb, _cb_log
-    _cb = cb if cb is not None else TerminalCallbacks(verbose=verbose)
-    _cb_log = log
-    # Hand the boot-line count to the callback so on_session_start can
-    # erase it (along with the on_boot_progress lines below) before the
-    # banner. Setattr instead of constructor arg keeps TerminalCallbacks
-    # / TuiCallbacks signatures stable.
-    if _BOOT_LINES_PRINTED:
-        try:
-            _cb._boot_lines_printed += _BOOT_LINES_PRINTED
-        except AttributeError:
-            pass
-
-    # Wire think tool's output through the callback system (D12 compliance).
-    # _emit("on_stream_chunk", text) routes through safe_cb so a buggy UI hook
-    # can never crash the think tool.  The default (_output = print) is kept
-    # as a safe fallback for standalone/test use outside the agent loop.
-    import tools.think as _think_mod
-    _think_mod._output = lambda text: _emit("on_stream_chunk", text)
-
-    model_name = _main_backend.model or _config["llm"]["model"]
-    _emit(
-        "on_boot_progress",
-        f"checking main backend — {_display_backend_kind(getattr(_main_backend, 'kind', ''), getattr(_main_backend, 'base_url', ''))} {model_name}",
-    )
-    ok, detail = _main_backend.health(timeout=_startup_health_timeout())
-
-    # Auto-detect the model name from /v1/models so requests and the TUI carry the
-    # server's real model. A single listed model always wins; with several, only
-    # an unset model takes the first (a configured one is left alone).
-    if ok and getattr(_main_backend, "kind", None) == "llamacpp":
-        _detected_models = _main_backend.list_models(timeout=3)
-        if len(_detected_models) == 1 or (_detected_models and not _main_backend.model):
-            _main_backend.model = _detected_models[0]
-            _config["llm"]["model"] = _detected_models[0]
-            log.info("Auto-detected main model name from /v1/models: %s", _detected_models[0])
-
-    # Backend banner (plan task 1.5) — one-line log noting which kinds are active.
-    log.info(
-        "backends: main=%s(%s@%s) summary=%s(%s@%s)",
-        _main_backend.kind, _main_backend.model, _main_backend.base_url,
-        _summary_backend.kind, _summary_backend.model, _summary_backend.base_url,
-    )
-
-    # Warn if the main llamacpp backend's chat template doesn't support tool calls.
-    # Symptom: the model's native tool-call tokens appear as content text, get
-    # stripped, and no tools ever fire. Fix: a template that supports tools.
-    if getattr(_main_backend, 'kind', '') == 'llamacpp':
-        caps = _main_backend.check_tool_caps()
-        if caps and not caps.get('supports_tool_calls', True):
-            log.warning(
-                "TOOL CALLS DISABLED: main backend chat template does not support tool calls "
-                "(chat_template_caps.supports_tool_calls=false). Tools will not execute. "
-                "Start llama-server with --jinja and a chat template that supports tool calls "
-                "(--chat-template-file <template>; docs/setup.md covers this)."
-            )
-
-    # Auto-detect context size from the main backend. Apply 85% buffer,
-    # then hard-cap at 85K to avoid llama_decode crashes.
-    # If the agent's config.json sets context.ctx_size to a value lower than
-    # the default (114688), that value is used as an additional cap — letting
-    # operators trade context depth for less fill pressure per turn.
-    _CTX_HARD_CAP = 85_000
-    _CTX_CONFIG_CAP = _config["context"]["ctx_size"]  # explicit agent cap (may be default 114688)
-    detected = _main_backend.detect_ctx_size()
-    if detected and getattr(_main_backend, "kind", None) == "aicommons":
-        # detect_ctx_size() is already tokens, already capped by
-        # aicommons.max_context_tokens — the 85% / 85K llama_decode guards don't
-        # apply. Only an explicitly LOWERED context.ctx_size still caps it (M7).
-        _explicit = _CTX_CONFIG_CAP if _CTX_CONFIG_CAP != _DEFAULT_CTX_SIZE else None
-        ctx_size = min(int(detected), _explicit or int(detected))
-        _config["context"]["ctx_size"] = ctx_size
-        log.info("AI Commons context: model window capped to %d tokens, using ctx_size=%d",
-                 detected, ctx_size)
-    elif detected:
-        ctx_size = min(int(detected * 0.85), _CTX_HARD_CAP, _CTX_CONFIG_CAP)
-        _config["context"]["ctx_size"] = ctx_size
-        log.info("Auto-detected main model n_ctx=%d, using ctx_size=%d (85%% / cap %dk / config cap %d)",
-                 detected, ctx_size, _CTX_HARD_CAP // 1000, _CTX_CONFIG_CAP)
-
-    # Probe summary health BEFORE on_session_start so the banner can
-    # render main + summary indicators together in a single header.
-    summary_cfg = _config["summary"]
-    summary_ok = False
-    summary_detail = "disabled"
-    summary_url = getattr(_summary_backend, "base_url", "") if _summary_backend else ""
-    if summary_cfg["enabled"]:
-        _emit(
-            "on_boot_progress",
-            f"checking summary backend — {_display_backend_kind(getattr(_summary_backend, 'kind', ''), summary_url)} {getattr(_summary_backend, 'model', '?')}",
-        )
-        try:
-            summary_ok, summary_detail = _summary_backend.health(timeout=_startup_health_timeout())
-        except (requests.ConnectionError, requests.Timeout):
-            summary_ok, summary_detail = False, "unreachable"
-        if summary_ok and getattr(_summary_backend, "kind", None) == "llamacpp":
-            _det = _summary_backend.list_models(timeout=3)
-            if len(_det) == 1 or (_det and not _summary_backend.model):
-                _summary_backend.model = _det[0]
-                log.info("Auto-detected summary model name from /v1/models: %s", _det[0])
-
-    # Probe the advisor (GLM) endpoint. If it is unreachable, remove the tool
-    # from the registry so the model never sees it in the schema — avoids
-    # wasted escalation attempts against a server that isn't running.
-    advisor_cfg = _config.get("advisor", {}) or {}
-    # Default-ON with main fallback: advisor_active/_read_role own the rule
-    # (explicit enabled wins; else the advisor self-consults main's endpoint).
-    try:
-        from tools.consult_advisor import (advisor_active as _advisor_active,
-                                           _read_role as _advisor_read_role)
-        advisor_enabled = _advisor_active(_config)
-        _adv_eff = _advisor_read_role("advisor")
-    except Exception:
-        advisor_enabled = advisor_cfg.get("enabled",
-                                          bool(advisor_cfg.get("base_url")))
-        _adv_eff = advisor_cfg
-    advisor_ok = False
-    advisor_detail = "disabled"
-    if advisor_enabled and getattr(_main_backend, "kind", "") == "fake":
-        # F8b: the fake backend promises "never opens a socket" — the advisor probe is a
-        # socket. Under the fake, the advisor is unloaded without probing (review finding 2).
-        advisor_enabled = False
-        advisor_detail = "disabled (fake backend active — no probe)"
-        try:
-            from tools import remove_tool as _remove_tool_fake
-            _remove_tool_fake("consult_advisor")
-        except Exception:  # noqa: BLE001
-            pass
-        log.info("Advisor probe skipped: fake backend active")
-    if advisor_enabled:
-        _emit("on_boot_progress",
-              f"checking advisor backend — "
-              f"{_adv_eff.get('base_url') or _display_backend_kind(_adv_eff.get('kind') or '?', '')} "
-              f"{_adv_eff.get('model') or '(served model)'}")
-        try:
-            from tools.consult_advisor import startup_check as _advisor_check
-            advisor_ok, advisor_detail = _advisor_check(
-                timeout_s=_startup_health_timeout())
-        except Exception as _e:
-            advisor_ok, advisor_detail = False, f"{type(_e).__name__}: {_e}"
-        if not advisor_ok:
-            from tools import remove_tool as _remove_tool
-            _remove_tool("consult_advisor")
-            log.warning(
-                "Advisor endpoint unavailable (%s) — consult_advisor tool unloaded",
-                advisor_detail,
-            )
-        else:
-            log.info("Advisor endpoint healthy — consult_advisor tool active")
-
-    # Footer ↔ banner parity: the banner uses _main_backend.model, the TUI
-    # footer reads _config["llm"]["model"]. Sync them before the banner renders
-    # and before the TuiSession is built so both show the active model name.
-    _sync_config_model(_main_backend, _config)
-
-    # Live-input mode reprints what the session showed when the terminal is
-    # resized (TuiSession); recording starts here so the banner is part of it.
-    _recorder = None
-    if tui and not auto:
-        _ivr = _config.get("interactive") if isinstance(_config, dict) else None
-        if not isinstance(_ivr, dict) or _ivr.get("live_input", True):
-            import transcript as _transcript
-            _recorder = _transcript.install()
-
-    _emit("on_session_start", {
-        "version": __version__,
-        "sha": _git_short_sha(),
-        "api_ok": ok,
-        "api_detail": detail,
-        "base_url": getattr(_main_backend, "base_url", None) or BASE_URL,
-        "model": _main_backend.model or _config["llm"]["model"],
-        "main_kind": _display_backend_kind(getattr(_main_backend, "kind", ""), getattr(_main_backend, "base_url", "")),
-        "summary_enabled": summary_cfg["enabled"],
-        "summary_ok": summary_ok,
-        "summary_detail": summary_detail,
-        "summary_base_url": summary_url,
-        "summary_model": getattr(_summary_backend, "model", "") if _summary_backend else "",
-        "summary_kind": _display_backend_kind(getattr(_summary_backend, "kind", ""), summary_url) if _summary_backend else "",
-        "advisor_enabled": advisor_enabled,
-        "advisor_ok": advisor_ok,
-        "advisor_detail": advisor_detail,
-        "ctx_size": ctx_size,
-        "max_turns": _MAX_TURNS,
-        "log_path": log_path,
-        "error_log_path": error_log_path,
-    })
-
-    log.info("Session started | ctx_size=%d max_turns=%d temperature=%.1f max_tokens=%d",
-             ctx_size, _MAX_TURNS, gen["temperature"], max_tokens)
-    if _CWD_CANONICALIZED:
-        # F5: say what was rewritten at import (logging was not configured yet then).
-        log.info("Working directory canonicalized: %s -> %s (pass --no-realpath-cwd to keep "
-                 "the symlinked view)", _CWD_CANONICALIZED[0], _CWD_CANONICALIZED[1])
-    if gen.get("seed") is not None:
-        log.info("Generation seed=%s (F8a)", gen["seed"])
-    log.info("Tools registered: %s", [t["function"]["name"] for t in tools])
-
-    # Instantiate the async summarizer from the already-probed state above.
-    _async_summarizer = None
-    if summary_cfg["enabled"]:
-        if summary_ok:
-            # Auto-detect summary model context size
-            summary_ctx = _summary_backend.detect_ctx_size()
-            if summary_ctx:
-                _config["summary"]["ctx_size"] = int(summary_ctx * 0.85)
-                log.info("Auto-detected summary model n_ctx=%d, using %d (85%%)",
-                         summary_ctx, _config["summary"]["ctx_size"])
-            _async_summarizer = _summ.AsyncSummarizer(_config, log)
-            log.debug("Async summarizer enabled → %s", summary_url)
-            _emit("on_summarizer_status", "online", summary_url)
-        elif summary_detail in ("unreachable", "timeout"):
-            # Connection-level failure → "offline" (matches pre-refactor).
-            log.warning("Summary endpoint unreachable at %s, using main model for summaries",
-                        summary_url)
-            _emit("on_summarizer_status", "offline", summary_url)
-        else:
-            log.warning("Summary endpoint unhealthy (%s), using main model for summaries",
-                        summary_detail)
-            _emit("on_summarizer_status", "unhealthy", summary_detail)
-
-    # ── Continue mode: resume from checkpoint ──
-    start_turn = 0
-    if continue_mode:
-        cp = _load_checkpoint()
-        if cp:
-            conversation_history, summary_state, start_turn, initial_files, _clean_exit = cp
-            _CKPT_TURN["turn"] = start_turn
-            log.info("CONTINUE: resuming from checkpoint (turn %d, %d messages, clean_exit=%s)",
-                     start_turn, len(conversation_history), _clean_exit)
-            if _RESTART["resumed"]:
-                log.info("CONTINUE: after a restart by %s (%s)", _RESTART["resumed"].get("by"),
-                         _RESTART["resumed"].get("reason") or "no reason given")
-            _cp_lead = initial_files
-            initial_files = _lead_reload(initial_files, log)
-            # The disk copy takes its place in the history too: an untrimmed window
-            # sends the history, not the lead slot, so without this an edit made
-            # between sessions reached the model only once the window trimmed.
-            _LEAD.pop("replaced", None)
-            if _lead_place(conversation_history, initial_files, log, old=_cp_lead) \
-                    and _LEAD.get("replaced"):
-                log.info("lead files placed in the history on resume (changed since the checkpoint)")
-            # Cap summary from old checkpoints that may have bloated summaries
-            if summary_state.get("text"):
-                summary_state["text"] = _summ.condense_summary(summary_state["text"], log)
-            _emit("on_continue_resumed", start_turn, len(conversation_history))
-            if auto:
-                _seed_phase_tasks(_config, log)
-                result = run_agent_single(conversation_history, summary_state, initial_files, log,
-                                          gen["temperature"], gen["top_p"], gen["top_k"],
-                                          gen["presence_penalty"], max_tokens, ctx_size,
-                                          start_turn=start_turn,
-                                          async_summarizer=_async_summarizer)
-                cleanup_temp_sessions()
-                log.info("Session ended (continue mode) | %d messages", len(conversation_history))
-                if _telemetry_on:
-                    telemetry.record_cycle(status="continue_completed", duration_s=time.time() - t0)
-                    telemetry.shutdown()
-                _log_bedrock_session_spend(log)
-                return
-            # Non-auto: restore state and fall through to interactive loop
-        else:
-            _emit("on_continue_none")
-            log.debug("CONTINUE: no checkpoint found, starting fresh")
-
-    if not continue_mode:
-        # Check if the current cycle was already committed — bump if so
-        _auto_increment_cycle(log)
-
-    conversation_history = conversation_history if continue_mode and start_turn > 0 else []
-    summary_state = summary_state if continue_mode and start_turn > 0 else {"text": "", "up_to": 0}
-    initial_files = initial_files if continue_mode and start_turn > 0 else None
-    _held = summary_state.pop("_pending", None)
-    if (_async_summarizer is not None and isinstance(_held, dict) and _held.get("text")
-            and isinstance(_held.get("up_to"), int)):
-        # A summary made ahead of an eviction that had not happened when the checkpoint
-        # was written: held again here, applied when the head moves past it.
-        _async_summarizer.seed(_held["text"], _held["up_to"], _held.get("kind") or "resumed")
-        log.info("summary.resume: a finished summary up to message %d rides along from the checkpoint",
-                 _held["up_to"])
-
-    # AC3/AC4 of #1028 — close ephemeral tasks left open from a prior session
-    # and build a [Session resume] preamble for the first user message.
-    # Skipped on continue-mode resumes (start_turn > 0) since the whole
-    # point of continue is to pick up the prior session intact. Runs
-    # BEFORE _seed_phase_tasks so idempotent seeding sees the post-close
-    # state, not stale ephemeral tasks from the previous abandoned cycle.
-    _session_resume_summary = (
-        _auto_close_ephemeral_tasks(log)
-        if not (continue_mode and start_turn > 0)
-        else None
-    )
-
-    _seed_phase_tasks(_config, log)
-
-    # ── TUI front-end (default in interactive mode) ──
-    # Now that history / summary / initial_files have stable identities,
-    # instantiate the prompt_toolkit session and swap the UI callback.
-    # If prompt_toolkit isn't installed we fall back silently to plain
-    # input() with a one-line notice so the default TUI path doesn't
-    # break environments that haven't installed the optional dependency.
-    tui_session = None
-    # Concurrent always-live input is the DEFAULT in interactive (TUI) mode:
-    # the input line stays usable while the agent works; typed lines and monitor
-    # pings queue and are delivered at the next natural boundary. Opt OUT with
-    # config.interactive.live_input=false (falls back to the blocking prompt
-    # loop). No effect under -a, or under --no-tui / no prompt_toolkit (plain
-    # input(), which cannot host a concurrent line).
-    _iv = _config.get("interactive") if isinstance(_config, dict) else None
-    _live_input = bool(_iv.get("live_input", True)) if isinstance(_iv, dict) else True
-    if tui and not auto:
-        import tui as _tuimod
-        if _tuimod._AVAILABLE and _live_input:
-            # Disable CPR (cursor-position requests) BEFORE the session is
-            # built: prompt_toolkit's Renderer caches CPR support at
-            # construction (renderer.py CPR_Support), so this must precede
-            # TuiSession(). Why: on CPR-capable terminals every streamed
-            # line's run_in_terminal cycle awaits outstanding CPR responses
-            # with the input detached — a response landing in that window is
-            # lost, after which every redraw stalls in
-            # wait_for_cpr_responses: the prompt/spinner freezes and
-            # streamed text lands BELOW the stale paint (field report
-            # 2026-08-13). The CPR-less relative-positioning path renders
-            # the same stream correctly (verified via pyte replay both
-            # ways). Cost: the bottom toolbar needs height-known and stops
-            # rendering — the working indicator lives on the prompt line,
-            # which every terminal renders. Blocking / --no-tui modes never
-            # set this.
-            os.environ["PROMPT_TOOLKIT_NO_CPR"] = "1"
-        if _tuimod._AVAILABLE:
-            tui_session = _tuimod.TuiSession(
-                history=conversation_history,
-                summary_state=summary_state,
-                config=_config,
-                ctx_size=ctx_size,
-                cb=_cb,
-                estimate_tokens=_cw.estimate_tokens,
-                enable_cancel_key=_live_input,
-            )
-            _cb = _tuimod.TuiCallbacks(tui_session, verbose=getattr(_cb, "verbose", False))
-            # Idle-wake (app.exit from a monitor thread) is only for the default
-            # blocking loop. Concurrent mode consumes monitor pings from the
-            # queue directly (queue.get wakes on any enqueue), so registering
-            # the wake notifier there would fire app.exit on the always-running
-            # input prompt — do NOT register it in live-input mode.
-            if not _live_input:
-                monitor_bus.set_notifier(tui_session.wake)
-        else:
-            _emit("on_notice", "warn",
-                  "prompt_toolkit not installed — using plain prompt. "
-                  "`pip install prompt_toolkit` (or pass --no-tui to silence).")
-
-    try:
-        _restored = monitor_bus.restore_persisted()
-        if _restored:
-            log.info("re-armed persistent monitors: %s", ", ".join(_restored))
-        _sched = schedule_bus.restore()
-        if _sched:
-            log.info("schedules active: %s", ", ".join(_sched))
-    except Exception:
-        log.debug("restore_persisted failed", exc_info=True)
-
-    # A restart the model asked for comes back to work, not to the prompt: the configured
-    # text (preferences.restart_resume_prompt) goes in as the user's message and one turn
-    # runs before the input loop, as an initial prompt would. A keyboard /restart returns
-    # to the prompt. Auto mode resumes its run anyway.
-    _resume_text = _restart_resume_prompt() if (continue_mode and start_turn > 0 and not auto) else ""
-    if _resume_text:
-        _emit("on_user_message", _resume_text)
-        conversation_history.append({"role": "user", "content": _resume_text})
-        log.info("RESTART: resuming with the configured prompt (%d chars)", len(_resume_text))
-        run_agent_single(conversation_history, summary_state, initial_files, log,
-                         gen["temperature"], gen["top_p"], gen["top_k"],
-                         gen["presence_penalty"], max_tokens, ctx_size,
-                         async_summarizer=_async_summarizer)
-
-    if initial_prompt and not (continue_mode and start_turn > 0):
-        _emit("on_user_message", initial_prompt)
-        try:
-            expanded, files, err = _expand_file_refs(initial_prompt)
-            if err:
-                _emit("on_error", err)
-                return
-        except Exception as e:
-            _emit("on_error", f"Unexpected error expanding initial prompt: {e}")
-            return
-        if files:
-            initial_files, expanded = _lead_absorb(conversation_history, initial_files,
-                                                  expanded, files, log)
-        # Extract <pinned>...</pinned> blocks — these survive summarization
-        global _pinned_instructions
-        expanded, pinned = _extract_pinned(expanded)
-        if pinned:
-            _pinned_instructions = pinned
-            log.info("Pinned instructions extracted (%d chars)", len(pinned))
-
-        # Bootstrap-template check (T3.9): create empty placeholders for files the
-        # agent's AGENT.md/CLAUDE.md references but which don't exist on disk, when
-        # they are declared under `bootstrap` in config. Eliminates a repeated
-        # "missing file" error loop at startup. Fresh starts only (not continue_mode);
-        # a no-op unless declared.
-        _bootstrap_actions = _bootstrap_template_check(log)
-        if _bootstrap_actions:
-            log.info(
-                "Bootstrap-template: %d placeholder(s) auto-created — %s",
-                len(_bootstrap_actions),
-                ", ".join(f"{p} ({a})" for p, a in _bootstrap_actions),
-            )
-            for _ in _bootstrap_actions:
-                telemetry.record_patch_event("bootstrap_create", kind="created")
-
-        # PERCEIVE preamble bundle (.agent/preamble.json): auto-load and inject
-        # before the user's initial prompt. Saves the 6-8 boilerplate tool calls
-        # both audits flagged as the #1 friction source. Only on fresh starts;
-        # continue_mode picks up where it left off and shouldn't re-inject.
-        _preamble = _load_preamble_bundle(log)
-        if _preamble:
-            conversation_history.append({"role": "system", "content": _preamble})
-
-        # F2: the contract instruction exists only when armed — creative/interactive sessions
-        # never see it. Injected as a system message on fresh starts (continue_mode resumes a
-        # history that already carries it).
-        if _result_contract_armed():
-            conversation_history.append({"role": "system", "content": _result_contract_instruction(
-                _RESULT_CONTRACT_SCHEMA or RESULT_CONTRACT_DEFAULT_SCHEMA)})
-            log.info("Result contract armed (%s)", "built-in schema" if _RESULT_CONTRACT_SCHEMA in (None, RESULT_CONTRACT_DEFAULT_SCHEMA) else "custom schema")
-            # F4 auto-arm: with the contract armed, a recognizable GOAL: / DELIVERABLE: stanza
-            # in the initial prompt fills cycle.goal / cycle.deliverables when they are unset.
-            # Only the guard's CORRECTION is ever armed this way, never a hard block.
-            _cyc = _config.setdefault("cycle", {})
-            if not _cyc.get("goal") or not _cyc.get("deliverables"):
-                _dg, _dd = _derive_goal_and_deliverables(expanded if isinstance(expanded, str) else "")
-                if _dg and not _cyc.get("goal"):
-                    _cyc["goal"] = _dg
-                if _dd and not _cyc.get("deliverables"):
-                    _cyc["deliverables"] = _dd
-                if _dg or _dd:
-                    log.info("F4 derived from the prompt: goal=%r deliverables=%s", _dg[:80], _dd)
-        # F4 launch check: a deliverable glob that already matches nothing is fine (it is to be
-        # produced) — but a pattern with a typo is caught by warning ONCE what is absent now,
-        # so a 45-minute run does not end on a misspelled path.
-        _dels_now = (_config.get("cycle") or {}).get("deliverables") or []
-        if isinstance(_dels_now, list) and _dels_now:
-            _absent = _missing_deliverables([d for d in _dels_now if isinstance(d, str)])
-            log.info("F4 deliverables at launch: %d named, %d not yet present: %s",
-                     len(_dels_now), len(_absent), _absent[:8])
-
-        # WS2: goal-stack hydration — independent of preamble.json. If
-        # state/goals.json has active goals, inject "goal → next actionable
-        # step" so multi-cycle work resumes without re-derivation from git
-        # log. Token-capped inside preamble_summary (~600 tokens).
-        try:
-            from tools.goal import preamble_summary as _goal_summary
-            _goals_txt = _goal_summary()
-            if _goals_txt:
-                conversation_history.append(
-                    {"role": "system", "content": _goals_txt})
-                log.info("Goal stack hydrated into preamble (%d chars)",
-                         len(_goals_txt))
-        except Exception as _ge:
-            log.debug("goal-stack hydration skipped: %s", _ge)
-
-        # AC4 of #1028 — prepend [Session resume] block to the first user
-        # message so the agent immediately sees what was auto-closed and
-        # what persistent work remains, without an extra task_tracker call.
-        if _session_resume_summary:
-            expanded = f"{_session_resume_summary}\n\n---\n\n{expanded}"
-
-        # F3a: inbound bulk spills too. A spec with a data blob pasted in, or a log dumped
-        # into the initial prompt, goes to a file with a reference — bulk belongs in files,
-        # references in context, in both directions. Same cap as tool results.
-        expanded = _spill_initial_prompt(expanded, files, log)
-        conversation_history.append({"role": "user", "content": expanded})
-        log.debug("USER: %s", expanded)
-        result = run_agent_single(conversation_history, summary_state, initial_files, log,
-                                  gen["temperature"], gen["top_p"], gen["top_k"],
-                                  gen["presence_penalty"], max_tokens, ctx_size,
-                                  async_summarizer=_async_summarizer)
-
-        if auto:
-            if result == "cancelled":
-                result = _handle_auto_guidance(conversation_history, summary_state, initial_files, log,
-                                               gen, max_tokens, ctx_size, _async_summarizer,
-                                               _telemetry_on, t0)
-            monitor_bus.stop_all()
-            cleanup_temp_sessions()
-            log.info("Session ended (auto mode) | %d messages in history", len(conversation_history))
-            if _telemetry_on:
-                telemetry.record_cycle(status="auto_completed", duration_s=time.time() - t0)
-                telemetry.shutdown()
-            _log_bedrock_session_spend(log)
-            # F6: classify the terminal value for the supervisor; main() emits and exits with it.
-            # Classified BEFORE the result file is written so the exit rides inside the JSON (F2).
-            _code, _detail = _classify_auto_result(result, _LAST_ERROR_KIND, _LAST_EXIT)
-            if _code == EXIT_OK and not _last_assistant_text(conversation_history):
-                # review finding 3: a run that produced NO assistant output is not 'completed'
-                _code, _detail = EXIT_ERROR, "run produced no assistant output"
-            _info = _set_exit(_code, _detail)
-            if result_file:
-                _obj, _synth = _write_result_file(result_file, conversation_history, exit_info=_info)
-                if _synth:
-                    # F2: no valid result block — the caller still gets valid JSON; the exit code
-                    # says the contract was not met unless a harder stop already owns the code.
-                    log.warning("result contract: synthesized failed record written to %s", result_file)
-                    if _info["code"] == EXIT_OK:
-                        _info = _set_exit(EXIT_CONTRACT, "no valid result block emitted; failed record synthesized")
-                        _obj["exit"] = dict(_info)
-                        with open(result_file, "w", encoding="utf-8") as f:
-                            json.dump(_obj, f, indent=1, ensure_ascii=False)
-                            f.write("\n")
-            return
-    # ── Concurrent always-live input (opt-in: config.interactive.live_input) ──
-    # A background thread runs the prompt continuously so the operator can type
-    # while the agent works; each entered line is queued (put_user) and
-    # delivered at the next natural boundary by the same mid-burst drain a
-    # monitor ping uses. The main thread here is the SINGLE consumer: it blocks
-    # on the shared queue, so a typed line OR a monitor ping wakes it — this
-    # supersedes the app.exit idle-wake (not registered in this mode). A
-    # process-wide patch_stdout held in the input thread routes all streaming /
-    # tool output above the live input line (probe-verified: a bg-thread app is
-    # visible to the main thread via the shared default AppSession). esc-esc
-    # requests cancellation of a running turn.
-    _skip_blocking = tui_session is not None and _live_input
-    if _skip_blocking:
-        _EXIT_MARK = _live.EXIT_MARK
-        # The prompt thread, the exit/borrow marks and the terminal borrow live in
-        # live_input.py; this loop is the bus's single consumer.
-        _live_in = _live.LiveInput(tui_session, monitor_bus, log, recorder=_recorder,
-                                   cancel=cancel_request)
-
-        def _dispatch_slash(_ui):
-            nonlocal initial_files, log, log_path
-            def _refresh_cb_log(new_log):
-                globals()["_cb_log"] = new_log
-            ctx = SimpleNamespace(
-                conversation_history=conversation_history, summary_state=summary_state,
-                initial_files=initial_files, async_summarizer=_async_summarizer, cb=_cb,
-                log=log, log_path=log_path, ctx_size=ctx_size, config=_config,
-                base_url=getattr(_main_backend, "base_url", None) or BASE_URL,
-                summary_base_url=getattr(_summary_backend, "base_url", None),
-                setup_logger=_setup_logger, pick_model=_pick_model_interactive,
-                set_model=_set_model_for_role, set_system_prompt=_set_system_prompt,
-                get_effort=_get_effort_for_role, set_effort=_set_effort_for_role,
-                render_context_bar=_render_context_bar,
-                refresh_cb_log=_refresh_cb_log, apply_setup=_apply_setup_updates, request_restart=_request_restart)
-            with _live_in.borrowed_terminal():
-                handled = _commands.handle_command(_ui, ctx)
-            if handled:
-                initial_files = ctx.initial_files
-                log = ctx.log
-                _live_in.log = log
-                log_path = ctx.log_path
-                return True
-            return False
-
-        set_tui_mode(True)   # input app owns the keyboard continuously
-        _SLASH_HOLD["active"] = True   # the consumer below dispatches slash lines
-        _live_in.start()
-        try:
-            # Items on this bus are (kind, str). Anything else is a defect in whatever
-            # produced it, and the consumer below cannot safely act on one: the exit-marker
-            # comparison silently returns False for a non-str while .startswith() may return
-            # a truthy object, so a malformed item falls through into the dispatcher and the
-            # loop spins on it forever. Validate here rather than trust the producer -- an
-            # unbounded spin is a far worse failure than a dropped item, and it is the shape
-            # that takes the whole machine down rather than just this loop.
-            _bad_items = 0
-            _MAX_BAD_ITEMS = 10
-            while not _RESTART["requested"]:
-                try:
-                    _item = monitor_bus.get_blocking()
-                except KeyboardInterrupt:
-                    break
-                if _item is None:
-                    continue
-                if (not isinstance(_item, tuple) or len(_item) != 2
-                        or not isinstance(_item[1], str)):
-                    _bad_items += 1
-                    log.error("live-input: dropping malformed bus item (%r); "
-                              "expected a (kind, str) pair", type(_item).__name__)
-                    if _bad_items >= _MAX_BAD_ITEMS:
-                        # Bounded rather than infinite: a producer emitting nothing but
-                        # malformed items is broken, and continuing to drain it accomplishes
-                        # nothing while costing memory on every pass.
-                        log.error("live-input: %d consecutive malformed items — ending live "
-                                  "input instead of spinning", _bad_items)
-                        break
-                    continue
-                _bad_items = 0
-                _kind, _text = _item
-                if _kind == "user" and _text == _EXIT_MARK:
-                    break
-                if _kind == "user":
-                    if _text.lower() in ("exit", "quit"):
-                        break
-                    if _text.startswith("/") and _dispatch_slash(_text):
-                        continue
-                    _expanded, _files, _err = _expand_file_refs(_text)
-                    if _err:
-                        _emit("on_error", _err)
-                        continue
-                    if _files:
-                        initial_files, _expanded = _lead_absorb(
-                            conversation_history, initial_files, _expanded, _files, log)
-                    _body = _expanded
-                    log.debug("USER (live): %s", _expanded[:200])
-                else:
-                    # A monitor ping consumed while idle IS the task (raw text).
-                    _body = _text
-                # Either way the agent is waking: the gate's held digests ride along
-                # instead of earning a wake of their own later.
-                _digests = monitor_bus.take_held_digests()
-                if _digests:
-                    _body = _body + "\n\n" + "\n\n".join(_digests)
-                conversation_history.append({"role": "user", "content": _body})
-                # Cancel-flag reset happens at run_agent_single entry (the
-                # turn boundary — single authority for tui_mode flag
-                # lifetime); here we only drop the toolbar's cancelling
-                # feedback segment before the new turn starts.
-                tui_session.clear_cancelling()
-                run_agent_single(conversation_history, summary_state, initial_files, log,
-                                 gen["temperature"], gen["top_p"], gen["top_k"],
-                                 gen["presence_penalty"], max_tokens, ctx_size,
-                                 async_summarizer=_async_summarizer)
-        finally:
-            _live_in.stop()
-            # Stop the input app cleanly so prompt_toolkit erases its render
-            # and the terminal is left on a fresh line, not mid-paint. Two
-            # attempts cover the narrow window where the thread was between
-            # prompts (exit_app no-ops) when the first shot fired.
-            for _ in range(2):
-                tui_session.exit_app()
-                _live_in.join(timeout=1.0)
-                if not _live_in.alive:
-                    break
-            _SLASH_HOLD["active"] = False
-            set_tui_mode(False)
-            if _live_in.alive:
-                # Could not stop the app — best-effort scrub of the painted
-                # prompt/toolbar rows so the shell doesn't land mid-screen.
-                sys.stdout.write("\033[0J")
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-
-    while not _skip_blocking and not _RESTART["requested"]:
-        # Monitor idle-wake pre-check (TUI only): if a monitor queued output
-        # while we were between prompts, inject and run it before blocking on
-        # input — closes the race where output lands just before prompt() starts.
-        if tui_session is not None and monitor_bus.has_pending():
-            if _drain_monitor_injections(conversation_history):
-                run_agent_single(conversation_history, summary_state, initial_files, log,
-                                 gen["temperature"], gen["top_p"], gen["top_k"],
-                                 gen["presence_penalty"], max_tokens, ctx_size,
-                                 async_summarizer=_async_summarizer)
-            continue
-        try:
-            if tui_session is not None:
-                user_input = tui_session.prompt()
-            else:
-                user_input = input("\nYou: ").strip()
-        except EOFError:
-            break
-        except KeyboardInterrupt:
-            _emit("on_notice", "info", "\n\nGoodbye!\n")
-            break
-
-        # An idle prompt woken by a monitor returns the WAKE sentinel: drain
-        # the bus and run, rather than treating it as typed text (so monitor
-        # output never hits the slash-command / file-ref paths).
-        if tui_session is not None and user_input is tui_session.WAKE:
-            if _drain_monitor_injections(conversation_history):
-                run_agent_single(conversation_history, summary_state, initial_files, log,
-                                 gen["temperature"], gen["top_p"], gen["top_k"],
-                                 gen["presence_penalty"], max_tokens, ctx_size,
-                                 async_summarizer=_async_summarizer)
-            continue
-
-        if not user_input:
-            continue
-        if user_input.lower() in ["exit", "quit"]:
-            _emit("on_notice", "info", "Goodbye!\n")
-            break
-        if user_input.startswith("/"):
-            def _refresh_cb_log(new_log):
-                globals()["_cb_log"] = new_log
-            ctx = SimpleNamespace(
-                conversation_history=conversation_history,
-                summary_state=summary_state,
-                initial_files=initial_files,
-                async_summarizer=_async_summarizer,
-                cb=_cb,
-                log=log,
-                log_path=log_path,
-                ctx_size=ctx_size,
-                config=_config,
-                # Point /model at the active main backend (e.g. the configured
-                # gateway), not the hardcoded llama-server default — otherwise
-                # the picker probes 127.0.0.1:8080 and lists nothing.
-                base_url=getattr(_main_backend, "base_url", None) or BASE_URL,
-                # Summary backend's URL so /model summary lists from (and uses
-                # the auth of) the summary backend, mirroring main listing.
-                summary_base_url=getattr(_summary_backend, "base_url", None),
-                setup_logger=_setup_logger,
-                pick_model=_pick_model_interactive,
-                # Applies a chosen model to a role (main/summary): updates the
-                # in-memory config + live backend object, then persists to
-                # .agent/config.json. Keeps commands.py free of business logic.
-                set_model=_set_model_for_role,
-                set_system_prompt=_set_system_prompt,
-                get_effort=_get_effort_for_role,
-                set_effort=_set_effort_for_role,
-                render_context_bar=_render_context_bar,
-                refresh_cb_log=_refresh_cb_log,
-                apply_setup=_apply_setup_updates, request_restart=_request_restart,
-            )
-            if _commands.handle_command(user_input, ctx):
-                # /clear may have rotated log and initial_files — pull them back
-                initial_files = ctx.initial_files
-                log = ctx.log
-                log_path = ctx.log_path
-                continue
-
-        expanded, files, err = _expand_file_refs(user_input)
-        if err:
-            _emit("on_error", err)
-            continue
-        if files:
-            initial_files, expanded = _lead_absorb(conversation_history, initial_files,
-                                                  expanded, files, log)
-
-        conversation_history.append({"role": "user", "content": expanded})
-        log.debug("USER: %s", expanded)
-
-        run_agent_single(conversation_history, summary_state, initial_files, log,
-                         gen["temperature"], gen["top_p"], gen["top_k"],
-                         gen["presence_penalty"], max_tokens, ctx_size,
-                         async_summarizer=_async_summarizer)
-
-    if _RESTART["requested"]:
-        # The checkpoint the re-exec resumes from: the history as it stands at this
-        # boundary (a /restart typed before any turn overwrites a stale file with an
-        # empty one, so -c starts fresh rather than resuming an older session).
-        if _async_summarizer:
-            _async_summarizer.harvest(summary_state)
-        _save_checkpoint(conversation_history, summary_state, _CKPT_TURN["turn"], initial_files)
-        _emit("on_notice", "info",
-              f"Restarting with -c ({_RESTART['by']}{': ' + _RESTART['reason'] if _RESTART['reason'] else ''})")
-        log.info("RESTART: by %s (%s); checkpoint at turn %d, %d messages",
-                 _RESTART["by"], _RESTART["reason"] or "no reason", _CKPT_TURN["turn"],
-                 len(conversation_history))
-    if tui_session is not None:
-        tui_session.close()
-    monitor_bus.clear_notifier()
-    monitor_bus.stop_all()
-    cleanup_temp_sessions()
-    log.info("Session ended | %d messages in history", len(conversation_history))
-    if _telemetry_on:
-        telemetry.record_cycle(status="completed", duration_s=time.time() - t0)
-    _log_bedrock_session_spend(log)
-
-    if result_file:
-        # raw text unless the contract is armed (F2) — interactive sessions leave it off
-        _write_result_file(result_file, conversation_history)
-
-    if _telemetry_on:
-        telemetry.shutdown()
+    _Session(initial_prompt, auto, continue_mode, cb, tui, verbose, result_file).run()
 
 
 def _handle_auto_guidance(conversation_history, summary_state, initial_files, log, 

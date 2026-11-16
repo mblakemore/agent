@@ -5,6 +5,7 @@ folded into an evicting or collapsing request blocked the main thread for 11 s a
 the median (35 times, 16 s at most) and the condense pass for 13 s (21 times, 19 s
 at most), in front of the request, with a person waiting on the other end.
 """
+import re
 import logging
 import threading
 import time
@@ -118,8 +119,8 @@ class TestResumeSeedsTheHeldSummary:
     def test_main_seeds_a_held_summary_from_the_checkpoint(self):
         """The continue path hands summary_state["_pending"] back to the worker."""
         src = open(agent.__file__, encoding="utf-8").read()
-        assert '_held = summary_state.pop("_pending", None)' in src
-        assert '_async_summarizer.seed(_held["text"], _held["up_to"]' in src
+        assert re.search(r'_held = (self\.)?summary_state\.pop\("_pending", None\)', src)
+        assert re.search(r'(self\.)?_async_summarizer\.seed\(_held\["text"\], _held\["up_to"\]', src)
 
 
 # ── 2. summary.wait_s: a head move with nothing ready ────────────────────────
