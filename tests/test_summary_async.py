@@ -13,8 +13,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import agent
+import summarize
 import context_window
-from agent import AsyncSummarizer
+from summarize import AsyncSummarizer
 
 log = logging.getLogger("test_summary_async")
 
@@ -31,7 +32,7 @@ def _hist(n):
 
 class TestCondenseOnTheWorker:
     def test_a_long_result_is_condensed_by_the_worker_thread(self, monkeypatch):
-        monkeypatch.setattr(agent, "_SUMMARY_MAX_CHARS", 50)
+        monkeypatch.setattr(summarize, "SUMMARY_MAX_CHARS", 50)
         seen = {}
 
         def fake_request(prompt, **kw):
@@ -39,7 +40,7 @@ class TestCondenseOnTheWorker:
                 seen["condense_thread"] = threading.current_thread().name
                 return "short"
             return "x" * 200
-        with patch("agent._summary_request", side_effect=fake_request), patch("agent._emit") as emit:
+        with patch("summarize.summary_request", side_effect=fake_request), patch("agent._emit") as emit:
             s = AsyncSummarizer(agent._config, log)
             assert s.kick("", [{"role": "user", "content": "a"}], 3) is True
             s.drain()
@@ -53,14 +54,14 @@ class TestCondenseOnTheWorker:
     def test_harvest_never_calls_the_model(self):
         s = AsyncSummarizer(agent._config, log)
         s.seed("y" * 10000, 4)
-        with patch("agent._summary_request") as req, patch("agent._condense_summary") as cond:
+        with patch("summarize.summary_request") as req, patch("summarize.condense_summary") as cond:
             assert s.harvest({"text": "", "up_to": 0}) is True
         assert not req.called and not cond.called
 
     def test_kick_reports_whether_it_started(self):
         s = AsyncSummarizer(agent._config, log)
         gate = threading.Event()
-        with patch("agent._summary_request", side_effect=lambda *a, **k: (gate.wait(5), "r")[1]):
+        with patch("summarize.summary_request", side_effect=lambda *a, **k: (gate.wait(5), "r")[1]):
             assert s.kick("", [], 1) is True
             assert s.kick("", [], 2) is False, "one worker at a time"
             gate.set()
@@ -126,19 +127,19 @@ class TestResumeSeedsTheHeldSummary:
 class TestWaitSetting:
     def test_null_and_blank_mean_block(self, monkeypatch):
         monkeypatch.setitem(agent._config["summary"], "wait_s", None)
-        assert agent._summary_wait_s() is None
+        assert summarize.summary_wait_s() is None
         monkeypatch.setitem(agent._config["summary"], "wait_s", "")
-        assert agent._summary_wait_s() is None
+        assert summarize.summary_wait_s() is None
 
     def test_numbers_are_seconds_never_negative(self, monkeypatch):
         monkeypatch.setitem(agent._config["summary"], "wait_s", 3)
-        assert agent._summary_wait_s() == 3.0
+        assert summarize.summary_wait_s() == 3.0
         monkeypatch.setitem(agent._config["summary"], "wait_s", "0")
-        assert agent._summary_wait_s() == 0.0
+        assert summarize.summary_wait_s() == 0.0
         monkeypatch.setitem(agent._config["summary"], "wait_s", -2)
-        assert agent._summary_wait_s() == 0.0
+        assert summarize.summary_wait_s() == 0.0
         monkeypatch.setitem(agent._config["summary"], "wait_s", "soon")
-        assert agent._summary_wait_s() is None
+        assert summarize.summary_wait_s() is None
 
 
 class FakeSummarizer:
@@ -183,8 +184,8 @@ class TestFoldAtHeadMove:
         monkeypatch.setitem(agent._config["summary"], "wait_s", wait_s)
         state = {"text": "old", "up_to": up_to, "_head": oldest}
         lg = MagicMock()
-        with patch("agent._generate_summary", return_value="SYNC SUMMARY") as gen, patch("agent._emit") as emit:
-            changed = agent._fold_summary_at_head_move(_hist(40), state, oldest, lg, "eviction", summarizer)
+        with patch("summarize.generate_summary", return_value="SYNC SUMMARY") as gen, patch("agent._emit") as emit:
+            changed = summarize.fold_summary_at_head_move(_hist(40), state, oldest, lg, "eviction", summarizer)
         lines = [c.args[0] % c.args[1:] for c in lg.info.call_args_list if c.args]
         notices = [c.args[2] for c in emit.call_args_list if c.args and c.args[0] == "on_notice"]
         return changed, state, gen, lines, notices
@@ -275,7 +276,7 @@ def _evicting_run(agent_loop_mocks, monkeypatch, summarizer, n=50):
     h.append({"role": "user", "content": "go on"})
     state = {"text": "old summary", "up_to": 0, "_cache_head": 1, "_head": 1}
     lg = MagicMock()
-    with patch("agent._generate_summary", return_value="SYNC SUMMARY") as gen, patch("agent._save_checkpoint"):
+    with patch("summarize.generate_summary", return_value="SYNC SUMMARY") as gen, patch("agent._save_checkpoint"):
         agent.run_agent_single(h, state, [], lg, max_tokens=100, ctx_size=1000, async_summarizer=summarizer)
     lines = [c.args[0] % c.args[1:] for c in lg.info.call_args_list if c.args]
     return sent, state, lines, gen
@@ -471,7 +472,7 @@ class TestIdleWatcher:
         run, s = self._run(monkeypatch)
         clock = [1000.0]
         lg = MagicMock()
-        why = agent._summary_idle_loop(FakeStop(clock), run, lg, now=lambda: clock[0])
+        why = summarize.summary_idle_loop(FakeStop(clock), run, lg, now=lambda: clock[0])
         assert why == "kicked" and clock[0] >= 1300
         # the collapse keeps 58 tokens: 4 messages behind a 10-token lead → edge 48
         assert s.kicks == [(48, 48, "idle")], s.kicks
@@ -480,19 +481,19 @@ class TestIdleWatcher:
     def test_a_run_that_starts_first_stops_it(self, small_budget, monkeypatch):
         run, s = self._run(monkeypatch)
         clock = [1000.0]
-        assert agent._summary_idle_loop(FakeStop(clock, stop_after=1100), run, MagicMock(), now=lambda: clock[0]) == "run"
+        assert summarize.summary_idle_loop(FakeStop(clock, stop_after=1100), run, MagicMock(), now=lambda: clock[0]) == "run"
         assert not s.kicks
 
     def test_a_window_too_small_to_collapse_needs_nothing(self, small_budget, monkeypatch):
         run, s = self._run(monkeypatch, n=6)
         clock = [1000.0]
-        assert agent._summary_idle_loop(FakeStop(clock), run, MagicMock(), now=lambda: clock[0]) == "no-collapse"
+        assert summarize.summary_idle_loop(FakeStop(clock), run, MagicMock(), now=lambda: clock[0]) == "no-collapse"
         assert not s.kicks
 
     def test_a_summary_already_in_hand_is_left_alone(self, small_budget, monkeypatch):
         run, s = self._run(monkeypatch, ready=("R", 30))
         clock = [1000.0]
-        assert agent._summary_idle_loop(FakeStop(clock), run, MagicMock(), now=lambda: clock[0]) == "busy"
+        assert summarize.summary_idle_loop(FakeStop(clock), run, MagicMock(), now=lambda: clock[0]) == "busy"
 
     def test_keepalives_moving_last_at_push_the_kick_out(self, small_budget, monkeypatch):
         run, s = self._run(monkeypatch)
@@ -506,7 +507,7 @@ class TestIdleWatcher:
                 agent._CACHE_REQ["last_at"] = 1200.0
             return r
         stop.wait = wait
-        why = agent._summary_idle_loop(stop, run, MagicMock(), now=lambda: clock[0])
+        why = summarize.summary_idle_loop(stop, run, MagicMock(), now=lambda: clock[0])
         assert why == "kicked" and clock[0] >= 1500
 
     def test_the_collapse_then_aligns_to_the_idle_summary(self, small_budget, monkeypatch):
@@ -521,19 +522,19 @@ class TestIdleWatcher:
     def test_arming_needs_ahead_a_caching_backend_and_a_collapse(self, small_budget, monkeypatch):
         monkeypatch.setitem(agent._config["context"], "cache_collapse_frac", 0.15)
         monkeypatch.setitem(agent._config["summary"], "ahead", 0.8)
-        monkeypatch.setattr(agent, "_SUMMARY_IDLE", {"stop": None, "thread": None, "run": None})
-        assert agent._summary_idle_arm(MagicMock()) is False, "no run recorded"
-        agent._SUMMARY_IDLE["run"] = {"summarizer": FakeSummarizer(), "history": [], "state": {},
+        monkeypatch.setattr(summarize, "SUMMARY_IDLE", {"stop": None, "thread": None, "run": None})
+        assert summarize.summary_idle_arm(MagicMock()) is False, "no run recorded"
+        summarize.SUMMARY_IDLE["run"] = {"summarizer": FakeSummarizer(), "history": [], "state": {},
                                       "initial_files": "", "ctx_size": 1000, "max_tokens": 100}
-        with patch("agent._summary_idle_loop", return_value="x"):
-            assert agent._summary_idle_arm(MagicMock()) is True
-            agent._SUMMARY_IDLE["thread"].join(2)
-        agent._summary_idle_disarm()
+        with patch("summarize.summary_idle_loop", return_value="x"):
+            assert summarize.summary_idle_arm(MagicMock()) is True
+            summarize.SUMMARY_IDLE["thread"].join(2)
+        summarize.summary_idle_disarm()
         monkeypatch.setitem(agent._config["summary"], "ahead", 0)
-        assert agent._summary_idle_arm(MagicMock()) is False
+        assert summarize.summary_idle_arm(MagicMock()) is False
         monkeypatch.setitem(agent._config["summary"], "ahead", 0.8)
         monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="llamacpp"))
-        assert agent._summary_idle_arm(MagicMock()) is False
+        assert summarize.summary_idle_arm(MagicMock()) is False
 
 
 # ── a lead message that is a large share of the budget (measured 2026-11-14: a quarter) ──
@@ -575,7 +576,7 @@ class TestALeadLargerThanTheCollapsedShare:
         _big_lead(monkeypatch)
         run["state"]["text"] = "BIGLEAD"
         clock = [1000.0]
-        why = agent._summary_idle_loop(FakeStop(clock), run, MagicMock(), now=lambda: clock[0])
+        why = summarize.summary_idle_loop(FakeStop(clock), run, MagicMock(), now=lambda: clock[0])
         assert why == "kicked" and s.kicks == [(52, 52, "idle")], (why, s.kicks)
 
     def test_the_wake_message_alone_aligns_to_that_summary(self, small_budget, monkeypatch):

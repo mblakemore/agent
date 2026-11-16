@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 GUARDED_FUNCTIONS = [
     ("tools/file.py", "_resolve_path"),
     ("agent.py", "run_agent_single"),
-    ("agent.py", "_worker"),                 # nested inside _AsyncSummarizer.kick
+    ("summarize.py", "_worker"),             # nested inside AsyncSummarizer.kick
     ("tool_recovery.py", "_ask_for_param"),
 ]
 

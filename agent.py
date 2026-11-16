@@ -79,7 +79,6 @@ try:
     import json_repair as _json_repair   # repairs malformed tool-call JSON before the heuristic salvage
 except ImportError:                      # optional: without it the heuristic salvage is the only fallback
     _json_repair = None
-from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -437,6 +436,7 @@ import checkpoint as _ckpt
 import job as _job
 import memory_pressure as _mem
 import context_window as _cw
+import summarize as _summ
 import lead as _lead
 _RUNTIME_NOTE_HEAD = _lead.RUNTIME_NOTE_HEAD   # the stored note's head; tests read it here
 _EXIT_ONLY_RE = re.compile(r'^\[session:[^\]]+\]\s+exit=0\s*$')
@@ -1618,31 +1618,10 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
         _summary_backend = _build_backend(
             _cfg_with_role(_config["backends"], "summary")
         )
-def _sane_summary_threshold(ctx_cfg, log=None):
-    """The summary threshold as a MESSAGE count. Setup wizards before 2026-10-29 wrote it
-    in characters (ctx_chars * 0.6, e.g. 432000), which the run loop compares to the
-    number of messages that have fallen out of the window — no calibrated session ever
-    summarised. A value above the message cap cannot be meant as messages, so it is
-    replaced by a fifth of the cap and the replacement is logged with the config key."""
-    cap = int(ctx_cfg.get("max_context_messages") or 30)
-    try:
-        value = int(ctx_cfg.get("summary_threshold", 5))
-    except (TypeError, ValueError):
-        value = 5
-    if value <= cap:
-        return value
-    fixed = max(5, cap // 5)
-    (log or logging.getLogger("agent")).warning(
-        "context.summary_threshold=%d is larger than max_context_messages=%d (a chars value "
-        "from an older /setup calibrate); using %d messages. Re-run /setup calibrate to fix the config.",
-        value, cap, fixed)
-    return fixed
 
 
 _MAX_FULL_LINES = _config["context"]["max_full_lines"]
 _PREVIEW_LINES = _config["context"]["preview_lines"]
-_SUMMARY_THRESHOLD = _sane_summary_threshold(_config["context"])
-_SUMMARY_MAX_CHARS = _config["context"]["summary_max_chars"]
 # A second execution of this file as a script while the imported `agent` module is
 # live (a test runner's runpy) must not re-register the modules' hooks from its own
 # throwaway namespace: the hooks would then read that namespace's state, not the
@@ -1652,6 +1631,50 @@ if _FIRST_LOAD:
     _lead.configure(max_full_lines=_MAX_FULL_LINES, preview_lines=_PREVIEW_LINES,
                     model_guards=_config["context"].get("model_guards", True),
                     emit=_emit)
+if _FIRST_LOAD:
+    _summ.configure(
+        threshold=_summ.sane_summary_threshold(_config["context"]),
+        max_chars=_config["context"]["summary_max_chars"],
+        summary_backend=lambda: _summary_backend, main_backend=lambda: _main_backend,
+        config=lambda: _config, base_url=lambda: BASE_URL, cache_req=lambda: _CACHE_REQ,
+        emit=lambda *a, **k: _emit(*a, **k),
+        trigger_failover=lambda *a, **k: _trigger_failover(*a, **k),
+        build_backend=lambda cfg: _build_backend(cfg),
+        cache_lifetime_key=lambda *a, **k: _cache_lifetime_key(*a, **k),
+        cache_lifetime_estimate=lambda *a, **k: _cache_lifetime_estimate(*a, **k),
+        cache_lifetimes=lambda: _cache_lifetimes(),
+        cache_collapse_frac=lambda: _cache_collapse_frac(),
+        prompt_caching_backend=lambda: _prompt_caching_backend(),
+        cicd_facts=lambda: (_cicd_worktree_path, _cicd_edited_files, _cicd_issue_number,
+                            _cicd_pr_number, _cicd_branch))
+# The old names, for readers. The loop reads the live knobs through _summ: a /setup
+# update changes them there.
+_SUMMARY_THRESHOLD, _SUMMARY_MAX_CHARS = _summ.SUMMARY_THRESHOLD, _summ.SUMMARY_MAX_CHARS
+_sane_summary_threshold = _summ.sane_summary_threshold
+_summary_wait_s = _summ.summary_wait_s
+_summary_ahead_frac = _summ.summary_ahead_frac
+_format_for_summary = _summ.format_for_summary
+_summary_request = _summ.summary_request
+_condense_summary = _summ.condense_summary
+_build_summary_prompt = _summ.build_summary_prompt
+_TOOL_RESULT_COMPRESS_AFTER = _summ.TOOL_RESULT_COMPRESS_AFTER
+_TOOL_RESULT_COMPRESS_MIN = _summ.TOOL_RESULT_COMPRESS_MIN
+_TOOL_RESULT_COMPRESS_MODEL_MAX = _summ.TOOL_RESULT_COMPRESS_MODEL_MAX
+_local_compress = _summ.local_compress
+_summarize_for_compression = _summ.summarize_for_compression
+_TOOL_RESULT_COMPRESS_PRESSURE = _summ.TOOL_RESULT_COMPRESS_PRESSURE
+_history_pressure = _summ.history_pressure
+_compress_repeated_tool_results = _summ.compress_repeated_tool_results
+_generate_summary = _summ.generate_summary
+AsyncSummarizer = _summ.AsyncSummarizer
+_maybe_resummarize = _summ.maybe_resummarize
+_fold_summary_at_head_move = _summ.fold_summary_at_head_move
+_SUMMARY_IDLE = _summ.SUMMARY_IDLE
+_SUMMARY_IDLE_AT_FRAC = _summ.SUMMARY_IDLE_AT_FRAC
+_SUMMARY_IDLE_POLL_S = _summ.SUMMARY_IDLE_POLL_S
+_summary_idle_loop = _summ.summary_idle_loop
+_summary_idle_disarm = _summ.summary_idle_disarm
+_summary_idle_arm = _summ.summary_idle_arm
 
 _LLM_MAX_RETRIES = _config["retry"]["max_retries"]
 _LLM_BASE_DELAY = _config["retry"]["base_delay_seconds"]
@@ -2535,30 +2558,6 @@ def _cache_collapse_frac():
         return 0.0
 
 
-def _summary_wait_s():
-    """summary.wait_s: None when a head move with no summary ready summarizes in front
-    of the request; otherwise the seconds to wait for a running summary, 0 or more."""
-    v = _config.get("summary", {}).get("wait_s")
-    if v is None or v == "":
-        return None
-    try:
-        return max(0.0, float(v))
-    except (TypeError, ValueError):
-        return None
-
-
-def _summary_ahead_frac():
-    """summary.ahead: the window fill (a fraction of the budget, or of the message
-    cap) at which the summary of what the next eviction will drop is started; 0 off."""
-    try:
-        v = float(_config.get("summary", {}).get("ahead", 0) or 0)
-    except (TypeError, ValueError):
-        return 0.0
-    return v if 0.0 < v < 1.0 else 0.0
-
-
-
-
 class _CompletionResponse:
     """Just enough of a chat-completions response (``.json()``) for tool_recovery."""
 
@@ -2586,8 +2585,6 @@ def _recovery_llm_call(log):
             text = _summary_backend.complete(prompt=prompt)
         return _CompletionResponse(text)
     return _call
-
-
 
 
 _persist_runtime_note, _append_turn_text = _sp.persist_runtime_note, _sp.append_turn_text
@@ -3589,81 +3586,6 @@ def _cache_keepalive_arm(log):
     return True
 
 
-# ── Summary ahead of a cache collapse ────────────────────────────────────────
-# While the agent waits for input on a caching backend, nothing in the history
-# changes, so the window a collapse would rebuild (context.cache_collapse_frac)
-# after an idle gap longer than the cache's lifetime is known now. When the gap
-# reaches half that lifetime the summary of what the collapse will drop is
-# started, and the wake request goes out at once instead of after it (measured
-# 2026-11-02: 32 collapses, each behind a synchronous summary of ~11 s).
-_SUMMARY_IDLE = {"stop": None, "thread": None, "run": None}
-_SUMMARY_IDLE_AT_FRAC = 0.5    # of the proven cache lifetime
-_SUMMARY_IDLE_POLL_S = 30.0    # keepalives move last_at, so the gap is re-read this often
-
-
-def _summary_idle_loop(stop, run, log, now=time.time):
-    """Wait for the idle gap to reach half the cache's proven lifetime, then start the
-    summary a collapse would need, once. `run` holds the history, state, summarizer
-    and sizes of the run that just ended. Returns why it stopped, for the tests."""
-    key = _cache_lifetime_key()
-    while True:
-        alive_s, _ = _cache_lifetime_estimate(_cache_lifetimes(), key)
-        last = _CACHE_REQ["last_at"]
-        if not last or not alive_s:
-            return "no-record"
-        gap = now() - last
-        due_in = alive_s * _SUMMARY_IDLE_AT_FRAC - gap
-        if due_in > 0:
-            if stop.wait(min(due_in, _SUMMARY_IDLE_POLL_S)):
-                return "run"
-            continue
-        summarizer, state = run["summarizer"], run["state"]
-        if summarizer.is_running or summarizer.pending_up_to() is not None:
-            return "busy"
-        edge = _collapse_edge(run["history"], state, run["initial_files"], run["ctx_size"], run["max_tokens"])
-        if edge is None:
-            return "no-collapse"
-        msgs = run["history"][state["up_to"]:edge]
-        if not msgs or not summarizer.kick(state["text"], msgs, edge, kind="idle"):
-            return "nothing"
-        log.info("summary.idle kick after %ds idle: up_to=%d edge=%d (%d messages), for the collapse due past %ds",
-                 int(gap), state["up_to"], edge, len(msgs), int(alive_s))
-        telemetry.record_patch_event("summary_idle", kind="fired")
-        return "kicked"
-
-
-def _summary_idle_disarm():
-    """Stop the idle watcher (a run is starting)."""
-    stop = _SUMMARY_IDLE.get("stop")
-    if stop is not None:
-        stop.set()
-    _SUMMARY_IDLE["stop"] = None
-    _SUMMARY_IDLE["thread"] = None
-
-
-def _summary_idle_arm(log):
-    """Start the idle watcher for the run that just ended, when summary.ahead is on,
-    the backend caches and a collapse is configured. Called with the keepalive."""
-    _summary_idle_disarm()
-    run = _SUMMARY_IDLE.get("run")
-    if (not run or run.get("summarizer") is None or not _summary_ahead_frac()
-            or not _prompt_caching_backend() or not _cache_collapse_frac()):
-        return False
-    stop = threading.Event()
-
-    def _worker():
-        try:
-            why = _summary_idle_loop(stop, run, log)
-            log.debug("summary.idle thread done: %s", why)
-        except Exception as e:  # noqa: BLE001
-            log.debug("summary.idle thread error: %s", e)
-
-    t = threading.Thread(target=_worker, name="summary-idle", daemon=True)
-    _SUMMARY_IDLE["stop"], _SUMMARY_IDLE["thread"] = stop, t
-    t.start()
-    return True
-
-
 def _stall_budget_s(base_s, est_prompt_tokens, prefill_tps_floor):
     """Pure: the zero-delta window a request may stay silent before it is called a stall.
     A backend emits no deltas during prefill, so the window must cover prefill for a prompt
@@ -3750,8 +3672,6 @@ def _get_adaptive_max_tokens(model: str, complexity: str) -> int:
     return _COMPLEXITY_MAX_TOKENS["_default"][complexity]
 
 
-
-
 # ── File reference expansion and the lead (lead.py) ───────────────────────────
 # Kept under their old names here: the loop, the checkpoint code and the tests reach
 # them as agent._lead_place, agent._LEAD and so on. Same objects, not copies.
@@ -3784,527 +3704,6 @@ def _spill_initial_prompt(expanded, files, log):
     log.info("F3a spill: initial prompt of %d chars -> file (cap %d)", len(typed), cap)
     return ("[Your initial instructions were too large for the context window and were "
             "saved to a file — read them from there before acting.]\n" + ref + tail)
-
-
-# ── Summarization ─────────────────────────────────────────────────────
-
-def _format_for_summary(messages):
-    """Format messages into a readable transcript for the summarizer.
-
-    Preserves error messages and tool results more fully than regular content,
-    since errors are critical for avoiding repeated failed approaches.
-    """
-    parts = []
-    for m in messages:
-        role = m["role"].upper()
-        if role == "TOOL":
-            name = m.get("name", "?")
-            content = m.get("content", "")
-            # Preserve error messages fully (up to 800 chars) — they're critical context
-            is_error = content.startswith("Error") or "Error:" in content[:50]
-            max_len = 800 if is_error else 500
-            if len(content) > max_len:
-                content = content[:max_len] + "..."
-            parts.append(f"TOOL RESULT ({name}): {content}")
-        elif role == "ASSISTANT":
-            text = m.get("content", "")
-            tool_calls = m.get("tool_calls", [])
-            if text:
-                if len(text) > 600:
-                    text = text[:600] + "..."
-                parts.append(f"ASSISTANT: {text}")
-            for tc in tool_calls:
-                fn_info = tc.get("function", {})
-                fn_name = fn_info.get("name", "?")
-                args = fn_info.get("arguments", "")
-                # For file writes, extract and preserve the path before truncating
-                if fn_name == "file" and '"write"' in args:
-                    _path_m = re.search(r'"path"\s*:\s*"([^"]+)"', args)
-                    if _path_m:
-                        parts.append(f"ASSISTANT called file(action=write, path={_path_m.group(1)})")
-                        continue
-                if len(args) > 200:
-                    args = args[:200] + "..."
-                parts.append(f"ASSISTANT called {fn_name}({args})")
-        else:
-            content = m.get("content", "")
-            if len(content) > 800:
-                content = content[:800] + "..."
-            parts.append(f"{role}: {content}")
-    return "\n".join(parts)
-
-
-def _summary_request(prompt, base_url=None, model=None, **kwargs):
-    """POST a summary prompt to the summary backend. Returns summary text.
-    
-    Plan task 1.4: routes through ``_summary_backend.complete(prompt=prompt)``.
-    The ``base_url`` / ``model`` parameters are preserved for signature
-    compatibility (see ``tests/test_summary_request_signature.py``). They are
-    only honored when ``_summary_backend.kind == "llamacpp"``; for non-llamacpp
-    backends a DEBUG log line is emitted and the backend's own config wins.
-    """
-    # Use default logger if none provided
-    log = kwargs.get("log")
-    if log is None:
-        import logging
-        log = logging.getLogger("agent")
-
-    try:
-        backend = _summary_backend
-        if backend.kind == "llamacpp" and (base_url or model):
-            # Build a transient backend with the overrides
-            override_cfg = dict(backend._cfg)
-            if base_url:
-                override_cfg["base_url"] = base_url
-            if model:
-                override_cfg["model"] = model
-            transient = _build_backend({**override_cfg, "kind": "llamacpp"})
-            return transient.complete(prompt=prompt)
-        if backend.kind != "llamacpp" and (base_url or model):
-            log.debug(
-                "_summary_request ignoring base_url/model override — "
-                "summary backend kind=%s",
-                backend.kind,
-            )
-        return backend.complete(prompt=prompt)
-    except Exception as e:
-        raise e
-
-
-def _condense_summary(text, log=None, quiet=False):
-    """Re-summarize if text exceeds the character cap. Preserves all info.
-    `quiet` skips the notices: the worker thread condenses its own result there,
-    and nothing on the main thread is waiting for it."""
-    if len(text) <= _SUMMARY_MAX_CHARS:
-        return text
-    if log:
-        log.info("Summary too long (%d chars, limit %d) — condensing", len(text), _SUMMARY_MAX_CHARS)
-    if not quiet:
-        _emit("on_summary_start", 0)
-    prompt = (
-        f"The following summary is too long ({len(text)} chars). "
-        f"Rewrite it in under {_SUMMARY_MAX_CHARS // 2} characters. "
-        f"Keep ALL file paths, decisions, failures, and completed actions. "
-        f"Remove filler and verbose descriptions. Be maximally terse.\n\n"
-        f"{text}"
-    )
-    try:
-        condensed = _summary_request(prompt)
-        if len(condensed) > _SUMMARY_MAX_CHARS:
-            # Model didn't comply — hard truncate as last resort
-            if log:
-                log.warning("Condensed summary still too long (%d chars), truncating", len(condensed))
-            condensed = condensed[:_SUMMARY_MAX_CHARS].rsplit('\n', 1)[0] + "\n[...truncated]"
-        if log:
-            log.info("Condensed summary: %d → %d chars", len(text), len(condensed))
-        if not quiet:
-            _emit("on_notice", "info", f"[summary condensed: {len(text)} → {len(condensed)} chars]")
-        return condensed
-    except Exception as e:
-        if log:
-            log.error("Condense failed (%s), truncating as fallback", e)
-        return text[:_SUMMARY_MAX_CHARS].rsplit('\n', 1)[0] + "\n[...truncated]"
-
-
-def _build_summary_prompt(old_summary, new_messages):
-    """Build the summary prompt from old summary + new messages."""
-    transcript = _format_for_summary(new_messages)
-
-    structure_instruction = (
-        "Write a CONCISE summary (under 400 words) with these sections:\n"
-        "GOAL: One line — the objective.\n"
-        "DONE: Bullet list of completed actions with file paths. Critical — prevents re-doing work.\n"
-        "FAILED: Approaches that failed and why (one line each).\n"
-        "STATE: Current state in 1-2 sentences.\n"
-        "NEXT: The single next action.\n"
-        "Be terse. Use file paths, not descriptions. No filler.\n\n"
-        "CRITICAL PRESERVATION RULES:\n"
-        "- Always preserve EXACT file paths and line numbers that were modified.\n"
-        "- Always preserve the specific code change (e.g. 'added sys.stdout.reconfigure() to agent.py:main()').\n"
-        "- Always preserve git branch names, commit hashes, and PR numbers.\n"
-        "- Always preserve GitHub issue numbers and whether they were opened, closed, or commented on.\n"
-        "- Always preserve installed dependencies and environment setup steps.\n"
-        "- Always preserve metric baselines and measurements.\n"
-        "- Never summarize these as 'made changes' or 'worked on the issue' — be specific."
-    )
-
-    # Inject CICD ground-truth state so the summarizer preserves it verbatim
-    cicd_facts = []
-    if _cicd_worktree_path:
-        cicd_facts.append(f"Worktree path: {_cicd_worktree_path}")
-    if _cicd_edited_files:
-        cicd_facts.append(f"Files already edited: {', '.join(sorted(_cicd_edited_files))}")
-    if _cicd_issue_number:
-        cicd_facts.append(f"Issue: #{_cicd_issue_number}")
-    if _cicd_pr_number:
-        cicd_facts.append(f"PR: #{_cicd_pr_number}")
-    if _cicd_branch:
-        cicd_facts.append(f"Branch: {_cicd_branch}")
-    if cicd_facts:
-        structure_instruction += (
-            "\n\nGROUND TRUTH (include verbatim in your summary under STATE):\n"
-            + "\n".join(f"- {f}" for f in cicd_facts)
-        )
-    # A skill loaded among these messages leaves the window with them: the summary
-    # says it was loaded, so the model knows it once had those instructions.
-    _skill_names = _skills.skills_in(new_messages)
-    if _skill_names:
-        structure_instruction += (
-            "\n\nUnder STATE, also say that these skills (instruction files) were loaded and "
-            "are no longer in the conversation; each can be loaded again with "
-            "tool_search skill:NAME: " + ", ".join(_skill_names)
-        )
-
-    if old_summary:
-        return (
-            f"Here is the previous summary of the conversation so far:\n\n"
-            f"{old_summary}\n\n"
-            f"Here are the new messages since that summary:\n\n"
-            f"{transcript}\n\n"
-            f"Write an updated summary that combines the previous summary with the new messages.\n\n"
-            f"{structure_instruction}"
-        )
-    return (
-        f"Here is a conversation transcript:\n\n"
-        f"{transcript}\n\n"
-        f"Write a concise summary.\n\n"
-        f"{structure_instruction}"
-    )
-
-
-# Number of same-tool occurrences in history before older ones are compressed.
-_TOOL_RESULT_COMPRESS_AFTER = 3
-# Don't compress results shorter than this — short results are cheap to keep.
-_TOOL_RESULT_COMPRESS_MIN   = 200
-# Each model summary is a blocking round trip inside the tool loop. After a resume the whole
-# backlog of old results qualifies at once, and one summary call per result froze the session
-# for minutes after its first command. Beyond this many per pass, use the local head+tail.
-_TOOL_RESULT_COMPRESS_MODEL_MAX = 2
-
-
-def _local_compress(content: str) -> str:
-    """Head+tail compression with no model call."""
-    lines = content.strip().split("\n")
-    if len(lines) <= 4:
-        return f"[compressed: {content[:300]}]"
-    head = "\n".join(lines[:2])
-    tail = "\n".join(lines[-2:])
-    return f"[compressed: {head}\n... ({len(lines)} lines) ...\n{tail}]"
-
-
-def _summarize_for_compression(content: str, func_name: str, log) -> str:
-    """Compress one tool result to key facts.  Tries summary backend; falls back to head+tail."""
-    try:
-        prompt = (
-            f"Compress this {func_name} result to 1-3 lines. "
-            f"Preserve all key values: progress percentages, step counts, "
-            f"file paths, error messages, exit codes.\n\n{content[:3000]}"
-        )
-        summary = _summary_request(prompt, log=log).strip()
-        return f"[compressed by summary: {summary}]"
-    except Exception as e:
-        log.debug("summary compression unavailable (%s) — using head+tail", e)
-        return _local_compress(content)
-
-
-# History rewrites are PROMPT-CACHE KILLERS. A server that caches the key-value state of the
-# previous request reuses it only for the longest common PREFIX of the next one; an in-place
-# rewrite at position p invalidates everything after p. Measured on a live run: this pass
-# rewrote one earlier tool result per turn (five consecutive calls to the same tool), the
-# server reported a 17% common prefix with its cache on every request, re-processed ~32k of a
-# 39k-token prompt each turn (~60 s of prefill), and the run's stall guard cancelled the request
-# at the moment prefill finished. So the pass runs only when the history is actually PRESSING
-# on the context window, and then does everything it can in one batch — steady-state turns
-# never touch the prefix. Compression under pressure also shrinks the history, which lowers the
-# pressure, which is the hysteresis that keeps it from firing every turn.
-_TOOL_RESULT_COMPRESS_PRESSURE = float(os.environ.get("AGENT_COMPRESS_PRESSURE_FRAC", "0.70") or 0.70)
-
-
-def _history_pressure(conversation_history, start=0):
-    """Estimated prompt tokens / context size, using the calibrated estimator (F3b). 0 when the
-    context size is unknown, which reads as 'not under pressure' — the rewrite is the risky side.
-
-    `start` is the index the SENT window begins at (the cache head on a caching backend).
-    Measured without it: a 1,061-message stored history read as 3.4× the context against a
-    0.70 gate, so the compression pass ran — and broke the cache — on nearly every turn,
-    although the window actually sent was a third of the context."""
-    try:
-        ctx = float((_config.get("context") or {}).get("ctx_size") or 0)
-    except Exception:  # noqa: BLE001
-        ctx = 0.0
-    if ctx <= 0:
-        return 0.0
-    window = conversation_history[start:] if start else conversation_history
-    est = ((_cw.TOOLS_TOKENS or 0) + sum(_cw.estimate_tokens(m) for m in window)) \
-        * float(_cw.TOKEN_CAL.get("ratio", 1.0) or 1.0)
-    return est / ctx
-
-
-def _compress_repeated_tool_results(conversation_history: list, func_name: str, log, pressure=None,
-                                    protect_from=None, local_only=False) -> list:
-    """When the same tool appears _TOOL_RESULT_COMPRESS_AFTER+ times in history,
-    compress all but the most recent occurrence.  Targets polling patterns
-    (e.g. exec_command(cat log) × N turns) that would otherwise fill the context
-    window with near-identical large results.
-
-    `pressure` (estimated prompt tokens / ctx_size) gates the pass: below
-    _TOOL_RESULT_COMPRESS_PRESSURE nothing is rewritten, because a rewrite costs a full
-    prefill on a prompt-caching server (see the note above). None = ungated (legacy callers).
-
-    `protect_from`: messages at or after this index are never rewritten — on a caching
-    backend that is the sent window, whose bytes must stay a prefix of the next request.
-    `local_only`: head+tail compression only, no blocking model round trip (for messages
-    below the head, which are never sent again, a model summary buys nothing).
-
-    Returns the indices that were rewritten (empty when nothing changed)."""
-    if pressure is not None and pressure < _TOOL_RESULT_COMPRESS_PRESSURE:
-        return []
-    indices = [
-        i for i, m in enumerate(conversation_history)
-        if m.get("role") == "tool" and m.get("name") == func_name
-    ]
-    if len(indices) < _TOOL_RESULT_COMPRESS_AFTER:
-        return []
-    changed = []
-    for idx in reversed(indices[:-1]):  # keep the most recent entry intact; newest first
-        if protect_from is not None and idx >= protect_from:
-            continue
-        content = conversation_history[idx].get("content", "")
-        if len(content) < _TOOL_RESULT_COMPRESS_MIN:
-            continue
-        if content.startswith("[compressed"):
-            continue
-        if _skills.skills_of(conversation_history[idx]):
-            continue   # a skill's text is instructions; it leaves by trimming, not in pieces
-        conversation_history[idx]["content"] = (
-            _summarize_for_compression(content, func_name, log)
-            if (not local_only and len(changed) < _TOOL_RESULT_COMPRESS_MODEL_MAX)
-            else _local_compress(content))
-        conversation_history[idx].pop("_tokens", None)   # token_utils caches per message
-        changed.append(idx)
-    if changed:
-        log.info("history compression: %d older %s result(s) compressed", len(changed), func_name)
-    return changed
-
-
-def _generate_summary(old_summary, new_messages, log):
-    """Call the LLM to produce an updated conversation summary.
-
-    The summary prompt explicitly preserves decisions, outcomes, and failed
-    approaches to prevent the agent from repeating mistakes.
-
-    Tries the dedicated summary endpoint first (CPU model on port 8082),
-    falls back to the main model on connection failure.
-    """
-    prompt = _build_summary_prompt(old_summary, new_messages)
-    log.info("Generating conversation summary...")
-
-    summary_cfg = _config["summary"]
-    summary_url = summary_cfg["base_url"]
-
-    # Guard: If summary is disabled or no base_url is provided, skip attempt.
-    if not summary_cfg["enabled"] or not summary_url:
-        return old_summary
-
-    def _fallback_to_main(reason_exc):
-        """Route the summary through the main backend after a summary failure.
-
-        The legacy path called ``_summary_request(prompt, base_url=BASE_URL, ...)``
-        which only re-homes to a llamacpp override and is a no-op when the
-        summary backend is non-llamacpp (Bedrock). Go directly to the
-        ``_main_backend.complete()`` so the fallback actually runs through a
-        different backend kind when the primary is Bedrock and e.g. the
-        daily cost cap tripped. See plan section 15 rollback / section 6.5 guardrail.
-        """
-        log.warning(
-            "Summary failed on %s backend (%s); falling back to main model",
-            getattr(_summary_backend, "kind", "?"),
-            reason_exc,
-        )
-        try:
-            summary = _main_backend.complete(prompt=prompt)
-            log.info("SUMMARY (fallback): %s", summary)
-            return summary
-        except Exception as e2:
-            log.error("Summary fallback also failed: %s", e2)
-            return old_summary or ""
-
-    _summary_t0 = time.monotonic()
-    try:
-        # Try dedicated summary endpoint first — via _summary_request, which
-        # now routes through _summary_backend.complete (plan task 1.4).
-        summary = _summary_request(prompt, log=log)
-        telemetry.record_summary()
-        log.info("SUMMARY: %s", summary)
-        if telemetry.verbose_enabled():
-            telemetry.record_turn(
-                role="summary",
-                duration_s=time.monotonic() - _summary_t0,
-                tool_calls=0,
-                in_tokens=0,
-                out_tokens=0,
-                model=getattr(_summary_backend, "model", "")
-                or _config.get("summary", {}).get("model", ""),
-            )
-        return summary
-    except (requests.ConnectionError, requests.Timeout,
-            TimeoutError, BedrockBudgetExceeded) as e:
-        # BedrockBudgetExceeded lands here too: _trigger_failover refuses a
-        # bedrock->bedrock swap on budget trips, so the cap case degrades to
-        # _fallback_to_main — avoiding cascading context overflow from
-        # missing summaries without moving spend to the other role's cap.
-        if _trigger_failover(log, 'summary', cause=e):
-            log.info("Retrying summary with failover backend...")
-            try:
-                summary = _summary_request(prompt, log=log)
-                telemetry.record_summary()
-                log.info("SUMMARY (retry): %s", summary)
-                return summary
-            except Exception as e2:
-                log.error("Summary retry failed: %s", e2)
-                return _fallback_to_main(e2)
-        return _fallback_to_main(e)
-    except Exception as e:
-        # For any other summary-backend error, if the summary backend is
-        # different from the main one, try the main backend before giving up.
-        if getattr(_summary_backend, "kind", None) != getattr(
-            _main_backend, "kind", None
-        ):
-            return _fallback_to_main(e)
-        log.error("Summary generation failed: %s", e)
-        telemetry.record_error(kind=type(e).__name__)
-        return old_summary or ""
-
-
-# ── Async summarizer ──────────────────────────────────────────────────
-
-class AsyncSummarizer:
-    """Background-thread summarizer targeting a separate (CPU) model endpoint.
-
-    Usage:
-        summarizer.kick(old_text, messages, up_to_idx)  # non-blocking
-        if summarizer.harvest(summary_state):            # pick up result
-            ...
-        summarizer.drain()                               # block before checkpoint
-
-    The worker hands over finished text: the condense pass, when the summary comes
-    back over the character cap, runs on the worker too (measured on one deployment
-    before this: 5 to 19 s on the main thread at harvest time, 21 times in six
-    sessions). `kind` names why a summary was made (threshold, ahead, idle, late,
-    resumed) and is in the summary.harvest log line.
-    """
-
-    def __init__(self, config, log):
-        self._config = config
-        self._log = log
-        self._lock = threading.Lock()
-        self._thread = None
-        self._pending_result = None
-        self._pending_up_to = None
-        self._pending_kind = ""
-        self._running = False
-
-    def kick(self, old_summary_text, messages_snapshot, up_to_idx, kind="threshold"):
-        """Start background summarization if not already running. True when started."""
-        with self._lock:
-            if self._running:
-                return False
-            self._running = True
-
-        msgs = deepcopy(messages_snapshot)
-
-        def _worker():
-            try:
-                prompt = _build_summary_prompt(old_summary_text, msgs)
-                # Try dedicated endpoint, fall back to main model.
-                # Routes through _summary_request which delegates to the
-                # summary backend under the hood (plan task 1.4).
-                try:
-                    result = _summary_request(prompt)
-                except (requests.ConnectionError, requests.Timeout) as e:
-                    self._log.warning("Async summary endpoint unavailable (%s), "
-                                      "falling back to main model", e)
-                    result = _summary_request(
-                        prompt,
-                        base_url=BASE_URL,
-                        model=self._config["llm"]["model"],
-                    )
-                self._log.info("ASYNC SUMMARY: %s", result)
-                result = _condense_summary(result, self._log, quiet=True)   # here, never on the main thread
-                with self._lock:
-                    self._pending_result = result
-                    self._pending_up_to = up_to_idx
-                    self._pending_kind = kind
-            except Exception as e:
-                self._log.error("Async summary failed: %s", e)
-            finally:
-                with self._lock:
-                    self._running = False
-
-        self._thread = threading.Thread(target=_worker, daemon=True)
-        self._thread.start()
-        return True
-
-    def pending_up_to(self):
-        """The edge (history index) of a finished summary not yet applied, or None."""
-        with self._lock:
-            return self._pending_up_to if self._pending_result is not None else None
-
-    def seed(self, text, up_to, kind="resumed"):
-        """Hold a finished summary, from a checkpoint, as if the worker had just made it."""
-        with self._lock:
-            self._pending_result = text
-            self._pending_up_to = up_to
-            self._pending_kind = kind
-
-    def harvest(self, summary_state):
-        """Apply a finished summary when it ends at or before the window's head
-        (summary_state["_head"], set by every window build): the messages it covers
-        have left the window, and the lead message is the only place they still are.
-        One that ends past the head, made ahead of an eviction, is held until the head
-        moves there: applying it earlier would rewrite the lead, and so the cached
-        prefix, while the messages are still in the window. A held one rides along
-        in summary_state["_pending"] so a checkpoint keeps it (see main's resume).
-        Returns True if the state was updated."""
-        with self._lock:
-            if self._pending_result is None:
-                return False
-            head = summary_state.get("_head")
-            if isinstance(head, int) and self._pending_up_to > head:
-                summary_state["_pending"] = {"text": self._pending_result, "up_to": self._pending_up_to,
-                                             "kind": self._pending_kind}
-                return False
-            summary_state["text"] = self._pending_result
-            summary_state["up_to"] = self._pending_up_to
-            # A new summary rewrites the lead message of the next request, i.e. one
-            # expected cache miss. Harvests happen at several sites (turn start, the
-            # stop paths), so the flag lives on the state and the cache.miss log pops it.
-            summary_state["_lead_changed"] = True
-            summary_state.pop("_pending", None)
-            self._log.info("summary.harvest up_to=%d kind=%s", self._pending_up_to, self._pending_kind or "threshold")
-            self._pending_result = None
-            self._pending_up_to = None
-            self._pending_kind = ""
-            return True
-
-    @property
-    def is_running(self):
-        with self._lock:
-            return self._running
-
-    def drain(self, timeout=None):
-        """Block until pending summary completes (for checkpoint saves)."""
-        if timeout is None:
-            timeout = self._config["summary"]["max_wait_on_save"]
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=timeout)
-
-    def reset(self):
-        """Discard any pending result (for /clear)."""
-        with self._lock:
-            self._pending_result = None
-            self._pending_up_to = None
-            self._pending_kind = ""
 
 
 # ── Context window management ─────────────────────────────────────────
@@ -4433,84 +3832,10 @@ def _last_request_at():
 
 if _FIRST_LOAD:
     _cw.configure(max_context_messages=_config["context"]["max_context_messages"], tool_list=tools,
-                  footnote=_build_context_footnote, condense_summary=_condense_summary,
-                  prompt_caching=_prompt_caching_backend, summary_ahead_frac=_summary_ahead_frac,
+                  footnote=_build_context_footnote, condense_summary=_summ.condense_summary,
+                  prompt_caching=_prompt_caching_backend, summary_ahead_frac=_summ.summary_ahead_frac,
                   collapse_frac=_cache_collapse_frac, cache_alive_s=_cache_alive_s,
                   last_request_at=_last_request_at)
-
-
-def _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=False):
-    """Check if enough messages have fallen out of the window to warrant a new summary."""
-    unsummarized = oldest_idx - summary_state["up_to"]
-
-    if not force and unsummarized < _SUMMARY_THRESHOLD:
-        return False
-
-    new_messages = conversation_history[summary_state["up_to"]:oldest_idx]
-
-    # Nothing new to summarize — keep existing summary intact
-    if not new_messages:
-        log.debug("Resummarize skipped: 0 new messages (up_to=%d, oldest_idx=%d)",
-                  summary_state["up_to"], oldest_idx)
-        return False
-
-    _emit("on_summary_start", len(new_messages))
-    summary = _generate_summary(summary_state["text"], new_messages, log)
-    summary_state["text"] = _condense_summary(summary, log)
-    summary_state["up_to"] = oldest_idx
-    summary_state["_lead_changed"] = True   # see AsyncSummarizer.harvest
-    _emit("on_summary_done")
-    return True
-
-
-def _fold_summary_at_head_move(conversation_history, summary_state, oldest_idx, log, why, summarizer):
-    """The window head just moved (an eviction, a cache collapse, an overflow retry).
-    The prefix after the lead is dead on this request anyway, so the lead may change
-    at no extra cost, and the summary of what left belongs in this request rather
-    than in a later one as a second miss (measured 2026-11-02: 11 harvest misses,
-    220k uncached tokens, in 40 minutes). A summary that is ready is applied. When
-    none is, `summary.wait_s` decides: None summarizes now, in front of the request
-    (blocking; measured 11 s at the median); a number waits at most that long for a
-    running summary, then sends the request with the last summary and lets the
-    worker catch up, which lands at a later harvest (kind=late). Returns True when
-    the summary state changed, so the window must be rebuilt."""
-    changed = bool(summarizer is not None and summarizer.harvest(summary_state))
-    if oldest_idx - summary_state["up_to"] <= 0:
-        if changed:
-            log.info("%s: the ready summary of the history up to message %d folded into this request",
-                     why, summary_state["up_to"])
-        return changed
-    wait_s = _summary_wait_s()
-    running = summarizer is not None and summarizer.is_running
-    if wait_s is None or summarizer is None:
-        if running:
-            log.info("%s: a summary is already running; the next turn harvests it", why)
-            return changed
-        if _maybe_resummarize(conversation_history, summary_state, oldest_idx, log, force=True):
-            log.info("%s: summary of the history up to message %d folded into this request", why, oldest_idx)
-            return True
-        return changed
-    if running and wait_s > 0:
-        _emit("on_notice", "info", f"[summary: waiting up to {wait_s:g}s]")
-        t0 = time.monotonic()
-        summarizer.drain(timeout=wait_s)
-        if summarizer.harvest(summary_state):
-            changed = True
-            if oldest_idx - summary_state["up_to"] <= 0:
-                log.info("%s: the summary arrived after %.1fs of the %gs wait and is folded into this request",
-                         why, time.monotonic() - t0, wait_s)
-                return True
-        running = summarizer.is_running
-    left = conversation_history[summary_state["up_to"]:oldest_idx]
-    if running:
-        log.info("summary.nowait %s: %d messages left the window unsummarized; a summary is still "
-                 "running after the %gs wait, the next harvest catches up", why, len(left), wait_s)
-    elif left and summarizer.kick(summary_state["text"], left, oldest_idx, kind="late"):
-        log.info("summary.nowait %s: %d messages left the window unsummarized; the worker catches up "
-                 "(wait_s=%g)", why, len(left), wait_s)
-    _emit("on_notice", "info", "[summary: going on without one]")
-    telemetry.record_patch_event("summary_nowait", kind=why.replace(" ", "_"))
-    return changed
 
 
 # ── Logger setup ──────────────────────────────────────────────────────
@@ -4993,15 +4318,15 @@ def _apply_setup_updates(updates):
         # ctx_size lands on the NEXT start; say so rather than half-apply.
         c = _config.get("context", {})
         for gname, key in (("_MAX_FULL_LINES", "max_full_lines"),
-                           ("_PREVIEW_LINES", "preview_lines"),
-                           ("_SUMMARY_THRESHOLD", "summary_threshold"),
-                           ("_SUMMARY_MAX_CHARS", "summary_max_chars")):
+                           ("_PREVIEW_LINES", "preview_lines")):
             if key in c:
                 globals()[gname] = c[key]
+        if "summary_max_chars" in c:
+            _summ.SUMMARY_MAX_CHARS = c["summary_max_chars"]
         if "max_context_messages" in c:
             _cw.MAX_CONTEXT_MESSAGES = int(c["max_context_messages"])
         if "summary_threshold" in c or "max_context_messages" in c:
-            globals()["_SUMMARY_THRESHOLD"] = _sane_summary_threshold(c)
+            _summ.SUMMARY_THRESHOLD = _summ.sane_summary_threshold(c)
         rebuilt.append("context knobs (ctx_size budget: next start)")
     if "preferences" in updates:
         rebuilt.append("preferences")
@@ -5406,7 +4731,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 _config["summary"]["ctx_size"] = int(summary_ctx * 0.85)
                 log.info("Auto-detected summary model n_ctx=%d, using %d (85%%)",
                          summary_ctx, _config["summary"]["ctx_size"])
-            _async_summarizer = AsyncSummarizer(_config, log)
+            _async_summarizer = _summ.AsyncSummarizer(_config, log)
             log.debug("Async summarizer enabled → %s", summary_url)
             _emit("on_summarizer_status", "online", summary_url)
         elif summary_detail in ("unreachable", "timeout"):
@@ -5442,7 +4767,7 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 log.info("lead files placed in the history on resume (changed since the checkpoint)")
             # Cap summary from old checkpoints that may have bloated summaries
             if summary_state.get("text"):
-                summary_state["text"] = _condense_summary(summary_state["text"], log)
+                summary_state["text"] = _summ.condense_summary(summary_state["text"], log)
             _emit("on_continue_resumed", start_turn, len(conversation_history))
             if auto:
                 _seed_phase_tasks(_config, log)
@@ -5966,7 +5291,6 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         telemetry.shutdown()
 
 
-
 def _handle_auto_guidance(conversation_history, summary_state, initial_files, log, 
                                gen, max_tokens, ctx_size, async_summarizer, 
                                telemetry_on, t0):
@@ -6097,7 +5421,7 @@ def run_agent_single(*args, **kwargs):
     _write_cycle_status("running")
     _run_turn_hooks("start")
     _cache_keepalive_disarm()
-    _summary_idle_disarm()
+    _summ.summary_idle_disarm()
     try:
         result = _run_agent_single_impl(*args, **kwargs)
         _write_cycle_status("complete", result=result)
@@ -6111,7 +5435,7 @@ def run_agent_single(*args, **kwargs):
             _log = args[3] if len(args) > 3 else kwargs.get("log")
             if _log is not None:
                 _cache_keepalive_arm(_log)
-                _summary_idle_arm(_log)
+                _summ.summary_idle_arm(_log)
         except Exception:  # the keepalive is a saving, never a failure
             pass
 
@@ -6465,7 +5789,7 @@ class _Run:
         self._cicd_issue_view_called = False  # tracks whether `gh issue view` was called before merge (PRE-MERGE CHECK)
 
         self._async_summarizer = self.async_summarizer
-        _SUMMARY_IDLE["run"] = {"history": self.conversation_history, "state": self.summary_state, "summarizer": self.async_summarizer,
+        _summ.SUMMARY_IDLE["run"] = {"history": self.conversation_history, "state": self.summary_state, "summarizer": self.async_summarizer,
                                 "initial_files": self.initial_files, "ctx_size": self.ctx_size, "max_tokens": self.max_tokens}
 
         # T5.15 — stall-retry budget (across the cycle, not per-turn). When the
@@ -7154,7 +6478,7 @@ class _Run:
                 # goes into this request, ready, waited for or skipped as summary.wait_s
                 # says (_fold_summary_at_head_move). The rebuilt context keeps the new head.
                 self._why = "cache collapse" if _collapsed_now else "eviction"
-                if _fold_summary_at_head_move(self.conversation_history, self.summary_state, oldest_idx, self.log, self._why,
+                if _summ.fold_summary_at_head_move(self.conversation_history, self.summary_state, oldest_idx, self.log, self._why,
                                               self._async_summarizer):
                     self.messages_to_send, oldest_idx = _build_context(
                         self.conversation_history, self.summary_state, self.initial_files, self.ctx_size, self.max_tokens, self.log,
@@ -7181,7 +6505,7 @@ class _Run:
                 # message threshold is waived on the eviction turn for the same reason:
                 # an eviction of 73 messages under a threshold of 75 kicked nothing and
                 # the next 14 minutes ran without a summary (measured 2026-10-30).
-                _msg_threshold_met = unsummarized >= _SUMMARY_THRESHOLD or (
+                _msg_threshold_met = unsummarized >= _summ.SUMMARY_THRESHOLD or (
                     _prompt_caching_backend() and unsummarized > 0
                     and bool(self.summary_state.get("_head_moved")))
                 _util_threshold_met = (_prompt_caching_backend()
@@ -7219,7 +6543,7 @@ class _Run:
                         telemetry.record_patch_event("summary_ahead", kind="fired")
                         _emit("on_notice", "info",
                               f"[summarizing {len(_ahead_msgs)} messages ahead of the next eviction]")
-            elif _maybe_resummarize(self.conversation_history, self.summary_state, oldest_idx, self.log):
+            elif _summ.maybe_resummarize(self.conversation_history, self.summary_state, oldest_idx, self.log):
                 self.messages_to_send, oldest_idx = _build_context(
                     self.conversation_history, self.summary_state, self.initial_files, self.ctx_size, self.max_tokens, self.log,
                     max_messages_override=_ctx_max_messages)
@@ -7432,7 +6756,7 @@ class _Run:
                                 _ctx_attempt + 1, _CTX_REDUCE_MAX, current_count, _ctx_max_messages)
                     _emit("on_context_recovery")
                     # The dropped messages are summarized (now, or by the worker: summary.wait_s)
-                    _fold_summary_at_head_move(self.conversation_history, self.summary_state, oldest_idx, self.log,
+                    _summ.fold_summary_at_head_move(self.conversation_history, self.summary_state, oldest_idx, self.log,
                                                "context overflow", self._async_summarizer)
                 continue
             except (BedrockBudgetExceeded, ConfigError) as e:
@@ -9280,15 +8604,15 @@ class _Run:
             # gate on ITS pressure and never rewrite inside it. Below the head
             # nothing is sent again, so head+tail only — no model round trip.
             self._head = self.summary_state.get("_cache_head") or 0
-            _rewritten = _compress_repeated_tool_results(
+            _rewritten = _summ.compress_repeated_tool_results(
                 self.conversation_history, self.func_name, self.log,
-                pressure=_history_pressure(self.conversation_history, start=self._head),
+                pressure=_summ.history_pressure(self.conversation_history, start=self._head),
                 protect_from=self._head, local_only=True)
             if any(i >= self._head for i in _rewritten):
                 self.summary_state["_rewrote_window"] = True   # alarm for the cache.miss log
         else:
-            _compress_repeated_tool_results(self.conversation_history, self.func_name, self.log,
-                                            pressure=_history_pressure(self.conversation_history))
+            _summ.compress_repeated_tool_results(self.conversation_history, self.func_name, self.log,
+                                            pressure=_summ.history_pressure(self.conversation_history))
 
         # Consecutive edit_file failure guard: after 2 consecutive
         # old_string-not-found failures on the same file, inject a
@@ -9988,7 +9312,6 @@ _load_job_spec, _normalize_job_lists, _job_prompt = _job.load_spec, _job.normali
 _apply_env_allow, _acceptance_parses = _job.apply_env_allow, _job.acceptance_parses
 _save_acceptance_output, _run_acceptance = _job.save_acceptance_output, _job.run_acceptance
 _refresh_result_exit = _job.refresh_result_exit
-
 
 
 def _acceptance_verdict():

@@ -1,6 +1,7 @@
 import pytest
 import requests
 from unittest.mock import patch, MagicMock
+import summarize
 from agent import (
     _format_for_summary, 
     _summary_request, 
@@ -81,14 +82,14 @@ def test_condense_summary_no_op():
     result = _condense_summary(short_text)
     assert result == short_text
 
-@patch("agent._summary_request")
+@patch("summarize.summary_request")
 def test_condense_summary_success(mock_req):
     long_text = "A" * (_SUMMARY_MAX_CHARS + 100)
     mock_req.return_value = "Condensed summary"
     result = _condense_summary(long_text)
     assert result == "Condensed summary"
 
-@patch("agent._summary_request")
+@patch("summarize.summary_request")
 def test_condense_summary_still_too_long(mock_req):
     long_text = "A" * (_SUMMARY_MAX_CHARS + 100)
     mock_req.return_value = "B" * (_SUMMARY_MAX_CHARS + 100)
@@ -96,7 +97,7 @@ def test_condense_summary_still_too_long(mock_req):
     assert "[...truncated]" in result
     assert len(result) <= _SUMMARY_MAX_CHARS + 20
 
-@patch("agent._summary_request")
+@patch("summarize.summary_request")
 def test_condense_summary_exception(mock_req):
     long_text = "A" * (_SUMMARY_MAX_CHARS + 100)
     mock_req.side_effect = Exception("API error")

@@ -576,7 +576,7 @@ def test_async_summarizer_harvest_emits_summary_ready(mock_config, mock_llm, moc
 
 def test_async_summarizer_is_running_property():
     """Cover AsyncSummarizer.is_running property (lines 927-928)."""
-    from agent import AsyncSummarizer
+    from summarize import AsyncSummarizer
     cfg = {
         "llm": {"model": "test"},
         "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "presence_penalty": 0.0},
@@ -609,7 +609,7 @@ def test_async_summarizer_is_running_property():
 
 def test_async_summarizer_drain_thread_alive():
     """Cover AsyncSummarizer.drain when thread is alive (lines 934-935)."""
-    from agent import AsyncSummarizer
+    from summarize import AsyncSummarizer
     import threading
 
     summarizer = AsyncSummarizer.__new__(AsyncSummarizer)
@@ -637,7 +637,7 @@ def test_async_summarizer_drain_thread_alive():
 
 def test_async_summarizer_drain_no_thread():
     """Cover AsyncSummarizer.drain when thread is None (no-op branch)."""
-    from agent import AsyncSummarizer
+    from summarize import AsyncSummarizer
     import threading
 
     summarizer = AsyncSummarizer.__new__(AsyncSummarizer)

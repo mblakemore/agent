@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import agent
+import summarize
 from llm_backend import BedrockBackend, LlamacppBackend
 
 
@@ -46,7 +47,7 @@ def test_summary_llamacpp_when_summary_backend_is_llamacpp(monkeypatch):
     fake_summary = _fake_llamacpp(base_url="http://127.0.0.1:8082", model="gemma-E4B")
     monkeypatch.setattr(agent, "_summary_backend", fake_summary)
     with patch.object(fake_summary, "complete", return_value="summ-text") as mk:
-        out = agent._summary_request("prompt")
+        out = summarize.summary_request("prompt")
     assert out == "summ-text"
     mk.assert_called_once_with(prompt="prompt")
 
@@ -56,7 +57,7 @@ def test_summary_bedrock_when_summary_backend_is_bedrock(monkeypatch, tmp_path):
     fake_summary = _fake_bedrock(monkeypatch, role="summary")
     monkeypatch.setattr(agent, "_summary_backend", fake_summary)
     with patch.object(fake_summary, "complete", return_value="bedrock-summary") as mk:
-        out = agent._summary_request("prompt")
+        out = summarize.summary_request("prompt")
     assert out == "bedrock-summary"
     mk.assert_called_once_with(prompt="prompt")
 
@@ -98,7 +99,7 @@ def test_both_backends_bedrock_different_models(monkeypatch, tmp_path):
             main_out = agent._llm_request(
                 logging.getLogger("test"), json={"messages": []}
             )
-            sum_out = agent._summary_request("prompt")
+            sum_out = summarize.summary_request("prompt")
 
     assert main_out == "m-resp"
     assert sum_out == "s-resp"

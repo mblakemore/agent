@@ -14,6 +14,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import agent
+import summarize
 import context_window
 from anthropic_wire import openai_to_anthropic
 
@@ -161,8 +162,8 @@ def test_compression_under_pressure_never_breaks_the_window_prefix(caching, monk
     only requests allowed to break the prefix are the chunk evictions."""
     mocks, sent = caching
     monkeypatch.setattr(context_window, "MAX_CONTEXT_MESSAGES", 12)
-    monkeypatch.setattr(agent, "_TOOL_RESULT_COMPRESS_PRESSURE", 0.0)
-    monkeypatch.setattr(agent, "_summarize_for_compression",
+    monkeypatch.setattr(summarize, "TOOL_RESULT_COMPRESS_PRESSURE", 0.0)
+    monkeypatch.setattr(summarize, "summarize_for_compression",
                         MagicMock(side_effect=AssertionError("model compression on a caching backend")))
     mocks.script(*[_tool_turn(f"t{i}") for i in range(30)])
     lg = MagicMock()

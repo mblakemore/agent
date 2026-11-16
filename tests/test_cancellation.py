@@ -31,7 +31,7 @@ def test_agent_cancellation_coverage(mock_config, mock_llm, mock_emit):
     mock_llm.return_value = mock_resp
 
     # CRITICAL: pass async_summarizer as kwarg — sets _async_summarizer at line 1762.
-    # Patching agent.AsyncSummarizer class does NOT work (run_agent_single uses the kwarg directly).
+    # Patching summarize.AsyncSummarizer class does NOT work (run_agent_single uses the kwarg directly).
     async_summarizer = MagicMock()
     summary_state = {"text": "", "up_to": 0}
 

@@ -35,6 +35,7 @@ GUARDED_FILES = [
     "live_input.py",
     "memory_pressure.py",
     "system_prompt.py",
+    "summarize.py",
     "restart_state.py",
 ]
 

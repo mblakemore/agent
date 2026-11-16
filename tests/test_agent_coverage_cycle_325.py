@@ -3,6 +3,7 @@ import os
 import tempfile
 from unittest.mock import patch, MagicMock
 import agent
+import summarize
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ def test_build_summary_prompt_with_cicd_globals():
         agent._cicd_pr_number = 325
         agent._cicd_branch = "cicd/324-test"
         
-        prompt = agent._build_summary_prompt("old summary", [])
+        prompt = summarize.build_summary_prompt("old summary", [])
         assert "Worktree path: /tmp/worktree" in prompt
         assert "Issue: #324" in prompt
         assert "PR: #325" in prompt

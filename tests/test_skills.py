@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import agent
+import summarize
 import checkpoint
 import commands
 import skills
@@ -523,7 +524,7 @@ def test_always_judges_a_later_message_on_a_thread_and_applies_it_at_a_boundary(
     agent._skills_at_boundary(hist2, None, 0, log)
     assert hist2[0]["content"].startswith("contents\n\n[skill: zoom (") and hist2[0]["_skills"] == ["zoom"]
     assert skills.sync_loaded(hist2, 0) == [] and skills.LOADED == ["zoom"]
-    assert agent._compress_repeated_tool_results(
+    assert summarize.compress_repeated_tool_results(
         hist2 * 4, "read_file", log, local_only=True) == []
 
 
@@ -562,9 +563,9 @@ def test_the_checkpoint_keeps_loaded_skills_and_a_resume_restores_the_names(tree
 def test_the_summarizer_is_told_which_skills_leave_with_the_messages(tree):
     msgs = [{"role": "tool", "name": "tool_search", "content": skills.render("zoom")},
             {"role": "assistant", "content": "ok"}]
-    prompt = agent._build_summary_prompt("", msgs)
+    prompt = summarize.build_summary_prompt("", msgs)
     assert "these skills (instruction files) were loaded" in prompt and "skill:NAME: zoom" in prompt
-    assert "instruction files" not in agent._build_summary_prompt("", msgs[1:])
+    assert "instruction files" not in summarize.build_summary_prompt("", msgs[1:])
 
 
 def test_history_compression_leaves_a_skill_text_whole(tree):
@@ -573,7 +574,7 @@ def test_history_compression_leaves_a_skill_text_whole(tree):
             {"role": "tool", "name": "tool_search", "content": "No tool matches " + "y" * 400},
             {"role": "tool", "name": "tool_search", "content": "No tool matches " + "z" * 400},
             {"role": "tool", "name": "tool_search", "content": "newest"}]
-    changed = agent._compress_repeated_tool_results(hist, "tool_search", log, local_only=True)
+    changed = summarize.compress_repeated_tool_results(hist, "tool_search", log, local_only=True)
     assert changed == [2, 1] and hist[0]["content"] == body
 
 

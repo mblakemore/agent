@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 import agent
+import summarize
 import context_window
 import logging
 
@@ -137,7 +138,7 @@ def test_build_summary_prompt_cicd_facts():
     agent._cicd_pr_number = 100
     
     try:
-        result = agent._build_summary_prompt("old summary", [])
+        result = summarize.build_summary_prompt("old summary", [])
         assert "Worktree path: /some/worktree" in result
         assert "Issue: #42" in result
         assert "PR: #100" in result

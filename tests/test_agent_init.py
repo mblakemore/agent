@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch, ANY
 import agent
+import summarize
 import requests
 
 def setup_common_mocks():
@@ -12,14 +13,14 @@ def setup_common_mocks():
         patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")),
         patch('telemetry.init', return_value=True),
         patch('agent._emit'),
-        patch('agent.AsyncSummarizer'),
+        patch('summarize.AsyncSummarizer'),
     ]
 
 def test_run_agent_interactive_init_flow():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
          patch('telemetry.init', return_value=True), \
          patch('agent._emit'), \
-         patch('agent.AsyncSummarizer'), \
+         patch('summarize.AsyncSummarizer'), \
          patch('agent._main_backend') as mock_main, \
          patch('agent._summary_backend') as mock_summary, \
          patch('agent.run_agent_single', return_value="done") as mock_run:
@@ -37,7 +38,7 @@ def test_run_agent_interactive_continue_mode():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
          patch('telemetry.init', return_value=True), \
          patch('agent._emit'), \
-         patch('agent.AsyncSummarizer'), \
+         patch('summarize.AsyncSummarizer'), \
          patch('agent._main_backend') as mock_main, \
          patch('agent._summary_backend') as mock_summary, \
          patch('agent._load_checkpoint') as mock_load, \
@@ -62,7 +63,7 @@ def test_run_agent_interactive_continue_auto():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
          patch('telemetry.init', return_value=True), \
          patch('agent._emit'), \
-         patch('agent.AsyncSummarizer'), \
+         patch('summarize.AsyncSummarizer'), \
          patch('agent._main_backend') as mock_main, \
          patch('agent._summary_backend') as mock_summary, \
          patch('agent._load_checkpoint') as mock_load, \
@@ -88,7 +89,7 @@ def test_initial_prompt_flow():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
          patch('telemetry.init', return_value=True), \
          patch('agent._emit'), \
-         patch('agent.AsyncSummarizer'), \
+         patch('summarize.AsyncSummarizer'), \
          patch('agent._main_backend') as mock_main, \
          patch('agent._summary_backend') as mock_summary, \
          patch('agent.run_agent_single', return_value="done") as mock_run:
@@ -107,7 +108,7 @@ def test_initial_prompt_pinned_flow():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
          patch('telemetry.init', return_value=True), \
          patch('agent._emit'), \
-         patch('agent.AsyncSummarizer'), \
+         patch('summarize.AsyncSummarizer'), \
          patch('agent._main_backend') as mock_main, \
          patch('agent._summary_backend') as mock_summary, \
          patch('agent.run_agent_single', return_value="done") as mock_run:
@@ -128,7 +129,7 @@ def test_initial_prompt_auto_cleanup():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
          patch('telemetry.init', return_value=True), \
          patch('agent._emit'), \
-         patch('agent.AsyncSummarizer'), \
+         patch('summarize.AsyncSummarizer'), \
          patch('agent._main_backend') as mock_main, \
          patch('agent._summary_backend') as mock_summary, \
          patch('agent.run_agent_single', return_value="done") as mock_run, \
@@ -152,7 +153,7 @@ def test_interactive_loop_commands():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
          patch('telemetry.init', return_value=True), \
          patch('agent._emit'), \
-         patch('agent.AsyncSummarizer'), \
+         patch('summarize.AsyncSummarizer'), \
          patch('agent._main_backend') as mock_main, \
          patch('agent._summary_backend') as mock_summary, \
          patch('agent.run_agent_single', return_value="done") as mock_run, \
@@ -174,7 +175,7 @@ def test_interactive_loop_interrupts():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
          patch('telemetry.init', return_value=True), \
          patch('agent._emit'), \
-         patch('agent.AsyncSummarizer'), \
+         patch('summarize.AsyncSummarizer'), \
          patch('agent._main_backend') as mock_main, \
          patch('agent._summary_backend') as mock_summary, \
          patch('agent.run_agent_single', return_value="done") as mock_run:
@@ -226,7 +227,7 @@ def test_summary_backend_unreachable():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
          patch('telemetry.init', return_value=True), \
          patch('agent._emit'), \
-         patch('agent.AsyncSummarizer'), \
+         patch('summarize.AsyncSummarizer'), \
          patch('agent._main_backend') as mock_main, \
          patch('agent._summary_backend') as mock_summary:
         
@@ -247,7 +248,7 @@ def test_summary_backend_unhealthy():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
          patch('telemetry.init', return_value=True), \
          patch('agent._emit'), \
-         patch('agent.AsyncSummarizer'), \
+         patch('summarize.AsyncSummarizer'), \
          patch('agent._main_backend') as mock_main, \
          patch('agent._summary_backend') as mock_summary:
         
@@ -266,7 +267,7 @@ def test_initial_prompt_expansion_error():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
          patch('telemetry.init', return_value=True), \
          patch('agent._emit') as mock_emit, \
-         patch('agent.AsyncSummarizer'), \
+         patch('summarize.AsyncSummarizer'), \
          patch('agent._main_backend') as mock_main, \
          patch('agent._summary_backend') as mock_summary, \
          patch('agent._expand_file_refs') as mock_expand:
@@ -288,7 +289,7 @@ def test_auto_guidance_cancelled():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
          patch('telemetry.init', return_value=True), \
          patch('agent._emit'), \
-         patch('agent.AsyncSummarizer'), \
+         patch('summarize.AsyncSummarizer'), \
          patch('agent._main_backend') as mock_main, \
          patch('agent._summary_backend') as mock_summary, \
          patch('agent.run_agent_single', return_value="cancelled") as mock_run, \
@@ -308,7 +309,7 @@ def test_result_file_writing():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
          patch('telemetry.init', return_value=True), \
          patch('agent._emit'), \
-         patch('agent.AsyncSummarizer'), \
+         patch('summarize.AsyncSummarizer'), \
          patch('agent._main_backend') as mock_main, \
          patch('agent._summary_backend') as mock_summary, \
          patch('agent.run_agent_single', return_value="done") as mock_run:
@@ -329,7 +330,7 @@ def test_tui_fallback_logic():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
          patch('telemetry.init', return_value=True), \
          patch('agent._emit') as mock_emit, \
-         patch('agent.AsyncSummarizer'), \
+         patch('summarize.AsyncSummarizer'), \
          patch('agent._main_backend') as mock_main, \
          patch('agent._summary_backend') as mock_summary:
     

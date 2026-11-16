@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import agent
+import summarize
 import context_window
 log = logging.getLogger("test_cache_collapse")
 
@@ -133,7 +134,7 @@ def _collapsed_run(agent_loop_mocks, monkeypatch, summarizer=None, gap=3000, n=3
     h.append({"role": "user", "content": "wake up"})
     state = {"text": "old summary", "up_to": 0, "_cache_head": 1}
     lg = MagicMock()
-    with patch("agent._generate_summary", return_value="NEW SUMMARY of the idle gap") as gen, \
+    with patch("summarize.generate_summary", return_value="NEW SUMMARY of the idle gap") as gen, \
          patch("agent._save_checkpoint"):
         agent.run_agent_single(h, state, [], lg, max_tokens=100, ctx_size=1000, async_summarizer=summarizer)
     lines = [c.args[0] % c.args[1:] for c in lg.info.call_args_list if c.args]

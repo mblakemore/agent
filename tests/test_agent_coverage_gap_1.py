@@ -4,6 +4,7 @@ import os
 import tempfile
 from unittest.mock import patch, MagicMock
 import agent
+import summarize
 import context_window
 log = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ def test_run_agent_single_async_summarizer_kick():
          patch('agent._save_checkpoint'), \
          patch('agent._NUDGE_ENABLED', False), \
          patch.dict('os.environ', {'AGENT_SUMMARY_UTIL_THRESHOLD': '0'}), \
-         patch('agent._SUMMARY_THRESHOLD', 1):
+         patch('summarize.SUMMARY_THRESHOLD', 1):
         
         with patch('agent._build_context', return_value=([{"role":"user", "content":"test"}], 5)):
             agent.run_agent_single(history, summary_state, [], MagicMock(),

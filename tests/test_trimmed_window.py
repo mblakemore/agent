@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import agent
+import summarize
 import context_window
 log = logging.getLogger("test_trimmed_window")
 
@@ -50,18 +51,18 @@ def uncalibrated(monkeypatch):
 class TestSaneSummaryThreshold:
     def test_a_chars_value_becomes_a_fifth_of_the_message_cap(self):
         lg = MagicMock()
-        got = agent._sane_summary_threshold({"summary_threshold": 432000, "max_context_messages": 375}, lg)
+        got = summarize.sane_summary_threshold({"summary_threshold": 432000, "max_context_messages": 375}, lg)
         assert got == 75
         args = lg.warning.call_args[0]
         assert "432000" in (args[0] % args[1:]) and "75" in (args[0] % args[1:])
 
     def test_a_message_count_passes_through_silently(self):
         lg = MagicMock()
-        assert agent._sane_summary_threshold({"summary_threshold": 5, "max_context_messages": 30}, lg) == 5
+        assert summarize.sane_summary_threshold({"summary_threshold": 5, "max_context_messages": 30}, lg) == 5
         lg.warning.assert_not_called()
 
     def test_the_floor_is_five_messages(self):
-        assert agent._sane_summary_threshold({"summary_threshold": 999, "max_context_messages": 20},
+        assert summarize.sane_summary_threshold({"summary_threshold": 999, "max_context_messages": 20},
                                              MagicMock()) == 5
 
 
@@ -79,7 +80,7 @@ def _kick_fires(monkeypatch, kind, util_threshold):
     with patch("agent._llm_request", return_value=resp), patch("agent._emit"), \
          patch("agent._save_checkpoint"), patch("agent._NUDGE_ENABLED", False), \
          patch.dict("os.environ", {"AGENT_SUMMARY_UTIL_THRESHOLD": util_threshold}), \
-         patch("agent._SUMMARY_THRESHOLD", 1), \
+         patch("summarize.SUMMARY_THRESHOLD", 1), \
          patch("agent._build_context", return_value=([{"role": "user", "content": "test"}], 5)):
         agent.run_agent_single(history, summary_state, [], MagicMock(), async_summarizer=summarizer)
     return summarizer.kick.called
@@ -144,14 +145,14 @@ class TestCompressionOnACachingBackend:
         monkeypatch.setitem(agent._config["context"], "ctx_size", 1000)
         monkeypatch.setattr(context_window, "estimate_tokens", lambda m: 100)
         h = [{"role": "user", "content": "x"} for _ in range(20)]
-        assert agent._history_pressure(h) == pytest.approx(2.0)
-        assert agent._history_pressure(h, start=15) == pytest.approx(0.5)
+        assert summarize.history_pressure(h) == pytest.approx(2.0)
+        assert summarize.history_pressure(h, start=15) == pytest.approx(0.5)
 
     def test_window_is_never_rewritten_and_nothing_below_it_calls_the_model(self):
         h = _tool_hist(6)                      # tool results at 2, 4, 6, 8, 10, 12
-        with patch("agent._summarize_for_compression",
+        with patch("summarize.summarize_for_compression",
                    side_effect=AssertionError("model compression for text that is never sent")):
-            changed = agent._compress_repeated_tool_results(
+            changed = summarize.compress_repeated_tool_results(
                 h, "exec_command", MagicMock(), pressure=0.95, protect_from=7, local_only=True)
         assert changed == [6, 4, 2]
         assert all(h[i]["content"].startswith("[compressed") for i in (2, 4, 6))
@@ -160,11 +161,11 @@ class TestCompressionOnACachingBackend:
     def test_legacy_call_keeps_model_compression_and_reports_what_changed(self):
         h = _tool_hist(6)
         calls = []
-        with patch("agent._summarize_for_compression",
+        with patch("summarize.summarize_for_compression",
                    lambda c, n, lg: calls.append(n) or "[compressed by summary: stub]"):
-            changed = agent._compress_repeated_tool_results(h, "exec_command", MagicMock(), pressure=0.95)
+            changed = summarize.compress_repeated_tool_results(h, "exec_command", MagicMock(), pressure=0.95)
         assert changed == [10, 8, 6, 4, 2]
-        assert len(calls) == agent._TOOL_RESULT_COMPRESS_MODEL_MAX
+        assert len(calls) == summarize.TOOL_RESULT_COMPRESS_MODEL_MAX
 
     def test_an_eviction_raises_the_head_moved_flag(self, monkeypatch):
         monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="aicommons"))
@@ -280,7 +281,7 @@ class TestRequestSignature:
 # ── a harvested summary is attributed wherever it was harvested ─────────────
 
 def test_every_harvest_site_marks_the_lead_change(monkeypatch):
-    s = agent.AsyncSummarizer({"summary": {"max_wait_on_save": 1}}, MagicMock())
+    s = summarize.AsyncSummarizer({"summary": {"max_wait_on_save": 1}}, MagicMock())
     s._pending_result, s._pending_up_to = "new summary", 7
     state = {"text": "", "up_to": 0}
     with patch.dict(context_window.DEPS, {"condense_summary": lambda t, lg: t}):
@@ -391,7 +392,7 @@ def _kick_after(monkeypatch, kind, head_moved, threshold=100):
                         MagicMock(kind=kind, model="m", honours_system=True, base_url="http://x"))
     with patch("agent._llm_request", return_value=resp), patch("agent._emit"), \
          patch("agent._save_checkpoint"), patch("agent._NUDGE_ENABLED", False), \
-         patch("agent._SUMMARY_THRESHOLD", threshold), \
+         patch("summarize.SUMMARY_THRESHOLD", threshold), \
          patch("agent._build_context", return_value=([{"role": "user", "content": "test"}], 5)):
         agent.run_agent_single(history, state, [], MagicMock(), async_summarizer=summarizer)
     return summarizer.kick.called

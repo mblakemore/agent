@@ -1,14 +1,14 @@
 """Regression guard for CICD cycle 0016 (#36).
 
-`_summary_request` in `agent.py` used to take a dead `log` positional parameter
+`summary_request` (then `_summary_request` in `agent.py`, now in `summarize.py`) used to take a dead `log` positional parameter
 that every caller passed and the function body never read. This test parses
-`agent.py` as text (no `import agent` — avoids pulling network/runtime setup)
+`summarize.py` as text (no `import agent` — avoids pulling network/runtime setup)
 and asserts:
 
-  1. `_summary_request`'s signature contains no parameter named `log`.
-  2. No call site in `agent.py` passes a `log` identifier (bare `log` or a
+  1. `summary_request`'s signature contains no parameter named `log`.
+  2. No call site in `summarize.py` passes a `log` identifier (bare `log` or a
      `.log` / `._log` attribute) as the second positional arg to
-     `_summary_request`.
+     `summary_request`.
 
 If a future edit re-introduces the dead wiring, this test fails and the
 score-based metric from `plan/CICD/improvements/0016-summary-request-dead-log.md`
@@ -20,7 +20,7 @@ import pathlib
 import unittest
 
 
-_AGENT_PY = pathlib.Path(__file__).resolve().parent.parent / "agent.py"
+_AGENT_PY = pathlib.Path(__file__).resolve().parent.parent / "summarize.py"
 
 
 def _parse_agent() -> ast.Module:
@@ -32,15 +32,15 @@ class SummaryRequestSignatureTest(unittest.TestCase):
         tree = _parse_agent()
         found = False
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "_summary_request":
+            if isinstance(node, ast.FunctionDef) and node.name == "summary_request":
                 found = True
                 arg_names = [a.arg for a in node.args.args]
                 self.assertNotIn(
                     "log",
                     arg_names,
-                    f"_summary_request signature still carries dead 'log' param: {arg_names}",
+                    f"summary_request signature still carries dead 'log' param: {arg_names}",
                 )
-        self.assertTrue(found, "_summary_request not found in agent.py")
+        self.assertTrue(found, "summary_request not found in summarize.py")
 
     def test_no_call_site_passes_log_positional(self):
         tree = _parse_agent()
@@ -49,7 +49,7 @@ class SummaryRequestSignatureTest(unittest.TestCase):
             if not isinstance(node, ast.Call):
                 continue
             func = node.func
-            if not (isinstance(func, ast.Name) and func.id == "_summary_request"):
+            if not (isinstance(func, ast.Name) and func.id == "summary_request"):
                 continue
             if len(node.args) < 2:
                 continue
@@ -61,7 +61,7 @@ class SummaryRequestSignatureTest(unittest.TestCase):
         self.assertEqual(
             offenders,
             [],
-            "_summary_request call sites still pass a dead log positional: "
+            "summary_request call sites still pass a dead log positional: "
             + "; ".join(offenders),
         )
 

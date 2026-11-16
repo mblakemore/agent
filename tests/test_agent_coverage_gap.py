@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import agent
+import summarize
 from unittest.mock import patch, MagicMock
 import importlib
 import runpy
@@ -63,7 +64,7 @@ def test_build_summary_prompt_with_cicd_globals():
         agent._cicd_issue_number = 324
         agent._cicd_pr_number = 325
         agent._cicd_branch = "cicd/324-test"
-        prompt = agent._build_summary_prompt("old summary", [])
+        prompt = summarize.build_summary_prompt("old summary", [])
         assert "Worktree path" in prompt
         assert "Issue: #324" in prompt
     finally:

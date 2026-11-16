@@ -3,6 +3,7 @@ import logging
 from unittest.mock import MagicMock, patch
 import requests
 import agent
+import summarize
 import llm_backend
 
 # Mock a Bedrock-like backend that fails
@@ -58,7 +59,7 @@ def test_summary_failover_timeout():
         with patch('agent._build_backend', return_value=WorkingLlama()):
             # We must call _generate_summary to trigger the failover logic
             try:
-                res = agent._generate_summary("old_summary", [], logging.getLogger('test'))
+                res = summarize.generate_summary("old_summary", [], logging.getLogger('test'))
                 assert agent._summary_backend.kind == 'llamacpp'
             except Exception as e:
                 pytest.fail(f"Summary failover failed: {e}")

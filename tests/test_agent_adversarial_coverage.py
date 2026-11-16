@@ -5,6 +5,7 @@ import pytest
 import requests
 from unittest.mock import patch, MagicMock
 import agent
+import summarize
 import checkpoint
 import context_window
 from agent import (
@@ -232,8 +233,8 @@ def test_condense_summary_model_noncompliance():
     """Test _condense_summary hard-truncates when model doesn't comply with length."""
     long_text = "A" * 5000
     mock_log = MagicMock()
-    with patch('agent._summary_request', return_value="B" * 10_000), \
-         patch('agent._SUMMARY_MAX_CHARS', 4000), \
+    with patch('summarize.summary_request', return_value="B" * 10_000), \
+         patch('summarize.SUMMARY_MAX_CHARS', 4000), \
          patch('agent._emit'):
         result = _condense_summary(long_text, log=mock_log)
     # rsplit may produce slightly more than the limit; allow 20 chars margin
@@ -247,8 +248,8 @@ def test_condense_summary_model_noncompliance():
 def test_condense_summary_exception_fallback():
     """Test _condense_summary falls back to truncation on exception."""
     long_text = "A" * 5000
-    with patch('agent._summary_request', side_effect=Exception("API down")), \
-         patch('agent._SUMMARY_MAX_CHARS', 4000), \
+    with patch('summarize.summary_request', side_effect=Exception("API down")), \
+         patch('summarize.SUMMARY_MAX_CHARS', 4000), \
          patch('agent._emit'):
         result = _condense_summary(long_text, log=MagicMock())
     assert "[...truncated]" in result
@@ -296,7 +297,7 @@ def test_format_for_summary_long_tool_args_truncated():
 
 def test_async_summarizer_is_running_and_reset():
     """Test AsyncSummarizer is_running property and reset method."""
-    from agent import AsyncSummarizer
+    from summarize import AsyncSummarizer
     config = {
         "summary": {"max_wait_on_save": 5},
         "llm": {"model": "test-model"},
@@ -310,7 +311,7 @@ def test_async_summarizer_is_running_and_reset():
 
 def test_async_summarizer_drain_no_thread():
     """Test AsyncSummarizer drain works when no thread has been started."""
-    from agent import AsyncSummarizer
+    from summarize import AsyncSummarizer
     config = {
         "summary": {"max_wait_on_save": 5},
         "llm": {"model": "test-model"},
@@ -323,7 +324,7 @@ def test_async_summarizer_drain_no_thread():
 def test_async_summarizer_drain_uses_config_timeout():
     """Test AsyncSummarizer drain uses config timeout when None passed."""
     import threading
-    from agent import AsyncSummarizer
+    from summarize import AsyncSummarizer
     config = {
         "summary": {"max_wait_on_save": 0.2},
         "llm": {"model": "test-model"},
@@ -343,7 +344,7 @@ def test_async_summarizer_drain_uses_config_timeout():
 
 def test_async_summarizer_kick_no_double_start():
     """Test AsyncSummarizer kick returns immediately if already running."""
-    from agent import AsyncSummarizer
+    from summarize import AsyncSummarizer
     config = {
         "summary": {"max_wait_on_save": 5},
         "llm": {"model": "test-model"},
@@ -359,7 +360,7 @@ def test_async_summarizer_kick_no_double_start():
 
 def test_async_summarizer_harvest_no_result():
     """Test AsyncSummarizer harvest returns False when no pending result."""
-    from agent import AsyncSummarizer
+    from summarize import AsyncSummarizer
     config = {
         "summary": {"max_wait_on_save": 5},
         "llm": {"model": "test-model"},
@@ -379,7 +380,7 @@ def test_maybe_resummarize_skips_when_below_threshold():
     history = [{"role": "user", "content": "msg"}]
     summary_state = {"text": "", "up_to": 0}
     log = MagicMock()
-    with patch('agent._SUMMARY_THRESHOLD', 100):
+    with patch('summarize.SUMMARY_THRESHOLD', 100):
         result = _maybe_resummarize(history, summary_state, oldest_idx=1, log=log)
     assert result is False
 
