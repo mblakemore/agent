@@ -69,3 +69,8 @@ per-turn (s):   median=2.000   p95=2.000
   `git commit` mid-capture; the pre-existing `nudge.*.log` files are left
   in place as an approximate anchor and the deterministic trio above
   carries the Phase-1 DoD.
+
+## The log files
+
+The `baseline/*.log` session captures these metrics were read from are no longer tracked
+(2026-11-16): they carry local paths. `scripts/capture_baseline.sh` writes them again.

@@ -12,6 +12,9 @@ plan/*
 state/
 agent_history/
 
+# Session logs scripts/capture_baseline.sh writes (they carry local paths); METRICS.md is tracked
+baseline/*.log
+
 # Local work products and detached worktrees (never commit these)
 temp/
 worktrees/

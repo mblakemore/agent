@@ -432,7 +432,8 @@ def _emit(method, *args, **kwargs):
     return safe_cb(_cb, method, *args, log=_cb_log, **kwargs)
 
 
-_FILE_REF = re.compile(r"(?<!\w)@(\.{0,2}/[^\s,;)]+|(?![^\s@]*[@:])[A-Za-z_][^\s,;:)}\]]*)")
+import lead as _lead
+from lead import RUNTIME_NOTE_HEAD as _RUNTIME_NOTE_HEAD
 _EXIT_ONLY_RE = re.compile(r'^\[session:[^\]]+\]\s+exit=0\s*$')
 
 # ── Pinned instructions ───────────────────────────────────────────────
@@ -531,6 +532,10 @@ _DEFAULT_CONFIG = {
         # waits a little longer to learn the real lifetime (0 never probes).
         "cache_collapse_frac": 0.15,
         "cache_keepalive": True,
+        # Prompt text that steers small models (the identity-file sentence, the
+        # working-directory preamble, the /home/user clause). Off for models that
+        # need none of it: every request is a little shorter.
+        "model_guards": True,
         "cache_keepalive_max_idle_s": 3600,
         "cache_keepalive_probe_every": 4,
     },
@@ -1633,6 +1638,9 @@ _MAX_FULL_LINES = _config["context"]["max_full_lines"]
 _PREVIEW_LINES = _config["context"]["preview_lines"]
 _SUMMARY_THRESHOLD = _sane_summary_threshold(_config["context"])
 _SUMMARY_MAX_CHARS = _config["context"]["summary_max_chars"]
+_lead.configure(max_full_lines=_MAX_FULL_LINES, preview_lines=_PREVIEW_LINES,
+                model_guards=_config["context"].get("model_guards", True),
+                emit=_emit)
 _MAX_CONTEXT_MESSAGES = _config["context"]["max_context_messages"]
 
 _LLM_MAX_RETRIES = _config["retry"]["max_retries"]
@@ -2044,59 +2052,12 @@ _registry.RUNTIME.update({
 # The request is a flag read at turn boundaries: the loops end on it, run_agent_single
 # returns "restart" once the turn's tool results are recorded (never mid-tool-call), and
 # main() does the exec after the normal teardown has restored the terminal.
-_RESTART = {"requested": False, "by": "", "reason": "", "at": 0.0,
-            "resumed": None,     # the checkpoint's restart record, when this run follows one
-            "recent": []}        # times of recent restarts (carried in the checkpoint)
-_RESTART_LIMIT, _RESTART_WINDOW_S = 3, 600
+import restart_state as _restart
+_RESTART = _restart.STATE
+_RESTART_LIMIT, _RESTART_WINDOW_S = _restart.LIMIT, _restart.WINDOW_S
+_restart_too_often, _request_restart = _restart.too_often, _restart.request
+_restart_argv, _exec_restart = _restart.restart_argv, _restart.exec_restart
 _CKPT_TURN = {"turn": 0}         # the turn the newest checkpoint carries (for a boundary save)
-
-
-def _restart_too_often(now=None):
-    """More than _RESTART_LIMIT restarts within _RESTART_WINDOW_S: a loop, not a fix."""
-    now = time.time() if now is None else now
-    recent = [t for t in _RESTART["recent"] if isinstance(t, (int, float)) and now - t < _RESTART_WINDOW_S]
-    _RESTART["recent"] = recent
-    return len(recent) >= _RESTART_LIMIT
-
-
-def _request_restart(by="command", reason=""):
-    """Ask for the restart; (ok, message). The tool path is refused when restarts are
-    coming too fast; the keyboard is never refused."""
-    by = str(by or "command")
-    reason = " ".join(str(reason or "").split())[:200]
-    if _RESTART["requested"]:
-        return True, "a restart is already requested; it happens when this turn ends"
-    if by == "tool" and _restart_too_often():
-        return False, (f"restarted {_RESTART_LIMIT} times in the last {_RESTART_WINDOW_S // 60} minutes; "
-                       "not again until that calms down (Mike can /restart at the keyboard)")
-    _RESTART.update(requested=True, by=by, reason=reason, at=time.time())
-    _RESTART["recent"].append(_RESTART["at"])
-    return True, ("restart requested: when this turn ends the process re-executes itself with -c "
-                  "and this session continues from its checkpoint (same history, loaded tools and "
-                  "skills; monitors armed with persist come back, the rest do not)")
-
-
-def _restart_argv(argv):
-    """The arguments to re-execute with: the same ones, `-c` added once."""
-    out = [str(a) for a in argv]
-    if not any(a in ("-c", "--continue") for a in out[1:]):
-        out.insert(1, "-c")
-    return out
-
-
-def _exec_restart():
-    """Replace this process with `python agent.py ... -c`. Only reached after the session's
-    own teardown (terminal restored, monitors stopped, telemetry flushed)."""
-    argv = _restart_argv(sys.argv)
-    sys.stdout.flush()
-    sys.stderr.flush()
-    logging.shutdown()
-    try:
-        os.execv(sys.executable, [sys.executable] + argv)
-    except OSError as e:
-        print(f"restart failed: {e}; start it by hand: {sys.executable} {' '.join(argv)}",
-              file=sys.stderr, flush=True)
-        sys.exit(3)
 
 
 def _restart_resume_prompt():
@@ -2627,7 +2588,6 @@ def _recovery_llm_call(log):
     return _call
 
 
-_RUNTIME_NOTE_HEAD = "[Runtime note — from the framework, not the user or the tool]"
 
 
 def _persist_runtime_note(conversation_history, messages_to_send, lines, turn):
@@ -3874,333 +3834,16 @@ def _estimate_tools_tokens():
     return _TOOLS_TOKENS
 
 
-# ── File reference expansion ──────────────────────────────────────────
-
-def _expand_file_refs(text):
-    """Expand @filepath references in user input to inline file contents.
-
-    Returns (expanded_text, files_content, error).
-    """
-    expanded, files_content, _refs, err = _expand_file_refs_ex(text)
-    return expanded, files_content, err
-
-
-def _expand_file_refs_ex(text):
-    """`_expand_file_refs` that also returns the refs it attached, as typed, so the
-    lead of a trimmed window can be re-read from disk later (`_lead_update`,
-    `_lead_reload`). Returns (expanded_text, files_content, attached_refs, error)."""
-    refs = _FILE_REF.findall(text)
-    if not refs:
-        return text, None, [], None
-    files_content, attached, err = _attach_file_refs(refs)
-    if err:
-        return None, None, [], err
-    return text + "\n\n" + files_content, files_content, attached, None
-
-
-def _attach_file_refs(refs, announce=True):
-    """Read the files behind @refs. Returns (files_content, attached_refs, error);
-    files_content carries the working-directory preamble when an identity file is
-    among them, exactly as the lead message of a trimmed window needs it. `announce`
-    shows each header in the UI; a re-read of files the UI already announced for
-    this message passes False (two banners for one file read as a double load)."""
-    # Resolve working directory once so every ref can be checked against it.
-    # We use Path.cwd().resolve() (not os.getcwd()) to follow any symlinks in
-    # the cwd itself, giving a canonical base for confinement checks.
-    cwd_resolved = Path.cwd().resolve()
-    cwd_prefix = str(cwd_resolved) + os.sep  # e.g. <repo>/
-
-    seen = set()
-    attachments = []
-    attached = []
-    for ref in refs:
-        if ref in seen:
-            continue
-        seen.add(ref)
-
-        p = Path(ref)
-        try:
-            path_exists = p.exists()
-            path_is_dir = p.is_dir() if path_exists else False
-            resolved_ref = p.resolve()
-        except OSError as exc:
-            return None, [], f"Error: '{ref}': {exc.strerror}"
-        if not path_exists:
-            # Bare identifiers with no path separator or extension (e.g. @state,
-            # @transition) are Python decorators or @-mentions — not file refs.
-            # Silently skip rather than erroring so prompts mentioning decorator
-            # names don't abort before the first LLM call.
-            if '/' not in ref and '.' not in ref:
-                continue
-            return None, [], f"Error: file '{ref}' does not exist"
-        if path_is_dir:
-            return None, [], f"Error: '{ref}' is a directory, not a file"
-
-        # Confinement check: reject any ref that resolves outside the working
-        # directory.  This blocks both relative traversals (@../../secret) and
-        # absolute paths (@/etc/passwd) that escape the project tree.
-        if resolved_ref != cwd_resolved and not str(resolved_ref).startswith(cwd_prefix):
-            return (
-                None,
-                [],
-                f"Error: '{ref}' resolves to '{resolved_ref}' which is outside "
-                f"the working directory '{cwd_resolved}'. "
-                f"Only files inside the current working directory can be referenced with @.",
-            )
-
-        lines = p.read_text(encoding='utf-8', errors='replace').splitlines(True)
-        total = len(lines)
-        # Identity files load WHOLE regardless of length — a preview-
-        # truncated identity is a lobotomy, not a summary. claude.md
-        # counts too (the DC/agentx convention; _bootstrap_template_check
-        # already treats both as the cognitive-instructions file — this
-        # loader disagreed and served 10-line stubs of >50-line CLAUDE.mds,
-        # caught in the 2026-08-15 scaffold review).
-        _is_agent_md = p.name.lower() in ("agent.md", "claude.md")
-        if total <= _MAX_FULL_LINES or _is_agent_md:
-            content = "".join(lines)
-            header = f"[{ref}: {total} lines]"
-        else:
-            content = "".join(lines[:_PREVIEW_LINES])
-            header = f"[{ref}: first {_PREVIEW_LINES} of {total} lines]"
-
-        resolved = str(p.resolve())
-        if _is_agent_md:
-            header = (f"[AGENT IDENTITY FILE: {ref} (loaded from {resolved}). "
-                      f"This is YOUR identity file — do not search for it elsewhere. {total} lines]")
-
-        attachments.append(f"{header}\n{content}")
-        attached.append(ref)
-        if announce:
-            # The console gets the file and where it came from; the sentence telling
-            # the model it is its own identity file is for the model, not the operator.
-            _emit("on_file_attached",
-                  f"[{ref}: loaded from {resolved}, {total} lines]" if _is_agent_md else header)
-
-    files_content = "\n\n".join(attachments)
-    # Prepend working directory context when agent.md is loaded
-    cwd = os.getcwd()
-    if any(Path(ref).name.lower() in ("agent.md", "claude.md") for ref in seen):
-        preamble = (
-            f"[SYSTEM CONTEXT: Your working directory is {cwd}. "
-            f"All relative paths resolve from here. "
-            f"Do not cd to other repositories or search for files outside this tree. "
-            f"Do not start with a directory listing for orientation. The task prompt specifies the repo path. "
-            f"Begin with the first tool call that directly advances the task — read a specific file, "
-            f"search for a pattern, or look up a symbol. "
-            f"Use `file list` only when you specifically need to enumerate a directory's contents as part of the task. "
-            f"**Search before reading large files.** When you need to find where something is defined or called, use `search_files` first to locate the right file and line — then read only from that line using `start_line=`. Never read a whole file >300 lines hoping to find something; search first.]\n\n"
-        )
-    else:
-        preamble = ""
-    return (preamble + files_content if preamble else files_content), attached, None
-
-
-# The files that lead a trimmed window (`initial_files`), as the refs that named them.
-# Kept so the lead can be re-read from disk instead of carried as the copy taken when
-# the session began: an identity file edited during the session (Iris edits hers
-# several times a day) was stale after every `-c` until the next fresh start.
-_LEAD = {"refs": []}
-_LEAD_HEADER_RE = re.compile(r"^\[(\S+): (?:first \d+ of )?\d+ lines\]$|"
-                             r"^\[AGENT IDENTITY FILE: (\S+) \(loaded from ", re.MULTILINE)
-
-
-def _lead_refs_from_text(initial_files):
-    """The refs behind a lead built before refs were checkpointed, read off its headers."""
-    out = []
-    if not isinstance(initial_files, str):   # tests and old code hand lists through here
-        return out
-    for m in _LEAD_HEADER_RE.finditer(initial_files):
-        ref = m.group(1) or m.group(2)
-        if ref and ref not in out:
-            out.append(ref)
-    return out
-
-
-def _lead_update(initial_files, files, log, refs=None):
-    """Decide what leads the trimmed window after a message that referenced files
-    (`files` is what `_expand_file_refs` attached; `refs` are the refs it attached, as
-    typed, and without them they are read off the headers in `files`, which a file
-    quoting a header can fool).
-
-    The first message with files sets the lead. A later message that names one of
-    the lead files again re-reads them all from disk (so `@CLAUDE.md` refreshes an
-    edited identity file); one that names other files keeps the lead as it is, and
-    those files stay in their own message. Replacing the lead with whichever file
-    was referenced last made `@notes.md look at this` drop the identity file from
-    every later window."""
-    if not files:
-        return initial_files
-    refs = list(refs) if refs else _lead_refs_from_text(files)
-    if not initial_files or not _LEAD["refs"]:
-        _LEAD["refs"] = list(refs)
-        return files
-    if not any(_same_path(r, lead) for r in refs for lead in _LEAD["refs"]):
-        log.info("lead files kept (%s); %s stays in its message",
-                 ", ".join(_LEAD["refs"]), ", ".join(refs))
-        return initial_files
-    # The UI announced these files when the message was expanded; a second banner
-    # for the same read looked like the file being loaded twice.
-    fresh, attached, err = _attach_file_refs(_LEAD["refs"], announce=False)
-    if err or not fresh:
-        log.warning("lead files not re-read (%s); the earlier copy stays", err or "nothing attached")
-        return initial_files
-    _LEAD["refs"] = list(attached)
-    log.info("lead files re-read from disk: %s%s", ", ".join(attached),
-             "" if fresh == initial_files else " (changed)")
-    return fresh
-
-
-def _same_path(a, b):
-    try:
-        return Path(a).resolve() == Path(b).resolve()
-    except OSError:
-        return a == b
-
-
-# ── The lead's one place ──────────────────────────────────────────────────────
-# The lead files live in exactly one history message: the one that first attached
-# them. A later message that names a lead file again re-reads it from disk, but the
-# fresh text goes into that place and the new message keeps a one-line note; before
-# this, every re-reference (`@CLAUDE.md run your next cycle`, the usual way an edited
-# identity file was pushed to a running agent) added a second whole copy, and an
-# untrimmed window sent both, one of them stale, for the rest of the session
-# (measured 2026-11-11: 8k of a 33k-token request). `-c` places the disk copy too,
-# so an edit takes effect at the next start without a re-reference.
-_LEAD_PREAMBLE_RE = re.compile(r"\[SYSTEM CONTEXT: Your working directory is [^\n]*\]\n\n\Z")
-
-
-def _lead_block(content, refs):
-    """(start, end) of the attachment block of a message that carries one of the lead
-    `refs` (any spelling of the same path): from the working-directory preamble (or
-    the header) to the runtime note or the end. Attachments always close a message
-    (`text + "\\n\\n" + files`) and a runtime note is only ever appended after them, so
-    the end is found first and the header is the first one before it naming a lead
-    file. A header-like line typed by the person can still fool this; `_lead_span`
-    is tried first where the earlier text is known."""
-    if not isinstance(content, str):
-        return None
-    end = content.find("\n\n" + _RUNTIME_NOTE_HEAD)
-    if end == -1:
-        end = len(content)
-    start = None
-    for m in _LEAD_HEADER_RE.finditer(content, 0, end):
-        ref = m.group(1) or m.group(2)
-        if ref and any(_same_path(ref, lead) for lead in refs):
-            start = m.start()
-            break
-    if start is None:
-        return None
-    pm = _LEAD_PREAMBLE_RE.search(content[:start])
-    if pm:
-        start = pm.start()
-    return start, end
-
-
-def _lead_span(content, old):
-    """The exact span of `old` (the lead text as it was last attached) in a message, if
-    it is there verbatim: the block without any header parsing. A trailing newline
-    the pinned-block extractor stripped does not matter."""
-    if not isinstance(content, str) or not isinstance(old, str) or not old:
-        return None
-    o = old.rstrip("\n")
-    if not o:
-        return None
-    i = content.find(o)
-    if i == -1:
-        return None
-    e = i + len(o)
-    while e < len(content) and content[e] == "\n" \
-            and not content.startswith("\n\n" + _RUNTIME_NOTE_HEAD, e):
-        e += 1
-    return i, e
-
-
-def _lead_note():
-    return "[" + ", ".join(_LEAD["refs"]) + ": re-read from disk; the current text leads this conversation]"
-
-
-def _lead_place(conversation_history, fresh, log, old=None):
-    """Put `fresh` (the current lead text) in its place: the first user message carrying
-    a lead file has its attachment block replaced; any later user message whose
-    attachments are exactly the lead files is reduced to the note. `old` is the lead
-    text as it was last attached (the previous `initial_files`): where a message holds
-    it verbatim, that span is the block, so a header-like line in the typed text
-    cannot widen the cut. A message already holding the text is left untouched (no
-    cache cost); `_LEAD["replaced"]` is set when one was rewritten, for the cache-miss
-    log. Returns True when a place was found."""
-    refs = _LEAD["refs"]
-    if not refs or not isinstance(fresh, str) or not fresh or not conversation_history:
-        return False
-    placed = False
-    for msg in conversation_history:
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content")
-        blk = (_lead_span(content, old) if not placed else None) or _lead_block(content, refs)
-        if not blk:
-            continue
-        s, e = blk
-        if not placed:
-            replacement = fresh
-            placed = True
-        else:
-            block_refs = _lead_refs_from_text(content[s:e])
-            if not block_refs or not all(any(_same_path(r, lead) for lead in refs) for r in block_refs):
-                continue                  # carries other files too; not ours to cut
-            replacement = _lead_note()
-        if content[s:e].rstrip("\n") != replacement.rstrip("\n"):
-            msg["content"] = content[:s] + replacement + content[e:]
-            msg.pop("_tokens", None)     # token_utils caches counts per message
-            _LEAD["replaced"] = True
-    return placed
-
-
-def _lead_refs_of(expanded, files):
-    """The refs a message attached: the headers in `files`, kept only when the typed
-    text names them, so a header-like line inside a file's content (a file quoting
-    `[notes.md: 1 lines]`) is not taken for an attachment. Callers go through the
-    three-tuple `_expand_file_refs`, which tests stand in for, so the refs are
-    recovered here rather than carried from the expansion."""
-    parsed = _lead_refs_from_text(files)
-    if not isinstance(expanded, str) or not isinstance(files, str):
-        return parsed
-    tail = "\n\n" + files.rstrip("\n")
-    body = expanded.rstrip("\n")
-    if not body.endswith(tail):
-        return parsed
-    typed = set(_FILE_REF.findall(body[:-len(tail)]))
-    kept = [r for r in parsed if r in typed]
-    return kept or parsed
-
-
-def _lead_absorb(conversation_history, initial_files, expanded, files, log, refs=None):
-    """A message's files and the lead, together. `_lead_update` decides the lead; when
-    the message re-read a lead file, the fresh text goes to the lead's place in the
-    history and the message keeps the note (plus any other files it named), so the
-    lead is never in the window twice. `refs` are the refs the expansion attached.
-    Returns (initial_files, message_content)."""
-    if not files:
-        return initial_files, expanded
-    refs = list(refs) if refs else _lead_refs_of(expanded, files)
-    before = initial_files
-    after = _lead_update(initial_files, files, log, refs=refs)
-    if before is None or after is before:
-        return after, expanded            # first files (this message is the place) or lead kept
-    others = [r for r in refs if not any(_same_path(r, lead) for lead in _LEAD["refs"])]
-    if not refs or not _lead_place(conversation_history, after, log, old=before):
-        log.info("lead place not found in the history; %s stays in its message", ", ".join(refs))
-        return after, expanded
-    typed = expanded[:-len("\n\n" + files)] if expanded.endswith("\n\n" + files) else expanded
-    body = typed + "\n\n" + _lead_note()
-    if others:
-        extra, _, err = _attach_file_refs(others, announce=False)
-        if err or not extra:
-            return after, expanded        # keep everything rather than lose a file
-        body += "\n\n" + extra
-    log.info("lead files re-read into their place: %s", ", ".join(_LEAD["refs"]))
-    return after, body
-
+# ── File reference expansion and the lead (lead.py) ───────────────────────────
+# Kept under their old names here: the loop, the checkpoint code and the tests reach
+# them as agent._lead_place, agent._LEAD and so on. Same objects, not copies.
+_LEAD = _lead.LEAD
+_LEAD_HEADER_RE = _lead.LEAD_HEADER_RE
+_expand_file_refs, _expand_file_refs_ex = _lead.expand_file_refs, _lead.expand_file_refs_ex
+_attach_file_refs, _lead_refs_from_text = _lead.attach_file_refs, _lead.refs_from_text
+_lead_update, _lead_block, _lead_span = _lead.update, _lead.block, _lead.span
+_lead_note, _lead_place, _lead_refs_of = _lead.note, _lead.place, _lead.refs_of
+_lead_absorb, _lead_reload, _same_path = _lead.absorb, _lead.reload, _lead.same_path
 
 def _spill_initial_prompt(expanded, files, log):
     """F3a for the first message: typed bulk past `limits.tool_result_max_chars` goes to
@@ -4223,28 +3866,6 @@ def _spill_initial_prompt(expanded, files, log):
     log.info("F3a spill: initial prompt of %d chars -> file (cap %d)", len(typed), cap)
     return ("[Your initial instructions were too large for the context window and were "
             "saved to a file — read them from there before acting.]\n" + ref + tail)
-
-
-def _lead_reload(initial_files, log):
-    """On `-c`, re-read the lead files from disk; the checkpoint's copy is the fallback."""
-    if not initial_files or not isinstance(initial_files, str):
-        return initial_files
-    refs = _LEAD["refs"] or _lead_refs_from_text(initial_files)
-    if not refs:
-        return initial_files
-    try:
-        fresh, attached, err = _attach_file_refs(refs)
-    except Exception as e:                      # a reload never breaks a resume
-        log.warning("lead files not re-read on resume (%s); the checkpoint's copy is used", e)
-        return initial_files
-    if err or not fresh:
-        log.warning("lead files not re-read on resume (%s); the checkpoint's copy is used",
-                    err or "nothing attached")
-        return initial_files
-    _LEAD["refs"] = list(attached)
-    log.info("lead files re-read from disk on resume: %s%s", ", ".join(attached),
-             "" if fresh == initial_files else " (changed since the checkpoint)")
-    return fresh
 
 
 # ── Summarization ─────────────────────────────────────────────────────
@@ -7223,8 +6844,8 @@ def _write_cycle_status(phase, result=None, turn=None, committed=None):
 def _run_turn_hooks(event):
     """Run the shell commands configured under preferences.turn_hooks[event].
 
-    event is "start" or "end". A harness that shows status (Iris's status dots
-    call a script that tells the avatar server whether she is thinking) used to
+    event is "start" or "end". A deployment that shows status (status dots that
+    call a script telling an avatar server whether the agent is thinking) used to
     hang this on Claude Code's UserPromptSubmit and Stop hooks; this is the
     same thing for agent.py. Each command gets 5 s, output is discarded, and
     nothing here may raise into the loop: a broken indicator must never stop a
@@ -8368,7 +7989,8 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             _skill_suggestion = _skills_at_boundary(conversation_history, messages_to_send, oldest_idx, log) or _skill_suggestion
             _system_lines = [
                 f"Current time (UTC, ISO8601): {_now_iso}",
-                f"Working directory: {os.getcwd()} — use this for all file paths, not /home/user.",
+                f"Working directory: {os.getcwd()}"
+                + (" — use this for all file paths, not /home/user." if _config["context"].get("model_guards", True) else ""),
             ]
             if _TOOLS_CFG.get("catalog", True):
                 _catalog_line = _registry.catalog_line()

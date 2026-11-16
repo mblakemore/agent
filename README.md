@@ -31,7 +31,7 @@ The first time, a short setup wizard asks where your model is and connects to it
 | Your model | What to do |
 | --- | --- |
 | **On this machine** | Start a server first, for example `llama-server -m model.gguf --port 8080`. The wizard finds it, and three presses of Enter connect it. See [Setup](docs/setup.md). |
-| **UCSB AI Commons** | Pick "UCSB AI Commons" and paste your key. See [AI Commons](docs/aicommons.md). |
+| **A gateway with its own key** | Pick it in the wizard and paste your key. UCSB's AI Commons gateway is built in; see [AI Commons](docs/aicommons.md). |
 | **Another hosted API** | Pick "OpenAI-compatible server", then "Another URL…". It asks for a key only if the server needs one. |
 
 You can run the wizard again at any time with `/setup`. Not sure which model to run? See [Recommended models](docs/models.md).
@@ -99,3 +99,7 @@ The wizard writes `.agent/config.json`. Three keys cover most adjustments:
 | [AI Commons](docs/aicommons.md) | The UCSB AI Commons gateway |
 | [Claude Code gateway](docs/claude-code-gateway.md) | `-cc`: driving Claude Code with your own model |
 | [Legacy Bedrock](docs/bedrock.md) | The older published-bot Bedrock gateway |
+
+## License
+
+MIT. See [LICENSE](LICENSE).

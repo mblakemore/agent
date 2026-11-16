@@ -23,9 +23,9 @@ class TestFileToolListHint(unittest.TestCase):
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 
-    def _read_agent_source(self):
+    def _read_agent_source(self, name="agent.py"):
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        path = os.path.join(repo_root, "agent.py")
+        path = os.path.join(repo_root, name)
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 
@@ -63,8 +63,8 @@ class TestFileToolListHint(unittest.TestCase):
         )
 
     def test_agent_system_context_contains_no_orientation_listing_guideline(self):
-        """agent.py SYSTEM CONTEXT preamble must tell the agent not to start with a directory listing."""
-        src = self._read_agent_source()
+        """The SYSTEM CONTEXT preamble (lead.py) must tell the agent not to start with a directory listing."""
+        src = self._read_agent_source("lead.py")
         self.assertIn(
             "Do not start with a directory listing for orientation",
             src,

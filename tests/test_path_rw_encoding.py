@@ -28,6 +28,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 
 TASK_TRACKER_PY = _REPO_ROOT / "tools" / "task_tracker.py"
 AGENT_PY = _REPO_ROOT / "agent.py"
+LEAD_PY = _REPO_ROOT / "lead.py"
 EXEC_CMD_PY = _REPO_ROOT / "tools" / "exec_command.py"
 SEARCH_FILES_PY = _REPO_ROOT / "tools" / "search_files.py"
 
@@ -68,13 +69,13 @@ class TestTaskTrackerReadWriteEncoding(unittest.TestCase):
 class TestAgentReadTextEncoding(unittest.TestCase):
 
     def test_agent_file_ref_read_uses_utf8(self):
-        """Static: agent.py @-ref read_text must use encoding='utf-8'."""
-        src = _src(AGENT_PY)
+        """Static: the @-ref read_text (lead.py) must use encoding='utf-8'."""
+        src = _src(LEAD_PY)
         # The specific call: p.read_text(encoding='utf-8', errors='replace').splitlines(True)
         self.assertIn(
             "p.read_text(encoding='utf-8', errors='replace').splitlines(True)",
             src,
-            "agent.py @-file read_text must pass encoding='utf-8', errors='replace'",
+            "lead.py @-file read_text must pass encoding='utf-8', errors='replace'",
         )
 
 

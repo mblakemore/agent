@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import agent
+import lead as lead_mod
 
 log = logging.getLogger("test_lead_files")
 
@@ -191,19 +192,33 @@ class TestPlace:
     def test_the_banner_is_shown_once_for_a_re_reference(self, repo, monkeypatch):
         history, lead = _first_message()
         shown = []
-        monkeypatch.setattr(agent, "_emit", lambda ev, *a: shown.append(ev) if ev == "on_file_attached" else None)
+        monkeypatch.setitem(lead_mod._CFG, "emit", lambda ev, *a: shown.append(ev) if ev == "on_file_attached" else None)
         expanded, files, _, _ = agent._expand_file_refs_ex("@CLAUDE.md again")
         agent._lead_absorb(history, lead, expanded, files, log)
         assert shown == ["on_file_attached"]
 
     def test_the_banner_names_the_file_and_keeps_the_model_note_off_the_console(self, repo, monkeypatch):
         shown = []
-        monkeypatch.setattr(agent, "_emit", lambda ev, *a: shown.append(a[0]) if ev == "on_file_attached" else None)
+        monkeypatch.setitem(lead_mod._CFG, "emit", lambda ev, *a: shown.append(a[0]) if ev == "on_file_attached" else None)
         expanded, files, _, _ = agent._expand_file_refs_ex("@CLAUDE.md")
         assert "This is YOUR identity file" in expanded          # the model still gets it
         (banner,) = shown
         assert banner.startswith("[CLAUDE.md: loaded from ") and banner.endswith(" lines]")
         assert "YOUR identity file" not in banner
+
+    def test_model_guards_off_keeps_the_headers_and_drops_the_steering_text(self, repo, monkeypatch):
+        on, _, _, _ = agent._expand_file_refs_ex("@CLAUDE.md and @notes.md")
+        assert "This is YOUR identity file" in on and "[SYSTEM CONTEXT:" in on
+        lead_mod.configure(model_guards=False)
+        try:
+            off, files, refs, err = agent._expand_file_refs_ex("@CLAUDE.md and @notes.md")
+        finally:
+            lead_mod.configure(model_guards=True)
+        assert err is None and refs == ["CLAUDE.md", "notes.md"]
+        assert "This is YOUR identity file" not in off and "[SYSTEM CONTEXT:" not in off
+        assert "[AGENT IDENTITY FILE: CLAUDE.md (loaded from " in off     # the structural header stays
+        assert agent._lead_refs_from_text(files) == ["CLAUDE.md", "notes.md"]   # and still parses
+        assert len(off) < len(on)
 
     def test_an_untrimmed_window_carries_the_lead_once(self, repo):
         history, lead = _first_message()
@@ -285,13 +300,13 @@ class TestPlaceEdges:
     def test_an_other_file_that_fails_to_read_keeps_the_whole_message(self, repo, monkeypatch):
         history, lead = _first_message()
         expanded, files, refs, _ = agent._expand_file_refs_ex("@CLAUDE.md with @notes.md")
-        real = agent._attach_file_refs
+        real = lead_mod.attach_file_refs
 
         def flaky(refs, announce=True):
             if refs == ["notes.md"]:
                 return None, [], "Error: file 'notes.md' does not exist"
             return real(refs, announce=announce)
-        monkeypatch.setattr(agent, "_attach_file_refs", flaky)
+        monkeypatch.setattr(lead_mod, "attach_file_refs", flaky)   # the lead code lives in lead.py
         _, body = agent._lead_absorb(history, lead, expanded, files, log, refs=refs)
         assert body == expanded
 
