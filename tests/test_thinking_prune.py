@@ -12,6 +12,7 @@ import copy
 import json
 
 import agent
+import checkpoint
 from anthropic_wire import THINKING_KEY, openai_to_anthropic
 
 M = "claude-v5.5-sonnet"
@@ -67,7 +68,7 @@ def test_the_env_flag_only_concerns_the_checkpoint(monkeypatch):
 
 def test_checkpoint_copy_is_pruned_and_the_live_list_is_not(tmp_path, monkeypatch):
     monkeypatch.delenv("AGENT_PRUNE_OLD_THINKING", raising=False)
-    monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(tmp_path / "cp.json"))
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_PATH", str(tmp_path / "cp.json"))
     history = _history()
     before = copy.deepcopy(history)
     agent._save_checkpoint(history, {"text": "", "up_to": 0}, 3, None)

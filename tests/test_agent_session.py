@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch, mock_open
 import agent
+import checkpoint
 import sys
 
 class TestAgentInteractive(unittest.TestCase):
@@ -260,7 +261,7 @@ class TestAgentInteractive(unittest.TestCase):
 
 def test_checkpoint_roundtrip_is_five_tuple(tmp_path, monkeypatch):
     cp_path = tmp_path / "cp.json"
-    monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(cp_path))
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_PATH", str(cp_path))
     history = [{"role": "user", "content": "hi"}]
     summary = {"text": "s", "up_to": 1}
     agent._save_checkpoint(history, summary, 3, ["f.txt"], clean_exit=True)
@@ -280,7 +281,7 @@ def test_checkpoint_load_defaults_clean_exit_for_old_files(tmp_path, monkeypatch
         "turn": 2,
         "initial_files": [],
     }))
-    monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(cp_path))
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_PATH", str(cp_path))
     loaded = agent._load_checkpoint()
     assert len(loaded) == 5
     assert loaded[4] is False  # clean_exit defaulted for pre-clean_exit files

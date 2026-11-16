@@ -20,6 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import agent
+import checkpoint
 import commands
 import skills
 import tools as registry
@@ -264,7 +265,7 @@ def test_the_judge_gets_the_configured_timeout(tree):
 
 
 def test_a_resume_finds_a_skill_a_boundary_appended(tree, tmp_path, monkeypatch):
-    monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(tmp_path / "cp.json"))
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_PATH", str(tmp_path / "cp.json"))
     hist = [{"role": "user", "content": "go"}]
     skills.request_load("zoom", by="command")
     agent._skills_at_boundary(hist, None, 0, log)
@@ -545,7 +546,7 @@ def test_a_bus_item_is_judged_only_with_pick_on_events(tree, monkeypatch):
 
 
 def test_the_checkpoint_keeps_loaded_skills_and_a_resume_restores_the_names(tree, loop, tmp_path, monkeypatch):
-    monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(tmp_path / "cp.json"))
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_PATH", str(tmp_path / "cp.json"))
     mocks, sent = loop
     mocks.script(_tool_turn("t1", "tool_search", '{"query": "skill:zoom"}'), _text_turn())
     history = [{"role": "user", "content": "join"}]

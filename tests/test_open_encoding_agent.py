@@ -32,6 +32,7 @@ _REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
 AGENT_PY = _REPO_ROOT / "agent.py"
+CHECKPOINT_PY = _REPO_ROOT / "checkpoint.py"
 WEB_FETCH_PY = _REPO_ROOT / "tools" / "web_fetch.py"
 THINK_PY = _REPO_ROOT / "tools" / "think.py"
 
@@ -98,20 +99,20 @@ class TestAgentOpenEncoding(unittest.TestCase):
         )
 
     def test_agent_checkpoint_write_uses_utf8(self):
-        """Static: agent.py checkpoint write open() must use encoding='utf-8'."""
-        src = _src(AGENT_PY)
+        """Static: the checkpoint write open() (checkpoint.py) must use encoding='utf-8'."""
+        src = _src(CHECKPOINT_PY)
         self.assertTrue(
-            self._has_utf8(src, 'open(_CHECKPOINT_PATH, "w"'),
-            "agent.py _save_checkpoint() must open checkpoint file with encoding='utf-8'. "
+            self._has_utf8(src, 'open(CHECKPOINT_PATH, "w"'),
+            "checkpoint.save() must open the checkpoint file with encoding='utf-8'. "
             "See plan/CICD/improvements/0044-open-encoding-agent.md.",
         )
 
     def test_agent_checkpoint_read_uses_utf8(self):
-        """Static: agent.py checkpoint read open() must use encoding='utf-8'."""
-        src = _src(AGENT_PY)
+        """Static: the checkpoint read open() (checkpoint.py) must use encoding='utf-8'."""
+        src = _src(CHECKPOINT_PY)
         self.assertTrue(
-            self._has_utf8(src, 'open(_CHECKPOINT_PATH'),
-            "agent.py _load_checkpoint() must open checkpoint file with encoding='utf-8'. "
+            self._has_utf8(src, 'open(CHECKPOINT_PATH'),
+            "checkpoint.load() must open the checkpoint file with encoding='utf-8'. "
             "See plan/CICD/improvements/0044-open-encoding-agent.md.",
         )
 

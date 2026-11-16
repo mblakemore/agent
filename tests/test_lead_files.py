@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import agent
+import checkpoint
 import lead as lead_mod
 
 log = logging.getLogger("test_lead_files")
@@ -319,7 +320,7 @@ class TestPlaceEdges:
 
     def test_an_old_checkpoint_without_refs_is_placed_on_resume(self, repo, monkeypatch):
         history, lead = _first_message()
-        monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(repo / "cp.json"))
+        monkeypatch.setattr(checkpoint, "CHECKPOINT_PATH", str(repo / "cp.json"))
         agent._save_checkpoint(history, {"text": "", "up_to": 0}, 2, lead)
         cp = json.load(open(repo / "cp.json"))
         del cp["initial_file_refs"]
@@ -350,7 +351,7 @@ class TestPlaceEdges:
 
 
 def test_the_checkpoint_carries_the_refs(repo, monkeypatch):
-    monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(repo / "cp.json"))
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_PATH", str(repo / "cp.json"))
     agent._LEAD["refs"] = ["CLAUDE.md"]
     agent._save_checkpoint([{"role": "user", "content": "x"}], {"text": "", "up_to": 0}, 3, "lead text")
     assert json.load(open(repo / "cp.json"))["initial_file_refs"] == ["CLAUDE.md"]

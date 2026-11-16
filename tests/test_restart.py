@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import agent
+import checkpoint
 import commands
 import tools.restart as restart_tool
 
@@ -107,7 +108,7 @@ def test_exec_restart_failure_exits_3(monkeypatch, capsys):
 
 def test_checkpoint_round_trip_carries_restart(tmp_path, monkeypatch):
     path = str(tmp_path / "conversation_checkpoint.json")
-    monkeypatch.setattr(agent, "_CHECKPOINT_PATH", path)
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_PATH", path)
     agent._request_restart(by="tool", reason="skills changed")
     history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
     agent._save_checkpoint(history, {"text": "", "up_to": 0}, 7, None)
@@ -125,7 +126,7 @@ def test_checkpoint_round_trip_carries_restart(tmp_path, monkeypatch):
 
 def test_checkpoint_without_a_restart_has_no_record(tmp_path, monkeypatch):
     path = str(tmp_path / "conversation_checkpoint.json")
-    monkeypatch.setattr(agent, "_CHECKPOINT_PATH", path)
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_PATH", path)
     agent._save_checkpoint([{"role": "user", "content": "x"}], {"text": "", "up_to": 0}, 1, None)
     agent._load_checkpoint()
     assert agent._RESTART["resumed"] is None
@@ -183,7 +184,7 @@ def test_tool_fn_without_runtime():
 # ── the loop ends on the flag, after the turn's checkpoint ────────────────────
 
 def test_run_agent_single_returns_restart_after_the_tool_turn(monkeypatch, agent_loop_mocks, tmp_path):
-    monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(tmp_path / "cp.json"))
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_PATH", str(tmp_path / "cp.json"))
     monkeypatch.setitem(agent._config, "preferences", {"restart_tool": True})
     agent.MAP_FN["restart"] = restart_tool.fn
     agent_loop_mocks.script(_tool_turn("c1", "restart", json.dumps({"reason": "new code"})))

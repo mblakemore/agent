@@ -28,6 +28,10 @@ GUARDED_FILES = [
     "tool_recovery.py",
     "callbacks.py",
     "agent.py",
+    "checkpoint.py",
+    "context_window.py",
+    "lead.py",
+    "restart_state.py",
 ]
 
 

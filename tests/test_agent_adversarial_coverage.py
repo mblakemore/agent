@@ -5,6 +5,7 @@ import pytest
 import requests
 from unittest.mock import patch, MagicMock
 import agent
+import checkpoint
 import context_window
 from agent import (
     _llm_request, _ReasoningRenderer,
@@ -162,7 +163,7 @@ def test_save_and_load_checkpoint():
     summary = {"text": "summary text", "up_to": 1}
     with tempfile.TemporaryDirectory() as tmpdir:
         checkpoint_path = os.path.join(tmpdir, "checkpoint.json")
-        with patch('agent._CHECKPOINT_PATH', checkpoint_path):
+        with patch('checkpoint.CHECKPOINT_PATH', checkpoint_path):
             _save_checkpoint(history, summary, turn=3, initial_files="some files")
             result = _load_checkpoint()
     assert result is not None
@@ -175,7 +176,7 @@ def test_save_and_load_checkpoint():
 
 def test_load_checkpoint_returns_none_if_missing():
     """Test _load_checkpoint returns None when no checkpoint file exists."""
-    with patch('agent._CHECKPOINT_PATH', '/nonexistent/path/checkpoint.json'):
+    with patch('checkpoint.CHECKPOINT_PATH', '/nonexistent/path/checkpoint.json'):
         result = _load_checkpoint()
     assert result is None
 
@@ -186,7 +187,7 @@ def test_delete_checkpoint():
         checkpoint_path = os.path.join(tmpdir, "checkpoint.json")
         with open(checkpoint_path, "w") as f:
             json.dump({}, f)
-        with patch('agent._CHECKPOINT_PATH', checkpoint_path):
+        with patch('checkpoint.CHECKPOINT_PATH', checkpoint_path):
             _delete_checkpoint()
         assert not os.path.exists(checkpoint_path)
 
@@ -431,7 +432,7 @@ def test_save_checkpoint_handles_exception():
     """Test _save_checkpoint doesn't raise on exception (best-effort)."""
     history = [{"role": "user", "content": "hello"}]
     summary = {"text": "text", "up_to": 0}
-    with patch('agent._CHECKPOINT_PATH', '/nonexistent/dir/checkpoint.json'):
+    with patch('checkpoint.CHECKPOINT_PATH', '/nonexistent/dir/checkpoint.json'):
         # Should not raise
         _save_checkpoint(history, summary, turn=1, initial_files=None)
 
@@ -442,7 +443,7 @@ def test_load_checkpoint_handles_corrupt_json():
         f.write("not valid json {{{")
         tmppath = f.name
     try:
-        with patch('agent._CHECKPOINT_PATH', tmppath):
+        with patch('checkpoint.CHECKPOINT_PATH', tmppath):
             result = _load_checkpoint()
         assert result is None
     finally:

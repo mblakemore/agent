@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import agent
+import checkpoint
 import tools as registry
 import tools.tool_search as tool_search
 
@@ -256,7 +257,7 @@ def test_the_prompt_preloads_named_tools_before_the_first_request(loop):
 
 
 def test_the_checkpoint_keeps_loaded_tools_and_a_resume_restores_them(loop, tmp_path, monkeypatch):
-    monkeypatch.setattr(agent, "_CHECKPOINT_PATH", str(tmp_path / "cp.json"))
+    monkeypatch.setattr(checkpoint, "CHECKPOINT_PATH", str(tmp_path / "cp.json"))
     mocks, sent = loop
     mocks.script(_tool_turn("t1", "tool_search", '{"query": "pdf"}'))
     agent.run_agent_single([{"role": "user", "content": "go"}], {"text": "", "up_to": 0}, [], log)
