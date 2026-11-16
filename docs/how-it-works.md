@@ -9,7 +9,7 @@ Each cycle is a turn loop:
 3. Execute any tool calls.
 4. Feed results back in and repeat until the model stops calling tools, a turn limit is hit, or the user cancels.
 
-In the code the loop is the `_Run` class in `agent.py`: the run's state as attributes, the exit gates as methods, and one method per step of a turn (`_begin_turn`, `_request`, `_stream`, `_record_response`, `_text_only`, `_tool_guard`, `_dispatch`, `_end_turn`), called in that order by `run()` until one of them ends the turn or the run.
+In the code the loop is the `_Run` class in `agent.py`: the run's state as attributes, the exit gates as methods, and one method per step of a turn (`_begin_turn`, `_request`, `_stream`, `_record_response`, `_text_only`, `_tool_guard`, `_dispatch`, `_end_turn`), called in that order by `run()` until one of them ends the turn or the run. The dispatch step runs each tool call through `_dispatch_call`, itself a sequence of named phases: parse, dedup, gate and execute, finish the result, the write-loop check, record, the exec_command follow-ups, the result-loop checks, and the repeated-error handling.
 
 ## Guardrails
 

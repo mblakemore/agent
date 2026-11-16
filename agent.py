@@ -6130,6 +6130,7 @@ def _get_tc_name(tc):
 
 
 _NEXT = object()   # a step's answer: go to the next turn
+_BREAK = object()  # a call's answer: no more calls this turn
 
 
 class _Run:
@@ -8452,7 +8453,6 @@ class _Run:
             return _NEXT
 
     def _dispatch(self):
-        global _LAST_REFUSAL, _cicd_branch, _cicd_issue_number, _cicd_pr_number, _cicd_worktree_path
         # Execute tool calls
         self.log.debug("Executing %d tool calls", len(self.tool_calls))
         _emit("on_tool_batch_start", len(self.tool_calls))
@@ -8481,1357 +8481,11 @@ class _Run:
             with cancellable():
                 for tool_call in self.tool_calls:
                     check_cancelled()
-                    try:
-                        if hasattr(tool_call, 'function'):
-                            self.func_name = tool_call.function.name
-                            self.raw_args = tool_call.function.arguments
-                            self.tool_id = tool_call.id
-                        else:
-                            self.func_name = tool_call["function"]["name"]
-                            self.raw_args = tool_call["function"]["arguments"]
-                            self.tool_id = tool_call["id"]
-                        # A name from another harness (bash, grep, Read) means a tool here.
-                        self._alias_note = ""
-                        if self.func_name not in MAP_FN:
-                            _resolved = _registry.resolve(self.func_name)
-                            if _resolved and _resolved != self.func_name:
-                                self._alias_note = f"({self.func_name} is {_resolved} here; use that name.) "
-                                self.log.info("tool.alias %s->%s", self.func_name, _resolved)
-                                telemetry.record_patch_event("tool_alias", kind="fired")
-                                self.func_name = _resolved
-                        self.func_args = json.loads(self.raw_args)
-                        # Coerce non-dict JSON values (null, [], 42, "str") to {}
-                        # so that **-unpack never raises TypeError (#859).
-                        # Consistent with _get_tc_args (line ~3218).
-                        if not isinstance(self.func_args, dict):
-                            self.func_args = {}
-                        # Sanitize garbled Gemma 4 args that parsed as valid JSON
-                        # e.g. {"action": "write**,content:"} — valid JSON but bogus values
-                        self.func_args = _sanitize_tool_args(self.func_name, self.func_args, self.log)
-                    except json.JSONDecodeError:
-                        # Repair the JSON (truncation, a trailing comma, single quotes),
-                        # else salvage the garbled shapes (e.g. "write**,content:")
-                        self.func_args = _repair_tool_args(self.func_name, self.raw_args, self.log)
-                        if self.func_args is None:
-                            self.log.error("Unsalvageable tool args: %s | raw: %s", self.func_name, self.raw_args)
-                            self._garbled_count += 1
-                            self.conversation_history.append({
-                                "role": "tool", "tool_call_id": self.tool_id,
-                                "name": self.func_name,
-                                "content": f"Error: malformed arguments — could not parse. "
-                                           f"Use separate JSON keys: {{\"action\": \"write\", \"path\": \"...\", \"content\": \"...\"}}"
-                            })
-                            continue
-                    except Exception as e:
-                        self.log.error("Error parsing tool call: %s | raw: %s", e, tool_call)
-                        self._garbled_count += 1
-                        continue
-
-                    # Reject any tool call whose args contain Harmony/ChatML
-                    # control tokens (<|tool_call|>, <|channel|>, etc. — including
-                    # the partial-pipe variants like <tool_call|> and <|channel>).
-                    # These leak from model output under context pressure and have
-                    # caused self-amplifying state corruption (field observation: tokens
-                    # leaked into file path → file written with tokens in NAME →
-                    # git-committed → every cycle's `ls` re-injects them). Surface
-                    # as a tool-error so the model self-corrects; do NOT dispatch.
-                    _harmony_hit = _detect_harmony_token(self.func_args)
-                    if _harmony_hit:
-                        key_path, token = _harmony_hit
-                        self.log.warning(
-                            "Rejecting %s call: chat-template token %r in arg %r",
-                            self.func_name, token, key_path or "(top-level)",
-                        )
-                        telemetry.record_tool_call(self.func_name + ":rejected_harmony_token")
-                        telemetry.record_patch_event("harmony_reject", kind="rejected")
-                        self._patch_telemetry["harmony_reject"] += 1
-                        self._garbled_count += 1
-                        self.conversation_history.append({
-                            "role": "tool", "tool_call_id": self.tool_id,
-                            "name": self.func_name,
-                            "content": (
-                                f"Error: tool call rejected — chat-template control token "
-                                f"{token!r} appeared in arg {key_path or '(top-level)'}. "
-                                f"Your JSON was garbled (the end-of-tool-call delimiter leaked "
-                                f"into an argument value). Make ONE clean tool call now with "
-                                f"simple quoted string arguments. "
-                                f"Example for {self.func_name}: "
-                                + _harmony_retry_hint(self.func_name)
-                            ),
-                        })
-                        continue
-
-                    # Hard-reject `think` calls that paraphrase recent context.
-                    # a field audit showed think prompts
-                    # full of "I am <agent>. Current State: - Cycle: 10, Mode:
-                    # Memory Curation..." — paraphrased context the model
-                    # already has, pays the LLM cost to reason about it again.
-                    # Framework owns the conversation history; check on the way
-                    # in, refuse on hit, force the model to frame the question
-                    # itself instead of the background.
-                    if self.func_name == "think" and isinstance(self.func_args, dict):
-                        _think_text = (self.func_args.get("prompt", "") or "") + "\n\n" + (self.func_args.get("context", "") or "")
-                        _launder = _detect_context_laundering(_think_text, self.conversation_history)
-                        if _launder:
-                            offender, src_idx = _launder
-                            self.log.warning(
-                                "Rejecting think call: %d-char verbatim overlap with msg[%d]: %r",
-                                len(offender), src_idx, offender[:80],
-                            )
-                            telemetry.record_tool_call("think:rejected_laundering")
-                            telemetry.record_patch_event("think_launder", kind="rejected")
-                            self._patch_telemetry["think_launder"] += 1
-                            self.conversation_history.append({
-                                "role": "tool", "tool_call_id": self.tool_id,
-                                "name": self.func_name,
-                                "content": (
-                                    f"Error: think call rejected — your prompt/context "
-                                    f"re-includes a {len(offender)}-char verbatim chunk "
-                                    f"from your own recent message (msg[{src_idx}], "
-                                    f"starts with {offender[:60]!r}). The framework "
-                                    f"already has that content. Frame the reasoning "
-                                    f"question itself — what specifically you need to "
-                                    f"think through — not the background you already "
-                                    f"know. If you genuinely need extra constraints, "
-                                    f"summarize them abstractly in `context` (a few "
-                                    f"sentences, not paragraphs)."
-                                ),
-                            })
-                            continue
-
-                    # Validate required fields — catch cases where sanitizer
-                    # extracted the action but lost required params (empty garble)
-                    if self.func_name == "file" and isinstance(self.func_args, dict):
-                        action = self.func_args.get("action", "")
-                        if action in ("read", "write", "insert", "append", "delete") and "path" not in self.func_args:
-                            self.log.warning("Sanitized file call missing 'path' — returning error")
-                            self._garbled_count += 1
-                            self.conversation_history.append({
-                                "role": "tool", "tool_call_id": self.tool_id,
-                                "name": self.func_name,
-                                "content": (
-                                    f"Error: file({action!r}) call is missing the 'path' argument. "
-                                    f"Call with separate string arguments: "
-                                    f"file(action={action!r}, path='the/file/path'). "
-                                    f"Do not concatenate arguments with backticks or commas inside a string."
-                                ),
-                            })
-                            continue
-
-                    # G.01-exec — garbled exec_command args under context pressure.
-                    # Model produces {"command=\"...reasoning...\"": <number>} instead
-                    # of {"command": "..."}. No reliable salvage — return clear error.
-                    # A poll of a background session (session_id, optional wait, no
-                    # command) is the tool's own documented form, not garbage: it
-                    # passes (found live 2026-11-02: a correct poll was refused).
-                    if self.func_name == "exec_command" and isinstance(self.func_args, dict):
-                        _cmd_val = self.func_args.get("command")
-                        _sid_val = self.func_args.get("session_id")
-                        _is_poll = (_cmd_val is None and isinstance(_sid_val, str) and _sid_val.strip())
-                        if not _is_poll and (_cmd_val is None or not isinstance(_cmd_val, str)):
-                            self._garbled_count += 1
-                            self.conversation_history.append({
-                                "role": "tool", "tool_call_id": self.tool_id,
-                                "name": self.func_name,
-                                "content": (
-                                    "Error: exec_command received garbled arguments "
-                                    "(missing or non-string 'command' value). "
-                                    "Call with a single string: "
-                                    "exec_command(command='your shell command here')."
-                                ),
-                            })
-                            self.log.warning("G.01-exec: garbled exec_command — keys=%r",
-                                        list(self.func_args.keys())[:3])
-                            telemetry.record_patch_event("g01_exec", kind="fired")
-                            continue
-
-                    # R.01 — node runtime used to execute a .py file.
-                    # The model confuses Python CLI tools with the Node-based
-                    # discord/email skills that live nearby.  Intercept before
-                    # dispatch and return a clear correction.
-                    if self.func_name == "exec_command" and isinstance(self.func_args, dict):
-                        _r01_cmd = self.func_args.get("command") or ""
-                        if isinstance(_r01_cmd, str) and re.match(r'\bnode\b.*\.py\b', _r01_cmd):
-                            self._garbled_count += 1
-                            self.conversation_history.append({
-                                "role": "tool", "tool_call_id": self.tool_id,
-                                "name": self.func_name,
-                                "content": (
-                                    f"Error: used 'node' to run a Python file. "
-                                    f"Python scripts must be run with 'python3', not 'node'. "
-                                    f"Replace 'node' with 'python3' and retry."
-                                ),
-                            })
-                            self.log.warning("R.01: node used on .py file — %r", _r01_cmd[:80])
-                            continue
-
-                    self.log.debug("TOOL CALL: %s(%s) [id=%s]", self.func_name, json.dumps(self.func_args), self.tool_id)
-                    telemetry.record_tool_call(self.func_name)
-
-                    # Track whether this turn has any "action" (write/exec) tool calls
-                    # for the action-inertia nudge (fires after _READ_ONLY_NUDGE_THRESHOLD
-                    # consecutive read-only turns).
-                    _ACTION_TOOLS = {"write_file", "edit_file", "append_file", "delete_file",
-                                     "exec_command", "gh_wrapper"}
-                    if self.func_name in _ACTION_TOOLS or (
-                        self.func_name == "file" and isinstance(self.func_args, dict)
-                        and self.func_args.get("action") in ("write", "insert", "append", "delete", "create")
-                    ):
-                        self._turn_had_action = True
-                    # Progress signal for the grind no-progress gate: a file
-                    # MUTATION (not exec/read) = the model is changing the
-                    # codebase = converging. exec_command is excluded (it's
-                    # usually re-running the check, i.e. spinning, not progress).
-                    if self.func_name in ("write_file", "edit_file", "append_file",
-                                     "delete_file") or (
-                        self.func_name == "file" and isinstance(self.func_args, dict)
-                        and self.func_args.get("action") in ("write", "insert",
-                                                        "append", "delete", "create")
-                    ):
-                        self._last_mutation_turn = self.turn
-                        # An edit invalidates any prior test run: the current
-                        # state is unverified until the tests re-run (claim gate).
-                        self._ran_verification = False
-
-                    # Per-call dedup: if this exact (tool_name, args) was dispatched
-                    # within the last _DEDUP_WINDOW calls AND the tool is safe to
-                    # dedup (pure reads — see _is_dedupable_call), short-circuit
-                    # with a synthetic result. Massive token-budget savings on the
-                    # PERCEIVE-boilerplate pattern two independent field audits
-                    # flagged as the #1 friction source.
-                    self._call_idx_counter += 1
-                    _dedup_sig = None
-                    if _is_dedupable_call(self.func_name, self.func_args):
-                        try:
-                            self._args_md5 = hashlib.md5(
-                                json.dumps(self.func_args, sort_keys=True, default=str).encode()
-                            ).hexdigest()
-                        except Exception:
-                            self._args_md5 = None
-                        if self._args_md5 is not None:
-                            _dedup_sig = (self.func_name, self._args_md5)
-                            _cached = self._call_dedup_cache.get(_dedup_sig)
-                            if _cached is not None and (self._call_idx_counter - _cached["call_idx"]) <= self._DEDUP_WINDOW:
-                                _gap = self._call_idx_counter - _cached["call_idx"]
-                                _synthetic = (
-                                    f"[deduped: identical {self.func_name} call was issued {_gap} "
-                                    f"tool-call(s) ago — result was ~{_cached['tokens']} tokens, "
-                                    f"starting with: {_cached['summary']!r}. If state may have "
-                                    f"changed since, vary the arguments meaningfully and retry; "
-                                    f"otherwise act on the cached result.]"
-                                )
-                                self.conversation_history.append({
-                                    "role": "tool", "tool_call_id": self.tool_id,
-                                    "name": self.func_name,
-                                    "content": _synthetic,
-                                })
-                                self.log.info(
-                                    "Deduped %s call (last issued %d calls ago, sig %s)",
-                                    self.func_name, _gap, self._args_md5[:8],
-                                )
-                                telemetry.record_tool_call(self.func_name + ":deduped")
-                                # Approximate tokens saved = the cached result's token estimate
-                                telemetry.record_patch_event("dedup", kind="saved", value=_cached.get("tokens", 1))
-                                self._patch_telemetry["dedup"] += 1
-                                continue
-
-                    # Track think tool usage for CICD phase-gate enforcement
-                    if self.func_name == "think":
-                        self._cicd_think_used = True
-
-                    # Tools that do their own streaming (think) handle
-                    # their own console output — don't wrap them in a spinner.
-                    # Under NO_COLOR / no-TTY, CLEAR_LINE is empty, so the
-                    # spinner's non-interactive prefix would dangle and
-                    # on_tool_start's header would duplicate it on the same
-                    # line. Skip the spinner entirely in that mode.
-                    _STREAMING_TOOLS = {"think"}
-                    use_spinner = (
-                        self.func_name not in _STREAMING_TOOLS
-                        and not theme._no_color()
-                    )
-
-                    if use_spinner:
-                        self.tool_status = StreamStatus(emit=_emit)
-                        if self.func_name == "exec_command":
-                            # Full first line of the command — width fitting
-                            # happens at render time now (StreamStatus middle-
-                            # truncates every frame against the live terminal
-                            # width), so no fixed budget that assumed a "9.9s"
-                            # counter and broke past 100s.
-                            self._cmd_preview = self.func_args.get("command", "").split("\n", 1)[0]
-                            self.prefix = f"  -> exec_command ({self._cmd_preview}) "
-                        else:
-                            self.prefix = f"  -> {self.func_name} "
-                        # pt_header=False: in live-input mode the toolbar
-                        # spinner carries this status; the scrollback header
-                        # is printed once by on_tool_start after the tool
-                        # completes (printing both duplicated every line).
-                        self.tool_status.start(self.prefix, pt_header=False)
-
-                    # T5.18 — pre-write content snapshot for similarity
-                    # detection. Captured before dispatch so the post-write
-                    # nudge can compare new vs. old. Only for file(action=
-                    # 'write') on existing files; cheap when the file is
-                    # small (state JSON / focus JSON), bounded by tool
-                    # result truncation cap when not.
-                    _prewrite_content = None
-                    if (self.func_name in ("write_file", "file")
-                            and isinstance(self.func_args, dict)
-                            and (self.func_name == "write_file" or self.func_args.get("action") == "write")
-                            and isinstance(self.func_args.get("path"), str)
-                            and isinstance(self.func_args.get("content"), str)):
-                        try:
-                            import os as _os_t518
-                            _pw_path = self.func_args["path"]
-                            if _os_t518.path.isfile(_pw_path):
-                                with open(_pw_path, "r", encoding="utf-8",
-                                          errors="replace") as _pf:
-                                    _prewrite_content = _pf.read()
-                        except Exception:
-                            _prewrite_content = None
-
-                    # Cycle 24: pre-execute PRE-MERGE CHECK short-circuit.
-                    # When reviewer attempts `gh pr merge` without prior
-                    # `gh issue view`, block execution (the merge is irreversible
-                    # once it runs; post-hoc reminders are too late). Return a
-                    # synthetic error; next turn the reviewer runs `gh issue view`,
-                    # WS8.3 (run 096): grace budget must bind tool-call turns
-                    # too. Previously only text-only turns were grace-capped,
-                    # so a builder that kept calling tools started a second
-                    # PERCEIVE inside the window and ran to the hard cap
-                    # (~15 wasted turns). After grace exhausts, non-TRACK
-                    # calls are blocked with a redirect; TRACK-scope work
-                    # (results/progress/review files, git/gh, end_cycle)
-                    # still runs. Hard cap at :_CYCLE_HARD_STOP_TURNS unchanged.
-                    _grace_exhausted_block = False
-                    if (self._cycle_persisted
-                            and (self.turn - (self._cycle_persisted_turn or self.turn)) >= self._CYCLE_GRACE_TURNS
-                            and not _is_track_scope_call(self.func_name, self.func_args)):
-                        _grace_exhausted_block = True
-                        self._grace_tool_blocks += 1
-                        self.log.info("Grace exhausted: non-TRACK tool call blocked (%s, block #%d)",
-                                 self.func_name, self._grace_tool_blocks)
-                        telemetry.record_patch_event("grace_tool_block", kind="fired")
-                        self.result_str = (
-                            "Error: this cycle already persisted its work and the "
-                            "post-persist grace window is exhausted — this call is "
-                            "outside TRACK scope and was NOT executed. Do NOT start "
-                            "new PERCEIVE/investigation work. Finish TRACK now "
-                            "(results file, progress row, issue comment) and call "
-                            "end_cycle."
-                        )
-                        self._cicd_blocked, self.cicd_error = False, None
-                    else:
-                        self._cicd_blocked, self.cicd_error = _validate_tool_call(self.func_name, self.func_args, self._cicd_issue_view_called, self.log, self._is_cicd_builder, self._is_reviewer_role)
-                    # WS1: PhaseEngine pre-dispatch gate (per-phase tool
-                    # rules). Only consulted when an engine is active.
-                    _phase_blocked = False
-                    if (self._phase_engine is not None and not _grace_exhausted_block
-                            and not self._cicd_blocked):
-                        _ph_ok, _ph_msg = self._phase_engine.allow(self.func_name, self.func_args)
-                        if not _ph_ok:
-                            _phase_blocked = True
-                            self.result_str = _ph_msg
-                            telemetry.record_patch_event("phase_gate_block", kind="fired")
-                    # WS10.c: success-check gate on end_cycle. After
-                    # _SUCCESS_CHECK_MAX_BLOCKS failed attempts the gate
-                    # stands aside (a gate that can deadlock a weak model is
-                    # worse than none — turn caps still bound the cycle).
-                    _sc_blocked = False
-                    if (self.func_name == "end_cycle" and self._success_check_cmd
-                            and not _grace_exhausted_block and not _phase_blocked
-                            and not self._cicd_blocked
-                            and self._success_check_blocks < self._SUCCESS_CHECK_MAX_BLOCKS):
-                        _sc_rc, _sc_out = _run_success_check(self._success_check_cmd, self.log)
-                        if _sc_rc != 0:
-                            _sc_blocked = True
-                            self._success_check_blocks += 1
-                            self.log.info("success_check FAILED (rc=%d) — end_cycle blocked (%d/%d)",
-                                     _sc_rc, self._success_check_blocks, self._SUCCESS_CHECK_MAX_BLOCKS)
-                            telemetry.record_patch_event("success_check_block", kind="fired")
-                            self.result_str = (
-                                "Error: end_cycle blocked — the declared success "
-                                "check still FAILS (exit=" + str(_sc_rc) + "). The "
-                                "work is NOT complete. Check output tail:\n"
-                                + _sc_out +
-                                "\nFix what the check reports, re-run it yourself "
-                                "to confirm, commit, then call end_cycle again."
-                            )
-                            _adv_msg = self._maybe_advisor_nudge()
-                            if _adv_msg:
-                                self.result_str += "\n\n" + _adv_msg
-                        else:
-                            self.log.info("success_check PASSED — end_cycle permitted")
-                    if _grace_exhausted_block or _phase_blocked or _sc_blocked:
-                        pass  # result_str already holds the redirect
-                    elif self._cicd_blocked:
-                        self.result_str = self.cicd_error
-                    elif self.func_name == "end_cycle" and not _END_CYCLE_ENABLED:
-                        self.result_str = ("Error: end_cycle is off for this agent (it is opt-in: "
-                                      "preferences.end_cycle_tool in .agent/config.json). "
-                                      "Stop when you are done; do not try to end the session.")
-                    elif self.func_name not in MAP_FN:
-                        _sugg = _registry.suggest(self.func_name, self.func_args)
-                        self.result_str = (f"Error: Unknown tool '{self.func_name}'."
-                                      + (f" Closest: {_sugg}." if _sugg else "")
-                                      + " Use tool_search to find and load tools.")
-                        telemetry.record_patch_event("tool_unknown", kind="fired")
-                    elif self.func_name in _registry.DEFINITIONS and not _registry.available(self.func_name):
-                        self.result_str = f"Error: {self.func_name} is not available in this session."
-                        self.log.info("tool.unavailable name=%s", self.func_name)
-                    elif (self.func_name in _registry.DEFINITIONS
-                          and self.func_name not in _session_tool_names(self._session_tools)
-                          and not (_TOOLS_CFG.get("implicit_run", True)
-                                   and _registry.args_fit(self.func_name, self.func_args))):
-                        # A deferred or hidden tool called from memory with arguments that do
-                        # not fit (or implicit runs are off): load it, answer with its schema.
-                        _registry.request_load(self.func_name)
-                        self.result_str = (f"Error: {self.func_name} is not loaded and these arguments do not fit it. "
-                                      f"Its schema: {json.dumps(_registry.DEFINITIONS[self.func_name].get('function'))}. "
-                                      "It is loaded now; call it again with arguments that fit.")
-                        self.log.info("tool.schema_returned name=%s", self.func_name)
-                    else:
-                        # A MAP_FN entry outside the registry (harness-internal, or a test's
-                        # stand-in) runs as it always did; a registered tool not yet in the
-                        # session's list is loaded for the next turn.
-                        if self.func_name in _registry.DEFINITIONS and self.func_name not in _session_tool_names(self._session_tools):
-                            _registry.request_load(self.func_name)
-                            self.log.info("tool.implicit_load name=%s", self.func_name)
-                        try:
-                            # Last check before dispatch: an esc-esc that
-                            # landed during argument parsing / gate checks
-                            # should stop the batch here, not after another
-                            # long tool run.
-                            check_cancelled()
-                            self.result_str = str(MAP_FN[self.func_name](**self.func_args))
-                            if self._alias_note:
-                                self.result_str = self._alias_note + self.result_str
-                            if self.func_name == "tool_search":
-                                telemetry.record_patch_event("tool_search", kind="fired")
-                        except CircuitBreakerError as e:
-                            # Tool temporarily unavailable - return graceful degradation
-                            self.result_str = f"Tool {self.func_name} temporarily unavailable: {e}"
-                        except CancelledError:
-                            # Propagate to outer handler to return 'cancelled'
-                            raise
-                        except Exception as e:
-                            self.result_str = f"Error executing tool: {str(e)}"
-                            telemetry.record_tool_error(self.func_name, "execution_error")
-                        # WS1: PhaseEngine observation — advance on
-                        # task_tracker phase-done markers, count verify
-                        # calls; may return a gate message to inject
-                        # (DECIDE verification gate).
-                        if self._phase_engine is not None:
-                            _gate_msg = self._phase_engine.observe(self.func_name, self.func_args, self.result_str)
-                            if _gate_msg:
-                                self.conversation_history.append(
-                                    {"role": "user", "content": _gate_msg})
-                                telemetry.record_patch_event(
-                                    "phase_verify_gate", kind="fired")
-                        # end_cycle sentinel — agent requested clean exit.
-                        if self.result_str == _end_cycle_tool.SENTINEL:
-                            self._summary = self.func_args.get("summary", "") if isinstance(self.func_args, dict) else ""
-                            self.log.info("end_cycle called — exiting cleanly: %s",
-                                     self._summary or "(no summary)")
-                            telemetry.record_patch_event("end_cycle", kind="fired")
-                            # Answer the tool_call before leaving: an interactive
-                            # session keeps this history, and an assistant
-                            # tool_call with no tool message is rejected by
-                            # strict APIs on the next turn.
-                            self.conversation_history.append({
-                                "role": "tool",
-                                "tool_call_id": self.tool_id,
-                                "name": self.func_name,
-                                "content": "Cycle ended.",
-                            })
-                            return "done"
-                        # Conversational tool recovery: on error, try to fix params
-                        if self.result_str.startswith("Error"):
-                            try:
-                                from tool_recovery import attempt_recovery
-                                recovered = attempt_recovery(
-                                    self.func_name, self.func_args, self.result_str,
-                                    map_fn=MAP_FN,
-                                    llm_call_fn=_recovery_llm_call(self.log),
-                                    config=_config, log=self.log,
-                                )
-                                if recovered is not None:
-                                    self.result_str = recovered
-                                    _emit("on_tool_recovery", self.func_name, 1)
-                                    _emit("on_notice", "info", f"[recovered: {self.func_name} succeeded]")
-                            except Exception as e:
-                                self.log.debug("Tool recovery unavailable: %s", e)
-
-                    if use_spinner:
-                        self.tool_status.first_token()
-                        self.tool_status.finish()
-                    _emit("on_tool_start", self.func_name, self.func_args)
-
-                    # Cycle 77 — verify gh pr/issue mutations against real state.
-                    # Appends a SUPERVISION note when the tool output references
-                    # a PR/issue that does not exist or is not in the claimed state.
-                    if self.func_name == "exec_command" and isinstance(self.func_args, dict):
-                        _cmd_str = self.func_args.get("command", "")
-                        if _cmd_str:
-                            self.result_str = _cicd_verify_gh_mutation(_cmd_str, self.result_str, self.log)
-
-                    # F3: an oversized tool result is SPILLED to a file and replaced by a
-                    # reference + excerpt (lossless — the old head/tail truncation threw the
-                    # middle away, and a data-heavy run died echoing bulk into a 196k window).
-                    # limits.tool_result_max_chars, 0 = legacy truncation only.
-                    _spill_cap = _tool_result_spill_cap()
-                    if _spill_cap > 0 and len(self.result_str) > _spill_cap and not self.result_str.startswith(_SPILL_MARKER):
-                        _ref = _spill_tool_result(self.turn, self.func_name, self.result_str, self.log)
-                        if _ref is not None:
-                            self.log.info("F3 spill: %s result of %d chars -> file (cap %d)", self.func_name, len(self.result_str), _spill_cap)
-                            telemetry.record_patch_event("tool_result_spill", kind=self.func_name)
-                            self.result_str = _ref
-                    if len(self.result_str) > _MAX_TOOL_RESULT_CHARS:
-                        half = _MAX_TOOL_RESULT_CHARS // 2
-                        self.result_str = (
-                            self.result_str[:half]
-                            + f"\n\n... [{len(self.result_str) - _MAX_TOOL_RESULT_CHARS} chars truncated] ...\n\n"
-                            + self.result_str[-half:]
-                        )
-
-                    # F9 — capability refusal: the tool said the run was never granted something
-                    # it needs. Say so ONCE, inside the result the model is about to read, and
-                    # start the clock; the turn-top stop is what makes the window bounded.
-                    if self._REFUSAL_MAX_TURNS > 0:
-                        _rf = _classify_tool_refusal(self.func_name, self.result_str)
-                        if _rf is not None:
-                            _rf_code, _rf_head = _rf
-                            _rf_cmd = (str(self.func_args.get("command") or "")[:120]
-                                       if isinstance(self.func_args, dict) else "")
-                            if self._refusal_first_turn is None:
-                                self._refusal_first_turn, self._refusal_tool = self.turn, self.func_name
-                                _LAST_REFUSAL = {"tool": self.func_name, "cmd": _rf_cmd, "exit": _rf_code,
-                                                 "head": _rf_head, "turn": self.turn}
-                                self.log.warning("capability refusal at turn %d: %s %s exit=%s — %s (blocked "
-                                            "result due within %d turn(s))", self.turn, self.func_name, _rf_cmd,
-                                            _rf_code, _rf_head, self._REFUSAL_MAX_TURNS)
-                                _emit("on_notice", "warn",
-                                      f"[Capability refusal: {self.func_name} exit={_rf_code} — blocked result "
-                                      f"due within {self._REFUSAL_MAX_TURNS} turn(s)]")
-                                telemetry.record_patch_event("capability_refusal", kind=self.func_name)
-                                self.result_str += "\n\n" + _refusal_notice(self.func_name, _rf_cmd, _rf_code,
-                                                                          _rf_head, self._REFUSAL_MAX_TURNS)
-                            else:
-                                self.log.warning("capability refusal AGAIN at turn %d: %s %s exit=%s",
-                                            self.turn, self.func_name, _rf_cmd, _rf_code)
-                    # Store in dedup cache if this call was eligible (see
-                    # _is_dedupable_call). The synthetic result returned by a
-                    # later duplicate references this entry's `call_idx` and
-                    # summary; storing after truncation keeps the summary
-                    # consistent with what the model originally saw.
-                    if _dedup_sig is not None:
-                        self._call_dedup_cache[_dedup_sig] = {
-                            "call_idx": self._call_idx_counter,
-                            "summary": self.result_str[:80].replace("\n", " "),
-                            "tokens": max(1, len(self.result_str) // 4),
-                        }
-                        # Prune entries older than the window so the cache
-                        # doesn't grow without bound across long sessions.
-                        if len(self._call_dedup_cache) > 256:
-                            _stale = [k for k, v in self._call_dedup_cache.items()
-                                      if (self._call_idx_counter - v["call_idx"]) > self._DEDUP_WINDOW * 4]
-                            for k in _stale:
-                                self._call_dedup_cache.pop(k, None)
-
-                    # Write-loop detector: if this tool wrote to a path that
-                    # we've already written 2+ times in the recent window,
-                    # append a system reminder to the tool result so the model
-                    # sees the pattern. a field-observed run ("The Orphan Paradox") canonical
-                    # signature: 3 write-audit-rewrite passes on context.json
-                    # in one cycle because the model's mental model of the
-                    # audit tool was wrong. Framework-side detection makes the
-                    # loop visible without relying on model self-noticing.
-                    _write_target = _extract_write_target(self.func_name, self.func_args)
-                    if _write_target:
-                        # T5.14 Option A — heredoc→state-file write nudge.
-                        # When the model writes a tracked state file via
-                        # exec_command 'cat > f <<EOF', append a one-line
-                        # suggestion that file(action='edit', ...) is safer
-                        # for surgical changes. a field-observed run noted exactly
-                        # this failure mode ("accidentally purged multiple
-                        # edges due to incorrect range replacement") on a
-                        # heredoc-style state-file rewrite. Only fires once
-                        # per session per file to avoid noise.
-                        _heredoc_write = (
-                            self.func_name == "exec_command"
-                            and "<<" in self.func_args.get("command", "")
-                            and _write_target.endswith(".json")
-                        )
-                        if _heredoc_write:
-                            if "_edit_nudges_emitted" not in dir(run_agent_single):
-                                run_agent_single._edit_nudges_emitted = set()
-                            if _write_target not in run_agent_single._edit_nudges_emitted:
-                                run_agent_single._edit_nudges_emitted.add(_write_target)
-                                self.result_str = self.result_str + (
-                                    f"\n\n[suggestion] You wrote to {_write_target!r} via "
-                                    f"a heredoc. For surgical changes to an existing file, "
-                                    f"file(action='edit', path=..., old_string=..., "
-                                    f"new_string=...) is safer — it's atomic, validates "
-                                    f"that the target text exists exactly once (no silent "
-                                    f"miss), and won't clobber neighbouring content the way "
-                                    f"a heredoc full-rewrite can. Heredoc is fine for "
-                                    f"creating new files or wholesale replacement; for "
-                                    f"single-field updates, prefer edit."
-                                )
-                                telemetry.record_patch_event("edit_nudge", kind="fired")
-                                self._patch_telemetry["edit_nudge"] += 1
-
-                        # T5.18 — file(action='write') high-similarity rewrite
-                        # nudge. The model has been bypassing the heredoc
-                        # nudge by routing through file(action='write')
-                        # instead of exec_command. two independent field audits
-                        # both showed full-file rewrites where most lines
-                        # were identical to the previous version — surgical
-                        # changes wearing a full-write costume. Detection:
-                        # Jaccard line-set similarity vs pre-write snapshot;
-                        # ≥0.8 triggers the nudge. Tracked separately under
-                        # kind="similar_rewrite" so we can measure whether
-                        # the new nudge fires while the model continues to
-                        # avoid action='edit', or whether behavior shifts.
-                        _similar_rewrite = (
-                            not _heredoc_write
-                            and _prewrite_content is not None
-                            and self.func_name in ("file", "write_file")
-                            and isinstance(self.func_args, dict)
-                            and (self.func_name == "write_file" or self.func_args.get("action") == "write")
-                        )
-                        if _similar_rewrite:
-                            _new_content = self.func_args.get("content", "")
-                            _old_lines = set(_prewrite_content.splitlines())
-                            _new_lines = set(_new_content.splitlines())
-                            if _old_lines and _new_lines:
-                                _inter = len(_old_lines & _new_lines)
-                                # MAX of two asymmetric ratios so both
-                                # "most-of-old-survived" (small edit to large
-                                # file → preserved_ratio high) and "most-of-
-                                # new-came-from-old" (some additions, rest
-                                # carried over → overlap_ratio high) trigger
-                                # the nudge. Symmetric Jaccard penalizes both
-                                # directions and would miss the a field-observed run
-                                # "added 30 lines to a 200-line HTML" case.
-                                _preserved = _inter / len(_old_lines)
-                                _overlap = _inter / len(_new_lines)
-                                _sim = max(_preserved, _overlap)
-                                if _sim >= 0.8:
-                                    if "_edit_nudges_emitted" not in dir(run_agent_single):
-                                        run_agent_single._edit_nudges_emitted = set()
-                                    if _write_target not in run_agent_single._edit_nudges_emitted:
-                                        run_agent_single._edit_nudges_emitted.add(_write_target)
-                                        self.result_str = self.result_str + (
-                                            f"\n\n[suggestion] You used "
-                                            f"write_file to rewrite "
-                                            f"{_write_target!r}, but {int(_sim*100)}% "
-                                            f"of the lines match the previous version "
-                                            f"— this is a surgical change in a "
-                                            f"full-rewrite costume. edit_file("
-                                            f"path=..., old_string=..., new_string=...) "
-                                            f"is the right tool: atomic, validates the "
-                                            f"target text exists exactly once, and won't "
-                                            f"silently drop unrelated keys (a field-observed run lost "
-                                            f"theme_tracking this way and regressed for "
-                                            f"13 cycles). Use write_file only when creating "
-                                            f"a new file or rewriting one in full."
-                                        )
-                                        telemetry.record_patch_event(
-                                            "edit_nudge", kind="similar_rewrite")
-                                        self._patch_telemetry["edit_nudge"] += 1
-
-                        # T5.18-log — file(action='write') on a .log file destroys
-                        # all prior entries.  Field-audited agents treat logs as episodic
-                        # memory; wiping them with write is high-damage (observed 9%
-                        # of Phase 7 sessions, including the a field-observed run spiral that
-                        # wiped consciousness.log).  Logs are append-only by design;
-                        # action='append' is always correct here.  Fires once per
-                        # file per session to avoid noise.
-                        _log_overwrite = (
-                            not _heredoc_write
-                            and self.func_name in ("file", "write_file")
-                            and isinstance(self.func_args, dict)
-                            and (self.func_name == "write_file" or self.func_args.get("action") == "write")
-                            and _write_target.endswith(".log")
-                        )
-                        if _log_overwrite:
-                            if "_edit_nudges_emitted" not in dir(run_agent_single):
-                                run_agent_single._edit_nudges_emitted = set()
-                            if _write_target not in run_agent_single._edit_nudges_emitted:
-                                run_agent_single._edit_nudges_emitted.add(_write_target)
-                                self.result_str = self.result_str + (
-                                    f"\n\n[suggestion] write_file on "
-                                    f"{_write_target!r} overwrote all prior log "
-                                    f"content. Log files are append-only — use "
-                                    f"append_file(path={_write_target!r}, "
-                                    f"content=...) to add new entries without "
-                                    f"destroying history."
-                                )
-                                self.log.warning(
-                                    "T5.18-log: write on log file %r — nudging append",
-                                    _write_target,
-                                )
-                                telemetry.record_patch_event("log_write_nudge", kind="fired")
-                                self._patch_telemetry["edit_nudge"] += 1
-
-                        _hist = self._write_path_history.setdefault(_write_target, [])
-                        _hist.append(self._call_idx_counter)
-                        # Prune outside window
-                        self._write_path_history[_write_target] = [
-                            t for t in _hist if (self._call_idx_counter - t) <= self._WRITE_LOOP_WINDOW
-                        ]
-                        _n_writes = len(self._write_path_history[_write_target])
-                        # Single-object state files — ones an agent rewrites
-                        # wholesale on a schedule rather than appending to — are
-                        # SUPPOSED to be written repeatedly. One agent's
-                        # detector misfired with `current-state.json` written
-                        # 3 times in one cycle (correct behavior!). Bump the
-                        # threshold so the detector only complains when the
-                        # rewrite count is unambiguously a loop.
-                        _is_single_object_state = (
-                            _write_target.endswith(("current-state.json",
-                                                    "focus.json",
-                                                    "context.json"))
-                        )
-                        _effective_threshold = 5 if _is_single_object_state else self._WRITE_LOOP_THRESHOLD
-                        if _n_writes >= _effective_threshold:
-                            self.result_str = self.result_str + (
-                                f"\n\n[write-loop-detector] You have written to {_write_target!r} "
-                                f"{_n_writes} times in the last {self._WRITE_LOOP_WINDOW} tool calls. "
-                                f"If your incremental edits are being clobbered by full rewrites, "
-                                f"use edit_file(...) to apply a surgical change instead "
-                                f"of rewriting the whole file. If you've genuinely needed this many "
-                                f"writes, ignore this note — but consider whether your mental model "
-                                f"of the file's state matches what's actually on disk."
-                            )
-                            self.log.info(
-                                "Write-loop detector tripped: %s written %d times in last %d calls",
-                                _write_target, _n_writes, self._WRITE_LOOP_WINDOW,
-                            )
-                            telemetry.record_tool_call(self.func_name + ":write_loop")
-                            telemetry.record_patch_event("write_loop", kind="fired")
-                            self._patch_telemetry["write_loop"] += 1
-
-                    self.conversation_history.append({
-                        "role": "tool",
-                        "tool_call_id": self.tool_id,
-                        "name": self.func_name,
-                        "content": self.result_str,
-                    })
-                    if _prompt_caching_backend():
-                        # The sent window (from the cache head) must stay byte-identical:
-                        # gate on ITS pressure and never rewrite inside it. Below the head
-                        # nothing is sent again, so head+tail only — no model round trip.
-                        self._head = self.summary_state.get("_cache_head") or 0
-                        _rewritten = _compress_repeated_tool_results(
-                            self.conversation_history, self.func_name, self.log,
-                            pressure=_history_pressure(self.conversation_history, start=self._head),
-                            protect_from=self._head, local_only=True)
-                        if any(i >= self._head for i in _rewritten):
-                            self.summary_state["_rewrote_window"] = True   # alarm for the cache.miss log
-                    else:
-                        _compress_repeated_tool_results(self.conversation_history, self.func_name, self.log,
-                                                        pressure=_history_pressure(self.conversation_history))
-
-                    # Consecutive edit_file failure guard: after 2 consecutive
-                    # old_string-not-found failures on the same file, inject a
-                    # user turn directing the model to switch strategy. The
-                    # existing error hint says "re-read the file" but models
-                    # often ignore it and retry with equally-wrong content.
-                    _is_edit_fail = (
-                        self.func_name in ("edit_file", "file")
-                        and "`old_string` not found" in self.result_str
-                        and isinstance(self.func_args, dict)
-                    )
-                    if _is_edit_fail:
-                        self._epath = self.func_args.get("path", "")
-                        self._edit_fail_counts[self._epath] = self._edit_fail_counts.get(self._epath, 0) + 1
-                        if self._edit_fail_counts[self._epath] >= 2:
-                            self.conversation_history.append({
-                                "role": "user",
-                                "content": (
-                                    f"[SYSTEM: edit_file has failed {self._edit_fail_counts[self._epath]} "
-                                    f"consecutive times for '{self._epath}' — the old_string does not "
-                                    f"match the actual file content. STOP using edit_file for this "
-                                    f"file. Instead: call read_file(path='{self._epath}') to get the "
-                                    f"EXACT current content, then use write_file to rewrite the "
-                                    f"relevant section, or use exec_command with a Python script "
-                                    f"to patch it in-place. Do not attempt edit_file again for "
-                                    f"'{self._epath}' until you have read the file.]"
-                                ),
-                            })
-                    elif self.func_name in ("edit_file", "file", "write_file") and isinstance(self.func_args, dict):
-                        # Successful edit or full rewrite — reset failure counter for this path.
-                        # write_file changes file content entirely so prior old_string mismatches
-                        # are no longer relevant for the new version.
-                        self._epath = self.func_args.get("path", "")
-                        self._edit_fail_counts.pop(self._epath, None)
-
-                    # Track file edits (file tool with action=write/create, or new per-action tools)
-                    if isinstance(self.func_args, dict) and (
-                        (self.func_name == "file" and self.func_args.get("action") in ("write", "create"))
-                        or self.func_name in ("write_file", "edit_file")
-                    ):
-                        self._has_edited, self._has_reviewer_persisted = _handle_cicd_file_edit(
-                            self.func_args, self.conversation_history, _cicd_worktree_path, _cicd_phase_state, 
-                            _cicd_edited_files, self._has_edited, self._has_reviewer_persisted, self.turn, self.log
-                        )
-                    # Track commits and pushes through exec_command
-                    if self.func_name == "exec_command" and isinstance(self.func_args, dict):
-                        _cmd = self.func_args.get("command", "")
-                        _cmd_normalized = re.sub(r"\\\n", " ", _cmd)  # Cycle 36: collapse shell line-continuations before all checks
-                        # Claim-vs-trace: a real test/verify run supports a later
-                        # "I ran the tests / verified" completion claim.
-                        if any(_vt in _cmd_normalized.lower() for _vt in _VERIFY_CMD_TOKENS):
-                            self._ran_verification = True
-                        if _cmd_has(_cmd, "git commit"):  # WS8.1: anchored, heredoc/quote-blind
-                            self._has_committed = True
-                            self._has_edited = True  # commit implies edit happened
-                            self.log.info("Commit detected — completion signals now allowed")
-                            _cicd_phase_state["implement"] = True
-                            # Cycle 61: if commit fails with nothing staged, builder never wrote test code
-                            if "no changes added to commit" in self.result_str:
-                                self.conversation_history.append({
-                                    "role": "user",
-                                    "content": (
-                                        "[SYSTEM: git commit failed — no test files were staged. "
-                                        "Only .coverage is modified, which means you ran pytest but "
-                                        "never wrote any new test code. You must use "
-                                        "file({'action': 'write', 'path': 'tests/test_<name>.py', "
-                                        "'content': '...'}) to write new test functions, then "
-                                        "git add tests/test_<name>.py && git commit -m '<message>'.]"
-                                    ),
-                                })
-                        if _cmd_has(_cmd, "git push") and "exit=0" in self.result_str:  # Cycle 35+36 anchoring; WS8.1: heredoc/quote-blind (a doc line `&& git push` must not fake-persist the cycle)
-                            if not self._cycle_persisted:
-                                self.log.info("Cycle persist detected (git push exit=0) — auto-nudge disabled")
-                            # Interactive sessions keep working after a push: the
-                            # grace/hard-stop gates are for -a cycles only.
-                            if _AUTO_MODE:
-                                self._cycle_persisted = True
-                                self._cycle_persisted_turn = self._cycle_persisted_turn or self.turn
-                            _cicd_phase_state["verify"] = True
-                            if self._phase_engine is not None:
-                                self._phase_engine.mark_persisted("git push")
-                            # Cycle 37: block direct push to main — builder must use feature branches.
-                            # Only enforce for CICD builder sessions; regular agents push to main normally.
-                            if self._is_cicd_builder and re.search(r"git\s+push\b.*\borigin\s+main\b", _cmd_normalized):
-                                self.log.warning("CICD: git push origin main — builder pushed directly to main")
-                                self.conversation_history.append({
-                                    "role": "user",
-                                    "content": (
-                                        "[SYSTEM: CRITICAL: You just pushed directly to origin/main. "
-                                        "This is PROHIBITED — all CICD work must go through a feature branch "
-                                        "(cicd/NNN-slug) and PR. Immediately revert: "
-                                        "`git revert HEAD --no-edit && git push origin main`. "
-                                        "Then create a proper worktree and branch for your changes. "
-                                        "Do NOT commit test artifacts or state files to main.]"
-                                    ),
-                                })
-
-                        # Warn when git add stages Python cache files.
-                        # CC agents always name files explicitly; agent.py agents
-                        # use `git add -A` which silently picks up __pycache__ and
-                        # *.pyc files, polluting git history.
-                        if (re.search(r"git\s+add\b", _cmd_normalized)
-                                and ("__pycache__" in self.result_str or ".pyc" in self.result_str)):
-                            self.log.warning("git add staged __pycache__/.pyc files — injecting cleanup hint")
-                            self.conversation_history.append({
-                                "role": "user",
-                                "content": (
-                                    "[SYSTEM: Your git add staged Python cache files "
-                                    "(__pycache__/ or *.pyc). These should not be committed. "
-                                    "Fix before committing:\n"
-                                    "  git rm -r --cached __pycache__/ scripts/__pycache__/ bin/__pycache__/ 2>/dev/null || true\n"
-                                    "  printf '__pycache__/\\n*.pyc\\n.agent/\\n' >> .gitignore\n"
-                                    "  git add .gitignore\n"
-                                    "Then re-add only your actual changed files by name (not git add -A).]"
-                                ),
-                            })
-
-                        # ── CICD phase detection ──
-                        if _cmd_has(_cmd, "gh issue list") or _cmd_has(_cmd, "gh issue search"):  # WS8.1
-                            _cicd_phase_state["perceive"] = True
-                        if ("pytest" in _cmd or "python3 -m pytest" in _cmd
-                                or "cat " in _cmd or "grep " in _cmd):
-                            if _cicd_phase_state["perceive"]:
-                                _cicd_phase_state["probe"] = True
-                        if _cmd_has(_cmd, "gh issue create") and "exit=0" in self.result_str:  # Cycles 36/55 anchoring; WS8.1: heredoc/quote-blind
-                            if not self._cicd_think_used:
-                                self.log.warning("CICD: gh issue create without think — injecting reminder")
-                                self.conversation_history.append({
-                                    "role": "user",
-                                    "content": "[SYSTEM: You filed an issue without using the think tool first. "
-                                    "Per MANDATORY THINK before DECIDE, you must call think() to evaluate "
-                                    "your candidate before filing. Use think now to validate this was the right choice.]",
-                                })
-                            # Cycle 33: require --label in-progress on gh issue create.
-                            # Cycle 41: use flag-specific regex (body text can contain "in-progress").
-                            if not re.search(r"--label[= ]in-progress", _cmd):
-                                self.log.warning("CICD: gh issue create without --label in-progress — injecting reminder")
-                                _issue_num_m = re.search(r'issues/(\d+)|#(\d+)|Issue\s+#(\d+)', self.result_str)
-                                _issue_num = next((g for g in _issue_num_m.groups() if g), "?") if _issue_num_m else "?"
-                                self.conversation_history.append({
-                                    "role": "user",
-                                    "content": (
-                                        f"[SYSTEM: Issue #{_issue_num} was filed without `--label in-progress` "
-                                        "(and/or `--label cicd`). The reviewer's PRE-MERGE CHECK rejects PRs "
-                                        "whose linked issue lacks these labels. Fix now: "
-                                        f"`gh issue edit {_issue_num} --add-label in-progress --add-label cicd "
-                                        f"--add-label cicd-cycle-{_issue_num}`. "
-                                        "Do this before opening the PR.]"
-                                    ),
-                                })
-                            _cicd_phase_state["decide"] = True
-                            self._cicd_think_used = False  # reset for next gate (verdict)
-                            # Extract issue number from gh output
-                            _issue_match = re.search(
-                                r'issues/(\d+)|#(\d+)|Issue #(\d+)', self.result_str
-                            )
-                            if _issue_match:
-                                _cicd_issue_number = next(
-                                    g for g in _issue_match.groups() if g
-                                )
-                                self.log.info("CICD phase: issue #%s filed",
-                                         _cicd_issue_number)
-                        if _cmd_has(_cmd, "git worktree add") and "exit=0" in self.result_str:  # WS8.1 (run 114: heredoc match here mis-captured the worktree path → guard-misdirection loop, turns 18-77)
-                            _cicd_phase_state["implement"] = True
-                            _wt_path_match = re.search(r'git\s+worktree\s+add\s+(?:-b\s+\S+\s+|--?[-\w]+\s+)*(\S+)', _strip_noncommand_text(_cmd))
-                            if _wt_path_match:
-                                _cicd_worktree_path = _wt_path_match.group(1)
-                                self.log.info("CICD: worktree path captured: %s", _cicd_worktree_path)
-                            _branch_match = re.search(r'-b\s+(\S+)', _cmd)
-                            if _branch_match:
-                                _cicd_branch = _branch_match.group(1)
-                        # Cycle 82 capture-fix: when builder claims an EXISTING
-                        # issue via `gh issue view N` or `gh issue edit N`, also
-                        # capture the issue number so cycle 82's nudge can fire
-                        # even on inherited/existing-issue cycles. Run 189 hit
-                        # this gap: builder used `gh issue view 397`, which
-                        # never set `_cicd_issue_number`, so cycle 82's elif
-                        # condition `and _cicd_issue_number` was always False.
-                        if (not _cicd_issue_number) and "exit=0" in self.result_str:
-                            _existing_match = re.search(
-                                r'^gh\s+issue\s+(?:view|edit|comment)\s+(\d+)\b',
-                                _cmd.lstrip(),
-                            )
-                            if _existing_match:
-                                _cicd_issue_number = _existing_match.group(1)
-                                self.log.info("CICD phase: issue #%s claimed (existing)",
-                                         _cicd_issue_number)
-                        if _cmd_has(_cmd, "gh pr create") and "exit=0" in self.result_str:  # WS8.1
-                            # cycle 87 (run 192 false-positive): only recognise a
-                            # real PR URL (`pull/NNN`) as proof the PR was created.
-                            # The old `#(\d+)` fallback fired on `Closes #424`
-                            # appearing in the PR body string inside the result,
-                            # causing the tracker to record "PR #424 opened" when
-                            # no PR existed on GitHub — the branch hadn't even been
-                            # pushed yet.  `gh pr create` always returns the full
-                            # URL on success; if there is no URL in the result the
-                            # command silently failed and we should NOT set a PR
-                            # number (which would suppress the reviewer's "no open
-                            # PRs" early-exit and cause confusing downstream state).
-                            _pr_match = re.search(r'pull/(\d+)', self.result_str)
-                            if _pr_match:
-                                _cicd_pr_number = _pr_match.group(1)
-                                self.log.info("CICD phase: PR #%s opened",
-                                         _cicd_pr_number)
-                            # Guard: PR body must contain `Closes #N` trailer
-                            # so the linked issue auto-closes on merge. Missing
-                            # trailer is a recurring builder failure that
-                            # causes the reviewer to CLOSE the PR.
-                            if not re.search(r'Closes\s+#\d+', _cmd, re.IGNORECASE) and _cicd_pr_number:
-                                self.log.warning("CICD: gh pr create without `Closes #N` trailer — injecting reminder")
-                                self.conversation_history.append({
-                                    "role": "user",
-                                    "content": (
-                                        f"[SYSTEM: PR #{_cicd_pr_number} was created without a `Closes #<issue>` "
-                                        f"trailer in the body. The reviewer will CLOSE this PR for the missing "
-                                        f"trailer (per pre-merge check rule #4), wasting the cycle. Fix it NOW: "
-                                        f"`gh pr edit {_cicd_pr_number} --body \"<existing body>\\n\\nCloses #<issue>\"` "
-                                        f"— use the real issue number this cycle targets.]"
-                                    ),
-                                })
-                        if (_cmd_has(_cmd, "gh pr review")  # WS8.1
-                                and ("--request-changes" in _cmd
-                                     or "--approve" in _cmd
-                                     or "--comment" in _cmd)
-                                and "exit=0" in self.result_str):
-                            if not self._has_reviewer_persisted:
-                                self.log.info("Reviewer persistence detected (gh pr review) — completion signals now allowed")
-                            self._has_reviewer_persisted = True
-                        if ("reviews.md" in _cmd
-                                and (">>" in _cmd or "tee -a" in _cmd or "tee --append" in _cmd)
-                                and "exit=0" in self.result_str):
-                            if not self._has_reviewer_persisted:
-                                self.log.info("Reviewer persistence detected (reviews.md append) — completion signals now allowed")
-                            self._has_reviewer_persisted = True
-                        if _cmd_has(_cmd, "gh pr review") and "--approve" in _cmd:  # WS8.1
-                            if not self._cicd_think_used:
-                                self.log.warning("CICD: gh pr review --approve without think — injecting reminder")
-                                self.conversation_history.append({
-                                    "role": "user",
-                                    "content": "[SYSTEM: You approved a PR without using the think tool first. "
-                                    "Per MANDATORY THINK before VERDICT, call think() to check: "
-                                    "did tests pass? was the metric measured? is the issue reference valid? "
-                                    "is the diff in-scope? Proceed with merge only after thinking.]",
-                                })
-                            if ("exit=0" not in self.result_str
-                                    and "approve your own pull request" in self.result_str.lower()):
-                                self.log.warning("CICD: self-approve failed — injecting skip-approval reminder")
-                                self.conversation_history.append({
-                                    "role": "user",
-                                    "content": "[SYSTEM: You cannot approve your own PR (same-account setup). "
-                                    "SKIP the approval step entirely. Go directly to: "
-                                    "`gh pr ready <N>` (separate command), then "
-                                    "`gh pr merge <N> --squash` (separate command).]",
-                                })
-                        if _cmd_has(_cmd, "gh pr ready") and "exit=0" in self.result_str:  # WS8.1
-                            self._cicd_pr_ready_called = True
-                            self.log.info("CICD: gh pr ready called")
-                        if _cmd_has(_cmd, "gh issue view") and ("exit=0" in self.result_str or "--json" in _cmd):  # WS8.1
-                            # Cycle 25: validate state + labels in the gh issue view result.
-                            # Calling gh issue view is necessary but not sufficient — the
-                            # issue must be OPEN and carry cicd + in-progress (or cicd-cycle-*)
-                            # labels. If not, leave _cicd_issue_view_called=False so the
-                            # pre-execute block (cycle 24) continues to block gh pr merge.
-                            _premerge_ok = False
-                            try:
-                                import json as _json_mod
-                                _json_body = self.result_str.split("exit=0", 1)[-1].strip()
-                                _json_start = _json_body.find("{")
-                                if _json_start >= 0:
-                                    _issue_data = _json_mod.loads(_json_body[_json_start:])
-                                    _lnames = [l.get("name", "") for l in _issue_data.get("labels", [])]
-                                    _istate = _issue_data.get("state", "")
-                                    _has_valid_labels = any(
-                                        l == "cicd" or l.startswith("in-progress") or l.startswith("cicd-cycle-")
-                                        for l in _lnames
-                                    )
-                                    if "state" not in _issue_data:
-                                        # state field absent → not a PRE-MERGE CHECK call
-                                        # (e.g. `gh issue view N --json body`); skip silently.
-                                        pass
-                                    elif _istate.upper() == "OPEN" and _has_valid_labels:
-                                        _premerge_ok = True
-                                    else:
-                                        self.log.warning(
-                                            "CICD: PRE-MERGE CHECK FAILED — state=%s labels=%s "
-                                            "(need OPEN + cicd/in-progress[-bot-N] label)",
-                                            _istate, _lnames,
-                                        )
-                                        self.conversation_history.append({
-                                            "role": "user",
-                                            "content": (
-                                                "[SYSTEM: PRE-MERGE CHECK FAILED. gh issue view returned "
-                                                f"state={_istate!r}, labels={_lnames}. "
-                                                "The issue must be OPEN with labels `cicd` + `in-progress` "
-                                                "or `in-progress-bot-N` (or `cicd-cycle-NNN`). Add missing labels with "
-                                                "`gh issue edit <N> --add-label in-progress --add-label cicd` "
-                                                "then re-run gh issue view before retrying the merge.]"
-                                            ),
-                                        })
-                            except Exception:
-                                _premerge_ok = True  # parse error: don't block on format change
-                            if _premerge_ok:
-                                self._cicd_issue_view_called = True
-                                self.log.info("CICD: gh issue view called (PRE-MERGE CHECK satisfied)")
-                        # Match `gh pr merge` as an actual top-level invocation — not inside
-                        # heredoc/cat content where the string may appear as documentation.
-                        # Matches at line start or after a shell separator (&&, ;, |, ||, \n).
-                        if re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+merge\b", _cmd):
-                            # Guard: PRE-MERGE CHECK — must view linked issue first (reviewer.md §4)
-                            if not self._cicd_issue_view_called:
-                                self.log.warning("CICD: gh pr merge without PRE-MERGE CHECK — injecting reminder")
-                                self.conversation_history.append({
-                                    "role": "user",
-                                    "content": "[SYSTEM: PRE-MERGE CHECK SKIPPED. You must complete these steps "
-                                    "IN ORDER before retrying gh pr merge: "
-                                    "(1) `gh issue view <N> --json state,labels,title,createdAt` — verify OPEN + cicd/in-progress labels; "
-                                    "(2) `think(...)` — confirm tests passed, metric verified, issue valid; "
-                                    "(3) `gh pr ready <N>` — promote draft to ready; "
-                                    "(4) THEN `gh pr merge <N> --squash` as a separate command. "
-                                    "Do NOT skip or combine steps. Do NOT add --delete-branch.]",
-                                })
-                            # Guard: must use --squash (NOT --delete-branch — builder worktree holds branch)
-                            if "--squash" not in _cmd:
-                                self.log.warning("CICD: gh pr merge without --squash — injecting reminder")
-                                self.conversation_history.append({
-                                    "role": "user",
-                                    "content": "[SYSTEM: You MUST use `gh pr merge --squash`. "
-                                    "Never use --merge or --rebase. Never use --delete-branch. Retry with --squash only.]",
-                                })
-                            # Guard: must call `gh pr ready` first (draft PRs)
-                            if not self._cicd_pr_ready_called and "exit=0" not in self.result_str:
-                                if "still a draft" in self.result_str.lower():
-                                    self.log.warning("CICD: gh pr merge on draft — need gh pr ready first")
-                                    self.conversation_history.append({
-                                        "role": "user",
-                                        "content": "[SYSTEM: The PR is still a draft. You must run "
-                                        "`gh pr ready <N>` FIRST, then run `gh pr merge <N> --squash` "
-                                        "as a SEPARATE command. Do NOT chain them. Do NOT add --delete-branch.]",
-                                    })
-                            if not self._cicd_think_used and "exit=0" not in self.result_str:
-                                self.log.warning("CICD: gh pr merge without think — injecting reminder")
-                                self.conversation_history.append({
-                                    "role": "user",
-                                    "content": "[SYSTEM: You attempted to merge without using the think tool first. "
-                                    "Per MANDATORY THINK before VERDICT, you must call think() to verify "
-                                    "tests passed, metric was measured, and issue reference is valid.]",
-                                })
-                            # Cycle 34: detect || echo / || true which mask merge errors.
-                            if re.search(r"gh\s+pr\s+merge\b.*\|\|\s*(echo|true|exit\s+0)", _cmd):
-                                self.log.warning("CICD: gh pr merge with || suppressor — injecting reminder")
-                                self.conversation_history.append({
-                                    "role": "user",
-                                    "content": (
-                                        "[SYSTEM: You used `|| echo` (or `|| true`) with `gh pr merge`. "
-                                        "This masks real errors — if the merge genuinely failed (draft, "
-                                        "conflict), exit=0 would be reported falsely. NEVER chain "
-                                        "`gh pr merge` with `||`. If the only error was local branch "
-                                        "deletion (worktree lock), that is benign — the PR is already "
-                                        "merged server-side. Verify with `gh pr view <N> --json state` "
-                                        "and clean up locally with `git branch -D <branch>` if needed.]"
-                                    ),
-                                })
-                            if "exit=0" in self.result_str:
-                                _cicd_phase_state["track"] = True
-                        # Detect plan file writes via exec_command (cat/heredoc)
-                        if ("improvements/" in _cmd
-                                and ("cat >" in _cmd or "cat >>" in _cmd
-                                     or "echo" in _cmd or "tee" in _cmd)
-                                and "exit=0" in self.result_str):
-                            _cicd_phase_state["plan"] = True
-                            self.log.info("CICD phase: plan written via exec_command")
-                        # Record cycle timestamp automatically
-                        if _tracker:
-                            try:
-                                with open(_state_path("current-state.json"), encoding="utf-8", errors="replace") as _sf:
-                                    self._cycle = json.load(_sf).get("cycle", 0)
-                            except Exception:
-                                self._cycle = 0
-                            try:
-                                timestamp = _tracker.auto_record(agent_id="e1")
-                                self.log.debug("Cycle %s recorded: %s", self._cycle, timestamp)
-                            except Exception as e:
-                                self.log.error("Failed to record cycle timestamp: %s", e)
-
-                    self.log.debug("TOOL RESULT [%s]: %s", self.func_name, self.result_str)
-
-                    # Search/find slow-loop detector.
-                    # The dedup cache catches close-range repeats (within
-                    # _DEDUP_WINDOW calls) but the model can evade it by
-                    # inserting other tool calls between retries.  Count real
-                    # (non-deduped) dispatches of the same (func, args) and
-                    # fire a forced-think when the count hits the threshold.
-                    if self.func_name in ("search_files", "find_symbol") and _dedup_sig is not None:
-                        self._search_sig_counts[_dedup_sig] = self._search_sig_counts.get(_dedup_sig, 0) + 1
-                        _search_n = self._search_sig_counts[_dedup_sig]
-                        if _search_n >= self._SEARCH_REPEAT_THRESHOLD:
-                            _s_think_prompt = (
-                                f"MANDATORY REFLECTION: I have dispatched {self.func_name} with "
-                                f"the same arguments {_search_n} times this session "
-                                f"(the dedup cache also blocked earlier repeats).\n\n"
-                                f"Arguments: {json.dumps(self.func_args)}\n"
-                                f"Last result: {self.result_str[:200]}\n\n"
-                                f"I MUST answer:\n"
-                                f"1. Why is this search not finding what I need?\n"
-                                f"2. Have I already confirmed the answer is not here — "
-                                f"is this a dead end?\n"
-                                f"3. What DIFFERENT approach (different tool, different "
-                                f"path, or direct file read) would actually make progress?\n"
-                                f"4. Should I accept this target does not exist and move on?"
-                            )
-                            self.log.warning(
-                                "Search slow-loop: %s with same args dispatched %d times — forcing think",
-                                self.func_name, _search_n,
-                            )
-                            _emit("on_forced_think", self.func_name, _search_n)
-                            if "think" in MAP_FN:
-                                _s_think_result = MAP_FN["think"](prompt=_s_think_prompt)
-                                _s_think_id = f"forced_think_search_{self.turn}_{_search_n}"
-                                self.conversation_history.append({
-                                    "role": "assistant",
-                                    "content": None,
-                                    "tool_calls": [{
-                                        "id": _s_think_id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": "think",
-                                            "arguments": json.dumps({"prompt": _s_think_prompt})
-                                        }
-                                    }]
-                                })
-                                self.conversation_history.append({
-                                    "role": "tool",
-                                    "tool_call_id": _s_think_id,
-                                    "name": "think",
-                                    "content": str(_s_think_result),
-                                })
-                            # Reset after intervention — allow one fresh attempt.
-                            self._search_sig_counts[_dedup_sig] = 0
-
-                    # Track repeated tool results (errors and identical results)
-                    _result_sig = (self.func_name, self.result_str[:100])
-                    self._recent_tool_errors.append(_result_sig)
-                    _result_repeats = sum(1 for e in self._recent_tool_errors if e == _result_sig)
-
-                    # Past turn limit + same tool result 3 times = end cycle
-                    if self.turn > _MAX_TURNS and _result_repeats >= 3:
-                        self.log.warning("Overtime + repeated tool result (%s x%d) — ending cycle",
-                                    self.func_name, _result_repeats)
-                        _emit("on_overtime", "repeated_result")
-                        return "done"
-
-                    # Semantic result-loop detection: same tool returning same
-                    # result despite different arguments.
-                    # Skip empty or exit-only results (e.g. `echo >> file`,
-                    # `git add`, `mkdir`) — they all hash identically and would
-                    # false-positive after 3 consecutive silent commands.
-                    # _EXIT_ONLY_RE is compiled at module scope.
-                    _result_is_noise = (
-                        not self.result_str.strip()
-                        or bool(_EXIT_ONLY_RE.match(self.result_str.strip()))
-                    )
-                    if not _result_is_noise:
-                        _res_hash = hashlib.md5(
-                            self.result_str[:200].encode()
-                        ).hexdigest()[:8]
-                        self._tool_result_key = (self.func_name, _res_hash)
-                        self._recent_tool_results.append(self._tool_result_key)
-                        if len(self._recent_tool_results) > self._RESULT_LOOP_WINDOW:
-                            self._recent_tool_results.pop(0)
-                    _same_result_count = sum(
-                        1 for k in self._recent_tool_results[-6:]
-                        if k == self._tool_result_key
-                    ) if not _result_is_noise else 0
-                    if _same_result_count >= self._RESULT_LOOP_THRESHOLD:
-                        self.log.warning(
-                            "Semantic result loop: %s returned same result %d times",
-                            self.func_name, _same_result_count)
-                        if self.func_name == "exec_command":
-                            self._cmd_preview = ""
-                            if isinstance(self.func_args, dict):
-                                self._cmd_preview = str(self.func_args.get("command", ""))[:120]
-                            self._hint = (
-                                f"SYSTEM: exec_command has returned the same output "
-                                f"{_same_result_count} times (e.g. `{self._cmd_preview}`). "
-                                f"If you are re-verifying a check (tests, lint, gh status), "
-                                f"the prior output is authoritative — do not re-run it. "
-                                f"Move to the next step (commit, push, open PR) or take a "
-                                f"materially different action."
-                            )
-                        else:
-                            self._hint = (
-                                f"SYSTEM: The {self.func_name} tool has returned the "
-                                f"same result {_same_result_count} times despite "
-                                f"different arguments. Your approach is not working. "
-                                f"Either try a completely different method, or accept "
-                                f"the current state and move on to the next step."
-                            )
-                        # WS10.e rung 2: escalate repeat interventions to a
-                        # system-invoked think (same ladder as the batch-loop
-                        # site above).
-                        self._loop_interventions += 1
-                        if self._loop_interventions >= 2 and "think" in MAP_FN:
-                            try:
-                                self._fk = MAP_FN["think"](prompt=(
-                                    f"MANDATORY REFLECTION: {self.func_name} has "
-                                    f"returned the same result "
-                                    f"{_same_result_count}x and a previous "
-                                    f"redirect this cycle was ignored. Result "
-                                    f"tail: {self.result_str[:300]}. Answer: (1) "
-                                    f"what is this result actually telling "
-                                    f"me? (2) ONE materially different next "
-                                    f"action; (3) if none, mark the step "
-                                    f"failed and move to CONSOLIDATE/PERSIST."))
-                                self._hint += ("\n\nFORCED REFLECTION (system-"
-                                          "invoked think):\n" + str(self._fk)[:1500])
-                                telemetry.record_patch_event(
-                                    "loop_forced_think", kind="fired")
-                            except Exception as _fe:
-                                self.log.warning("forced think failed: %s", _fe)
-                            # Stall-side advisor escalation: the model repeated a
-                            # failing action AND ignored a prior redirect — the
-                            # cognitively-stuck mode the gate-block trigger never
-                            # sees (a stuck model never cleanly declares done).
-                            # Offer the heavyweight advisor alongside the forced
-                            # self-think; once-per-cycle, budget- and config-gated.
-                            self._adv_nudge = self._maybe_advisor_nudge(source="stall",
-                                                              context=self._hint)
-                            if self._adv_nudge:
-                                self._hint += "\n\n" + self._adv_nudge
-                        self.conversation_history.append({
-                            "role": "user",
-                            "content": self._hint,
-                        })
-
-                    if self.result_str.startswith("Error"):
-                        consecutive = _result_repeats
-                        if consecutive >= self._REPEAT_THRESHOLD * 2:
-                            # Model is stuck even after forced thinks — skip this step
-                            self.log.warning("Hard bail: %s failed %d times — skipping",
-                                        self.func_name, consecutive)
-                            _emit("on_tool_skip", self.func_name, consecutive)
-                            self.conversation_history.append({
-                                "role": "user",
-                                "content": (
-                                    f"SYSTEM: The {self.func_name} tool has failed {consecutive} times "
-                                    f"with the same error. This step is being SKIPPED. "
-                                    f"Use exec_command with cat/heredoc to write files instead, "
-                                    f"or move on to the next step."
-                                ),
-                            })
-                            self._recent_tool_errors[:] = [e for e in self._recent_tool_errors if e[0] != self.func_name]
-                            break
-                        elif consecutive >= self._REPEAT_THRESHOLD:
-                            # Force a think call to break the loop
-                            think_prompt = (
-                                f"MANDATORY REFLECTION: I have called {self.func_name} "
-                                f"{consecutive} times and gotten the same error each time.\n\n"
-                                f"The error is: {self.result_str[:300]}\n\n"
-                                f"My last arguments were: {json.dumps(self.func_args) if isinstance(self.func_args, dict) else str(self.func_args)}\n\n"
-                                f"I MUST answer these questions:\n"
-                                f"1. What exactly is the error telling me?\n"
-                                f"2. What parameter am I missing or getting wrong?\n"
-                                f"3. What is a DIFFERENT way to accomplish my goal "
-                                f"without repeating the same call?\n"
-                                f"4. Should I just skip this step and move on to "
-                                f"CONSOLIDATE and PERSIST?"
-                            )
-                            self.log.warning("Loop detected: %s x%d — forcing think",
-                                        self.func_name, consecutive)
-                            _emit("on_forced_think", self.func_name, consecutive)
-                            if "think" in MAP_FN:
-                                think_result = MAP_FN["think"](prompt=think_prompt)
-                                # Inject as assistant thought + tool response
-                                think_id = f"forced_think_{self.turn}_{consecutive}"
-                                self.conversation_history.append({
-                                    "role": "assistant",
-                                    "content": None,
-                                    "tool_calls": [{
-                                        "id": think_id,
-                                        "type": "function",
-                                        "function": {
-                                            "name": "think",
-                                            "arguments": json.dumps({"prompt": think_prompt})
-                                        }
-                                    }]
-                                })
-                                self.conversation_history.append({
-                                    "role": "tool",
-                                    "tool_call_id": think_id,
-                                    "name": "think",
-                                    "content": str(think_result),
-                                })
-                                self.log.info("FORCED THINK RESULT: %s", think_result)
-                    else:
-                        # Successful call — reset tracker for this tool
-                        self._recent_tool_errors[:] = [e for e in self._recent_tool_errors if e[0] != self.func_name]
-                    _emit("on_tool_result", self.func_name, self.func_args, self.result_str,
-                          self.result_str.startswith("Error"))
+                    r = self._dispatch_call(tool_call)
+                    if r is _BREAK:
+                        break
+                    if r is not None:
+                        return r
         except CancelledError:
             _emit("on_cancelled", "tool_execution")
             self.log.info(
@@ -9845,6 +8499,1405 @@ class _Run:
                 self._async_summarizer.harvest(self.summary_state)
             _save_checkpoint(self.conversation_history, self.summary_state, self.turn, self.initial_files)
             return "cancelled"
+
+    def _dispatch_call(self, tool_call):
+        """One tool call: parse it, gate and run it, record the result and run the loop
+        detectors on it. Returns None, the run's result, or _BREAK to end this turn's batch."""
+        if not self._parse_call(tool_call):
+            return None
+        self.log.debug("TOOL CALL: %s(%s) [id=%s]", self.func_name, json.dumps(self.func_args), self.tool_id)
+        telemetry.record_tool_call(self.func_name)
+
+        # Track whether this turn has any "action" (write/exec) tool calls
+        # for the action-inertia nudge (fires after _READ_ONLY_NUDGE_THRESHOLD
+        # consecutive read-only turns).
+        _ACTION_TOOLS = {"write_file", "edit_file", "append_file", "delete_file",
+                         "exec_command", "gh_wrapper"}
+        if self.func_name in _ACTION_TOOLS or (
+            self.func_name == "file" and isinstance(self.func_args, dict)
+            and self.func_args.get("action") in ("write", "insert", "append", "delete", "create")
+        ):
+            self._turn_had_action = True
+        # Progress signal for the grind no-progress gate: a file
+        # MUTATION (not exec/read) = the model is changing the
+        # codebase = converging. exec_command is excluded (it's
+        # usually re-running the check, i.e. spinning, not progress).
+        if self.func_name in ("write_file", "edit_file", "append_file",
+                         "delete_file") or (
+            self.func_name == "file" and isinstance(self.func_args, dict)
+            and self.func_args.get("action") in ("write", "insert",
+                                            "append", "delete", "create")
+        ):
+            self._last_mutation_turn = self.turn
+            # An edit invalidates any prior test run: the current
+            # state is unverified until the tests re-run (claim gate).
+            self._ran_verification = False
+
+        # Per-call dedup: if this exact (tool_name, args) was dispatched
+        # within the last _DEDUP_WINDOW calls AND the tool is safe to
+        # dedup (pure reads — see _is_dedupable_call), short-circuit
+        # with a synthetic result. Massive token-budget savings on the
+        # PERCEIVE-boilerplate pattern two independent field audits
+        # flagged as the #1 friction source.
+        self._call_idx_counter += 1
+        if self._dedup_hit():
+            return None
+        # Track think tool usage for CICD phase-gate enforcement
+        if self.func_name == "think":
+            self._cicd_think_used = True
+
+        # Tools that do their own streaming (think) handle
+        # their own console output — don't wrap them in a spinner.
+        # Under NO_COLOR / no-TTY, CLEAR_LINE is empty, so the
+        # spinner's non-interactive prefix would dangle and
+        # on_tool_start's header would duplicate it on the same
+        # line. Skip the spinner entirely in that mode.
+        _STREAMING_TOOLS = {"think"}
+        use_spinner = (
+            self.func_name not in _STREAMING_TOOLS
+            and not theme._no_color()
+        )
+
+        if use_spinner:
+            self.tool_status = StreamStatus(emit=_emit)
+            if self.func_name == "exec_command":
+                # Full first line of the command — width fitting
+                # happens at render time now (StreamStatus middle-
+                # truncates every frame against the live terminal
+                # width), so no fixed budget that assumed a "9.9s"
+                # counter and broke past 100s.
+                self._cmd_preview = self.func_args.get("command", "").split("\n", 1)[0]
+                self.prefix = f"  -> exec_command ({self._cmd_preview}) "
+            else:
+                self.prefix = f"  -> {self.func_name} "
+            # pt_header=False: in live-input mode the toolbar
+            # spinner carries this status; the scrollback header
+            # is printed once by on_tool_start after the tool
+            # completes (printing both duplicated every line).
+            self.tool_status.start(self.prefix, pt_header=False)
+
+        # T5.18 — pre-write content snapshot for similarity
+        # detection. Captured before dispatch so the post-write
+        # nudge can compare new vs. old. Only for file(action=
+        # 'write') on existing files; cheap when the file is
+        # small (state JSON / focus JSON), bounded by tool
+        # result truncation cap when not.
+        self._prewrite_content = None
+        if (self.func_name in ("write_file", "file")
+                and isinstance(self.func_args, dict)
+                and (self.func_name == "write_file" or self.func_args.get("action") == "write")
+                and isinstance(self.func_args.get("path"), str)
+                and isinstance(self.func_args.get("content"), str)):
+            try:
+                import os as _os_t518
+                _pw_path = self.func_args["path"]
+                if _os_t518.path.isfile(_pw_path):
+                    with open(_pw_path, "r", encoding="utf-8",
+                              errors="replace") as _pf:
+                        self._prewrite_content = _pf.read()
+            except Exception:
+                self._prewrite_content = None
+        r = self._gate_and_execute()
+        if r is not None:
+            return r
+        if use_spinner:
+            self.tool_status.first_token()
+            self.tool_status.finish()
+        _emit("on_tool_start", self.func_name, self.func_args)
+        self._finish_result()
+        self._write_loop_check()
+        self._record_result()
+        self._exec_followups()
+        r = self._result_loop_checks()
+        if r is not None:
+            return r
+        return self._after_result()
+
+    def _parse_call(self, tool_call):
+        """Name, arguments and id of one call; the garbled shapes answer with an error and
+        False (the call is skipped). Returns True for a call to run."""
+        try:
+            if hasattr(tool_call, 'function'):
+                self.func_name = tool_call.function.name
+                self.raw_args = tool_call.function.arguments
+                self.tool_id = tool_call.id
+            else:
+                self.func_name = tool_call["function"]["name"]
+                self.raw_args = tool_call["function"]["arguments"]
+                self.tool_id = tool_call["id"]
+            # A name from another harness (bash, grep, Read) means a tool here.
+            self._alias_note = ""
+            if self.func_name not in MAP_FN:
+                _resolved = _registry.resolve(self.func_name)
+                if _resolved and _resolved != self.func_name:
+                    self._alias_note = f"({self.func_name} is {_resolved} here; use that name.) "
+                    self.log.info("tool.alias %s->%s", self.func_name, _resolved)
+                    telemetry.record_patch_event("tool_alias", kind="fired")
+                    self.func_name = _resolved
+            self.func_args = json.loads(self.raw_args)
+            # Coerce non-dict JSON values (null, [], 42, "str") to {}
+            # so that **-unpack never raises TypeError (#859).
+            # Consistent with _get_tc_args (line ~3218).
+            if not isinstance(self.func_args, dict):
+                self.func_args = {}
+            # Sanitize garbled Gemma 4 args that parsed as valid JSON
+            # e.g. {"action": "write**,content:"} — valid JSON but bogus values
+            self.func_args = _sanitize_tool_args(self.func_name, self.func_args, self.log)
+        except json.JSONDecodeError:
+            # Repair the JSON (truncation, a trailing comma, single quotes),
+            # else salvage the garbled shapes (e.g. "write**,content:")
+            self.func_args = _repair_tool_args(self.func_name, self.raw_args, self.log)
+            if self.func_args is None:
+                self.log.error("Unsalvageable tool args: %s | raw: %s", self.func_name, self.raw_args)
+                self._garbled_count += 1
+                self.conversation_history.append({
+                    "role": "tool", "tool_call_id": self.tool_id,
+                    "name": self.func_name,
+                    "content": f"Error: malformed arguments — could not parse. "
+                               f"Use separate JSON keys: {{\"action\": \"write\", \"path\": \"...\", \"content\": \"...\"}}"
+                })
+                return False
+        except Exception as e:
+            self.log.error("Error parsing tool call: %s | raw: %s", e, tool_call)
+            self._garbled_count += 1
+            return False
+
+        # Reject any tool call whose args contain Harmony/ChatML
+        # control tokens (<|tool_call|>, <|channel|>, etc. — including
+        # the partial-pipe variants like <tool_call|> and <|channel>).
+        # These leak from model output under context pressure and have
+        # caused self-amplifying state corruption (field observation: tokens
+        # leaked into file path → file written with tokens in NAME →
+        # git-committed → every cycle's `ls` re-injects them). Surface
+        # as a tool-error so the model self-corrects; do NOT dispatch.
+        _harmony_hit = _detect_harmony_token(self.func_args)
+        if _harmony_hit:
+            key_path, token = _harmony_hit
+            self.log.warning(
+                "Rejecting %s call: chat-template token %r in arg %r",
+                self.func_name, token, key_path or "(top-level)",
+            )
+            telemetry.record_tool_call(self.func_name + ":rejected_harmony_token")
+            telemetry.record_patch_event("harmony_reject", kind="rejected")
+            self._patch_telemetry["harmony_reject"] += 1
+            self._garbled_count += 1
+            self.conversation_history.append({
+                "role": "tool", "tool_call_id": self.tool_id,
+                "name": self.func_name,
+                "content": (
+                    f"Error: tool call rejected — chat-template control token "
+                    f"{token!r} appeared in arg {key_path or '(top-level)'}. "
+                    f"Your JSON was garbled (the end-of-tool-call delimiter leaked "
+                    f"into an argument value). Make ONE clean tool call now with "
+                    f"simple quoted string arguments. "
+                    f"Example for {self.func_name}: "
+                    + _harmony_retry_hint(self.func_name)
+                ),
+            })
+            return False
+
+        # Hard-reject `think` calls that paraphrase recent context.
+        # a field audit showed think prompts
+        # full of "I am <agent>. Current State: - Cycle: 10, Mode:
+        # Memory Curation..." — paraphrased context the model
+        # already has, pays the LLM cost to reason about it again.
+        # Framework owns the conversation history; check on the way
+        # in, refuse on hit, force the model to frame the question
+        # itself instead of the background.
+        if self.func_name == "think" and isinstance(self.func_args, dict):
+            _think_text = (self.func_args.get("prompt", "") or "") + "\n\n" + (self.func_args.get("context", "") or "")
+            _launder = _detect_context_laundering(_think_text, self.conversation_history)
+            if _launder:
+                offender, src_idx = _launder
+                self.log.warning(
+                    "Rejecting think call: %d-char verbatim overlap with msg[%d]: %r",
+                    len(offender), src_idx, offender[:80],
+                )
+                telemetry.record_tool_call("think:rejected_laundering")
+                telemetry.record_patch_event("think_launder", kind="rejected")
+                self._patch_telemetry["think_launder"] += 1
+                self.conversation_history.append({
+                    "role": "tool", "tool_call_id": self.tool_id,
+                    "name": self.func_name,
+                    "content": (
+                        f"Error: think call rejected — your prompt/context "
+                        f"re-includes a {len(offender)}-char verbatim chunk "
+                        f"from your own recent message (msg[{src_idx}], "
+                        f"starts with {offender[:60]!r}). The framework "
+                        f"already has that content. Frame the reasoning "
+                        f"question itself — what specifically you need to "
+                        f"think through — not the background you already "
+                        f"know. If you genuinely need extra constraints, "
+                        f"summarize them abstractly in `context` (a few "
+                        f"sentences, not paragraphs)."
+                    ),
+                })
+                return False
+
+        # Validate required fields — catch cases where sanitizer
+        # extracted the action but lost required params (empty garble)
+        if self.func_name == "file" and isinstance(self.func_args, dict):
+            action = self.func_args.get("action", "")
+            if action in ("read", "write", "insert", "append", "delete") and "path" not in self.func_args:
+                self.log.warning("Sanitized file call missing 'path' — returning error")
+                self._garbled_count += 1
+                self.conversation_history.append({
+                    "role": "tool", "tool_call_id": self.tool_id,
+                    "name": self.func_name,
+                    "content": (
+                        f"Error: file({action!r}) call is missing the 'path' argument. "
+                        f"Call with separate string arguments: "
+                        f"file(action={action!r}, path='the/file/path'). "
+                        f"Do not concatenate arguments with backticks or commas inside a string."
+                    ),
+                })
+                return False
+
+        # G.01-exec — garbled exec_command args under context pressure.
+        # Model produces {"command=\"...reasoning...\"": <number>} instead
+        # of {"command": "..."}. No reliable salvage — return clear error.
+        # A poll of a background session (session_id, optional wait, no
+        # command) is the tool's own documented form, not garbage: it
+        # passes (found live 2026-11-02: a correct poll was refused).
+        if self.func_name == "exec_command" and isinstance(self.func_args, dict):
+            _cmd_val = self.func_args.get("command")
+            _sid_val = self.func_args.get("session_id")
+            _is_poll = (_cmd_val is None and isinstance(_sid_val, str) and _sid_val.strip())
+            if not _is_poll and (_cmd_val is None or not isinstance(_cmd_val, str)):
+                self._garbled_count += 1
+                self.conversation_history.append({
+                    "role": "tool", "tool_call_id": self.tool_id,
+                    "name": self.func_name,
+                    "content": (
+                        "Error: exec_command received garbled arguments "
+                        "(missing or non-string 'command' value). "
+                        "Call with a single string: "
+                        "exec_command(command='your shell command here')."
+                    ),
+                })
+                self.log.warning("G.01-exec: garbled exec_command — keys=%r",
+                            list(self.func_args.keys())[:3])
+                telemetry.record_patch_event("g01_exec", kind="fired")
+                return False
+
+        # R.01 — node runtime used to execute a .py file.
+        # The model confuses Python CLI tools with the Node-based
+        # discord/email skills that live nearby.  Intercept before
+        # dispatch and return a clear correction.
+        if self.func_name == "exec_command" and isinstance(self.func_args, dict):
+            _r01_cmd = self.func_args.get("command") or ""
+            if isinstance(_r01_cmd, str) and re.match(r'\bnode\b.*\.py\b', _r01_cmd):
+                self._garbled_count += 1
+                self.conversation_history.append({
+                    "role": "tool", "tool_call_id": self.tool_id,
+                    "name": self.func_name,
+                    "content": (
+                        f"Error: used 'node' to run a Python file. "
+                        f"Python scripts must be run with 'python3', not 'node'. "
+                        f"Replace 'node' with 'python3' and retry."
+                    ),
+                })
+                self.log.warning("R.01: node used on .py file — %r", _r01_cmd[:80])
+                return False
+        return True
+
+    def _dedup_hit(self):
+        """An identical read within the dedup window answers with the cached summary and
+        returns True; else registers the signature for the store after the run."""
+        self._dedup_sig = None
+        if _is_dedupable_call(self.func_name, self.func_args):
+            try:
+                self._args_md5 = hashlib.md5(
+                    json.dumps(self.func_args, sort_keys=True, default=str).encode()
+                ).hexdigest()
+            except Exception:
+                self._args_md5 = None
+            if self._args_md5 is not None:
+                self._dedup_sig = (self.func_name, self._args_md5)
+                _cached = self._call_dedup_cache.get(self._dedup_sig)
+                if _cached is not None and (self._call_idx_counter - _cached["call_idx"]) <= self._DEDUP_WINDOW:
+                    _gap = self._call_idx_counter - _cached["call_idx"]
+                    _synthetic = (
+                        f"[deduped: identical {self.func_name} call was issued {_gap} "
+                        f"tool-call(s) ago — result was ~{_cached['tokens']} tokens, "
+                        f"starting with: {_cached['summary']!r}. If state may have "
+                        f"changed since, vary the arguments meaningfully and retry; "
+                        f"otherwise act on the cached result.]"
+                    )
+                    self.conversation_history.append({
+                        "role": "tool", "tool_call_id": self.tool_id,
+                        "name": self.func_name,
+                        "content": _synthetic,
+                    })
+                    self.log.info(
+                        "Deduped %s call (last issued %d calls ago, sig %s)",
+                        self.func_name, _gap, self._args_md5[:8],
+                    )
+                    telemetry.record_tool_call(self.func_name + ":deduped")
+                    # Approximate tokens saved = the cached result's token estimate
+                    telemetry.record_patch_event("dedup", kind="saved", value=_cached.get("tokens", 1))
+                    self._patch_telemetry["dedup"] += 1
+                    return True
+        return False
+
+    def _gate_and_execute(self):
+        """The gates (grace, phase, success check, CICD, unknown or unloaded tool), then the
+        tool itself; result_str holds the answer. Returns the run's result on end_cycle."""
+        # Cycle 24: pre-execute PRE-MERGE CHECK short-circuit.
+        # When reviewer attempts `gh pr merge` without prior
+        # `gh issue view`, block execution (the merge is irreversible
+        # once it runs; post-hoc reminders are too late). Return a
+        # synthetic error; next turn the reviewer runs `gh issue view`,
+        # WS8.3 (run 096): grace budget must bind tool-call turns
+        # too. Previously only text-only turns were grace-capped,
+        # so a builder that kept calling tools started a second
+        # PERCEIVE inside the window and ran to the hard cap
+        # (~15 wasted turns). After grace exhausts, non-TRACK
+        # calls are blocked with a redirect; TRACK-scope work
+        # (results/progress/review files, git/gh, end_cycle)
+        # still runs. Hard cap at :_CYCLE_HARD_STOP_TURNS unchanged.
+        _grace_exhausted_block = False
+        if (self._cycle_persisted
+                and (self.turn - (self._cycle_persisted_turn or self.turn)) >= self._CYCLE_GRACE_TURNS
+                and not _is_track_scope_call(self.func_name, self.func_args)):
+            _grace_exhausted_block = True
+            self._grace_tool_blocks += 1
+            self.log.info("Grace exhausted: non-TRACK tool call blocked (%s, block #%d)",
+                     self.func_name, self._grace_tool_blocks)
+            telemetry.record_patch_event("grace_tool_block", kind="fired")
+            self.result_str = (
+                "Error: this cycle already persisted its work and the "
+                "post-persist grace window is exhausted — this call is "
+                "outside TRACK scope and was NOT executed. Do NOT start "
+                "new PERCEIVE/investigation work. Finish TRACK now "
+                "(results file, progress row, issue comment) and call "
+                "end_cycle."
+            )
+            self._cicd_blocked, self.cicd_error = False, None
+        else:
+            self._cicd_blocked, self.cicd_error = _validate_tool_call(self.func_name, self.func_args, self._cicd_issue_view_called, self.log, self._is_cicd_builder, self._is_reviewer_role)
+        # WS1: PhaseEngine pre-dispatch gate (per-phase tool
+        # rules). Only consulted when an engine is active.
+        _phase_blocked = False
+        if (self._phase_engine is not None and not _grace_exhausted_block
+                and not self._cicd_blocked):
+            _ph_ok, _ph_msg = self._phase_engine.allow(self.func_name, self.func_args)
+            if not _ph_ok:
+                _phase_blocked = True
+                self.result_str = _ph_msg
+                telemetry.record_patch_event("phase_gate_block", kind="fired")
+        # WS10.c: success-check gate on end_cycle. After
+        # _SUCCESS_CHECK_MAX_BLOCKS failed attempts the gate
+        # stands aside (a gate that can deadlock a weak model is
+        # worse than none — turn caps still bound the cycle).
+        _sc_blocked = False
+        if (self.func_name == "end_cycle" and self._success_check_cmd
+                and not _grace_exhausted_block and not _phase_blocked
+                and not self._cicd_blocked
+                and self._success_check_blocks < self._SUCCESS_CHECK_MAX_BLOCKS):
+            _sc_rc, _sc_out = _run_success_check(self._success_check_cmd, self.log)
+            if _sc_rc != 0:
+                _sc_blocked = True
+                self._success_check_blocks += 1
+                self.log.info("success_check FAILED (rc=%d) — end_cycle blocked (%d/%d)",
+                         _sc_rc, self._success_check_blocks, self._SUCCESS_CHECK_MAX_BLOCKS)
+                telemetry.record_patch_event("success_check_block", kind="fired")
+                self.result_str = (
+                    "Error: end_cycle blocked — the declared success "
+                    "check still FAILS (exit=" + str(_sc_rc) + "). The "
+                    "work is NOT complete. Check output tail:\n"
+                    + _sc_out +
+                    "\nFix what the check reports, re-run it yourself "
+                    "to confirm, commit, then call end_cycle again."
+                )
+                _adv_msg = self._maybe_advisor_nudge()
+                if _adv_msg:
+                    self.result_str += "\n\n" + _adv_msg
+            else:
+                self.log.info("success_check PASSED — end_cycle permitted")
+        if _grace_exhausted_block or _phase_blocked or _sc_blocked:
+            pass  # result_str already holds the redirect
+        elif self._cicd_blocked:
+            self.result_str = self.cicd_error
+        elif self.func_name == "end_cycle" and not _END_CYCLE_ENABLED:
+            self.result_str = ("Error: end_cycle is off for this agent (it is opt-in: "
+                          "preferences.end_cycle_tool in .agent/config.json). "
+                          "Stop when you are done; do not try to end the session.")
+        elif self.func_name not in MAP_FN:
+            _sugg = _registry.suggest(self.func_name, self.func_args)
+            self.result_str = (f"Error: Unknown tool '{self.func_name}'."
+                          + (f" Closest: {_sugg}." if _sugg else "")
+                          + " Use tool_search to find and load tools.")
+            telemetry.record_patch_event("tool_unknown", kind="fired")
+        elif self.func_name in _registry.DEFINITIONS and not _registry.available(self.func_name):
+            self.result_str = f"Error: {self.func_name} is not available in this session."
+            self.log.info("tool.unavailable name=%s", self.func_name)
+        elif (self.func_name in _registry.DEFINITIONS
+              and self.func_name not in _session_tool_names(self._session_tools)
+              and not (_TOOLS_CFG.get("implicit_run", True)
+                       and _registry.args_fit(self.func_name, self.func_args))):
+            # A deferred or hidden tool called from memory with arguments that do
+            # not fit (or implicit runs are off): load it, answer with its schema.
+            _registry.request_load(self.func_name)
+            self.result_str = (f"Error: {self.func_name} is not loaded and these arguments do not fit it. "
+                          f"Its schema: {json.dumps(_registry.DEFINITIONS[self.func_name].get('function'))}. "
+                          "It is loaded now; call it again with arguments that fit.")
+            self.log.info("tool.schema_returned name=%s", self.func_name)
+        else:
+            # A MAP_FN entry outside the registry (harness-internal, or a test's
+            # stand-in) runs as it always did; a registered tool not yet in the
+            # session's list is loaded for the next turn.
+            if self.func_name in _registry.DEFINITIONS and self.func_name not in _session_tool_names(self._session_tools):
+                _registry.request_load(self.func_name)
+                self.log.info("tool.implicit_load name=%s", self.func_name)
+            try:
+                # Last check before dispatch: an esc-esc that
+                # landed during argument parsing / gate checks
+                # should stop the batch here, not after another
+                # long tool run.
+                check_cancelled()
+                self.result_str = str(MAP_FN[self.func_name](**self.func_args))
+                if self._alias_note:
+                    self.result_str = self._alias_note + self.result_str
+                if self.func_name == "tool_search":
+                    telemetry.record_patch_event("tool_search", kind="fired")
+            except CircuitBreakerError as e:
+                # Tool temporarily unavailable - return graceful degradation
+                self.result_str = f"Tool {self.func_name} temporarily unavailable: {e}"
+            except CancelledError:
+                # Propagate to outer handler to return 'cancelled'
+                raise
+            except Exception as e:
+                self.result_str = f"Error executing tool: {str(e)}"
+                telemetry.record_tool_error(self.func_name, "execution_error")
+            # WS1: PhaseEngine observation — advance on
+            # task_tracker phase-done markers, count verify
+            # calls; may return a gate message to inject
+            # (DECIDE verification gate).
+            if self._phase_engine is not None:
+                _gate_msg = self._phase_engine.observe(self.func_name, self.func_args, self.result_str)
+                if _gate_msg:
+                    self.conversation_history.append(
+                        {"role": "user", "content": _gate_msg})
+                    telemetry.record_patch_event(
+                        "phase_verify_gate", kind="fired")
+            # end_cycle sentinel — agent requested clean exit.
+            if self.result_str == _end_cycle_tool.SENTINEL:
+                self._summary = self.func_args.get("summary", "") if isinstance(self.func_args, dict) else ""
+                self.log.info("end_cycle called — exiting cleanly: %s",
+                         self._summary or "(no summary)")
+                telemetry.record_patch_event("end_cycle", kind="fired")
+                # Answer the tool_call before leaving: an interactive
+                # session keeps this history, and an assistant
+                # tool_call with no tool message is rejected by
+                # strict APIs on the next turn.
+                self.conversation_history.append({
+                    "role": "tool",
+                    "tool_call_id": self.tool_id,
+                    "name": self.func_name,
+                    "content": "Cycle ended.",
+                })
+                return "done"
+            # Conversational tool recovery: on error, try to fix params
+            if self.result_str.startswith("Error"):
+                try:
+                    from tool_recovery import attempt_recovery
+                    recovered = attempt_recovery(
+                        self.func_name, self.func_args, self.result_str,
+                        map_fn=MAP_FN,
+                        llm_call_fn=_recovery_llm_call(self.log),
+                        config=_config, log=self.log,
+                    )
+                    if recovered is not None:
+                        self.result_str = recovered
+                        _emit("on_tool_recovery", self.func_name, 1)
+                        _emit("on_notice", "info", f"[recovered: {self.func_name} succeeded]")
+                except Exception as e:
+                    self.log.debug("Tool recovery unavailable: %s", e)
+
+    def _finish_result(self):
+        """The result as the model will see it: gh verification, the spill, the truncation,
+        the capability-refusal notice, the dedup store."""
+        global _LAST_REFUSAL
+        # Cycle 77 — verify gh pr/issue mutations against real state.
+        # Appends a SUPERVISION note when the tool output references
+        # a PR/issue that does not exist or is not in the claimed state.
+        if self.func_name == "exec_command" and isinstance(self.func_args, dict):
+            _cmd_str = self.func_args.get("command", "")
+            if _cmd_str:
+                self.result_str = _cicd_verify_gh_mutation(_cmd_str, self.result_str, self.log)
+
+        # F3: an oversized tool result is SPILLED to a file and replaced by a
+        # reference + excerpt (lossless — the old head/tail truncation threw the
+        # middle away, and a data-heavy run died echoing bulk into a 196k window).
+        # limits.tool_result_max_chars, 0 = legacy truncation only.
+        _spill_cap = _tool_result_spill_cap()
+        if _spill_cap > 0 and len(self.result_str) > _spill_cap and not self.result_str.startswith(_SPILL_MARKER):
+            _ref = _spill_tool_result(self.turn, self.func_name, self.result_str, self.log)
+            if _ref is not None:
+                self.log.info("F3 spill: %s result of %d chars -> file (cap %d)", self.func_name, len(self.result_str), _spill_cap)
+                telemetry.record_patch_event("tool_result_spill", kind=self.func_name)
+                self.result_str = _ref
+        if len(self.result_str) > _MAX_TOOL_RESULT_CHARS:
+            half = _MAX_TOOL_RESULT_CHARS // 2
+            self.result_str = (
+                self.result_str[:half]
+                + f"\n\n... [{len(self.result_str) - _MAX_TOOL_RESULT_CHARS} chars truncated] ...\n\n"
+                + self.result_str[-half:]
+            )
+
+        # F9 — capability refusal: the tool said the run was never granted something
+        # it needs. Say so ONCE, inside the result the model is about to read, and
+        # start the clock; the turn-top stop is what makes the window bounded.
+        if self._REFUSAL_MAX_TURNS > 0:
+            _rf = _classify_tool_refusal(self.func_name, self.result_str)
+            if _rf is not None:
+                _rf_code, _rf_head = _rf
+                _rf_cmd = (str(self.func_args.get("command") or "")[:120]
+                           if isinstance(self.func_args, dict) else "")
+                if self._refusal_first_turn is None:
+                    self._refusal_first_turn, self._refusal_tool = self.turn, self.func_name
+                    _LAST_REFUSAL = {"tool": self.func_name, "cmd": _rf_cmd, "exit": _rf_code,
+                                     "head": _rf_head, "turn": self.turn}
+                    self.log.warning("capability refusal at turn %d: %s %s exit=%s — %s (blocked "
+                                "result due within %d turn(s))", self.turn, self.func_name, _rf_cmd,
+                                _rf_code, _rf_head, self._REFUSAL_MAX_TURNS)
+                    _emit("on_notice", "warn",
+                          f"[Capability refusal: {self.func_name} exit={_rf_code} — blocked result "
+                          f"due within {self._REFUSAL_MAX_TURNS} turn(s)]")
+                    telemetry.record_patch_event("capability_refusal", kind=self.func_name)
+                    self.result_str += "\n\n" + _refusal_notice(self.func_name, _rf_cmd, _rf_code,
+                                                              _rf_head, self._REFUSAL_MAX_TURNS)
+                else:
+                    self.log.warning("capability refusal AGAIN at turn %d: %s %s exit=%s",
+                                self.turn, self.func_name, _rf_cmd, _rf_code)
+        # Store in dedup cache if this call was eligible (see
+        # _is_dedupable_call). The synthetic result returned by a
+        # later duplicate references this entry's `call_idx` and
+        # summary; storing after truncation keeps the summary
+        # consistent with what the model originally saw.
+        if self._dedup_sig is not None:
+            self._call_dedup_cache[self._dedup_sig] = {
+                "call_idx": self._call_idx_counter,
+                "summary": self.result_str[:80].replace("\n", " "),
+                "tokens": max(1, len(self.result_str) // 4),
+            }
+            # Prune entries older than the window so the cache
+            # doesn't grow without bound across long sessions.
+            if len(self._call_dedup_cache) > 256:
+                _stale = [k for k, v in self._call_dedup_cache.items()
+                          if (self._call_idx_counter - v["call_idx"]) > self._DEDUP_WINDOW * 4]
+                for k in _stale:
+                    self._call_dedup_cache.pop(k, None)
+
+    def _write_loop_check(self):
+        """The write-loop detector and the edit nudges for a call that wrote a file."""
+        # Write-loop detector: if this tool wrote to a path that
+        # we've already written 2+ times in the recent window,
+        # append a system reminder to the tool result so the model
+        # sees the pattern. a field-observed run ("The Orphan Paradox") canonical
+        # signature: 3 write-audit-rewrite passes on context.json
+        # in one cycle because the model's mental model of the
+        # audit tool was wrong. Framework-side detection makes the
+        # loop visible without relying on model self-noticing.
+        _write_target = _extract_write_target(self.func_name, self.func_args)
+        if _write_target:
+            # T5.14 Option A — heredoc→state-file write nudge.
+            # When the model writes a tracked state file via
+            # exec_command 'cat > f <<EOF', append a one-line
+            # suggestion that file(action='edit', ...) is safer
+            # for surgical changes. a field-observed run noted exactly
+            # this failure mode ("accidentally purged multiple
+            # edges due to incorrect range replacement") on a
+            # heredoc-style state-file rewrite. Only fires once
+            # per session per file to avoid noise.
+            _heredoc_write = (
+                self.func_name == "exec_command"
+                and "<<" in self.func_args.get("command", "")
+                and _write_target.endswith(".json")
+            )
+            if _heredoc_write:
+                if "_edit_nudges_emitted" not in dir(run_agent_single):
+                    run_agent_single._edit_nudges_emitted = set()
+                if _write_target not in run_agent_single._edit_nudges_emitted:
+                    run_agent_single._edit_nudges_emitted.add(_write_target)
+                    self.result_str = self.result_str + (
+                        f"\n\n[suggestion] You wrote to {_write_target!r} via "
+                        f"a heredoc. For surgical changes to an existing file, "
+                        f"file(action='edit', path=..., old_string=..., "
+                        f"new_string=...) is safer — it's atomic, validates "
+                        f"that the target text exists exactly once (no silent "
+                        f"miss), and won't clobber neighbouring content the way "
+                        f"a heredoc full-rewrite can. Heredoc is fine for "
+                        f"creating new files or wholesale replacement; for "
+                        f"single-field updates, prefer edit."
+                    )
+                    telemetry.record_patch_event("edit_nudge", kind="fired")
+                    self._patch_telemetry["edit_nudge"] += 1
+
+            # T5.18 — file(action='write') high-similarity rewrite
+            # nudge. The model has been bypassing the heredoc
+            # nudge by routing through file(action='write')
+            # instead of exec_command. two independent field audits
+            # both showed full-file rewrites where most lines
+            # were identical to the previous version — surgical
+            # changes wearing a full-write costume. Detection:
+            # Jaccard line-set similarity vs pre-write snapshot;
+            # ≥0.8 triggers the nudge. Tracked separately under
+            # kind="similar_rewrite" so we can measure whether
+            # the new nudge fires while the model continues to
+            # avoid action='edit', or whether behavior shifts.
+            _similar_rewrite = (
+                not _heredoc_write
+                and self._prewrite_content is not None
+                and self.func_name in ("file", "write_file")
+                and isinstance(self.func_args, dict)
+                and (self.func_name == "write_file" or self.func_args.get("action") == "write")
+            )
+            if _similar_rewrite:
+                _new_content = self.func_args.get("content", "")
+                _old_lines = set(self._prewrite_content.splitlines())
+                _new_lines = set(_new_content.splitlines())
+                if _old_lines and _new_lines:
+                    _inter = len(_old_lines & _new_lines)
+                    # MAX of two asymmetric ratios so both
+                    # "most-of-old-survived" (small edit to large
+                    # file → preserved_ratio high) and "most-of-
+                    # new-came-from-old" (some additions, rest
+                    # carried over → overlap_ratio high) trigger
+                    # the nudge. Symmetric Jaccard penalizes both
+                    # directions and would miss the a field-observed run
+                    # "added 30 lines to a 200-line HTML" case.
+                    _preserved = _inter / len(_old_lines)
+                    _overlap = _inter / len(_new_lines)
+                    _sim = max(_preserved, _overlap)
+                    if _sim >= 0.8:
+                        if "_edit_nudges_emitted" not in dir(run_agent_single):
+                            run_agent_single._edit_nudges_emitted = set()
+                        if _write_target not in run_agent_single._edit_nudges_emitted:
+                            run_agent_single._edit_nudges_emitted.add(_write_target)
+                            self.result_str = self.result_str + (
+                                f"\n\n[suggestion] You used "
+                                f"write_file to rewrite "
+                                f"{_write_target!r}, but {int(_sim*100)}% "
+                                f"of the lines match the previous version "
+                                f"— this is a surgical change in a "
+                                f"full-rewrite costume. edit_file("
+                                f"path=..., old_string=..., new_string=...) "
+                                f"is the right tool: atomic, validates the "
+                                f"target text exists exactly once, and won't "
+                                f"silently drop unrelated keys (a field-observed run lost "
+                                f"theme_tracking this way and regressed for "
+                                f"13 cycles). Use write_file only when creating "
+                                f"a new file or rewriting one in full."
+                            )
+                            telemetry.record_patch_event(
+                                "edit_nudge", kind="similar_rewrite")
+                            self._patch_telemetry["edit_nudge"] += 1
+
+            # T5.18-log — file(action='write') on a .log file destroys
+            # all prior entries.  Field-audited agents treat logs as episodic
+            # memory; wiping them with write is high-damage (observed 9%
+            # of Phase 7 sessions, including the a field-observed run spiral that
+            # wiped consciousness.log).  Logs are append-only by design;
+            # action='append' is always correct here.  Fires once per
+            # file per session to avoid noise.
+            _log_overwrite = (
+                not _heredoc_write
+                and self.func_name in ("file", "write_file")
+                and isinstance(self.func_args, dict)
+                and (self.func_name == "write_file" or self.func_args.get("action") == "write")
+                and _write_target.endswith(".log")
+            )
+            if _log_overwrite:
+                if "_edit_nudges_emitted" not in dir(run_agent_single):
+                    run_agent_single._edit_nudges_emitted = set()
+                if _write_target not in run_agent_single._edit_nudges_emitted:
+                    run_agent_single._edit_nudges_emitted.add(_write_target)
+                    self.result_str = self.result_str + (
+                        f"\n\n[suggestion] write_file on "
+                        f"{_write_target!r} overwrote all prior log "
+                        f"content. Log files are append-only — use "
+                        f"append_file(path={_write_target!r}, "
+                        f"content=...) to add new entries without "
+                        f"destroying history."
+                    )
+                    self.log.warning(
+                        "T5.18-log: write on log file %r — nudging append",
+                        _write_target,
+                    )
+                    telemetry.record_patch_event("log_write_nudge", kind="fired")
+                    self._patch_telemetry["edit_nudge"] += 1
+
+            _hist = self._write_path_history.setdefault(_write_target, [])
+            _hist.append(self._call_idx_counter)
+            # Prune outside window
+            self._write_path_history[_write_target] = [
+                t for t in _hist if (self._call_idx_counter - t) <= self._WRITE_LOOP_WINDOW
+            ]
+            _n_writes = len(self._write_path_history[_write_target])
+            # Single-object state files — ones an agent rewrites
+            # wholesale on a schedule rather than appending to — are
+            # SUPPOSED to be written repeatedly. One agent's
+            # detector misfired with `current-state.json` written
+            # 3 times in one cycle (correct behavior!). Bump the
+            # threshold so the detector only complains when the
+            # rewrite count is unambiguously a loop.
+            _is_single_object_state = (
+                _write_target.endswith(("current-state.json",
+                                        "focus.json",
+                                        "context.json"))
+            )
+            _effective_threshold = 5 if _is_single_object_state else self._WRITE_LOOP_THRESHOLD
+            if _n_writes >= _effective_threshold:
+                self.result_str = self.result_str + (
+                    f"\n\n[write-loop-detector] You have written to {_write_target!r} "
+                    f"{_n_writes} times in the last {self._WRITE_LOOP_WINDOW} tool calls. "
+                    f"If your incremental edits are being clobbered by full rewrites, "
+                    f"use edit_file(...) to apply a surgical change instead "
+                    f"of rewriting the whole file. If you've genuinely needed this many "
+                    f"writes, ignore this note — but consider whether your mental model "
+                    f"of the file's state matches what's actually on disk."
+                )
+                self.log.info(
+                    "Write-loop detector tripped: %s written %d times in last %d calls",
+                    _write_target, _n_writes, self._WRITE_LOOP_WINDOW,
+                )
+                telemetry.record_tool_call(self.func_name + ":write_loop")
+                telemetry.record_patch_event("write_loop", kind="fired")
+                self._patch_telemetry["write_loop"] += 1
+
+    def _record_result(self):
+        """Append the tool result, compress repeats, track edit failures and CICD edits."""
+        self.conversation_history.append({
+            "role": "tool",
+            "tool_call_id": self.tool_id,
+            "name": self.func_name,
+            "content": self.result_str,
+        })
+        if _prompt_caching_backend():
+            # The sent window (from the cache head) must stay byte-identical:
+            # gate on ITS pressure and never rewrite inside it. Below the head
+            # nothing is sent again, so head+tail only — no model round trip.
+            self._head = self.summary_state.get("_cache_head") or 0
+            _rewritten = _compress_repeated_tool_results(
+                self.conversation_history, self.func_name, self.log,
+                pressure=_history_pressure(self.conversation_history, start=self._head),
+                protect_from=self._head, local_only=True)
+            if any(i >= self._head for i in _rewritten):
+                self.summary_state["_rewrote_window"] = True   # alarm for the cache.miss log
+        else:
+            _compress_repeated_tool_results(self.conversation_history, self.func_name, self.log,
+                                            pressure=_history_pressure(self.conversation_history))
+
+        # Consecutive edit_file failure guard: after 2 consecutive
+        # old_string-not-found failures on the same file, inject a
+        # user turn directing the model to switch strategy. The
+        # existing error hint says "re-read the file" but models
+        # often ignore it and retry with equally-wrong content.
+        _is_edit_fail = (
+            self.func_name in ("edit_file", "file")
+            and "`old_string` not found" in self.result_str
+            and isinstance(self.func_args, dict)
+        )
+        if _is_edit_fail:
+            self._epath = self.func_args.get("path", "")
+            self._edit_fail_counts[self._epath] = self._edit_fail_counts.get(self._epath, 0) + 1
+            if self._edit_fail_counts[self._epath] >= 2:
+                self.conversation_history.append({
+                    "role": "user",
+                    "content": (
+                        f"[SYSTEM: edit_file has failed {self._edit_fail_counts[self._epath]} "
+                        f"consecutive times for '{self._epath}' — the old_string does not "
+                        f"match the actual file content. STOP using edit_file for this "
+                        f"file. Instead: call read_file(path='{self._epath}') to get the "
+                        f"EXACT current content, then use write_file to rewrite the "
+                        f"relevant section, or use exec_command with a Python script "
+                        f"to patch it in-place. Do not attempt edit_file again for "
+                        f"'{self._epath}' until you have read the file.]"
+                    ),
+                })
+        elif self.func_name in ("edit_file", "file", "write_file") and isinstance(self.func_args, dict):
+            # Successful edit or full rewrite — reset failure counter for this path.
+            # write_file changes file content entirely so prior old_string mismatches
+            # are no longer relevant for the new version.
+            self._epath = self.func_args.get("path", "")
+            self._edit_fail_counts.pop(self._epath, None)
+
+        # Track file edits (file tool with action=write/create, or new per-action tools)
+        if isinstance(self.func_args, dict) and (
+            (self.func_name == "file" and self.func_args.get("action") in ("write", "create"))
+            or self.func_name in ("write_file", "edit_file")
+        ):
+            self._has_edited, self._has_reviewer_persisted = _handle_cicd_file_edit(
+                self.func_args, self.conversation_history, _cicd_worktree_path, _cicd_phase_state, 
+                _cicd_edited_files, self._has_edited, self._has_reviewer_persisted, self.turn, self.log
+            )
+
+    def _exec_followups(self):
+        """What an exec_command result says about the run: commits, pushes, worktrees, PRs,
+        reviews, merges (the CICD phase trackers)."""
+        global _cicd_branch, _cicd_issue_number, _cicd_pr_number, _cicd_worktree_path
+        # Track commits and pushes through exec_command
+        if self.func_name == "exec_command" and isinstance(self.func_args, dict):
+            _cmd = self.func_args.get("command", "")
+            _cmd_normalized = re.sub(r"\\\n", " ", _cmd)  # Cycle 36: collapse shell line-continuations before all checks
+            # Claim-vs-trace: a real test/verify run supports a later
+            # "I ran the tests / verified" completion claim.
+            if any(_vt in _cmd_normalized.lower() for _vt in _VERIFY_CMD_TOKENS):
+                self._ran_verification = True
+            if _cmd_has(_cmd, "git commit"):  # WS8.1: anchored, heredoc/quote-blind
+                self._has_committed = True
+                self._has_edited = True  # commit implies edit happened
+                self.log.info("Commit detected — completion signals now allowed")
+                _cicd_phase_state["implement"] = True
+                # Cycle 61: if commit fails with nothing staged, builder never wrote test code
+                if "no changes added to commit" in self.result_str:
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": (
+                            "[SYSTEM: git commit failed — no test files were staged. "
+                            "Only .coverage is modified, which means you ran pytest but "
+                            "never wrote any new test code. You must use "
+                            "file({'action': 'write', 'path': 'tests/test_<name>.py', "
+                            "'content': '...'}) to write new test functions, then "
+                            "git add tests/test_<name>.py && git commit -m '<message>'.]"
+                        ),
+                    })
+            if _cmd_has(_cmd, "git push") and "exit=0" in self.result_str:  # Cycle 35+36 anchoring; WS8.1: heredoc/quote-blind (a doc line `&& git push` must not fake-persist the cycle)
+                if not self._cycle_persisted:
+                    self.log.info("Cycle persist detected (git push exit=0) — auto-nudge disabled")
+                # Interactive sessions keep working after a push: the
+                # grace/hard-stop gates are for -a cycles only.
+                if _AUTO_MODE:
+                    self._cycle_persisted = True
+                    self._cycle_persisted_turn = self._cycle_persisted_turn or self.turn
+                _cicd_phase_state["verify"] = True
+                if self._phase_engine is not None:
+                    self._phase_engine.mark_persisted("git push")
+                # Cycle 37: block direct push to main — builder must use feature branches.
+                # Only enforce for CICD builder sessions; regular agents push to main normally.
+                if self._is_cicd_builder and re.search(r"git\s+push\b.*\borigin\s+main\b", _cmd_normalized):
+                    self.log.warning("CICD: git push origin main — builder pushed directly to main")
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": (
+                            "[SYSTEM: CRITICAL: You just pushed directly to origin/main. "
+                            "This is PROHIBITED — all CICD work must go through a feature branch "
+                            "(cicd/NNN-slug) and PR. Immediately revert: "
+                            "`git revert HEAD --no-edit && git push origin main`. "
+                            "Then create a proper worktree and branch for your changes. "
+                            "Do NOT commit test artifacts or state files to main.]"
+                        ),
+                    })
+
+            # Warn when git add stages Python cache files.
+            # CC agents always name files explicitly; agent.py agents
+            # use `git add -A` which silently picks up __pycache__ and
+            # *.pyc files, polluting git history.
+            if (re.search(r"git\s+add\b", _cmd_normalized)
+                    and ("__pycache__" in self.result_str or ".pyc" in self.result_str)):
+                self.log.warning("git add staged __pycache__/.pyc files — injecting cleanup hint")
+                self.conversation_history.append({
+                    "role": "user",
+                    "content": (
+                        "[SYSTEM: Your git add staged Python cache files "
+                        "(__pycache__/ or *.pyc). These should not be committed. "
+                        "Fix before committing:\n"
+                        "  git rm -r --cached __pycache__/ scripts/__pycache__/ bin/__pycache__/ 2>/dev/null || true\n"
+                        "  printf '__pycache__/\\n*.pyc\\n.agent/\\n' >> .gitignore\n"
+                        "  git add .gitignore\n"
+                        "Then re-add only your actual changed files by name (not git add -A).]"
+                    ),
+                })
+
+            # ── CICD phase detection ──
+            if _cmd_has(_cmd, "gh issue list") or _cmd_has(_cmd, "gh issue search"):  # WS8.1
+                _cicd_phase_state["perceive"] = True
+            if ("pytest" in _cmd or "python3 -m pytest" in _cmd
+                    or "cat " in _cmd or "grep " in _cmd):
+                if _cicd_phase_state["perceive"]:
+                    _cicd_phase_state["probe"] = True
+            if _cmd_has(_cmd, "gh issue create") and "exit=0" in self.result_str:  # Cycles 36/55 anchoring; WS8.1: heredoc/quote-blind
+                if not self._cicd_think_used:
+                    self.log.warning("CICD: gh issue create without think — injecting reminder")
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": "[SYSTEM: You filed an issue without using the think tool first. "
+                        "Per MANDATORY THINK before DECIDE, you must call think() to evaluate "
+                        "your candidate before filing. Use think now to validate this was the right choice.]",
+                    })
+                # Cycle 33: require --label in-progress on gh issue create.
+                # Cycle 41: use flag-specific regex (body text can contain "in-progress").
+                if not re.search(r"--label[= ]in-progress", _cmd):
+                    self.log.warning("CICD: gh issue create without --label in-progress — injecting reminder")
+                    _issue_num_m = re.search(r'issues/(\d+)|#(\d+)|Issue\s+#(\d+)', self.result_str)
+                    _issue_num = next((g for g in _issue_num_m.groups() if g), "?") if _issue_num_m else "?"
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": (
+                            f"[SYSTEM: Issue #{_issue_num} was filed without `--label in-progress` "
+                            "(and/or `--label cicd`). The reviewer's PRE-MERGE CHECK rejects PRs "
+                            "whose linked issue lacks these labels. Fix now: "
+                            f"`gh issue edit {_issue_num} --add-label in-progress --add-label cicd "
+                            f"--add-label cicd-cycle-{_issue_num}`. "
+                            "Do this before opening the PR.]"
+                        ),
+                    })
+                _cicd_phase_state["decide"] = True
+                self._cicd_think_used = False  # reset for next gate (verdict)
+                # Extract issue number from gh output
+                _issue_match = re.search(
+                    r'issues/(\d+)|#(\d+)|Issue #(\d+)', self.result_str
+                )
+                if _issue_match:
+                    _cicd_issue_number = next(
+                        g for g in _issue_match.groups() if g
+                    )
+                    self.log.info("CICD phase: issue #%s filed",
+                             _cicd_issue_number)
+            if _cmd_has(_cmd, "git worktree add") and "exit=0" in self.result_str:  # WS8.1 (run 114: heredoc match here mis-captured the worktree path → guard-misdirection loop, turns 18-77)
+                _cicd_phase_state["implement"] = True
+                _wt_path_match = re.search(r'git\s+worktree\s+add\s+(?:-b\s+\S+\s+|--?[-\w]+\s+)*(\S+)', _strip_noncommand_text(_cmd))
+                if _wt_path_match:
+                    _cicd_worktree_path = _wt_path_match.group(1)
+                    self.log.info("CICD: worktree path captured: %s", _cicd_worktree_path)
+                _branch_match = re.search(r'-b\s+(\S+)', _cmd)
+                if _branch_match:
+                    _cicd_branch = _branch_match.group(1)
+            # Cycle 82 capture-fix: when builder claims an EXISTING
+            # issue via `gh issue view N` or `gh issue edit N`, also
+            # capture the issue number so cycle 82's nudge can fire
+            # even on inherited/existing-issue cycles. Run 189 hit
+            # this gap: builder used `gh issue view 397`, which
+            # never set `_cicd_issue_number`, so cycle 82's elif
+            # condition `and _cicd_issue_number` was always False.
+            if (not _cicd_issue_number) and "exit=0" in self.result_str:
+                _existing_match = re.search(
+                    r'^gh\s+issue\s+(?:view|edit|comment)\s+(\d+)\b',
+                    _cmd.lstrip(),
+                )
+                if _existing_match:
+                    _cicd_issue_number = _existing_match.group(1)
+                    self.log.info("CICD phase: issue #%s claimed (existing)",
+                             _cicd_issue_number)
+            if _cmd_has(_cmd, "gh pr create") and "exit=0" in self.result_str:  # WS8.1
+                # cycle 87 (run 192 false-positive): only recognise a
+                # real PR URL (`pull/NNN`) as proof the PR was created.
+                # The old `#(\d+)` fallback fired on `Closes #424`
+                # appearing in the PR body string inside the result,
+                # causing the tracker to record "PR #424 opened" when
+                # no PR existed on GitHub — the branch hadn't even been
+                # pushed yet.  `gh pr create` always returns the full
+                # URL on success; if there is no URL in the result the
+                # command silently failed and we should NOT set a PR
+                # number (which would suppress the reviewer's "no open
+                # PRs" early-exit and cause confusing downstream state).
+                _pr_match = re.search(r'pull/(\d+)', self.result_str)
+                if _pr_match:
+                    _cicd_pr_number = _pr_match.group(1)
+                    self.log.info("CICD phase: PR #%s opened",
+                             _cicd_pr_number)
+                # Guard: PR body must contain `Closes #N` trailer
+                # so the linked issue auto-closes on merge. Missing
+                # trailer is a recurring builder failure that
+                # causes the reviewer to CLOSE the PR.
+                if not re.search(r'Closes\s+#\d+', _cmd, re.IGNORECASE) and _cicd_pr_number:
+                    self.log.warning("CICD: gh pr create without `Closes #N` trailer — injecting reminder")
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": (
+                            f"[SYSTEM: PR #{_cicd_pr_number} was created without a `Closes #<issue>` "
+                            f"trailer in the body. The reviewer will CLOSE this PR for the missing "
+                            f"trailer (per pre-merge check rule #4), wasting the cycle. Fix it NOW: "
+                            f"`gh pr edit {_cicd_pr_number} --body \"<existing body>\\n\\nCloses #<issue>\"` "
+                            f"— use the real issue number this cycle targets.]"
+                        ),
+                    })
+            if (_cmd_has(_cmd, "gh pr review")  # WS8.1
+                    and ("--request-changes" in _cmd
+                         or "--approve" in _cmd
+                         or "--comment" in _cmd)
+                    and "exit=0" in self.result_str):
+                if not self._has_reviewer_persisted:
+                    self.log.info("Reviewer persistence detected (gh pr review) — completion signals now allowed")
+                self._has_reviewer_persisted = True
+            if ("reviews.md" in _cmd
+                    and (">>" in _cmd or "tee -a" in _cmd or "tee --append" in _cmd)
+                    and "exit=0" in self.result_str):
+                if not self._has_reviewer_persisted:
+                    self.log.info("Reviewer persistence detected (reviews.md append) — completion signals now allowed")
+                self._has_reviewer_persisted = True
+            if _cmd_has(_cmd, "gh pr review") and "--approve" in _cmd:  # WS8.1
+                if not self._cicd_think_used:
+                    self.log.warning("CICD: gh pr review --approve without think — injecting reminder")
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": "[SYSTEM: You approved a PR without using the think tool first. "
+                        "Per MANDATORY THINK before VERDICT, call think() to check: "
+                        "did tests pass? was the metric measured? is the issue reference valid? "
+                        "is the diff in-scope? Proceed with merge only after thinking.]",
+                    })
+                if ("exit=0" not in self.result_str
+                        and "approve your own pull request" in self.result_str.lower()):
+                    self.log.warning("CICD: self-approve failed — injecting skip-approval reminder")
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": "[SYSTEM: You cannot approve your own PR (same-account setup). "
+                        "SKIP the approval step entirely. Go directly to: "
+                        "`gh pr ready <N>` (separate command), then "
+                        "`gh pr merge <N> --squash` (separate command).]",
+                    })
+            if _cmd_has(_cmd, "gh pr ready") and "exit=0" in self.result_str:  # WS8.1
+                self._cicd_pr_ready_called = True
+                self.log.info("CICD: gh pr ready called")
+            if _cmd_has(_cmd, "gh issue view") and ("exit=0" in self.result_str or "--json" in _cmd):  # WS8.1
+                # Cycle 25: validate state + labels in the gh issue view result.
+                # Calling gh issue view is necessary but not sufficient — the
+                # issue must be OPEN and carry cicd + in-progress (or cicd-cycle-*)
+                # labels. If not, leave _cicd_issue_view_called=False so the
+                # pre-execute block (cycle 24) continues to block gh pr merge.
+                _premerge_ok = False
+                try:
+                    import json as _json_mod
+                    _json_body = self.result_str.split("exit=0", 1)[-1].strip()
+                    _json_start = _json_body.find("{")
+                    if _json_start >= 0:
+                        _issue_data = _json_mod.loads(_json_body[_json_start:])
+                        _lnames = [l.get("name", "") for l in _issue_data.get("labels", [])]
+                        _istate = _issue_data.get("state", "")
+                        _has_valid_labels = any(
+                            l == "cicd" or l.startswith("in-progress") or l.startswith("cicd-cycle-")
+                            for l in _lnames
+                        )
+                        if "state" not in _issue_data:
+                            # state field absent → not a PRE-MERGE CHECK call
+                            # (e.g. `gh issue view N --json body`); skip silently.
+                            pass
+                        elif _istate.upper() == "OPEN" and _has_valid_labels:
+                            _premerge_ok = True
+                        else:
+                            self.log.warning(
+                                "CICD: PRE-MERGE CHECK FAILED — state=%s labels=%s "
+                                "(need OPEN + cicd/in-progress[-bot-N] label)",
+                                _istate, _lnames,
+                            )
+                            self.conversation_history.append({
+                                "role": "user",
+                                "content": (
+                                    "[SYSTEM: PRE-MERGE CHECK FAILED. gh issue view returned "
+                                    f"state={_istate!r}, labels={_lnames}. "
+                                    "The issue must be OPEN with labels `cicd` + `in-progress` "
+                                    "or `in-progress-bot-N` (or `cicd-cycle-NNN`). Add missing labels with "
+                                    "`gh issue edit <N> --add-label in-progress --add-label cicd` "
+                                    "then re-run gh issue view before retrying the merge.]"
+                                ),
+                            })
+                except Exception:
+                    _premerge_ok = True  # parse error: don't block on format change
+                if _premerge_ok:
+                    self._cicd_issue_view_called = True
+                    self.log.info("CICD: gh issue view called (PRE-MERGE CHECK satisfied)")
+            # Match `gh pr merge` as an actual top-level invocation — not inside
+            # heredoc/cat content where the string may appear as documentation.
+            # Matches at line start or after a shell separator (&&, ;, |, ||, \n).
+            if re.search(r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*)gh\s+pr\s+merge\b", _cmd):
+                # Guard: PRE-MERGE CHECK — must view linked issue first (reviewer.md §4)
+                if not self._cicd_issue_view_called:
+                    self.log.warning("CICD: gh pr merge without PRE-MERGE CHECK — injecting reminder")
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": "[SYSTEM: PRE-MERGE CHECK SKIPPED. You must complete these steps "
+                        "IN ORDER before retrying gh pr merge: "
+                        "(1) `gh issue view <N> --json state,labels,title,createdAt` — verify OPEN + cicd/in-progress labels; "
+                        "(2) `think(...)` — confirm tests passed, metric verified, issue valid; "
+                        "(3) `gh pr ready <N>` — promote draft to ready; "
+                        "(4) THEN `gh pr merge <N> --squash` as a separate command. "
+                        "Do NOT skip or combine steps. Do NOT add --delete-branch.]",
+                    })
+                # Guard: must use --squash (NOT --delete-branch — builder worktree holds branch)
+                if "--squash" not in _cmd:
+                    self.log.warning("CICD: gh pr merge without --squash — injecting reminder")
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": "[SYSTEM: You MUST use `gh pr merge --squash`. "
+                        "Never use --merge or --rebase. Never use --delete-branch. Retry with --squash only.]",
+                    })
+                # Guard: must call `gh pr ready` first (draft PRs)
+                if not self._cicd_pr_ready_called and "exit=0" not in self.result_str:
+                    if "still a draft" in self.result_str.lower():
+                        self.log.warning("CICD: gh pr merge on draft — need gh pr ready first")
+                        self.conversation_history.append({
+                            "role": "user",
+                            "content": "[SYSTEM: The PR is still a draft. You must run "
+                            "`gh pr ready <N>` FIRST, then run `gh pr merge <N> --squash` "
+                            "as a SEPARATE command. Do NOT chain them. Do NOT add --delete-branch.]",
+                        })
+                if not self._cicd_think_used and "exit=0" not in self.result_str:
+                    self.log.warning("CICD: gh pr merge without think — injecting reminder")
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": "[SYSTEM: You attempted to merge without using the think tool first. "
+                        "Per MANDATORY THINK before VERDICT, you must call think() to verify "
+                        "tests passed, metric was measured, and issue reference is valid.]",
+                    })
+                # Cycle 34: detect || echo / || true which mask merge errors.
+                if re.search(r"gh\s+pr\s+merge\b.*\|\|\s*(echo|true|exit\s+0)", _cmd):
+                    self.log.warning("CICD: gh pr merge with || suppressor — injecting reminder")
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": (
+                            "[SYSTEM: You used `|| echo` (or `|| true`) with `gh pr merge`. "
+                            "This masks real errors — if the merge genuinely failed (draft, "
+                            "conflict), exit=0 would be reported falsely. NEVER chain "
+                            "`gh pr merge` with `||`. If the only error was local branch "
+                            "deletion (worktree lock), that is benign — the PR is already "
+                            "merged server-side. Verify with `gh pr view <N> --json state` "
+                            "and clean up locally with `git branch -D <branch>` if needed.]"
+                        ),
+                    })
+                if "exit=0" in self.result_str:
+                    _cicd_phase_state["track"] = True
+            # Detect plan file writes via exec_command (cat/heredoc)
+            if ("improvements/" in _cmd
+                    and ("cat >" in _cmd or "cat >>" in _cmd
+                         or "echo" in _cmd or "tee" in _cmd)
+                    and "exit=0" in self.result_str):
+                _cicd_phase_state["plan"] = True
+                self.log.info("CICD phase: plan written via exec_command")
+            # Record cycle timestamp automatically
+            if _tracker:
+                try:
+                    with open(_state_path("current-state.json"), encoding="utf-8", errors="replace") as _sf:
+                        self._cycle = json.load(_sf).get("cycle", 0)
+                except Exception:
+                    self._cycle = 0
+                try:
+                    timestamp = _tracker.auto_record(agent_id="e1")
+                    self.log.debug("Cycle %s recorded: %s", self._cycle, timestamp)
+                except Exception as e:
+                    self.log.error("Failed to record cycle timestamp: %s", e)
+
+    def _result_loop_checks(self):
+        """The search slow-loop, the repeated-result and the semantic result-loop detectors.
+        Returns the run's result when overtime meets a repeated result."""
+        self.log.debug("TOOL RESULT [%s]: %s", self.func_name, self.result_str)
+
+        # Search/find slow-loop detector.
+        # The dedup cache catches close-range repeats (within
+        # _DEDUP_WINDOW calls) but the model can evade it by
+        # inserting other tool calls between retries.  Count real
+        # (non-deduped) dispatches of the same (func, args) and
+        # fire a forced-think when the count hits the threshold.
+        if self.func_name in ("search_files", "find_symbol") and self._dedup_sig is not None:
+            self._search_sig_counts[self._dedup_sig] = self._search_sig_counts.get(self._dedup_sig, 0) + 1
+            _search_n = self._search_sig_counts[self._dedup_sig]
+            if _search_n >= self._SEARCH_REPEAT_THRESHOLD:
+                _s_think_prompt = (
+                    f"MANDATORY REFLECTION: I have dispatched {self.func_name} with "
+                    f"the same arguments {_search_n} times this session "
+                    f"(the dedup cache also blocked earlier repeats).\n\n"
+                    f"Arguments: {json.dumps(self.func_args)}\n"
+                    f"Last result: {self.result_str[:200]}\n\n"
+                    f"I MUST answer:\n"
+                    f"1. Why is this search not finding what I need?\n"
+                    f"2. Have I already confirmed the answer is not here — "
+                    f"is this a dead end?\n"
+                    f"3. What DIFFERENT approach (different tool, different "
+                    f"path, or direct file read) would actually make progress?\n"
+                    f"4. Should I accept this target does not exist and move on?"
+                )
+                self.log.warning(
+                    "Search slow-loop: %s with same args dispatched %d times — forcing think",
+                    self.func_name, _search_n,
+                )
+                _emit("on_forced_think", self.func_name, _search_n)
+                if "think" in MAP_FN:
+                    _s_think_result = MAP_FN["think"](prompt=_s_think_prompt)
+                    _s_think_id = f"forced_think_search_{self.turn}_{_search_n}"
+                    self.conversation_history.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": _s_think_id,
+                            "type": "function",
+                            "function": {
+                                "name": "think",
+                                "arguments": json.dumps({"prompt": _s_think_prompt})
+                            }
+                        }]
+                    })
+                    self.conversation_history.append({
+                        "role": "tool",
+                        "tool_call_id": _s_think_id,
+                        "name": "think",
+                        "content": str(_s_think_result),
+                    })
+                # Reset after intervention — allow one fresh attempt.
+                self._search_sig_counts[self._dedup_sig] = 0
+
+        # Track repeated tool results (errors and identical results)
+        _result_sig = (self.func_name, self.result_str[:100])
+        self._recent_tool_errors.append(_result_sig)
+        self._result_repeats = sum(1 for e in self._recent_tool_errors if e == _result_sig)
+
+        # Past turn limit + same tool result 3 times = end cycle
+        if self.turn > _MAX_TURNS and self._result_repeats >= 3:
+            self.log.warning("Overtime + repeated tool result (%s x%d) — ending cycle",
+                        self.func_name, self._result_repeats)
+            _emit("on_overtime", "repeated_result")
+            return "done"
+
+        # Semantic result-loop detection: same tool returning same
+        # result despite different arguments.
+        # Skip empty or exit-only results (e.g. `echo >> file`,
+        # `git add`, `mkdir`) — they all hash identically and would
+        # false-positive after 3 consecutive silent commands.
+        # _EXIT_ONLY_RE is compiled at module scope.
+        _result_is_noise = (
+            not self.result_str.strip()
+            or bool(_EXIT_ONLY_RE.match(self.result_str.strip()))
+        )
+        if not _result_is_noise:
+            _res_hash = hashlib.md5(
+                self.result_str[:200].encode()
+            ).hexdigest()[:8]
+            self._tool_result_key = (self.func_name, _res_hash)
+            self._recent_tool_results.append(self._tool_result_key)
+            if len(self._recent_tool_results) > self._RESULT_LOOP_WINDOW:
+                self._recent_tool_results.pop(0)
+        _same_result_count = sum(
+            1 for k in self._recent_tool_results[-6:]
+            if k == self._tool_result_key
+        ) if not _result_is_noise else 0
+        if _same_result_count >= self._RESULT_LOOP_THRESHOLD:
+            self.log.warning(
+                "Semantic result loop: %s returned same result %d times",
+                self.func_name, _same_result_count)
+            if self.func_name == "exec_command":
+                self._cmd_preview = ""
+                if isinstance(self.func_args, dict):
+                    self._cmd_preview = str(self.func_args.get("command", ""))[:120]
+                self._hint = (
+                    f"SYSTEM: exec_command has returned the same output "
+                    f"{_same_result_count} times (e.g. `{self._cmd_preview}`). "
+                    f"If you are re-verifying a check (tests, lint, gh status), "
+                    f"the prior output is authoritative — do not re-run it. "
+                    f"Move to the next step (commit, push, open PR) or take a "
+                    f"materially different action."
+                )
+            else:
+                self._hint = (
+                    f"SYSTEM: The {self.func_name} tool has returned the "
+                    f"same result {_same_result_count} times despite "
+                    f"different arguments. Your approach is not working. "
+                    f"Either try a completely different method, or accept "
+                    f"the current state and move on to the next step."
+                )
+            # WS10.e rung 2: escalate repeat interventions to a
+            # system-invoked think (same ladder as the batch-loop
+            # site above).
+            self._loop_interventions += 1
+            if self._loop_interventions >= 2 and "think" in MAP_FN:
+                try:
+                    self._fk = MAP_FN["think"](prompt=(
+                        f"MANDATORY REFLECTION: {self.func_name} has "
+                        f"returned the same result "
+                        f"{_same_result_count}x and a previous "
+                        f"redirect this cycle was ignored. Result "
+                        f"tail: {self.result_str[:300]}. Answer: (1) "
+                        f"what is this result actually telling "
+                        f"me? (2) ONE materially different next "
+                        f"action; (3) if none, mark the step "
+                        f"failed and move to CONSOLIDATE/PERSIST."))
+                    self._hint += ("\n\nFORCED REFLECTION (system-"
+                              "invoked think):\n" + str(self._fk)[:1500])
+                    telemetry.record_patch_event(
+                        "loop_forced_think", kind="fired")
+                except Exception as _fe:
+                    self.log.warning("forced think failed: %s", _fe)
+                # Stall-side advisor escalation: the model repeated a
+                # failing action AND ignored a prior redirect — the
+                # cognitively-stuck mode the gate-block trigger never
+                # sees (a stuck model never cleanly declares done).
+                # Offer the heavyweight advisor alongside the forced
+                # self-think; once-per-cycle, budget- and config-gated.
+                self._adv_nudge = self._maybe_advisor_nudge(source="stall",
+                                                  context=self._hint)
+                if self._adv_nudge:
+                    self._hint += "\n\n" + self._adv_nudge
+            self.conversation_history.append({
+                "role": "user",
+                "content": self._hint,
+            })
+
+    def _after_result(self):
+        """Repeated errors: the forced think, or the hard bail that ends this turn's batch
+        (_BREAK). Then the on_tool_result event."""
+        if self.result_str.startswith("Error"):
+            consecutive = self._result_repeats
+            if consecutive >= self._REPEAT_THRESHOLD * 2:
+                # Model is stuck even after forced thinks — skip this step
+                self.log.warning("Hard bail: %s failed %d times — skipping",
+                            self.func_name, consecutive)
+                _emit("on_tool_skip", self.func_name, consecutive)
+                self.conversation_history.append({
+                    "role": "user",
+                    "content": (
+                        f"SYSTEM: The {self.func_name} tool has failed {consecutive} times "
+                        f"with the same error. This step is being SKIPPED. "
+                        f"Use exec_command with cat/heredoc to write files instead, "
+                        f"or move on to the next step."
+                    ),
+                })
+                self._recent_tool_errors[:] = [e for e in self._recent_tool_errors if e[0] != self.func_name]
+                return _BREAK
+            elif consecutive >= self._REPEAT_THRESHOLD:
+                # Force a think call to break the loop
+                think_prompt = (
+                    f"MANDATORY REFLECTION: I have called {self.func_name} "
+                    f"{consecutive} times and gotten the same error each time.\n\n"
+                    f"The error is: {self.result_str[:300]}\n\n"
+                    f"My last arguments were: {json.dumps(self.func_args) if isinstance(self.func_args, dict) else str(self.func_args)}\n\n"
+                    f"I MUST answer these questions:\n"
+                    f"1. What exactly is the error telling me?\n"
+                    f"2. What parameter am I missing or getting wrong?\n"
+                    f"3. What is a DIFFERENT way to accomplish my goal "
+                    f"without repeating the same call?\n"
+                    f"4. Should I just skip this step and move on to "
+                    f"CONSOLIDATE and PERSIST?"
+                )
+                self.log.warning("Loop detected: %s x%d — forcing think",
+                            self.func_name, consecutive)
+                _emit("on_forced_think", self.func_name, consecutive)
+                if "think" in MAP_FN:
+                    think_result = MAP_FN["think"](prompt=think_prompt)
+                    # Inject as assistant thought + tool response
+                    think_id = f"forced_think_{self.turn}_{consecutive}"
+                    self.conversation_history.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": think_id,
+                            "type": "function",
+                            "function": {
+                                "name": "think",
+                                "arguments": json.dumps({"prompt": think_prompt})
+                            }
+                        }]
+                    })
+                    self.conversation_history.append({
+                        "role": "tool",
+                        "tool_call_id": think_id,
+                        "name": "think",
+                        "content": str(think_result),
+                    })
+                    self.log.info("FORCED THINK RESULT: %s", think_result)
+        else:
+            # Successful call — reset tracker for this tool
+            self._recent_tool_errors[:] = [e for e in self._recent_tool_errors if e[0] != self.func_name]
+        _emit("on_tool_result", self.func_name, self.func_args, self.result_str,
+              self.result_str.startswith("Error"))
 
     def _end_turn(self):
         # If ALL tool calls in this turn were garbled, retry the turn once
