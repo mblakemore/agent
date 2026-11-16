@@ -39,6 +39,7 @@ GUARDED_FILES = [
     "tool_args.py",
     "cicd_gates.py",
     "restart_state.py",
+    "agent_config.py",
 ]
 
 

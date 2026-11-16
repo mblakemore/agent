@@ -95,6 +95,7 @@ import skills as _skills
 import live_input as _live
 import system_prompt as _sp
 import cicd_gates as _cicd
+import agent_config as _cfg
 import monitor_bus
 import schedule_bus
 import tools.end_cycle as _end_cycle_tool
@@ -354,414 +355,31 @@ def _extract_pinned(text):
 
 # ── Configuration ──────────────────────────────────────────────────────
 
-_DEFAULT_CONFIG = {
-    # Lazy tools (tools/__init__.py): which tools the model sees in every request
-    # (core), which it loads with tool_search (deferred, named in one catalog line) and
-    # which only a search finds (hidden). Empty lists keep the shipped tiers.
-    "tools": {
-        "core": [],
-        "deferred": [],
-        "hidden": [],
-        "catalog": True,             # the one-line list of deferred tools in the system prompt
-        "preload_from_prompt": True, # load tools the task text names before the first request
-        "implicit_run": True,        # a deferred tool called with fitting arguments runs at once
-    },
-    # Skills (skills.py): instruction files the model loads by name with
-    # `tool_search skill:NAME`, named in one catalog line beside the tools; optionally
-    # picked by the summary model from the task text. Every key is off or harmless by
-    # default; discovery of .agent/skills and .claude/skills is always on.
-    "skills": {
-        "dirs": [],                  # extra directories of <name>/SKILL.md
-        "catalog": [],               # registered documents: {name, path, description, keywords?}
-        "max_chars": 20000,          # a bigger file is not a skill (the spill cap)
-        "max_loaded_tokens": 12000,  # loads past this are refused with a notice
-        "pick": "off",               # "start": one summary-model pick before the first request;
-                                     # "always": also after each later user message
-        "pick_on_events": False,     # "always" also judges delivered bus items
-        "load_threshold": 0.75,      # a pick at or above this is loaded
-        "suggest_threshold": 0.4,    # ... at or above this is suggested in the runtime note
-        "max_picks_per_turn": 2,
-        "pick_timeout_s": 15,
-    },
-    # No model name ships: an empty model takes the server's own (startup reads
-    # /v1/models), and /setup writes the one picked.
-    "llm": {"base_url": "http://127.0.0.1:8080", "model": ""},
-    "retry": {
-        "max_retries": 10,
-        "base_delay_seconds": 2,
-        "max_delay_seconds": 60,
-        "backoff_multiplier": 2.0,
-        "jitter_factor": 0.1,
-    },
-    "context": {
-        "max_full_lines": 800,
-        "preview_lines": 200,
-        "summary_threshold": 5,
-        "summary_max_chars": 3000,
-        "max_context_messages": 30,
-        "ctx_size": 114688,   # _DEFAULT_CTX_SIZE
-        "max_tokens": 16384,
-        # Prompt-caching backends only (aicommons). When the next request follows an
-        # idle gap longer than the cache's recorded lifetime, the window is rebuilt to
-        # this fraction of the budget behind a fresh summary instead of re-sending the
-        # whole dead prefix (0 disables). The keepalive re-sends the last request with
-        # a one-token output limit at a fraction of the recorded lifetime while the
-        # agent waits for input, for at most max_idle_s; every probe_every-th keepalive
-        # waits a little longer to learn the real lifetime (0 never probes).
-        "cache_collapse_frac": 0.15,
-        "cache_keepalive": True,
-        # Prompt text that steers small models (the identity-file sentence, the
-        # working-directory preamble, the /home/user clause). Off for models that
-        # need none of it: every request is a little shorter.
-        "model_guards": True,
-        "cache_keepalive_max_idle_s": 3600,
-        "cache_keepalive_probe_every": 4,
-    },
-    "cycle": {
-        "max_turns": 250,
-        "wind_down_turns": 10,
-        "max_text_only": 3,
-        "max_total_nudges": 6,
-        # F1 (plan/headless-hardening.md): wall-clock deadline in seconds, 0 = off (today's
-        # behavior exactly). --deadline wins over this. Escalating injections at these
-        # fractions reuse the wind-down channel; at 1.0 tool dispatch is refused and the
-        # run takes the final-result path with exit code 10.
-        "deadline_s": 0,
-        "deadline_warn_fracs": [0.6, 0.8, 0.92],
-        # F9: capability-refusal stop (headless only). When a tool result says the run was never
-        # GRANTED something it needs — a missing key, blocked egress, a permission — the run is
-        # told once, in that result, that blocked-with-reasoning is the required exit and that
-        # building a substitute is prohibited. If it is still issuing tool calls this many turns
-        # later, tool calls are refused and the final result is forced, exactly as the deadline
-        # does. Measured before this existed: a refusal at turn 2, two hand-written fetchers,
-        # 43 more turns, no result. 0 = off.
-        "refusal_max_turns": 5,
-        # F2: result contract. false = off (raw --result-file text, today's behavior);
-        # true = built-in schema; a path = JSON schema file. When armed the final message must
-        # end with a fenced JSON block carrying "contract": 1 that validates; missing/invalid
-        # exits are redirected up to result_contract_max_blocks times, then a synthesized
-        # {"status": "failed"} block is written so the caller ALWAYS gets valid JSON (exit 11).
-        "result_contract": False,
-        "result_contract_max_blocks": 2,
-        # F4: goal anchoring + deliverable guard. Empty = off. Auto-derived from a GOAL: /
-        # DELIVERABLE: stanza in the initial prompt when the result contract is armed.
-        # Anchors are injected at these fractions of the deadline (turn fraction when no
-        # deadline); a final `done` while a named deliverable is absent draws a correction.
-        "goal": "",
-        "deliverables": [],
-        "goal_anchor_fracs": [0.5, 0.8],
-        # F7: the same read-class call repeated n times within `window` turns is a stall
-        # signature sharper than "no edits lately"; one nudge per unique call, not a nag.
-        "repeat_read_nudge": {"n": 3, "window": 6},
-    },
-    # F3: per-result spill cap. A tool result (or an inbound prompt/message, F3a) over this many
-    # chars is written to .agent/spill/ and replaced by a reference + excerpt; 0 = legacy
-    # head/tail truncation only. Sits at the boundary the old truncation used, now lossless.
-    "limits": {
-        "tool_result_max_chars": 20_000,
-    },
-    "generation": {
-        "temperature": 0.6,
-        "top_p": 0.95,
-        "top_k": 20,
-        "min_p": 0.0,
-        "presence_penalty": 0.0,
-        # F8a: sampling seed for reproducible runs (None = server default). Overridable per run
-        # with --seed; honored by llama.cpp, warned-once-and-ignored by backends without one.
-        "seed": None,
-        # Whether the MAIN loop generation may emit thinking. Default False: the
-        # design is no-thinking-in-main + the opt-in `think` tool, so the model
-        # chooses when to reason hard. Set True to let the main model think on
-        # every turn (bounded by max_tokens); the `think` tool stays available
-        # either way. Consumed at the main request_body (chat_template_kwargs).
-        "enable_thinking": False,
-    },
-    # `think` tool depth->max_tokens budgets. Preset names are fixed
-    # (brief/normal/deep); values are tunable per deployment (a fast small model
-    # may want smaller ceilings, a slow reasoning model larger). Consumed by
-    # tools/think.py::_depth_budgets(); a bad/non-positive value falls back to
-    # the tool's built-in default for that preset.
-    "think": {
-        "depths": {"brief": 2048, "normal": 4096, "deep": 16384},
-    },
-    "summary": {
-        "base_url": "http://127.0.0.1:8082",
-        "model": "",
-        "enabled": True,
-        "max_wait_on_save": 10,
-        # At a window head move (eviction, cache collapse, overflow retry) with no
-        # summary ready: null summarizes now, in front of the request (blocking); a
-        # number waits at most that many seconds for a running summary, then sends
-        # the request with the last summary and lets the worker catch up.
-        "wait_s": None,
-        # Prompt-caching backends: once the window stands at this fraction of its
-        # budget (or of the message cap), summarize what the next eviction is certain
-        # to drop, so the eviction finds its summary ready. 0 = off.
-        "ahead": 0.0,
-    },
-    "bedrock": {
-        "adaptive_max_tokens": True,
-    },
-    "preferences": {
-        # Your own instructions, placed first in the system message of every
-        # request (before the agent's own lines). Empty = none. Set it with
-        # /system or by hand.
-        "system_prompt": "",
-        # T5.14 Option B — when true, the framework prepends a system-prompt
-        # directive recommending file(action='edit') over heredoc rewrites
-        # for existing-file modifications. Off by default so existing agents
-        # with rich AGENT.md aren't double-nudged. Operator turns on per
-        # agent when they want stronger tool-selection guidance.
-        "tool_selection_hints": False,
-        # When true, the harness checks git status before accepting a
-        # text-only stop: if there are uncommitted changes and no commit
-        # happened this session, it injects one nudge to run PERSIST.
-        # Budget: 2 retries (shared with _consecutive_text_only).
-        # Intended for long-running, git-native agents that must commit
-        # every cycle. Off by default.
-        "persist_nudge": False,
-        # List of task descriptions to pre-seed into task_tracker at session
-        # start. Seeding only fires when there are no open tasks — either the
-        # first run ever, or the previous cycle fully completed all tasks.
-        # If open tasks remain (interrupted cycle) the list is left untouched
-        # so the agent picks up from where it left off.
-        # Intended for agents with a fixed phase loop (e.g. PERCEIVE→PERSIST).
-        "initial_tasks": [],
-        # Per-turn text-only response cap (characters). Only enforced when nudge
-        # is enabled — has no effect when nudge is off.  Prevents context-filling
-        # spirals (field observation: 50K-char monologue → 10 ctx-overflow errors).
-        # ~24000 chars ≈ 6000 tokens — allows long reasoning/analysis turns while
-        # still cutting runaway loops well before they exhaust the context window.
-        "max_text_response_chars": 24000,
-        # Enable auto-nudge on text-only responses. Off by default.
-        # Also settable via --nudge CLI flag (either enables it).
-        "nudge": False,
-        # Cap on text content generated AFTER tool calls in the same turn.
-        # Prevents post-tool prose spirals (field observation: garbled task_tracker
-        # adds set receiving_tools=True, bypassing the pre-tool cap, then 50K
-        # chars of post-tool prose filled the context).
-        # 2000 chars is generous for any legitimate wrap-up text.
-        "max_post_tool_text_chars": 2000,
-        # Restrict the tool schema sent to the LLM to this exact list of names.
-        # null (default) = all tools available. Use to reduce schema tokens and
-        # context pressure for agents that don't need read_pdf / subagent / etc.
-        # Example: ["read_file", "write_file", "edit_file", "append_file",
-        #           "list_files", "exec_command", "search_files", "find_symbol",
-        #           "think", "task_tracker"]
-        "tools_whitelist": None,
-        # The end_cycle tool (a clean "I am finished" exit for a cycle). Off by
-        # default: the model never sees it and a call to it is refused, so an
-        # always-on interactive agent cannot end its own session. A cycle runner
-        # that wants the explicit exit opts in with true; the text-only completion
-        # paths end a cycle either way.
-        "end_cycle_tool": False,
-        # The restart tool: the model may re-execute its own process with -c (the same
-        # session, from the checkpoint written as the turn ends). Off by default; /restart
-        # at the keyboard always works.
-        "restart_tool": False,
-        # After a restart the model asked for (the restart tool), send this as the user's
-        # message and run a turn, instead of waiting at the prompt until someone types
-        # or a monitor pings. Empty: wait at the prompt. A keyboard /restart always
-        # returns to the prompt.
-        "restart_resume_prompt": "",
-        # The event bus (monitor_bus.py): a detached or background exec_command
-        # session, and a background subagent, queue one item when they exit.
-        "session_events": True,
-        # The gate in front of event sources (gate.py). `enabled` is the master
-        # switch, read at startup: off, nothing is judged or held, a saved brief is
-        # inert, and the `gate` tool and monitor's brief/bypass/quiet are refused.
-        # On, the summary model judges a source only once it carries a brief, so
-        # the switch itself costs nothing. The other keys (timeout_s,
-        # digest_after_s, max_held_chars, digest_raw_chars, log_dir) default from
-        # gate.DEFAULTS; see docs/config-reference.md.
-        "gate": {"enabled": False},
-    },
-}
+# The old names, for readers; agent.py calls the module. The loaded dict and the live
+# backends stay here, and the module reads them through its DEPS getters.
+_DEFAULT_CONFIG = _cfg.DEFAULTS
+_ENDPOINT_KEYS = _cfg.ENDPOINT_KEYS
+_drop_llamacpp_defaults = _cfg.drop_llamacpp_defaults
+_synthesize_backends_registry = _cfg.synthesize_backends_registry
+_redact_api_keys = _cfg.redact_api_keys
+_display_backend_kind = _cfg.display_backend_kind
+_warn_if_world_readable_with_key = _cfg.warn_if_world_readable_with_key
+_load_config = _cfg.load
+_SUBAGENT_ARGS_ENV = _cfg.SUBAGENT_ARGS_ENV
+_export_backend_overrides = _cfg.export_backend_overrides
+_export_subagent_args = _cfg.export_subagent_args
+_cfg_with_role = _cfg.with_role
+_apply_generation_overrides = _cfg.apply_generation_overrides
+_generation_request_extras = _cfg.generation_request_extras
+_EFFORT_LEVELS = _cfg.EFFORT_LEVELS
+_persist_config_value = _cfg.persist_value
+_set_model_for_role = _cfg.set_model_for_role
+_get_effort_for_role = _cfg.get_effort_for_role
+_set_effort_for_role = _cfg.set_effort_for_role
+_set_system_prompt = _cfg.set_system_prompt
 
 
 _DEFAULT_CTX_SIZE = 114688
-
-
-_ENDPOINT_KEYS = ("base_url", "api_key", "api_key_env", "model")
-
-
-def _drop_llamacpp_defaults(block, user_block):
-    """A user ``llm`` / ``summary`` block that names another backend kind (e.g.
-    ``{"kind": "aicommons", "model": ...}``) must not inherit the shipped llamacpp
-    endpoint: a role's own ``base_url`` outranks every credential source the
-    gateway backends have, so the default http://127.0.0.1:8080 (main) and :8082
-    (summary) silently won and every request went to the local server. Drops the
-    endpoint keys the user did not write themselves."""
-    from llm_backend import normalize_kind
-    try:
-        kind = normalize_kind((user_block or {}).get("kind") or "llamacpp")
-    except Exception:  # noqa: BLE001 — an unknown kind is build_backend's error to report
-        return
-    if kind == "llamacpp":
-        return
-    for k in _ENDPOINT_KEYS:
-        if k not in user_block:
-            block.pop(k, None)
-
-
-def _synthesize_backends_registry(config):
-    """Build a ``backends`` registry dict from the legacy ``llm`` / ``summary``
-    top-level blocks, or pass through an explicit ``backends`` block.
-
-    See plan/bedrock-integration.md § 6 "Migration strategy". Preserves every
-    field from the legacy block so unknown keys survive the shim intact.
-    """
-    if "backends" in config and isinstance(config["backends"], dict):
-        return config["backends"]
-
-    main = {"kind": "llamacpp"}
-    main.update(config.get("llm", {}))
-
-    summary = {"kind": "llamacpp"}
-    summary.update(config.get("summary", {}))
-
-    return {"main": main, "summary": summary}
-
-
-def _redact_api_keys(cfg):
-    """Return a copy of ``cfg`` with every nested ``api_key`` value redacted.
-
-    Plan § 18.75 security checklist: any ``log.debug("config: %s", _config)``
-    line must not surface the literal key. Walks ``backends``
-    specifically (the only surface that carries an ``api_key``) plus any
-    top-level ``api_key`` field for defensive-depth reasons.
-    """
-    if not isinstance(cfg, dict):
-        return cfg
-    result = {}
-    for k, v in cfg.items():
-        if k == "api_key" and v:
-            result[k] = "***REDACTED***"
-        elif isinstance(v, dict):
-            result[k] = _redact_api_keys(v)
-        else:
-            result[k] = v
-    return result
-
-
-def _display_backend_kind(kind, base_url) -> str:
-    """Display label for a backend's ``kind``. AWS gateways are configured as
-    ``llamacpp`` but live behind ``*.amazonaws.com`` — surface those as ``aws``
-    so the banner is meaningful without exposing the endpoint URL.
-    """
-    if kind == "aicommons":
-        return "ai-commons"
-    if base_url and "amazonaws.com" in str(base_url).lower():
-        return "aws"
-    return kind or ""
-
-
-def _warn_if_world_readable_with_key(config_path, user_config):
-    """Emit a WARN log line if ``config.json`` is world-readable AND
-    contains a non-empty ``api_key`` under any ``backends`` entry.
-
-    Plan § 18.75 security checklist. Don't enforce; just warn.
-    """
-    if os.name == "nt":
-        # Windows uses NTFS ACLs, not POSIX mode bits — os.stat().st_mode is
-        # synthetic (typically 0o666) and `chmod 600` is a no-op here, so the
-        # warning is a false positive. The redistributable protection against
-        # committing keys is the .gitignore entry (see _ensure_agent_dirs).
-        return
-    if not isinstance(user_config, dict):
-        return
-    # Walk backends → {main,summary} → api_key to check for a non-empty key.
-    has_key = False
-    backends = user_config.get("backends", {})
-    if isinstance(backends, dict):
-        for entry in backends.values():
-            if isinstance(entry, dict) and entry.get("api_key"):
-                has_key = True
-                break
-    if isinstance(user_config.get("aicommons"), dict) and user_config["aicommons"].get("api_key"):
-        has_key = True
-    if not has_key:
-        return
-    try:
-        mode = os.stat(str(config_path)).st_mode & 0o777
-    except OSError:
-        return
-    if mode & 0o077:  # any permission bits for group or other
-        logging.getLogger("agent").warning(
-            "config.json is world-readable (mode 0o%o); chmod 600 %s",
-            mode,
-            config_path,
-        )
-
-
-def _load_config():
-    """Load configuration from CWD/config.json, deep-merged with defaults.
-
-    Also synthesizes a ``backends`` registry (plan § 6 / D3) from the legacy
-    ``llm`` / ``summary`` blocks for back-compat. Existing call sites that
-    read ``_config["llm"]`` / ``_config["summary"]`` continue to work.
-    """
-    config = json.loads(json.dumps(_DEFAULT_CONFIG))  # deep copy
-
-    # Prefer .agent/config.json (keeps local, key-bearing config out of the repo
-    # root and alongside the other .agent/ runtime files); fall back to the
-    # legacy ./config.json so existing setups keep working unchanged.
-    _agent_cfg = Path(os.getcwd()) / ".agent" / "config.json"
-    _legacy_cfg = Path(os.getcwd()) / "config.json"
-    config_path = _agent_cfg if _agent_cfg.exists() else _legacy_cfg
-    user_config = None
-    if config_path.exists():
-        try:
-            with open(config_path, "r", encoding="utf-8", errors="replace") as f:
-                user_config = json.load(f)
-            for section in config:
-                if section in user_config and isinstance(user_config[section], dict):
-                    config[section].update(user_config[section])
-            # Carry through top-level overrides that aren't _DEFAULT_CONFIG
-            # sections: scalar keys (log_dir, log_prefix) AND new dict sections
-            # such as `advisor` (a role the defaults don't ship). Without this a
-            # user-provided advisor block would be silently dropped and the
-            # escalation tier would never activate. Dicts are deep-copied so the
-            # loaded config can't alias user_config.
-            for key, val in user_config.items():
-                if key not in config:
-                    config[key] = (json.loads(json.dumps(val))
-                                   if isinstance(val, dict) else val)
-            _warn_if_world_readable_with_key(config_path, user_config)
-        except (json.JSONDecodeError, IOError) as e:
-            # _load_config runs at MODULE IMPORT, before _cb is wired, so the
-            # on_notice emit fires into the void (verified 2026-08-16: a
-            # malformed .agent/config.json was silently ignored and the agent
-            # ran on DEFAULTS with no word — the user's endpoint/model settings
-            # vanished invisibly). Stderr + log always reach the user; name the
-            # file and say defaults are now in effect. Same stderr-for-config-
-            # integrity pattern as _warn_if_config_tracked.
-            msg = (f"could not parse {config_path} ({e}) — ALL its settings are "
-                   f"IGNORED and engine DEFAULTS are in effect. Fix the JSON or "
-                   f"re-run /setup.")
-            _emit("on_notice", "warn", f"Warning: {msg}")
-            logging.getLogger("agent").error("config load failed: %s", msg)
-            print(f"⚠ {msg}", file=sys.stderr)
-            user_config = None
-
-    # Back-compat shim: if user provided an explicit `backends` block, use it
-    # as-is; otherwise synthesize from legacy `llm` / `summary` blocks.
-    merge_src = {}
-    if user_config and isinstance(user_config.get("backends"), dict):
-        merge_src["backends"] = user_config["backends"]
-    # Merge the synthesized registry back on top of the deep-copied default
-    # `llm` / `summary` blocks so each backend entry carries kind + defaults.
-    merge_src.setdefault("llm", config["llm"])
-    merge_src.setdefault("summary", config["summary"])
-    config["backends"] = _synthesize_backends_registry(merge_src)
-    if user_config and "backends" not in merge_src:
-        # Scrub the registry, not the legacy blocks: plenty of code reads
-        # _config["llm"]["base_url"] / ["model"] directly (BASE_URL at import).
-        for role, section in (("main", "llm"), ("summary", "summary")):
-            if isinstance(user_config.get(section), dict):
-                _drop_llamacpp_defaults(config["backends"][role], user_config[section])
-
-    return config
 
 
 # ── Headless hardening (plan/headless-hardening.md) ───────────────────────────
@@ -1252,7 +870,16 @@ def _canonicalize_cwd(env=None, chdir=os.chdir, getcwd=os.getcwd):
 
 _CWD_CANONICALIZED = _canonicalize_cwd()
 
-_config = _load_config()
+_config = _cfg.load()
+# A second execution of this file as a script while the imported `agent` module is
+# live (a test runner's runpy) must not re-register the modules' hooks from its own
+# throwaway namespace: the hooks would then read that namespace's state, not the
+# module's that the tests patch.
+_FIRST_LOAD = not (__name__ == "__main__" and "agent" in sys.modules)
+if _FIRST_LOAD:
+    _cfg.configure(config=lambda: _config, main_backend=lambda: _main_backend,
+                   summary_backend=lambda: _summary_backend,
+                   emit=lambda *a, **k: _emit(*a, **k))
 
 # Config-declared environment, exported verbatim. A deployment often needs to pin a value that
 # an external CLI reads from the environment — a caller identity, a workspace tag, a tenant —
@@ -1305,78 +932,16 @@ def _apply_model_effort_overrides(model, effort) -> None:
         entry["model"] = model
     if effort:
         entry["effort"] = effort
-    _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
+    _main_backend = _build_backend(_cfg.with_role(_config["backends"], "main"))
     if getattr(_main_backend, "model", None):
         _config["llm"]["model"] = _main_backend.model
     logging.getLogger("agent").info("main backend override: model=%s effort=%s",
                                     getattr(_main_backend, "model", None), effort or "-")
 
 
-# M6: what a subagent process inherits. The parent's backend choices ride in the
-# environment (the subagent tool runs in this process and builds the command);
-# `subagent.model` / `subagent.effort` in config pick a cheaper tier for children,
-# which start with a cold cache anyway (E2).
-_SUBAGENT_ARGS_ENV = "AGENT_SUBAGENT_ARGS"
-
-
-def _export_backend_overrides(args) -> dict:
-    """Tell in-process tools that read config from disk (consult_advisor) which backend
-    the command line chose: kind / model / effort per role, never URLs or keys."""
-    out = {}
-    for role, kind in (("main", getattr(args, "backend_main", None)),
-                       ("summary", getattr(args, "backend_summary", None))):
-        if kind:
-            out[role] = {"kind": kind, "model": _config["backends"].get(role, {}).get("model")}
-    if getattr(args, "model", None) or getattr(args, "effort", None):
-        out.setdefault("main", {"kind": _config["backends"].get("main", {}).get("kind")})
-        out["main"].update({"model": _config["backends"]["main"].get("model"),
-                            "effort": getattr(args, "effort", None)})
-    if out:
-        os.environ["AGENT_BACKEND_OVERRIDES"] = json.dumps(out)
-    return out
-
-
-def _export_subagent_args(args) -> list:
-    out = []
-    for flag, val in (("--backend-main", getattr(args, "backend_main", None)),
-                      ("--backend-summary", getattr(args, "backend_summary", None))):
-        if val:
-            out += [flag, val]
-    sub = _config.get("subagent") if isinstance(_config.get("subagent"), dict) else {}
-    model = sub.get("model") or getattr(args, "model", None)
-    effort = sub.get("effort") or getattr(args, "effort", None)
-    if model:
-        out += ["--model", str(model)]
-    if effort:
-        out += ["--effort", str(effort)]
-    if out:
-        os.environ[_SUBAGENT_ARGS_ENV] = json.dumps(out)
-    return out
-
-
-def _cfg_with_role(backends: dict, role: str) -> dict:
-    """Return the role's backend config dict with ``role`` injected.
-
-    Plan task 2.4: ``BedrockBackend`` uses ``role`` to pick the daily cost
-    cap and label telemetry lines. LlamacppBackend ignores ``role`` so the
-    injection is safe for both kinds.
-    """
-    entry = dict(backends.get(role, {}))
-    entry.setdefault("role", role)
-    try:
-        from llm_backend import normalize_kind
-        if normalize_kind(entry.get("kind")) == "aicommons" and isinstance(_config.get("aicommons"), dict):
-            # the shared top-level block (base_url, api_key, thinking, caps) under the
-            # role's own keys, which win
-            entry["aicommons"] = {**_config["aicommons"], **(entry.get("aicommons") or {})}
-    except NameError:  # _config not built yet (called from tests with a bare registry)
-        pass
-    return entry
-
-
 try:
-    _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
-    _summary_backend = _build_backend(_cfg_with_role(_config["backends"], "summary"))
+    _main_backend = _build_backend(_cfg.with_role(_config["backends"], "main"))
+    _summary_backend = _build_backend(_cfg.with_role(_config["backends"], "summary"))
 except (ValueError, ConfigError) as _be:
     # A bad "kind" (or other unbuildable backend config) must not dump a raw
     # import-time traceback on the user — build_backend already phrases these
@@ -1386,40 +951,6 @@ except (ValueError, ConfigError) as _be:
     logging.getLogger("agent").error("backend build failed: %s", _be)
     print(f"⚠ Backend config error: {_be}", file=sys.stderr)
     _exit_now(EXIT_CONFIG, f"backend config error: {_be}")   # F6: 14 in -a mode, 2 interactive
-
-
-_SEED_WARNED = False
-
-
-def _apply_generation_overrides(args) -> dict:
-    """F8a: ``--temperature`` / ``--top-p`` / ``--seed`` onto ``_config["generation"]``
-    (flag > config > default). Returns the applied overrides (unit-tested). A seed on a backend
-    kind that does not honor one warns ONCE and is kept in config so the request builder can
-    still decide per kind."""
-    global _SEED_WARNED
-    gen = _config["generation"]
-    applied = {}
-    for flag, key in (("temperature", "temperature"), ("top_p", "top_p"), ("seed", "seed")):
-        val = getattr(args, flag, None)
-        if val is not None:
-            gen[key] = val
-            applied[key] = val
-    seed = gen.get("seed")
-    if seed is not None:
-        kind = (_config.get("backends", {}).get("main", {}) or {}).get("kind", "llamacpp")
-        if kind != "llamacpp" and not _SEED_WARNED:
-            _SEED_WARNED = True
-            logging.getLogger("agent").warning(
-                "generation.seed=%s set but the %s backend does not honor a sampling seed — "
-                "runs will not be reproducible on this backend", seed, kind)
-    return applied
-
-
-def _generation_request_extras() -> dict:
-    """Extra request-body keys derived from generation config: currently the seed, only when
-    set (llama.cpp honors `seed` on /v1/chat/completions; absent = server default)."""
-    seed = _config["generation"].get("seed")
-    return {"seed": int(seed)} if seed is not None else {}
 
 
 def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) -> None:
@@ -1434,72 +965,23 @@ def _apply_backend_overrides(main_kind: str | None, summary_kind: str | None) ->
     """
     global _main_backend, _summary_backend
 
-    defaults = {"main": "claude-v4.6-opus", "summary": "claude-v4.5-haiku"}
-    _AICOMMONS_DEFAULT_MODELS = {"main": "claude-v5.5-sonnet", "summary": "claude-v5.5-haiku"}
-
-    from llm_backend import normalize_kind
-
-    def _same_kind(a, b):
-        try:
-            return normalize_kind(a or "llamacpp") == normalize_kind(b or "llamacpp")
-        except Exception:  # noqa: BLE001
-            return False
-
-    def _override(role: str, kind: str | None):
-        if not kind:
-            return
-        entry = _config["backends"].setdefault(role, {})
-        prev_kind = entry.get("kind")
-        entry["kind"] = kind
-        # A model set for the kind being replaced (e.g. a local server's model name
-        # carried over from the llm block) means nothing to the new one and the
-        # gateway would 422 on it; only a model set for this same kind is kept.
-        foreign_model = not _same_kind(prev_kind, kind)
-        if kind == "aicommons":
-            if prev_kind not in ("aicommons", "ucsb", "ai-commons", "ai_commons"):
-                # The entry's endpoint and key belong to the kind being replaced (usually the
-                # llamacpp default http://127.0.0.1:8080). Left in place they outrank the
-                # aicommons block, AICOMMONS_* env and the keystore, and every request goes
-                # to the local server instead of the gateway.
-                for k in ("base_url", "api_key", "api_key_env"):
-                    entry.pop(k, None)
-            existing = entry.get("model", "")
-            if not existing or foreign_model:
-                entry["model"] = _AICOMMONS_DEFAULT_MODELS[role]
-        if kind == "bedrock":
-            existing = entry.get("model", "")
-            if not existing or foreign_model:
-                entry["model"] = defaults[role]
-                logging.getLogger("agent").info(
-                    "backend-override role=%s kind=bedrock model=%s "
-                    "(default — replaced incompatible %r)",
-                    role,
-                    entry["model"],
-                    existing or "<unset>",
-                )
-
-    _override("main", main_kind)
-    _override("summary", summary_kind)
+    _cfg.override_backend_kind("main", main_kind)
+    _cfg.override_backend_kind("summary", summary_kind)
 
     if main_kind:
-        _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
+        _main_backend = _build_backend(_cfg.with_role(_config["backends"], "main"))
         # Keep _config["llm"]["model"] in sync so the TUI status bar shows the
         # active model rather than the llamacpp default.
         if getattr(_main_backend, "model", None):
             _config["llm"]["model"] = _main_backend.model
     if summary_kind:
         _summary_backend = _build_backend(
-            _cfg_with_role(_config["backends"], "summary")
+            _cfg.with_role(_config["backends"], "summary")
         )
 
 
 _MAX_FULL_LINES = _config["context"]["max_full_lines"]
 _PREVIEW_LINES = _config["context"]["preview_lines"]
-# A second execution of this file as a script while the imported `agent` module is
-# live (a test runner's runpy) must not re-register the modules' hooks from its own
-# throwaway namespace: the hooks would then read that namespace's state, not the
-# module's that the tests patch.
-_FIRST_LOAD = not (__name__ == "__main__" and "agent" in sys.modules)
 if _FIRST_LOAD:
     _lead.configure(max_full_lines=_MAX_FULL_LINES, preview_lines=_PREVIEW_LINES,
                     model_guards=_config["context"].get("model_guards", True),
@@ -1617,11 +1099,6 @@ try:
 except Exception:
     pass
 # ── Runtime controls a tool may call (tools.RUNTIME) ──────────────────────────
-# The one supported way for a tool to act on the running harness. Every entry looks the
-# live globals up when it is called, through the module Python knows as `agent` (see
-# _end_cycle_gate for why), so a backend rebuilt later is still the one acted on and a
-# function defined further down this file is found by then.
-_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 
 def _agent_mod():
@@ -1956,7 +1433,7 @@ def _trigger_failover(log, backend_type, cause=None):
         # it — otherwise a budget-tripped main quietly spends under the
         # summary role's daily cap.
         other_role = "main" if backend_type == "summary" else "summary"
-        fallback_cfg = _cfg_with_role(_config.get("backends", {}), other_role)
+        fallback_cfg = _cfg.with_role(_config.get("backends", {}), other_role)
         fallback_cfg["role"] = backend_type
 
         failing = _main_backend if backend_type == "main" else _summary_backend
@@ -3531,39 +3008,6 @@ def _pick_model_interactive(current_model, base_url):
     return None
 
 
-def _persist_config_value(section, key, value):
-    """Persist ``config[section][key] = value`` to ``./.agent/config.json``.
-
-    Deep-merges into any existing file: pre-existing sections/keys are
-    preserved, only ``section.key`` is updated. Creates ``.agent/`` and the
-    file if missing. Writes UTF-8 with ``indent=2``. This is the same path
-    ``_load_config`` prefers, so the choice survives a restart.
-
-    A corrupt existing file is treated as empty (so a bad on-disk config never
-    kills the session); the freshly-written file then contains just the merged
-    section.
-    """
-    cfg_path = Path(os.getcwd()) / ".agent" / "config.json"
-    data = {}
-    if cfg_path.exists():
-        try:
-            with open(cfg_path, "r", encoding="utf-8", errors="replace") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                data = loaded
-        except (json.JSONDecodeError, IOError):
-            data = {}
-    sect = data.get(section)
-    if not isinstance(sect, dict):
-        sect = {}
-        data[section] = sect
-    sect[key] = value
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(cfg_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    return cfg_path
-
-
 def _apply_setup_updates(updates):
     """Apply a /setup result to the LIVE session (setup_wizard already
     persisted it to .agent/config.json).
@@ -3587,23 +3031,23 @@ def _apply_setup_updates(updates):
     merge(_config, updates)
     rebuilt = []
     if "llm" in updates or "summary" in updates:
-        _config["backends"] = _synthesize_backends_registry(
+        _config["backends"] = _cfg.synthesize_backends_registry(
             {k: v for k, v in _config.items() if k != "backends"})
         # The wizard writes a role's whole endpoint: for a gateway kind, any
         # base_url/key/model it didn't write is a llamacpp default or the previous
         # kind's, and would outrank the gateway's own credentials.
         for role, section in (("main", "llm"), ("summary", "summary")):
             if isinstance(updates.get(section), dict):
-                _drop_llamacpp_defaults(_config["backends"][role], updates[section])
+                _cfg.drop_llamacpp_defaults(_config["backends"][role], updates[section])
         if "llm" in updates:
-            _main_backend = _build_backend(_cfg_with_role(_config["backends"], "main"))
+            _main_backend = _build_backend(_cfg.with_role(_config["backends"], "main"))
             if getattr(_main_backend, "model", None):
                 _config["llm"]["model"] = _main_backend.model
             BASE_URL = _config["llm"].get("base_url", BASE_URL)
             rebuilt.append("main backend")
         if "summary" in updates:
             _summary_backend = _build_backend(
-                _cfg_with_role(_config["backends"], "summary"))
+                _cfg.with_role(_config["backends"], "summary"))
             rebuilt.append("summary backend")
     if "context" in updates:
         # These were snapshotted into module globals at import — refresh the
@@ -3625,67 +3069,6 @@ def _apply_setup_updates(updates):
     if "preferences" in updates:
         rebuilt.append("preferences")
     return ", ".join(rebuilt) or "config only"
-
-
-def _set_model_for_role(role, new_model):
-    """Apply ``new_model`` to the given role (``"main"`` / ``"summary"``).
-
-    Updates the in-memory ``_config`` (``llm.model`` / ``summary.model``) AND
-    the live backend object (``_main_backend.model`` / ``_summary_backend.model``)
-    so the banner/footer reflect it immediately, then persists the change to
-    ``./.agent/config.json``.
-    """
-    section = "llm" if role == "main" else "summary"
-    _config.setdefault(section, {})["model"] = new_model
-    backend = _main_backend if role == "main" else _summary_backend
-    entry = (_config.get("backends") or {}).get(role)
-    if isinstance(entry, dict):
-        entry["model"] = new_model      # the registry is what a rebuild reads
-    if backend is not None:
-        try:
-            if hasattr(backend, "set_model"):
-                backend.set_model(new_model)   # re-derives per-model limits
-            else:
-                backend.model = new_model
-        except AttributeError:
-            pass
-    return _persist_config_value(section, "model", new_model)
-
-
-def _get_effort_for_role(role):
-    """The role's reasoning effort: the live backend's when it has one, else the config's."""
-    section = "llm" if role == "main" else "summary"
-    backend = _main_backend if role == "main" else _summary_backend
-    return str(getattr(backend, "effort", None) or (_config.get(section) or {}).get("effort") or "")
-
-
-def _set_effort_for_role(role, effort):
-    """Apply a reasoning effort to a role's live backend (when it takes one) and persist
-    ``<section>.effort``, the key the backend reads at construction. ``/effort`` and
-    ``tools.RUNTIME["set_effort"]`` use it. A model switch keeps the backend's effort."""
-    effort = str(effort or "").strip().lower()
-    if effort not in _EFFORT_LEVELS:
-        raise ValueError(f"effort must be one of {', '.join(_EFFORT_LEVELS)}, not {effort!r}")
-    section = "llm" if role == "main" else "summary"
-    _config.setdefault(section, {})["effort"] = effort
-    entry = (_config.get("backends") or {}).get(role)
-    if isinstance(entry, dict):
-        entry["effort"] = effort       # a failover rebuild reads the registry
-    backend = _main_backend if role == "main" else _summary_backend
-    if backend is not None:
-        if hasattr(backend, "set_effort"):
-            backend.set_effort(effort)
-        elif hasattr(backend, "effort"):
-            backend.effort = effort
-    return _persist_config_value(section, "effort", effort)
-
-
-def _set_system_prompt(text):
-    """Set (or, with ``""``, clear) ``preferences.system_prompt`` for this
-    session and persist it to ``./.agent/config.json``. The run loop reads it
-    on every request, so it applies from the next one."""
-    _config.setdefault("preferences", {})["system_prompt"] = text
-    return _persist_config_value("preferences", "system_prompt", text)
 
 
 def _log_bedrock_session_spend(log):
@@ -3858,7 +3241,7 @@ class _Session:
         model_name = _main_backend.model or _config["llm"]["model"]
         _emit(
             "on_boot_progress",
-            f"checking main backend — {_display_backend_kind(getattr(_main_backend, 'kind', ''), getattr(_main_backend, 'base_url', ''))} {model_name}",
+            f"checking main backend — {_cfg.display_backend_kind(getattr(_main_backend, 'kind', ''), getattr(_main_backend, 'base_url', ''))} {model_name}",
         )
         self.ok, self.detail = _main_backend.health(timeout=_startup_health_timeout())
 
@@ -3924,7 +3307,7 @@ class _Session:
         if self.summary_cfg["enabled"]:
             _emit(
                 "on_boot_progress",
-                f"checking summary backend — {_display_backend_kind(getattr(_summary_backend, 'kind', ''), self.summary_url)} {getattr(_summary_backend, 'model', '?')}",
+                f"checking summary backend — {_cfg.display_backend_kind(getattr(_summary_backend, 'kind', ''), self.summary_url)} {getattr(_summary_backend, 'model', '?')}",
             )
             try:
                 self.summary_ok, self.summary_detail = _summary_backend.health(timeout=_startup_health_timeout())
@@ -3967,7 +3350,7 @@ class _Session:
         if self.advisor_enabled:
             _emit("on_boot_progress",
                   f"checking advisor backend — "
-                  f"{self._adv_eff.get('base_url') or _display_backend_kind(self._adv_eff.get('kind') or '?', '')} "
+                  f"{self._adv_eff.get('base_url') or _cfg.display_backend_kind(self._adv_eff.get('kind') or '?', '')} "
                   f"{self._adv_eff.get('model') or '(served model)'}")
             try:
                 from tools.consult_advisor import startup_check as _advisor_check
@@ -4008,13 +3391,13 @@ class _Session:
             "api_detail": self.detail,
             "base_url": getattr(_main_backend, "base_url", None) or BASE_URL,
             "model": _main_backend.model or _config["llm"]["model"],
-            "main_kind": _display_backend_kind(getattr(_main_backend, "kind", ""), getattr(_main_backend, "base_url", "")),
+            "main_kind": _cfg.display_backend_kind(getattr(_main_backend, "kind", ""), getattr(_main_backend, "base_url", "")),
             "summary_enabled": self.summary_cfg["enabled"],
             "summary_ok": self.summary_ok,
             "summary_detail": self.summary_detail,
             "summary_base_url": self.summary_url,
             "summary_model": getattr(_summary_backend, "model", "") if _summary_backend else "",
-            "summary_kind": _display_backend_kind(getattr(_summary_backend, "kind", ""), self.summary_url) if _summary_backend else "",
+            "summary_kind": _cfg.display_backend_kind(getattr(_summary_backend, "kind", ""), self.summary_url) if _summary_backend else "",
             "advisor_enabled": self.advisor_enabled,
             "advisor_ok": self.advisor_ok,
             "advisor_detail": self.advisor_detail,
@@ -4390,8 +3773,8 @@ class _Session:
                     base_url=getattr(_main_backend, "base_url", None) or BASE_URL,
                     summary_base_url=getattr(_summary_backend, "base_url", None),
                     setup_logger=_setup_logger, pick_model=_pick_model_interactive,
-                    set_model=_set_model_for_role, set_system_prompt=_set_system_prompt,
-                    get_effort=_get_effort_for_role, set_effort=_set_effort_for_role,
+                    set_model=_cfg.set_model_for_role, set_system_prompt=_cfg.set_system_prompt,
+                    get_effort=_cfg.get_effort_for_role, set_effort=_cfg.set_effort_for_role,
                     render_context_bar=_render_context_bar,
                     refresh_cb_log=_refresh_cb_log, apply_setup=_apply_setup_updates, request_restart=_request_restart)
                 with self._live_in.borrowed_terminal():
@@ -4558,10 +3941,10 @@ class _Session:
                     # Applies a chosen model to a role (main/summary): updates the
                     # in-memory config + live backend object, then persists to
                     # .agent/config.json. Keeps commands.py free of business logic.
-                    set_model=_set_model_for_role,
-                    set_system_prompt=_set_system_prompt,
-                    get_effort=_get_effort_for_role,
-                    set_effort=_set_effort_for_role,
+                    set_model=_cfg.set_model_for_role,
+                    set_system_prompt=_cfg.set_system_prompt,
+                    get_effort=_cfg.get_effort_for_role,
+                    set_effort=_cfg.set_effort_for_role,
                     render_context_bar=_render_context_bar,
                     refresh_cb_log=_refresh_cb_log,
                     apply_setup=_apply_setup_updates, request_restart=_request_restart,
@@ -5973,7 +5356,7 @@ class _Run:
                 "max_tokens": _effective_max_tokens,
                 "chat_template_kwargs": {
                     "enable_thinking": _config["generation"].get("enable_thinking", False)},
-                **_generation_request_extras(),   # F8a: seed when configured
+                **_cfg.generation_request_extras(),   # F8a: seed when configured
                 "cache_prompt": True,
                 "tools": self._session_tools,
                 "tool_choice": "auto",
@@ -8598,12 +7981,12 @@ class _Run:
 
 def _run_agent_single_impl(conversation_history: list, summary_state: dict, initial_files,
                      log: logging.Logger,
-                     temperature=_DEFAULT_CONFIG["generation"]["temperature"],
-                     top_p=_DEFAULT_CONFIG["generation"]["top_p"],
-                     top_k=_DEFAULT_CONFIG["generation"]["top_k"],
-                     presence_penalty=_DEFAULT_CONFIG["generation"]["presence_penalty"],
-                     max_tokens=_DEFAULT_CONFIG["context"]["max_tokens"],
-                     ctx_size=_DEFAULT_CONFIG["context"]["ctx_size"],
+                     temperature=_cfg.DEFAULTS["generation"]["temperature"],
+                     top_p=_cfg.DEFAULTS["generation"]["top_p"],
+                     top_k=_cfg.DEFAULTS["generation"]["top_k"],
+                     presence_penalty=_cfg.DEFAULTS["generation"]["presence_penalty"],
+                     max_tokens=_cfg.DEFAULTS["context"]["max_tokens"],
+                     ctx_size=_cfg.DEFAULTS["context"]["ctx_size"],
                      start_turn=0, async_summarizer=None):
     """Run the agentic loop with turn limits and wind-down."""
     return _Run(conversation_history, summary_state, initial_files, log, temperature, top_p,
@@ -8874,11 +8257,11 @@ def main():
     # Apply backend-kind overrides before any backend-dependent startup logic.
     _apply_backend_overrides(args.backend_main, args.backend_summary)
     _apply_model_effort_overrides(getattr(args, "model", None), getattr(args, "effort", None))
-    _export_subagent_args(args)
-    _export_backend_overrides(args)
+    _cfg.export_subagent_args(args)
+    _cfg.export_backend_overrides(args)
     # F8a: generation overrides (flag > config > default), applied after backend overrides so
     # the seed support warning names the backend that will actually run.
-    _apply_generation_overrides(args)
+    _cfg.apply_generation_overrides(args)
     # F1: --deadline wins over cycle.deadline_s.
     if getattr(args, "deadline", None) is not None:
         if args.deadline <= 0:

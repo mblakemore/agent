@@ -32,6 +32,7 @@ _REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
 AGENT_PY = _REPO_ROOT / "agent.py"
+AGENT_CONFIG_PY = _REPO_ROOT / "agent_config.py"
 CHECKPOINT_PY = _REPO_ROOT / "checkpoint.py"
 WEB_FETCH_PY = _REPO_ROOT / "tools" / "web_fetch.py"
 THINK_PY = _REPO_ROOT / "tools" / "think.py"
@@ -90,11 +91,11 @@ class TestAgentOpenEncoding(unittest.TestCase):
         return 'encoding="utf-8"' in window or "encoding='utf-8'" in window
 
     def test_agent_config_read_uses_utf8(self):
-        """Static: agent.py config read open() must use encoding='utf-8'."""
-        src = _src(AGENT_PY)
+        """Static: the config read open() (agent_config.py) must use encoding='utf-8'."""
+        src = _src(AGENT_CONFIG_PY)
         self.assertTrue(
             self._has_utf8(src, 'open(config_path'),
-            "agent.py _load_config() must open config_path with encoding='utf-8'. "
+            "agent_config.load() must open config_path with encoding='utf-8'. "
             "See plan/CICD/improvements/0044-open-encoding-agent.md.",
         )
 

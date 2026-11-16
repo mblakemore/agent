@@ -12,6 +12,7 @@ import pytest
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _REPO)
+import agent_config  # noqa: E402
 import agent as _agent  # noqa: E402
 
 
@@ -143,7 +144,7 @@ class TestGenerationOverrides:
         kind = _agent._config["backends"]["main"].get("kind")
         try:
             _agent._config["backends"]["main"]["kind"] = "bedrock"
-            monkeypatch.setattr(_agent, "_SEED_WARNED", False)
+            monkeypatch.setattr(agent_config, "SEED_WARNED", False)
             with caplog.at_level(logging.WARNING, logger="agent"):
                 _agent._apply_generation_overrides(argparse.Namespace(temperature=None, top_p=None, seed=3))
                 _agent._apply_generation_overrides(argparse.Namespace(temperature=None, top_p=None, seed=3))
