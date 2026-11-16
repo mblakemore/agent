@@ -199,31 +199,15 @@ class TestTuiSessionToolbar(unittest.TestCase):
         sess._ctx_pct()
         self.assertGreater(calls["n"], first)
 
-    def test_toolbar_label_shows_tilde_when_fallback_tokenizer(self):
-        """When the real tokenizer isn't loaded, the ctx% label should be prefixed with ~."""
-        import token_utils
+    def test_toolbar_carries_no_context_share(self):
+        """The ctx% label left the bar (2026-11-16); the session log carries the number."""
         sess = self._make_session(
             history=[{"role": "user", "content": "hi"}],
             summary_text=None,
         )
-        with mock.patch.object(token_utils, "_EXACT_TOKENIZER_AVAILABLE", False):
-            html = sess._toolbar()
-            # HTML object stringifies to its raw input
-            self.assertIn("ctx ~", str(html.value))
-
-    def test_toolbar_label_no_tilde_when_real_tokenizer(self):
-        """When the real tokenizer is loaded, the ~ approximation marker drops."""
-        import token_utils
-        sess = self._make_session(
-            history=[{"role": "user", "content": "hi"}],
-            summary_text=None,
-        )
-        with mock.patch.object(token_utils, "_EXACT_TOKENIZER_AVAILABLE", True):
-            # Invalidate cache so the label re-renders with new flag value
-            sess._ctx_cache_key = None
-            html = sess._toolbar()
-            self.assertNotIn("ctx ~", str(html.value))
-            self.assertIn("ctx ", str(html.value))
+        html = sess._toolbar()
+        self.assertNotIn("ctx", str(html.value))
+        self.assertNotIn("msgs", str(html.value))
 
 
     def test_toolbar_uses_unicode_separator(self):

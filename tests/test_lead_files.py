@@ -196,6 +196,15 @@ class TestPlace:
         agent._lead_absorb(history, lead, expanded, files, log)
         assert shown == ["on_file_attached"]
 
+    def test_the_banner_names_the_file_and_keeps_the_model_note_off_the_console(self, repo, monkeypatch):
+        shown = []
+        monkeypatch.setattr(agent, "_emit", lambda ev, *a: shown.append(a[0]) if ev == "on_file_attached" else None)
+        expanded, files, _, _ = agent._expand_file_refs_ex("@CLAUDE.md")
+        assert "This is YOUR identity file" in expanded          # the model still gets it
+        (banner,) = shown
+        assert banner.startswith("[CLAUDE.md: loaded from ") and banner.endswith(" lines]")
+        assert "YOUR identity file" not in banner
+
     def test_an_untrimmed_window_carries_the_lead_once(self, repo):
         history, lead = _first_message()
         (repo / "CLAUDE.md").write_text("# Iris\n\nRule one.\nRule two.\n", encoding="utf-8")

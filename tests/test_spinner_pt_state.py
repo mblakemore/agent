@@ -154,6 +154,13 @@ class TestToolbarStaysStable(unittest.TestCase):
         out = sess._toolbar()  # must not raise
         self.assertNotIn("cancelling", out.value)
 
+    def test_toolbar_shows_cwd_and_model_only(self):
+        sess = self._session()
+        out = sess._toolbar()
+        self.assertNotIn("msgs", out.value)
+        self.assertNotIn("ctx", out.value)
+        self.assertIn("esc·esc cancel", out.value)
+
     def test_toolbar_still_valid_html_with_hostile_model_name(self):
         sess = self._session()
         sess.config = {"llm": {"model": "we&ird<model>"}}

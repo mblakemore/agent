@@ -711,31 +711,19 @@ if _AVAILABLE:
             # expat treats a stray & or < as fatally as the ESC byte above.
             cwd = html.escape(Path(os.getcwd()).name or "/")
             model = html.escape(self.config.get("llm", {}).get("model", "?"))
-            msgs = len(self.history)
-            pct = self._ctx_pct() * 100.0
             verbose = bool(getattr(self.cb, "verbose", False))
-
-            # Drop the ~ approximation marker when the real tokenizer is in
-            # use. Import lazily so tui.py stays independent of token_utils.
-            try:
-                from token_utils import _EXACT_TOKENIZER_AVAILABLE as _exact
-            except Exception:
-                _exact = False
-            ctx_label = f"ctx {pct:.0f}%" if _exact else f"ctx ~{pct:.0f}%"
 
             verbose_segment = (
                 f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> │ </style>'
                 f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> verbose </style>'
             ) if verbose else ""
 
+            # The message count and the context share left the bar (2026-11-16):
+            # the operator reads neither, and the session log carries both.
             left = (
                 f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"><b> {cwd} </b></style>'
                 f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> │ </style>'
                 f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> {model} </style>'
-                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> │ </style>'
-                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> {msgs} msgs </style>'
-                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> │ </style>'
-                f'<style fg="{_BAR_FG_HEX}" bg="{_BAR_BG_HEX}"> {ctx_label} </style>'
                 + verbose_segment
             )
 
@@ -755,8 +743,8 @@ if _AVAILABLE:
             # lives on the PROMPT LINE (see _prompt_message) — rendering it
             # in both places doubled it up in terminals where the toolbar
             # draws (field report 2026-08-13). The toolbar keeps its stable
-            # identity: cwd / model / msgs / ctx / hints.
-            visible_base = f" {cwd}  │  {model}  │  {msgs} msgs  │  {ctx_label} "
+            # identity: cwd / model / hints.
+            visible_base = f" {cwd}  │  {model} "
             visible_len = (
                 len(visible_base)
                 + (len("  │   verbose ") if verbose else 0)

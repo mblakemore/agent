@@ -3972,7 +3972,10 @@ def _attach_file_refs(refs, announce=True):
         attachments.append(f"{header}\n{content}")
         attached.append(ref)
         if announce:
-            _emit("on_file_attached", header)
+            # The console gets the file and where it came from; the sentence telling
+            # the model it is its own identity file is for the model, not the operator.
+            _emit("on_file_attached",
+                  f"[{ref}: loaded from {resolved}, {total} lines]" if _is_agent_md else header)
 
     files_content = "\n\n".join(attachments)
     # Prepend working directory context when agent.md is loaded
@@ -6906,10 +6909,6 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
         _SLASH_HOLD["active"] = True   # the consumer below dispatches slash lines
         _it = threading.Thread(target=_live_input_thread, name="live-input", daemon=True)
         _it.start()
-        _emit("on_notice", "info",
-              "[live-input] Type anytime — your line is delivered at the next "
-              "boundary (a /command typed during a turn runs when it ends). "
-              "esc·esc cancels a running turn; 'exit' quits.")
         try:
             # Items on this bus are (kind, str). Anything else is a defect in whatever
             # produced it, and the consumer below cannot safely act on one: the exit-marker
