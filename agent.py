@@ -97,6 +97,8 @@ from token_utils import count_tokens_from_message
 from tools import MAP_FN, tools, load_extra_tools
 import tools as _registry
 import skills as _skills
+import live_input as _live
+import system_prompt as _sp
 import monitor_bus
 import schedule_bus
 import tools.end_cycle as _end_cycle_tool
@@ -224,7 +226,7 @@ _BTW_FRAMING = (
 # note and delivered to the MODEL while the interactive loop — the only
 # consumer that knows what 'exit' means — never saw it (field report
 # 2026-08-14: input box gone, exit passed to the backend, loop wedged).
-_LIVE_EXIT_MARK = "\x00__LIVE_INPUT_EXIT__"
+_LIVE_EXIT_MARK = _live.EXIT_MARK
 
 # True while the live-input consumer (the only reader that dispatches slash commands) is
 # running: then a `/command` typed during a tool burst is held for it instead of being
@@ -432,10 +434,11 @@ def _emit(method, *args, **kwargs):
 
 
 import checkpoint as _ckpt
+import job as _job
 import memory_pressure as _mem
 import context_window as _cw
 import lead as _lead
-from lead import RUNTIME_NOTE_HEAD as _RUNTIME_NOTE_HEAD
+_RUNTIME_NOTE_HEAD = _lead.RUNTIME_NOTE_HEAD   # the stored note's head; tests read it here
 _EXIT_ONLY_RE = re.compile(r'^\[session:[^\]]+\]\s+exit=0\s*$')
 
 # ── Pinned instructions ───────────────────────────────────────────────
@@ -2587,46 +2590,7 @@ def _recovery_llm_call(log):
 
 
 
-def _persist_runtime_note(conversation_history, messages_to_send, lines, turn):
-    """P4.1: append this turn's runtime note to the newest history message (a user turn
-    or a tool result — never sent before, so editing it costs no cache), or add it as
-    a user turn after an assistant one. Idempotent within a turn: a retried request
-    (overflow reduction, stall) re-sends the same note rather than stacking another."""
-    if not lines or not conversation_history:
-        return
-    note = _RUNTIME_NOTE_HEAD + "\n" + "\n\n".join(lines)
-    last = conversation_history[-1]
-    if last.get("_note_turn") == turn:
-        return
-    # A message noted on an EARLIER turn has already been sent; editing it would
-    # break the prefix, so the new note gets its own message.
-    if (last.get("role") in ("user", "tool") and isinstance(last.get("content"), str)
-            and last.get("_note_turn") is None):
-        last["content"] = (last["content"] + "\n\n" + note) if last["content"] else note
-        last.pop("_tokens", None)          # M7: token_utils caches counts per message
-        last["_note_turn"] = turn
-        return
-    msg = {"role": "user", "content": note, "_note_turn": turn}
-    conversation_history.append(msg)
-    if messages_to_send is not None:
-        messages_to_send.append(msg)
-
-
-def _append_turn_text(conversation_history, messages_to_send, text):
-    """Add text for the model at a turn boundary the way the runtime note does: onto
-    the newest message when it is a user turn or a tool result not yet sent, else as a
-    user turn of its own (never two user turns in a row)."""
-    last = conversation_history[-1] if conversation_history else None
-    if (last is not None and last.get("role") in ("user", "tool")
-            and isinstance(last.get("content"), str) and last.get("_note_turn") is None):
-        last["content"] = (last["content"] + "\n\n" + text) if last["content"] else text
-        last.pop("_tokens", None)
-        return last
-    msg = {"role": "user", "content": text}
-    conversation_history.append(msg)
-    if messages_to_send is not None:
-        messages_to_send.append(msg)
-    return msg
+_persist_runtime_note, _append_turn_text = _sp.persist_runtime_note, _sp.append_turn_text
 
 
 def _skills_at_boundary(conversation_history, messages_to_send, oldest_idx, log):
@@ -5758,93 +5722,11 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
     # requests cancellation of a running turn.
     _skip_blocking = tui_session is not None and _live_input
     if _skip_blocking:
-        from contextlib import contextmanager as _contextmanager
-        from prompt_toolkit.patch_stdout import patch_stdout as _patch_stdout
-        _input_stop = threading.Event()
-        _EXIT_MARK = _LIVE_EXIT_MARK
-        # Terminal borrow: interactive slash commands (/model's input()
-        # picker) need real stdin, but the always-running prompt owns the
-        # keyboard — every keystroke feeds the prompt app, so a nested
-        # input() never returns. The main loop borrows the terminal by
-        # forcing the prompt to return _BORROW_MARK; the input thread then
-        # parks on _borrow_release instead of repainting a fresh prompt.
-        _BORROW_MARK = "\x00__TERMINAL_BORROW__"
-        _borrow_ack = threading.Event()
-        _borrow_release = threading.Event()
-
-        @_contextmanager
-        def _borrowed_terminal():
-            """Suspend the live prompt while the body runs input()-style IO.
-
-            Retries the interrupt briefly — the common dispatch pattern
-            (user submits '/model', main dequeues it instantly) races the
-            input thread's NEXT prompt starting up, so the first attempt
-            often finds no running app. Degrades to running the command
-            anyway if no prompt appears within ~0.5s (no worse than the
-            pre-borrow behavior). Half-typed text in the interrupted
-            prompt is preserved via TuiSession._resume_default.
-            """
-            _borrow_ack.clear()
-            _borrow_release.clear()
-            borrowed = False
-            for _ in range(10):
-                if tui_session.interrupt_prompt(_BORROW_MARK):
-                    borrowed = True
-                    break
-                time.sleep(0.05)
-            if borrowed:
-                _borrow_ack.wait(timeout=2.0)
-            try:
-                yield
-            finally:
-                _borrow_release.set()
-
-        def _live_input_thread():
-            try:
-                with _patch_stdout(raw=True):
-                    if _recorder is not None:
-                        # keep recording: forward to the proxy, which prints
-                        # above the prompt
-                        _recorder.target, sys.stdout = sys.stdout, _recorder
-                    while not _input_stop.is_set():
-                        try:
-                            _line = tui_session.prompt_line()
-                        except (EOFError, KeyboardInterrupt):
-                            monitor_bus.put_user(_EXIT_MARK)
-                            return
-                        if _recorder is not None and _line != _BORROW_MARK:
-                            # prompt_toolkit paints the accepted line itself
-                            _recorder.transcript.write(
-                                "\n" + theme.c(theme.MINT, "You: ") + _line + "\n")
-                        if _line == _BORROW_MARK:
-                            # Main thread borrowed the terminal for an
-                            # interactive command — park (don't repaint a
-                            # prompt over its input()) until released.
-                            _borrow_ack.set()
-                            _borrow_release.wait()
-                            continue
-                        if _line:
-                            # An exit line is CONTROL, not conversation: it
-                            # must never ride the bus as text (mid-turn the
-                            # btw-drain would frame it and hand it to the
-                            # model). Deliver the mark instead, cancel any
-                            # running turn so the exit is prompt rather than
-                            # waiting out a long tool burst, and end this
-                            # thread HERE — before the loop repaints a fresh
-                            # prompt + toolbar the main thread is about to
-                            # tear down (that repaint was the stale screen
-                            # the shell used to land in).
-                            if _line.lower() in ("exit", "quit"):
-                                cancel_request()
-                                monitor_bus.put_user(_EXIT_MARK)
-                                return
-                            monitor_bus.put_user(_line)
-            except Exception as _e:  # never let the input thread die silently
-                log.error("live-input thread crashed: %s", _e)
-                monitor_bus.put_user(_EXIT_MARK)
-            finally:
-                if _recorder is not None:
-                    _recorder.target = _recorder.real
+        _EXIT_MARK = _live.EXIT_MARK
+        # The prompt thread, the exit/borrow marks and the terminal borrow live in
+        # live_input.py; this loop is the bus's single consumer.
+        _live_in = _live.LiveInput(tui_session, monitor_bus, log, recorder=_recorder,
+                                   cancel=cancel_request)
 
         def _dispatch_slash(_ui):
             nonlocal initial_files, log, log_path
@@ -5861,19 +5743,19 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                 get_effort=_get_effort_for_role, set_effort=_set_effort_for_role,
                 render_context_bar=_render_context_bar,
                 refresh_cb_log=_refresh_cb_log, apply_setup=_apply_setup_updates, request_restart=_request_restart)
-            with _borrowed_terminal():
+            with _live_in.borrowed_terminal():
                 handled = _commands.handle_command(_ui, ctx)
             if handled:
                 initial_files = ctx.initial_files
                 log = ctx.log
+                _live_in.log = log
                 log_path = ctx.log_path
                 return True
             return False
 
         set_tui_mode(True)   # input app owns the keyboard continuously
         _SLASH_HOLD["active"] = True   # the consumer below dispatches slash lines
-        _it = threading.Thread(target=_live_input_thread, name="live-input", daemon=True)
-        _it.start()
+        _live_in.start()
         try:
             # Items on this bus are (kind, str). Anything else is a defect in whatever
             # produced it, and the consumer below cannot safely act on one: the exit-marker
@@ -5941,19 +5823,19 @@ def run_agent_interactive(initial_prompt=None, auto=False, continue_mode=False, 
                                  gen["presence_penalty"], max_tokens, ctx_size,
                                  async_summarizer=_async_summarizer)
         finally:
-            _input_stop.set()
+            _live_in.stop()
             # Stop the input app cleanly so prompt_toolkit erases its render
             # and the terminal is left on a fresh line, not mid-paint. Two
             # attempts cover the narrow window where the thread was between
             # prompts (exit_app no-ops) when the first shot fired.
             for _ in range(2):
                 tui_session.exit_app()
-                _it.join(timeout=1.0)
-                if not _it.is_alive():
+                _live_in.join(timeout=1.0)
+                if not _live_in.alive:
                     break
             _SLASH_HOLD["active"] = False
             set_tui_mode(False)
-            if _it.is_alive():
+            if _live_in.alive:
                 # Could not stop the app — best-effort scrub of the painted
                 # prompt/toolbar rows so the shell doesn't land mid-screen.
                 sys.stdout.write("\033[0J")
@@ -7331,96 +7213,33 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
             _apply_tool_loads(_session_tools, log)   # loads asked for last turn join the list here
             # A retried attempt keeps the suggestion the first one harvested.
             _skill_suggestion = _skills_at_boundary(conversation_history, messages_to_send, oldest_idx, log) or _skill_suggestion
-            _system_lines = [
-                f"Current time (UTC, ISO8601): {_now_iso}",
-                f"Working directory: {os.getcwd()}"
-                + (" — use this for all file paths, not /home/user." if _config["context"].get("model_guards", True) else ""),
-            ]
-            if _TOOLS_CFG.get("catalog", True):
-                _catalog_line = _registry.catalog_line()
-                if _catalog_line:
-                    _system_lines.append(_catalog_line)   # static: the same bytes every request
-                _skill_catalog = _skills.catalog_line()
-                if _skill_catalog:
-                    _system_lines.append(_skills.INSTRUCTIONS)   # static too
-                    _system_lines.append(_skill_catalog)
-            if _skill_suggestion:
-                _system_lines.append(_skill_suggestion)
+            # The per-turn lines, their order and the static/dynamic split are
+            # system_prompt.py's; the side effects of consuming a restart record and a
+            # repeat-read nudge stay here.
+            _rs = None
             if _RESTART["resumed"]:
                 _rs, _RESTART["resumed"] = _RESTART["resumed"], None
-                _system_lines.append(
-                    "The agent process restarted (by %s%s) and this session resumed from its "
-                    "checkpoint: same history, tools and skills; monitors armed with persist "
-                    "came back, others did not." % (
-                        "the restart tool" if _rs.get("by") == "tool" else "/restart at the keyboard",
-                        f": {_rs.get('reason')}" if _rs.get("reason") else ""))
-            # WS1: phase checkpoint every turn — phase state survives
-            # summarization the same way the CICD footnote line does.
-            if _phase_engine is not None:
-                _system_lines.append(_phase_engine.checkpoint_line())
-            # On a caching backend the CICD checkpoint is kept out of the lead message
-            # (see _build_context_footnote) and rides here, in the per-turn note.
-            if _prompt_caching_backend():
-                _cp_line = _cicd_checkpoint_text()
-                if _cp_line:
-                    _system_lines.append(_cp_line)
-
-            # T5.14 Option B — opt-in tool-selection guidance. When the agent's
-            # config has `preferences.tool_selection_hints: true`, prepend a
-            # one-paragraph directive recommending file(action='edit') over
-            # heredoc rewrites for existing-file modifications. Off by default
-            # — agents with rich AGENT.md that already cover this can opt
-            # out by leaving the flag unset.
-            if _config.get("preferences", {}).get("tool_selection_hints"):
-                _system_lines.append(
-                    "Tool-selection guidance: when modifying an EXISTING file, "
-                    "prefer file(action='edit', path=..., old_string=..., "
-                    "new_string=...) over exec_command 'cat > f <<EOF'. "
-                    "Surgical edits are atomic, validate that old_string "
-                    "exists exactly once, and won't lose neighbouring content. "
-                    "Use heredoc writes only when creating a NEW file or "
-                    "rewriting one in full."
-                )
-
-            # Action-inertia hint: if the model has been reading without writing
-            # for several turns, remind it to act on what it's found.
-            if _read_only_turns >= _READ_ONLY_NUDGE_THRESHOLD:
-                _system_lines.append(
-                    f"[SYSTEM NOTICE: You have spent {_read_only_turns} consecutive turns "
-                    f"reading files without writing, editing, or executing anything. "
-                    f"If you have identified what needs to change, apply the fix now "
-                    f"rather than reading more files.]"
-                )
-            # F7: the sharper, earlier signature — the SAME read repeated. Set by the tool
-            # dispatcher when a read-class key recurs; delivered once, then cleared.
+            _catalog_on = _TOOLS_CFG.get("catalog", True)
+            _system_lines = _sp.per_turn_lines(
+                _now_iso, os.getcwd(),
+                model_guards=_config["context"].get("model_guards", True),
+                catalog_line=_registry.catalog_line() if _catalog_on else None,
+                skill_catalog=_skills.catalog_line() if _catalog_on else None,
+                skill_suggestion=_skill_suggestion,
+                restart=_rs,
+                phase_line=_phase_engine.checkpoint_line() if _phase_engine is not None else None,
+                cicd_line=_cicd_checkpoint_text() if _prompt_caching_backend() else None,
+                tool_hints=bool(_config.get("preferences", {}).get("tool_selection_hints")),
+                read_only_turns=_read_only_turns, read_only_threshold=_READ_ONLY_NUDGE_THRESHOLD,
+                repeat_msg=_repeat_msg)
             if _repeat_msg:
-                _system_lines.append(_repeat_msg)
+                # F7: the SAME read repeated, set by the tool dispatcher; delivered once.
                 log.warning("repeat-read stall: %s", _repeat_msg[:100])
                 telemetry.record_patch_event("repeat_read_nudge", kind="fired")
                 _repeat_msg = None
-
-            # PROMPT-CACHE DISCIPLINE (measured on a live run): the leading system message used to
-            # begin with a second-resolution clock, so the FIRST tokens of every request differed
-            # and a prompt-caching server matched a near-empty prefix (15%) on every turn — ~60 s
-            # of prefill per turn at 40k tokens, whatever the history did. The head of the request
-            # must be byte-stable turn to turn: only lines that do not change within a run stay
-            # there. Everything per-turn — the clock, the phase checkpoint, the nudges — rides as
-            # a trailing USER-role note (strict chat templates reject a non-leading system
-            # message, the c0b2660 lesson), so the whole history remains the cached prefix.
-            _static_lines = [ln for ln in _system_lines
-                             if ln.startswith("Working directory:") or ln.startswith("Tool-selection guidance:")
-                             or ln.startswith(_registry.CATALOG_PREFIX)
-                             or ln.startswith(_skills.CATALOG_PREFIX) or ln is _skills.INSTRUCTIONS]
-            if _prompt_caching_backend():
-                # E7: nothing run-specific before the first user turn, so runs that start
-                # within the cache TTL share the cached system prompt + tools.
-                _static_lines = [ln for ln in _static_lines if not ln.startswith("Working directory:")]
-            _dynamic_lines = [ln for ln in _system_lines if ln not in _static_lines]
-            # The user's own system prompt leads. It is fixed within a run unless /system
-            # changes it, so it stays in the cached head of the request.
-            _user_prompt = _config.get("preferences", {}).get("system_prompt")
-            if isinstance(_user_prompt, str) and _user_prompt.strip():
-                _static_lines.insert(0, _user_prompt.strip())
+            _static_lines, _dynamic_lines = _sp.split(
+                _system_lines, caching=_prompt_caching_backend(),
+                user_prompt=_config.get("preferences", {}).get("system_prompt"))
             if _prompt_caching_backend():
                 # P4.1: the note is STORED in history (once per turn), so the next request
                 # extends this one exactly and the server's last-message cache point hits.
@@ -7430,11 +7249,7 @@ def _run_agent_single_impl(conversation_history: list, summary_state: dict, init
                     _dynamic_lines.append(wind_down_msg)
                 _persist_runtime_note(conversation_history, messages_to_send, _dynamic_lines, turn)
                 _dynamic_lines = []
-            _outgoing_messages = ([
-                {"role": "system", "content": "\n\n".join(_static_lines)}
-            ] if _static_lines else []) + messages_to_send + ([
-                {"role": "user", "content": "[Runtime note — from the framework, not the user]\n" + "\n\n".join(_dynamic_lines)}
-            ] if _dynamic_lines else [])
+            _outgoing_messages = _sp.outgoing(_static_lines, messages_to_send, _dynamic_lines)
 
             # Unlock end_cycle after the first nudge so the agent can exit cleanly
             # without calling it before doing any real work.
@@ -10070,169 +9885,14 @@ run_agent_single.__wrapped__ = _run_agent_single_impl
 _JOB_ACCEPTANCE = None      # command string, re-run after the agent exits
 _JOB_PATH = None            # for messages
 _JOB_ACCEPTANCE_TIMEOUT = 300   # seconds; `acceptance_timeout_sec` in the job file overrides it
-# Every top-level key a job file may carry. Anything else is refused at launch: a misspelled
-# `acceptence:` is a gate that never arms, and a gate that never arms is indistinguishable
-# from one that passed. Same class as the unparseable-command refusal in main().
-_JOB_KNOWN_KEYS = frozenset({"goal", "context", "constraints", "deliverable", "acceptance",
-                             "timebox_sec", "env_allow", "acceptance_timeout_sec",
-                             "result_contract", "refusal_max_turns"})
+# The file's schema and the helpers live in job.py; the three runtime values below are
+# set by main() from the file and read by _acceptance_verdict after the run.
+_JOB_KNOWN_KEYS = _job.KNOWN_KEYS
+_load_job_spec, _normalize_job_lists, _job_prompt = _job.load_spec, _job.normalize_lists, _job.prompt
+_apply_env_allow, _acceptance_parses = _job.apply_env_allow, _job.acceptance_parses
+_save_acceptance_output, _run_acceptance = _job.save_acceptance_output, _job.run_acceptance
+_refresh_result_exit = _job.refresh_result_exit
 
-
-def _load_job_spec(path):
-    """Read a job file. JSON always; YAML only if PyYAML happens to be installed.
-
-    PyYAML is NOT a declared dependency of this tool and is not made one for an optional
-    feature — a public utility should not grow an install requirement for a flag most
-    callers never use. A .json job works everywhere; a .yaml job says plainly what to
-    install rather than failing on an opaque parse error.
-    """
-    with open(path, "r", encoding="utf-8") as fh:
-        raw = fh.read()
-    looks_json = raw.lstrip().startswith(("{", "["))
-    if looks_json or str(path).lower().endswith(".json"):
-        return _normalize_job_lists(json.loads(raw))
-    try:
-        import yaml  # noqa: PLC0415 — optional, imported only for YAML job files
-    except ImportError:
-        raise ValueError(
-            f"{path} is not JSON and PyYAML is not installed. Either `pip install pyyaml` "
-            f"or write the job file as JSON — the schema is identical."
-        )
-    return _normalize_job_lists(yaml.safe_load(raw))
-
-
-_JOB_LIST_KEYS = ("context", "constraints", "deliverable")
-
-
-def _normalize_job_lists(spec):
-    """A bare string in a list-valued field is ONE item, not a sequence of characters.
-
-    `deliverable: hello.txt and done.txt in the working directory` reached the prompt as
-    forty-eight single-character bullets and the deliverable guard as seventeen missing
-    one-letter files — and the model, shown that, created a file per character. Python
-    iterates a str; the contract does not.
-    """
-    if isinstance(spec, dict):
-        for k in _JOB_LIST_KEYS:
-            v = spec.get(k)
-            if isinstance(v, str):
-                spec[k] = [v]
-    return spec
-
-
-def _job_prompt(spec):
-    """Fold goal/context/constraints/deliverable into the run's opening prompt.
-
-    The acceptance command is shown to the run too. Not as a gate it can satisfy by talking
-    — the runner re-runs it regardless — but because a run that knows how it will be judged
-    can check itself before finishing, and one that does not is guessing at the target.
-    """
-    out = []
-    if spec.get("goal"):
-        out.append(f"GOAL: {str(spec['goal']).strip()}")
-    ctx = spec.get("context") or []
-    if ctx:
-        out.append("CONTEXT (read these first; this run starts with no memory):")
-        out.extend(f"  - {c}" for c in ctx)
-    con = spec.get("constraints") or []
-    if con:
-        out.append("CONSTRAINTS:")
-        out.extend(f"  - {c}" for c in con)
-    deliv = spec.get("deliverable") or []
-    if deliv:
-        out.append("DELIVERABLE — this run must actually produce:")
-        out.extend(f"  - {d}" for d in deliv)
-    if spec.get("acceptance"):
-        out.append(
-            "ACCEPTANCE (the runner RE-RUNS this after you exit; its exit status is the "
-            "verdict, and your own report does not override it):")
-        out.append(f"  {spec['acceptance']}")
-    out.append(
-        "`blocked` is a legal and respected outcome: if the task cannot be done, say so with "
-        "your reasoning rather than producing something in order to have produced something.")
-    return "\n".join(out)
-
-
-def _apply_env_allow(allow):
-    """Scrub the environment down to an explicit allowlist, plus what a process needs to run.
-
-    Absent or unset -> NO-OP. An empty list is meaningful and different: it means this job
-    declared that it needs nothing, and the scrub happens. Conflating "not specified" with
-    "specified as empty" would silently strip a caller who never opted in.
-
-    The interpreter's own knobs (PYTHON*) always stay. PYTHONUNBUFFERED is how a supervisor's
-    log arrives while the run is still alive; a scrub that strips it re-buffers the very log
-    the run is being read through, which breaks the thing doing the watching. Those variables
-    configure the process, they are not the job's secrets.
-    """
-    if allow is None:
-        return None
-    keep = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "TMPDIR", "TERM",
-            "PWD", "PYTHONPATH", "PYTHONIOENCODING", "SystemRoot", "COMSPEC"}
-    keep.update(str(k) for k in allow)
-    removed = [k for k in list(os.environ) if k not in keep and not k.startswith("PYTHON")]
-    for k in removed:
-        os.environ.pop(k, None)
-    return removed
-
-
-def _acceptance_parses(cmd):
-    """(ok, message). `bash -n` on the command. A validator that cannot run is itself a
-    refusal, not a traceback: a supervisor reads exit 14 and a reason, never a stack."""
-    try:
-        chk = subprocess.run(["bash", "-n"], input=str(cmd), capture_output=True, text=True)
-    except OSError as e:
-        return False, f"bash is not available to validate the acceptance command ({e})"
-    if chk.returncode != 0:
-        return False, (chk.stderr or "").strip()[:160]
-    return True, ""
-
-
-def _save_acceptance_output(cmd, code, out, path=None):
-    """Keep the gate's full output beside the run. Never raises; returns the path or None.
-
-    The exit line carries one line of it, which is a pointer, not evidence. Whoever asks
-    "why did the gate fail" after the process is gone needs the artifact, not the address.
-    """
-    path = path or os.path.join(".agent", "acceptance-out.txt")
-    try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(f"command: {cmd}\nexit: {code}\n---\n{out}\n")
-        return path
-    except OSError:
-        return None
-
-
-def _run_acceptance(cmd, cwd=None, timeout=300):
-    """Re-run the acceptance command OUTSIDE the agent. Returns (ok, code, output)."""
-    try:
-        proc = subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True,
-                              text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return False, None, f"acceptance command exceeded {timeout:g}s"
-    except OSError as e:
-        return False, None, f"acceptance command could not be run: {e}"
-    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
-    return proc.returncode == 0, proc.returncode, out
-
-
-def _refresh_result_exit(result_file, info):
-    """Rewrite the `exit` block of an already-written JSON result file so it matches the final
-    verdict. Raw (non-JSON) result files are left alone; a file that cannot be parsed is not
-    a result file this code owns."""
-    if not result_file or not info or not os.path.exists(result_file):
-        return
-    try:
-        with open(result_file, "r", encoding="utf-8") as f:
-            obj = json.load(f)
-        if not isinstance(obj, dict):
-            return
-        obj["exit"] = dict(info)
-        with open(result_file, "w", encoding="utf-8") as f:
-            json.dump(obj, f, indent=2)
-    except (OSError, ValueError):
-        return
 
 
 def _acceptance_verdict():

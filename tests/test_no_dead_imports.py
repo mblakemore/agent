@@ -30,8 +30,11 @@ GUARDED_FILES = [
     "agent.py",
     "checkpoint.py",
     "context_window.py",
+    "job.py",
     "lead.py",
+    "live_input.py",
     "memory_pressure.py",
+    "system_prompt.py",
     "restart_state.py",
 ]
 

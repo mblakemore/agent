@@ -72,6 +72,9 @@ lead.py               # `@file` references, identity files and the lead of a tri
 context_window.py     # The window a request carries, and the token accounting behind it
 checkpoint.py         # The checkpoint `-c` resumes from, and the .agent/ directories
 memory_pressure.py    # The RSS watermark and the spill of oversized tool output
+job.py                # The `--job` file: schema, prompt, env allowlist, acceptance re-run
+system_prompt.py      # The per-turn lines, the static/dynamic split, the runtime note
+live_input.py         # The always-live prompt thread and the terminal borrow
 restart_state.py      # The state behind /restart and the restart tool
 tui.py                # prompt_toolkit front end
 transcript.py         # Session record, reprinted on terminal resize
