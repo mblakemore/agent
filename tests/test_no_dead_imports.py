@@ -37,6 +37,7 @@ GUARDED_FILES = [
     "system_prompt.py",
     "summarize.py",
     "tool_args.py",
+    "cicd_gates.py",
     "restart_state.py",
 ]
 

@@ -2,6 +2,7 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 import json
+import cicd_gates
 from agent import run_agent_single
 from tools import MAP_FN
 
@@ -212,7 +213,7 @@ def test_handle_cicd_file_edit_logic():
     assert has_edited is True
     assert "file.txt" in edited_files
     
-    with patch('agent._check_worktree_guard', return_value=(True, "/correct/path")):
+    with patch('cicd_gates.check_worktree_guard', return_value=(True, "/correct/path")):
         args = {"path": "/bad/path"}
         _handle_cicd_file_edit(
             args, history, wt_path, phase_state, edited_files, True, False, 2, mock_log

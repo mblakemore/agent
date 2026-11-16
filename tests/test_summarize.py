@@ -2,6 +2,7 @@
 keeps the old names as aliases, and the backends come in through DEPS at call time."""
 import pytest
 
+import cicd_gates
 import agent
 import summarize
 
@@ -38,7 +39,7 @@ def test_summary_backend_is_read_at_call_time(monkeypatch):
 
 
 def test_cicd_facts_come_from_agent(monkeypatch):
-    monkeypatch.setattr(agent, "_cicd_branch", "feat/x")
-    monkeypatch.setattr(agent, "_cicd_pr_number", 42)
+    monkeypatch.setattr(cicd_gates, "branch", "feat/x")
+    monkeypatch.setattr(cicd_gates, "pr_number", 42)
     prompt = summarize.build_summary_prompt("", [{"role": "user", "content": "hi"}])
     assert "Branch: feat/x" in prompt and "PR: #42" in prompt

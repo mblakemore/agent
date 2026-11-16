@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock, mock_open
 # For now, this is a placeholder for the tests we WILL run.
 
 def test_validate_tool_call_merge_blocked():
+    import cicd_gates
     from agent import _validate_tool_call
     mock_log = MagicMock()
     # WS8.2 (run 110): builder-only session — merge ALWAYS blocked,
@@ -87,7 +88,7 @@ def test_validate_tool_call_python3_merge_not_blocked():
     mock_log = MagicMock()
     cmd = (
         'python3 -c "import agent, unittest.mock as m; log=m.MagicMock(); '
-        'blocked, err = agent._validate_tool_call(\'exec_command\', '
+        'blocked, err = cicd_gates.validate_tool_call(\'exec_command\', '
         '{\'command\': \'gh pr merge 99 --squash\'}, False, log, is_cicd_builder=False); '
         'print(err)"'
     )

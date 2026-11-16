@@ -16,6 +16,7 @@ Lines targeted:
 import pytest
 import logging
 import json
+import cicd_gates
 import agent
 from unittest.mock import patch, MagicMock, PropertyMock
 from agent import run_agent_interactive
@@ -86,9 +87,9 @@ def test_worktree_add_sets_implement_phase(mock_config, mock_llm, mock_emit):
             pass
 
     # After the session, the CICD phase state should have implement=True
-    assert agent._cicd_phase_state["implement"] is True
-    assert agent._cicd_worktree_path == "/tmp/wt/cicd-test"
-    assert agent._cicd_branch == "cicd/999-test-branch"
+    assert cicd_gates.phase_state["implement"] is True
+    assert cicd_gates.worktree_path == "/tmp/wt/cicd-test"
+    assert cicd_gates.branch == "cicd/999-test-branch"
 
 
 @patch("agent._emit")
@@ -110,7 +111,7 @@ def test_worktree_add_no_exit0_skips_implement(mock_config, mock_llm, mock_emit)
             pass
 
     # implement should NOT be set since there was no exit=0
-    assert agent._cicd_phase_state["implement"] is False
+    assert cicd_gates.phase_state["implement"] is False
 
 
 # ── Lines 2460-2485: gh pr create (with Closes #N) → PR number capture ───
@@ -134,7 +135,7 @@ def test_pr_create_with_closes_captures_pr_number(mock_config, mock_llm, mock_em
         except Exception:
             pass
 
-    assert agent._cicd_pr_number == "42"
+    assert cicd_gates.pr_number == "42"
 
 
 @patch("agent._emit")
@@ -157,7 +158,7 @@ def test_pr_create_with_closes_no_pr_number_in_result(mock_config, mock_llm, moc
             pass
 
     # _cicd_pr_number stays None because no match found
-    assert agent._cicd_pr_number is None
+    assert cicd_gates.pr_number is None
 
 
 # ── Lines 2486-2499: gh pr review --approve → reviewer persistence ────────
@@ -314,7 +315,7 @@ def test_improvements_write_sets_plan_phase(mock_config, mock_llm, mock_emit):
         except Exception:
             pass
 
-    assert agent._cicd_phase_state["plan"] is True
+    assert cicd_gates.phase_state["plan"] is True
 
 
 # ── Lines 2561-2562: gh issue view with unparseable JSON → exception path ─

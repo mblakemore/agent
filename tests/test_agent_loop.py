@@ -3,6 +3,7 @@ import logging
 import json
 import requests
 from unittest.mock import patch, MagicMock
+import cicd_gates
 from agent import run_agent_single, CancelledError, _handle_auto_guidance, _pick_model_interactive
 
 # Setup basic logging to avoid noise
@@ -768,7 +769,7 @@ def test_validate_tool_call_blocks_pr_with_syntax_errors(monkeypatch):
 
     try:
         # 2. Patch the global set in agent.py
-        monkeypatch.setattr("agent._cicd_edited_files", {tmp_path})
+        monkeypatch.setattr("cicd_gates.edited_files", {tmp_path})
         
         # 3. Use a mock logger
         mock_log = MagicMock()
@@ -805,7 +806,7 @@ def test_validate_tool_call_allows_pr_with_valid_syntax(monkeypatch):
         tmp_path = tmp.name
 
     try:
-        monkeypatch.setattr("agent._cicd_edited_files", {tmp_path})
+        monkeypatch.setattr("cicd_gates.edited_files", {tmp_path})
         mock_log = MagicMock()
 
         func_name = "exec_command"

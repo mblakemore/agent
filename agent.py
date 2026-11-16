@@ -94,6 +94,7 @@ import tools as _registry
 import skills as _skills
 import live_input as _live
 import system_prompt as _sp
+import cicd_gates as _cicd
 import monitor_bus
 import schedule_bus
 import tools.end_cycle as _end_cycle_tool
@@ -113,69 +114,19 @@ from types import SimpleNamespace
 RESET = theme.RESET
 BOLD = theme.BOLD
 DIM = theme.DIM
-def _check_worktree_guard(file_path, worktree_path):
-    """
-    Checks if a file write target is inside the repo clone instead of the worktree.
-    Returns (is_violation, correction_path)
-    """
-    if not worktree_path or not file_path:
-        return False, None
-
-    try:
-        _abs_file = str(Path(file_path).resolve())
-        _abs_wt = str(Path(worktree_path).resolve())
-        _abs_cwd = str(Path.cwd().resolve())
-        
-        if (_abs_file.startswith(_abs_cwd) and not _abs_file.startswith(_abs_wt)):
-            _rel = os.path.relpath(_abs_file, _abs_cwd)
-            _correct = os.path.join(worktree_path, _rel)
-            return True, _correct
-    except Exception:
-        pass
-    return False, None
-
-
-# WS8.1 (beewatcher runs 092+, 114): guard/tracker regexes must only see
-# actual command positions. Naive substring checks (`"git worktree add" in
-# _cmd`) match inside heredoc bodies and quoted string literals — run 114
-# burned turns 18-77 in a worktree-guard loop seeded by exactly this, and a
-# heredoc line containing `&& git push` would fake-persist the cycle.
-# Shell-separator anchor set shared by every command guard. Includes `$(`
-# and backtick so unquoted command substitutions can't evade detection.
-_SHELL_ANCHOR = r"(?:^|&&\s*|;\s*|\|\|?\s*|\n\s*|\$\(\s*|`\s*)"
-
-_HEREDOC_BODY_RE = re.compile(
-    r"<<-?\s*([\"']?)(\w+)\1.*?(?:\n\2\b|\Z)", re.DOTALL
-)
-
-
-def _strip_noncommand_text(cmd: str) -> str:
-    """Return cmd with heredoc bodies and quoted-string contents removed,
-    and backslash line-continuations collapsed (cycle 36), so command
-    detection only fires on real command positions.
-
-    NOTE: only use the result for *detection/anchoring*. Content checks
-    (e.g. `Closes #N` inside a --body string) must keep reading the raw
-    command — quoted bodies are semantics-bearing there.
-    """
-    if not cmd:
-        return cmd
-    out = re.sub(r"\\\n", " ", cmd)
-    out = _HEREDOC_BODY_RE.sub(" ", out)
-    out = re.sub(r"'[^']*'", "''", out)
-    out = re.sub(r'"(?:\\.|[^"\\])*"', '""', out)
-    return out
-
-
-def _cmd_has(cmd: str, phrase: str) -> bool:
-    """True if `phrase` (words separated by whitespace) occurs at a command
-    position — start of command or after a shell separator — outside
-    heredoc bodies and quoted strings."""
-    if not cmd or not phrase:
-        return False
-    stripped = _strip_noncommand_text(cmd)
-    pat = _SHELL_ANCHOR + r"\s+".join(re.escape(w) for w in phrase.split()) + r"\b"
-    return re.search(pat, stripped) is not None
+# The old names, for readers; the loop calls the module and reads its state as _cicd.NAME.
+_check_worktree_guard = _cicd.check_worktree_guard
+_SHELL_ANCHOR = _cicd.SHELL_ANCHOR
+_HEREDOC_BODY_RE = _cicd.HEREDOC_BODY_RE
+_strip_noncommand_text = _cicd.strip_noncommand_text
+_cmd_has = _cicd.cmd_has
+_TRACK_SCOPE_TOOLS = _cicd.TRACK_SCOPE_TOOLS
+_TRACK_SCOPE_PATH_RE = _cicd.TRACK_SCOPE_PATH_RE
+_is_track_scope_call = _cicd.is_track_scope_call
+_handle_cicd_file_edit = _cicd.handle_file_edit
+_validate_tool_call = _cicd.validate_tool_call
+_cicd_verify_gh_mutation = _cicd.verify_gh_mutation
+_cicd_checkpoint_text = _cicd.checkpoint_text
 
 
 # WS10.c: success-check gate. When config defines cycle.success_check (a
@@ -322,33 +273,6 @@ def _has_pending_tool_calls(conversation_history):
         return True
 
 
-# WS8.3 (run 096): tools/paths that count as legitimate TRACK work after the
-# post-persist grace budget is exhausted. Everything else at that point is
-# the start of a second PERCEIVE and gets blocked with a redirect.
-_TRACK_SCOPE_TOOLS = {"end_cycle", "task_tracker", "think", "sleep"}
-_TRACK_SCOPE_PATH_RE = re.compile(
-    r"improvements/|progress-\d|reviews-\d|\.results\.md|journal"
-)
-
-
-def _is_track_scope_call(func_name, func_args):
-    """True if this tool call is plausible TRACK-phase work (results file,
-    progress/review rows, git/gh bookkeeping) rather than new-cycle work."""
-    args = func_args if isinstance(func_args, dict) else {}
-    if func_name in _TRACK_SCOPE_TOOLS:
-        return True
-    if func_name in ("file", "write_file", "append_file", "edit_file",
-                     "read_file", "check_file"):
-        path = str(args.get("path", "") or args.get("file_path", ""))
-        return bool(_TRACK_SCOPE_PATH_RE.search(path))
-    if func_name == "exec_command":
-        cmd = _strip_noncommand_text(str(args.get("command", "")))
-        if re.search(_SHELL_ANCHOR + r"(?:git|gh)\b", cmd):
-            return True
-        return bool(_TRACK_SCOPE_PATH_RE.search(cmd))
-    return False
-
-
 def _detect_hallucinated_read(full_content: str) -> tuple[bool, str | None]:
     """
     Checks if the agent claims to have read a file that was not actually accessed.
@@ -372,46 +296,6 @@ def _detect_hallucinated_read(full_content: str) -> tuple[bool, str | None]:
     except Exception:
         pass
     return False, None
-
-def _handle_cicd_file_edit(func_args, conversation_history, cicd_worktree_path, cicd_phase_state, cicd_edited_files, has_edited, has_reviewer_persisted, turn, log):
-    """
-    Tracks file edits for CICD state management and enforces worktree guards.
-    Returns (updated_has_edited, updated_has_reviewer_persisted)
-    """
-    if not has_edited:
-        log.info("First file edit detected at turn %d", turn)
-    
-    has_edited = True
-    _file_path = func_args.get("path", "")
-    if _file_path:
-        cicd_edited_files.add(_file_path)
-
-    # Worktree guard
-    is_violation, correct = _check_worktree_guard(_file_path, cicd_worktree_path)
-    if is_violation:
-        log.warning("CICD: file write targets repo clone (%s), not worktree (%s)", _file_path, correct)
-        conversation_history.append({
-            "role": "user",
-            "content": (
-                f"[SYSTEM: WRONG PATH! You wrote to {_file_path} which is "
-                f"inside the repo clone. Your worktree is at "
-                f"'{cicd_worktree_path}'. You MUST write to "
-                f"'{correct}' instead. Re-do this edit targeting "
-                f"the worktree path now.]"
-            ),
-        })
-
-    if "improvements/" in _file_path and _file_path.endswith(".md"):
-        cicd_phase_state["plan"] = True
-        log.info("CICD phase: plan written to %s", _file_path)
-
-    if _file_path.endswith("reviews.md"):
-        if not has_reviewer_persisted:
-            has_reviewer_persisted = True
-            log.info("CICD phase: review persisted to %s", _file_path)
-        log.info("Reviewer persistence detected (reviews.md write) — completion signals now allowed")
-    
-    return has_edited, has_reviewer_persisted
 
 
 # Module-level UI callback handle. run_agent_interactive replaces this with a
@@ -447,14 +331,6 @@ _EXIT_ONLY_RE = re.compile(r'^\[session:[^\]]+\]\s+exit=0\s*$')
 _PINNED_RE = re.compile(r"<pinned>(.*?)</pinned>", re.DOTALL)
 _pinned_instructions = ""  # set once from the initial prompt
 
-# CICD phase tracking — module-level so _build_context_message() can read it.
-# Updated by run_agent() as it detects phase transitions from tool calls.
-_cicd_phase_state = {}
-_cicd_issue_number = None
-_cicd_pr_number = None
-_cicd_branch = None
-_cicd_edited_files = set()  # tracks edited file paths to survive summary compression
-_cicd_worktree_path = None  # actual worktree path, captured on successful `git worktree add`
 # WS1 (wave 2): active PhaseEngine for this session, or None (inert — no
 # behavior change without cycle.profile/cycle.phases config). Module-level
 # for the same reason as the _cicd_* cluster: read by per-turn injection.
@@ -1642,8 +1518,7 @@ if _FIRST_LOAD:
         cache_lifetimes=lambda: _cache_lifetimes(),
         cache_collapse_frac=lambda: _cache_collapse_frac(),
         prompt_caching_backend=lambda: _prompt_caching_backend(),
-        cicd_facts=lambda: (_cicd_worktree_path, _cicd_edited_files, _cicd_issue_number,
-                            _cicd_pr_number, _cicd_branch))
+        cicd_facts=_cicd.facts)
 # The old names, for readers. The loop reads the live knobs through _summ: a /setup
 # update changes them there.
 _SUMMARY_THRESHOLD, _SUMMARY_MAX_CHARS = _summ.SUMMARY_THRESHOLD, _summ.SUMMARY_MAX_CHARS
@@ -1713,278 +1588,6 @@ def _is_read_only_command(cmd):
     if any(cmd_stripped.startswith(rc) for rc in _READ_ONLY_COMMANDS):
         return True
     return not any(kw in cmd for kw in _WRITE_KEYWORDS)
-
-def _validate_tool_call(func_name, func_args, cicd_issue_view_called, log, is_cicd_builder=False, is_cicd_reviewer=False):
-    """
-    Returns (is_blocked, error_message).
-    If is_blocked is True, the tool should not be executed.
-    """
-    # Cycle 84 (runs 190+191 reviewer fix-forward failure mode): block the
-    # reviewer from editing production .py files inside its review worktree.
-    # Cycle 75 already says reviewer commits may only modify `tests/**`, but
-    # the rule was prose only — runs 190 and 191 each saw the reviewer spend
-    # 30+ turns rewriting `tools/exec_command.py` in the `pr-N` worktree
-    # instead of issuing a verdict. The work is throwaway (no commit path)
-    # and the missing verdict leaves the queue stuck.
-    #
-    # Detection: file tool, write/insert/replace action, target is a non-test
-    # `.py` file, AND the target path is inside a `/worktrees/pr-<N>/` review
-    # worktree (vs a builder worktree which has different naming). The marker
-    # `/worktrees/pr-` is what reviewer.md prescribes (`git worktree add
-    # <ROOT>/pr-<N> review/pr-<N>`).
-    if func_name == "file" and isinstance(func_args, dict):
-        _action = func_args.get("action", "")
-        _path = func_args.get("path", "")
-        if (_action in ("write", "insert", "replace")
-                and _path.endswith(".py")
-                and "/tests/" not in _path
-                and not _path.startswith("tests/")
-                and re.search(r"/worktrees/pr-\d+/", _path)):
-            log.warning(
-                "CICD: reviewer file edit BLOCKED — production .py inside review worktree (cycle 84)"
-            )
-            return True, (
-                "Error: CICD reviewer file edit BLOCKED — you are editing a "
-                f"production Python file ({_path}) inside a review worktree. "
-                "Your role is REVIEWER, not BUILDER. Per cycle 75, reviewer "
-                "commits may only modify `tests/**`. If the PR has a real bug "
-                "in production code, the verdict is REQUEST_CHANGES (or CLOSE "
-                "for destruction-class signatures) — leave a `gh pr comment "
-                "<N> --body \"Verdict: REQUEST_CHANGES ...\"` citing the "
-                "exact file:line and expected fix, then move on. Do NOT fix "
-                "the code yourself — the builder owns production changes."
-            )
-
-    if func_name != "exec_command":
-        return False, None
-
-    _precmd = func_args.get("command", "") if isinstance(func_args, dict) else ""
-
-    # WS8.1: anchor detection runs on stripped text (heredoc bodies + quoted
-    # literals removed) so keywords inside string content can't false-fire.
-    # Content checks below (pr-body `Closes #N`) keep using raw _precmd.
-    _precmd_anchor = _strip_noncommand_text(_precmd)
-
-    # Cycle 96 — skip shell-level guards for python3/python invocations.
-    # Guard regexes match CICD keywords appearing as string literals inside
-    # python -c scripts, producing false positives (run 207 reviewer, turns 30-62).
-    # WS8.1 tightening: only skip when the WHOLE command is a single python
-    # invocation. The old blanket skip meant `python3 -c '...' && gh pr merge`
-    # bypassed every guard. With quoted bodies stripped, a trailing compound
-    # command is visible and the guards still run.
-    if (re.match(r'\s*python3?\s', _precmd)
-            and not re.search(r'&&|;|\|\|?|\n', _precmd_anchor)):
-        return False, None
-
-    # WS8.2 (run 110): the builder must NEVER merge — merge is the reviewer's
-    # verdict. PRE-MERGE CHECK below only verifies issue state, so a builder
-    # that ran `gh issue view` could still self-merge its own draft PR (run
-    # 110: builder merged in 20 turns with no reviewer; merged test hung).
-    # NOTE: reviewer sessions also match the "CICD Improvement Loop" builder
-    # heuristic (reviewer.md shares the header), so is_cicd_builder is True
-    # for reviewers too — the reviewer flag must win here.
-    if (is_cicd_builder and not is_cicd_reviewer
-            and re.search(_SHELL_ANCHOR + r"gh\s+pr\s+merge\b", _precmd_anchor)):
-        log.warning("CICD: gh pr merge BLOCKED — builder role may never merge (WS8.2, run 110)")
-        return True, (
-            "Error: CICD `gh pr merge` BLOCKED — you are the BUILDER. Merging "
-            "is the REVIEWER's verdict, never the builder's. Your cycle ends "
-            "at: draft PR opened + `Closes #N` + results file + TRACK row. "
-            "The reviewer session will re-run tests and decide MERGE / "
-            "REQUEST_CHANGES / CLOSE. The merge was NOT executed."
-        )
-
-    # PRE-MERGE CHECK — gated on CICD sessions only (issue #455: don't fire
-    # for non-CICD repos that merge PRs without linked issues).
-    if ((is_cicd_builder or is_cicd_reviewer)
-            and re.search(_SHELL_ANCHOR + r"gh\s+pr\s+merge\b", _precmd_anchor)
-            and not cicd_issue_view_called):
-        log.warning("CICD: gh pr merge BLOCKED — PRE-MERGE CHECK required (cycle 24)")
-        return True, (
-            "Error: CICD PRE-MERGE CHECK required. Before `gh pr merge`, you "
-            "MUST run `gh issue view <N> --json state,labels,title,createdAt` "
-            "on the linked issue and verify: state is OPEN, labels include "
-            "`cicd` + `in-progress`, the title matches the PR's stated scope. "
-            "Run the gh issue view now as a SEPARATE command, then re-attempt "
-            "the merge. The merge was NOT executed."
-        )
-    
-    # PR CREATE CHECK
-    _precmd_body_check = _precmd
-    # cycle 60: read pr-body file so Closes #N is visible even with $(cat ...) expansion
-    # cycle 71: also handle per-issue filenames like /tmp/pr-body-324.md
-    _pb_match = re.search(r'\$\(cat (/tmp/pr-body(?:-\d+)?\.md)\)', _precmd)
-    if _pb_match:
-        try:
-            with open(_pb_match.group(1)) as _pf:
-                _precmd_body_check = _precmd_body_check + " " + _pf.read()
-        except OSError:
-            pass
-            
-    # cycle 86: only enforce `Closes #N` requirement in CICD builder sessions;
-    # general agent use on other repos may legitimately create PRs without a
-    # linked issue (roadmap commits, README updates, etc.).
-    if (is_cicd_builder
-            and re.search(_SHELL_ANCHOR + r"gh\s+pr\s+create\b", _precmd_anchor)
-            and not re.search(r'Closes\s+#\d+', _precmd_body_check, re.IGNORECASE)):
-        log.warning("CICD: gh pr create blocked — body missing valid Closes #N (cycle 44)")
-        return True, (
-            "Error: CICD gh pr create blocked — the --body must contain "
-            "`Closes #<N>` where N is a numeric issue number (e.g. `Closes #123`). "
-            "Non-numeric references like `Closes #slug` or missing Closes trailer "
-            "cause the reviewer to CLOSE this PR. "
-            "File the issue first with `gh issue create --label in-progress --label cicd ...`, "
-            "note the issue number, then include `Closes #<number>` in the PR body. "
-            "The PR was NOT created."
-        )
-
-    # Cycle 81 (run 186 failure mode): block `git push origin main` pre-execute.
-    # Cycle 37's post-execute WARNING let the push through — run 186 builder
-    # committed `ed67439` directly to main, push succeeded with only a log line,
-    # builder reverted as `42a1dac`, then hit hard-cap with no PR opened. 5
-    # turns + the entire cycle were wasted. Make it a hard block at the same
-    # point as the other CICD pre-checks.
-    # cycle 81 — gated on CICD sessions only (issue #455: non-CICD repos may
-    # legitimately push directly to main).
-    if ((is_cicd_builder or is_cicd_reviewer)
-            and re.search(_SHELL_ANCHOR + r"git\s+push\b[^&;|]*\borigin\s+main\b", _precmd_anchor)):
-        log.warning("CICD: git push origin main BLOCKED — must use feature branch (cycle 81)")
-        return True, (
-            "Error: CICD `git push origin main` BLOCKED — direct pushes to main "
-            "are prohibited. All CICD work must land via a feature branch + PR.\n"
-            "If you have a local commit on main that shouldn't be there:\n"
-            "  1. `git reset --hard origin/main` (drops the local commit)\n"
-            "  2. `git worktree add <WORKTREE_ROOT>/<slug> -b cicd/<slug>`\n"
-            "  3. Re-apply your changes inside the worktree\n"
-            "  4. `git push -u origin cicd/<slug>` then `gh pr create --draft ...`\n"
-            "Do NOT use `git revert HEAD && git push origin main` — that still "
-            "pushes to main. The push was NOT executed."
-        )
-
-    # Cycle 80 (run 183 failure mode): block `gh pr create` if any edited .py
-    # file fails py_compile. Run 183 PR #398 shipped IndentationError at the
-    # four "Session ended" sites + a double `continue` in `_iter_stream_chunks`.
-    # Cycle 65's "git checkout HEAD -- agent.py and reapply" was prose only;
-    # the builder ignored it and 93 turns + a R-0008 REQUEST_CHANGES were lost.
-    # This guard makes py_compile a hard gate at the same point as the Closes
-    # check — the only way past is to fix the syntax.
-    if re.search(_SHELL_ANCHOR + r"gh\s+pr\s+create\b", _precmd_anchor):
-        import py_compile
-        _syntax_errors = []
-        for _path in sorted(_cicd_edited_files):
-            if not _path.endswith(".py"):
-                continue
-            try:
-                py_compile.compile(_path, doraise=True)
-            except py_compile.PyCompileError as _e:
-                _syntax_errors.append(f"{_path}: {str(_e).strip()}")
-            except OSError:
-                pass
-        if _syntax_errors:
-            log.warning(
-                "CICD: gh pr create BLOCKED — %d edited .py file(s) fail py_compile (cycle 80)",
-                len(_syntax_errors),
-            )
-            return True, (
-                "Error: CICD gh pr create BLOCKED — edited Python files fail py_compile:\n  - "
-                + "\n  - ".join(_syntax_errors)
-                + "\nFix the syntax errors and re-verify with `python3 -m py_compile <file>` "
-                "before opening the PR. If the error keeps moving line-to-line, "
-                "`git checkout HEAD -- <file>` and reapply the change with exact "
-                "indentation (cycle 65). The PR was NOT created."
-            )
-
-    return False, None
-
-
-def _cicd_verify_gh_mutation(command: str, result: str, log) -> str:
-    """Cycle 77 — verify claimed gh PR/issue mutations against GitHub's actual state.
-
-    Runs 142 + 146 hallucinated exec_command tool results that *looked* like
-    successful `gh pr create` / `gh pr merge` output (URLs, exit=0) but the
-    referenced PR did not actually exist on GitHub. The model then proceeded
-    as if the work was done.
-
-    This helper runs after any `gh pr create|merge|close|ready` or
-    `gh issue create|close` command. It extracts the PR/issue number the
-    model claimed in the tool output, queries GitHub directly for its real
-    state, and appends a SUPERVISION note to the tool result if the state
-    does not match the mutation's expected outcome. The note becomes part
-    of the tool-result the model sees next turn, so fabricated numbers are
-    corrected with real data the model cannot override.
-
-    Scoped to the CICD exec_command path; returns ``result`` unchanged for
-    non-gh commands so non-CICD runs see zero overhead.
-    """
-    action_match = re.search(r"\bgh\s+(pr|issue)\s+(create|merge|close|ready)\b", command)
-    if not action_match:
-        return result
-    kind_word, action = action_match.group(1), action_match.group(2)
-    # Forensic probe (cycle 77 step 3): prove the hook fires on gh mutations.
-    # Keep at INFO so it appears in the standard CICD run log.
-    log.info("cicd.gh_verify.enter kind=%s action=%s cmd_preview=%r",
-             kind_word, action, command[:80])
-    expected_state = {
-        "create": None,    # just needs to exist
-        "merge": "MERGED",
-        "close": "CLOSED",
-        "ready": "OPEN",
-    }[action]
-
-    # Parse claimed number from the result: URLs like .../pull/123 or .../issues/456
-    url_match = re.search(
-        r"github\.com/[^\s]+/(pull|issues)/(\d+)", result, re.IGNORECASE)
-    if not url_match:
-        # Also accept bare "#N" patterns in case gh output form differs
-        hash_match = re.search(r"(?:pull request|issue) #(\d+)", result, re.IGNORECASE)
-        if not hash_match:
-            return result
-        path = "pr" if kind_word == "pr" else "issue"
-        num = hash_match.group(1)
-    else:
-        path = "pr" if url_match.group(1).lower() == "pull" else "issue"
-        num = url_match.group(2)
-
-    try:
-        import subprocess
-        proc = subprocess.run(
-            ["gh", path, "view", num, "--json", "state,title"],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
-        log.warning("cicd.gh_verify.probe_failed path=%s num=%s error=%s", path, num, e)
-        return result
-
-    if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout).strip().splitlines()[-1][:160]
-        log.warning("cicd.gh_verify.missing path=%s num=%s", path, num)
-        return result + (
-            f"\n\n[CICD SUPERVISION (cycle 77): gh {path} view {num} failed — "
-            f"the {path} #{num} referenced in the tool output DOES NOT EXIST on GitHub. "
-            f"Do not proceed as if the {action} succeeded. "
-            f"gh stderr: {err}]"
-        )
-
-    try:
-        import json as _json
-        data = _json.loads(proc.stdout)
-        actual_state = (data.get("state") or "").upper()
-    except (ValueError, KeyError) as e:
-        log.warning("cicd.gh_verify.parse_failed num=%s error=%s", num, e)
-        return result
-
-    if expected_state and actual_state != expected_state:
-        log.warning(
-            "cicd.gh_verify.state_mismatch path=%s num=%s expected=%s actual=%s",
-            path, num, expected_state, actual_state,
-        )
-        return result + (
-            f"\n\n[CICD SUPERVISION (cycle 77): gh {path} view {num} reports state={actual_state}, "
-            f"but `gh {kind_word} {action}` claims {expected_state}. "
-            f"The {action} did NOT take effect as narrated. Investigate before proceeding.]"
-        )
-
-    return result
 
 
 # Load agent-specific tools from CWD/.agent/tools/ if it exists.
@@ -3421,28 +3024,6 @@ def _spill_initial_prompt(expanded, files, log):
 
 # ── Context window management ─────────────────────────────────────────
 
-def _cicd_checkpoint_text():
-    """The CICD phase checkpoint as one block of text, or "" when no phase is set.
-    Changes whenever a phase flips, a PR/issue/branch is learned or a file is edited."""
-    if not (_cicd_phase_state and any(_cicd_phase_state.values())):
-        return ""
-    phases = " | ".join(
-        f"{k.upper()} {'✓' if v else '✗'}"
-        for k, v in _cicd_phase_state.items()
-    )
-    phase_line = f"PHASE CHECKPOINT: {phases}"
-    if _cicd_issue_number:
-        phase_line += f"\nIssue: #{_cicd_issue_number}"
-    if _cicd_pr_number:
-        phase_line += f"  PR: #{_cicd_pr_number}"
-    if _cicd_branch:
-        phase_line += f"  Branch: {_cicd_branch}"
-    if _cicd_worktree_path:
-        phase_line += f"\nWorktree path: {_cicd_worktree_path} (ALL file edits and commands MUST target this path, not the repo clone)"
-    if _cicd_edited_files:
-        phase_line += f"\nFiles already edited (DO NOT re-verify — move to commit/push): {', '.join(sorted(_cicd_edited_files))}"
-    return phase_line
-
 
 def _build_context_footnote(summary_text, initial_files, volatile=None):
     """Build the synthetic context-restoration user message.
@@ -3480,7 +3061,7 @@ def _build_context_footnote(summary_text, initial_files, volatile=None):
         parts.append(f"PINNED INSTRUCTIONS (always follow these):\n{_pinned_instructions}")
     # CICD phase checkpoint — injected here so it survives summary compression
     if volatile:
-        phase_line = _cicd_checkpoint_text()
+        phase_line = _cicd.checkpoint_text()
         if phase_line:
             parts.append(phase_line)
     return {"role": "user", "content": "\n\n".join(parts)}
@@ -5480,24 +5061,10 @@ class _Run:
             "summary_gated": 0,          # T5.13 — summary skipped (under threshold)
         }
 
-        # CICD phase tracking — module-level globals so _build_context_message()
-        # can inject them into every context window, surviving summary compression.
-        global _cicd_phase_state, _cicd_issue_number, _cicd_pr_number, _cicd_branch, _cicd_edited_files, _cicd_worktree_path
-        _cicd_phase_state = {
-            "perceive": False,
-            "probe": False,
-            "decide": False,
-            "plan": False,
-            "implement": False,
-            "verify": False,
-            "track": False,
-        }
-        _cicd_issue_number = None
-        _cicd_pr_number = None
-        _cicd_branch = None
+        # CICD phase tracking — the module's state, so the context window and the summary
+        # prompt read the same values, surviving summary compression.
+        _cicd.reset()
         self._cicd_think_used = False  # reset each cycle; set True when think() is called
-        _cicd_edited_files = set()  # reset each cycle
-        _cicd_worktree_path = None  # reset each cycle
         self._cicd_pr_ready_called = False  # tracks whether `gh pr ready` was called before merge
         self._cicd_issue_view_called = False  # tracks whether `gh issue view` was called before merge (PRE-MERGE CHECK)
 
@@ -6295,7 +5862,7 @@ class _Run:
                 skill_suggestion=_skill_suggestion,
                 restart=_rs,
                 phase_line=self._phase_engine.checkpoint_line() if self._phase_engine is not None else None,
-                cicd_line=_cicd_checkpoint_text() if _prompt_caching_backend() else None,
+                cicd_line=_cicd.checkpoint_text() if _prompt_caching_backend() else None,
                 tool_hints=bool(_config.get("preferences", {}).get("tool_selection_hints")),
                 read_only_turns=self._read_only_turns, read_only_threshold=self._READ_ONLY_NUDGE_THRESHOLD,
                 repeat_msg=self._repeat_msg)
@@ -7140,7 +6707,7 @@ class _Run:
             # merge (reviewer role).  _cicd_phase_state["track"] is set when
             # `gh pr merge` exits 0.
             _has_persisted_work = (self._has_committed
-                                    or _cicd_phase_state.get("track", False)
+                                    or _cicd.phase_state.get("track", False)
                                     or self._has_reviewer_persisted)
             # Cycle 39: regex patterns for natural paraphrases ("cycle 249 is complete")
             _completion_signal_patterns = (
@@ -7324,8 +6891,8 @@ class _Run:
                 self.log.info("Hallucination guard: detected fabricated file read, correcting")
                 _emit("on_hallucination_stripped", "file_read")
                 telemetry.record_hallucination()
-            elif (_cicd_branch and _cicd_edited_files
-                  and not _cicd_pr_number and _cicd_issue_number):
+            elif (_cicd.branch and _cicd.edited_files
+                  and not _cicd.pr_number and _cicd.issue_number):
                 # Cycle 82 (runs 187+188 failure mode): builder edited files in
                 # the worktree, ran tests, said "I'm done", but never ran the
                 # commit + push + gh pr create sequence. Run 187 hit it after
@@ -7336,34 +6903,34 @@ class _Run:
                 if self._cycle_persisted:
                     self._missing = "PR open"
                     self._next_cmds = (
-                        f"  cat > /tmp/pr-body-{_cicd_issue_number}.md << 'EOF'\n"
-                        f"  Closes #{_cicd_issue_number}\n"
+                        f"  cat > /tmp/pr-body-{_cicd.issue_number}.md << 'EOF'\n"
+                        f"  Closes #{_cicd.issue_number}\n"
                         f"  <one-paragraph summary of what changed>\n"
                         f"  EOF\n"
-                        f"  gh pr create --draft --base main --head {_cicd_branch} \\\n"
-                        f"    --title 'CICD: <slug> (#{_cicd_issue_number})' \\\n"
-                        f"    --body \"$(cat /tmp/pr-body-{_cicd_issue_number}.md)\"\n"
+                        f"  gh pr create --draft --base main --head {_cicd.branch} \\\n"
+                        f"    --title 'CICD: <slug> (#{_cicd.issue_number})' \\\n"
+                        f"    --body \"$(cat /tmp/pr-body-{_cicd.issue_number}.md)\"\n"
                     )
                 else:
                     self._missing = "commit + push + PR open"
                     self._next_cmds = (
-                        f"  cd <WORKTREE_ROOT>/{_cicd_branch.split('/', 1)[-1] if '/' in _cicd_branch else _cicd_branch}\n"
+                        f"  cd <WORKTREE_ROOT>/{_cicd.branch.split('/', 1)[-1] if '/' in _cicd.branch else _cicd.branch}\n"
                         f"  git add <edited files>\n"
-                        f"  git commit -m 'CICD <N> (#{_cicd_issue_number}): <what>'\n"
-                        f"  git push -u origin {_cicd_branch}\n"
-                        f"  cat > /tmp/pr-body-{_cicd_issue_number}.md << 'EOF'\n"
-                        f"  Closes #{_cicd_issue_number}\n"
+                        f"  git commit -m 'CICD <N> (#{_cicd.issue_number}): <what>'\n"
+                        f"  git push -u origin {_cicd.branch}\n"
+                        f"  cat > /tmp/pr-body-{_cicd.issue_number}.md << 'EOF'\n"
+                        f"  Closes #{_cicd.issue_number}\n"
                         f"  <one-paragraph summary of what changed>\n"
                         f"  EOF\n"
-                        f"  gh pr create --draft --base main --head {_cicd_branch} \\\n"
-                        f"    --title 'CICD: <slug> (#{_cicd_issue_number})' \\\n"
-                        f"    --body \"$(cat /tmp/pr-body-{_cicd_issue_number}.md)\"\n"
+                        f"  gh pr create --draft --base main --head {_cicd.branch} \\\n"
+                        f"    --title 'CICD: <slug> (#{_cicd.issue_number})' \\\n"
+                        f"    --body \"$(cat /tmp/pr-body-{_cicd.issue_number}.md)\"\n"
                     )
                 self.nudge = (
-                    f"You edited files in worktree on `{_cicd_branch}` but {self._missing} "
+                    f"You edited files in worktree on `{_cicd.branch}` but {self._missing} "
                     f"is incomplete (step 8 of MANDATORY IMPLEMENTATION WORKFLOW). "
                     f"Tests passing is NOT the cycle ending — the cycle ends when "
-                    f"the PR is open with `Closes #{_cicd_issue_number}`. Run these "
+                    f"the PR is open with `Closes #{_cicd.issue_number}`. Run these "
                     f"commands as your next tool calls:\n{self._next_cmds}"
                     f"Do not say you're done until `gh pr create` exits 0."
                 )
@@ -7896,7 +7463,7 @@ class _Run:
         _grace_exhausted_block = False
         if (self._cycle_persisted
                 and (self.turn - (self._cycle_persisted_turn or self.turn)) >= self._CYCLE_GRACE_TURNS
-                and not _is_track_scope_call(self.func_name, self.func_args)):
+                and not _cicd.is_track_scope_call(self.func_name, self.func_args)):
             _grace_exhausted_block = True
             self._grace_tool_blocks += 1
             self.log.info("Grace exhausted: non-TRACK tool call blocked (%s, block #%d)",
@@ -7912,7 +7479,7 @@ class _Run:
             )
             self._cicd_blocked, self.cicd_error = False, None
         else:
-            self._cicd_blocked, self.cicd_error = _validate_tool_call(self.func_name, self.func_args, self._cicd_issue_view_called, self.log, self._is_cicd_builder, self._is_reviewer_role)
+            self._cicd_blocked, self.cicd_error = _cicd.validate_tool_call(self.func_name, self.func_args, self._cicd_issue_view_called, self.log, self._is_cicd_builder, self._is_reviewer_role)
         # WS1: PhaseEngine pre-dispatch gate (per-phase tool
         # rules). Only consulted when an engine is active.
         _phase_blocked = False
@@ -8062,7 +7629,7 @@ class _Run:
         if self.func_name == "exec_command" and isinstance(self.func_args, dict):
             _cmd_str = self.func_args.get("command", "")
             if _cmd_str:
-                self.result_str = _cicd_verify_gh_mutation(_cmd_str, self.result_str, self.log)
+                self.result_str = _cicd.verify_gh_mutation(_cmd_str, self.result_str, self.log)
 
         # F3: an oversized tool result is SPILLED to a file and replaced by a
         # reference + excerpt (lossless — the old head/tail truncation threw the
@@ -8366,15 +7933,14 @@ class _Run:
             (self.func_name == "file" and self.func_args.get("action") in ("write", "create"))
             or self.func_name in ("write_file", "edit_file")
         ):
-            self._has_edited, self._has_reviewer_persisted = _handle_cicd_file_edit(
-                self.func_args, self.conversation_history, _cicd_worktree_path, _cicd_phase_state, 
-                _cicd_edited_files, self._has_edited, self._has_reviewer_persisted, self.turn, self.log
+            self._has_edited, self._has_reviewer_persisted = _cicd.handle_file_edit(
+                self.func_args, self.conversation_history, _cicd.worktree_path, _cicd.phase_state, 
+                _cicd.edited_files, self._has_edited, self._has_reviewer_persisted, self.turn, self.log
             )
 
     def _exec_followups(self):
         """What an exec_command result says about the run: commits, pushes, worktrees, PRs,
         reviews, merges (the CICD phase trackers)."""
-        global _cicd_branch, _cicd_issue_number, _cicd_pr_number, _cicd_worktree_path
         # Track commits and pushes through exec_command
         if self.func_name == "exec_command" and isinstance(self.func_args, dict):
             _cmd = self.func_args.get("command", "")
@@ -8383,11 +7949,11 @@ class _Run:
             # "I ran the tests / verified" completion claim.
             if any(_vt in _cmd_normalized.lower() for _vt in _VERIFY_CMD_TOKENS):
                 self._ran_verification = True
-            if _cmd_has(_cmd, "git commit"):  # WS8.1: anchored, heredoc/quote-blind
+            if _cicd.cmd_has(_cmd, "git commit"):  # WS8.1: anchored, heredoc/quote-blind
                 self._has_committed = True
                 self._has_edited = True  # commit implies edit happened
                 self.log.info("Commit detected — completion signals now allowed")
-                _cicd_phase_state["implement"] = True
+                _cicd.phase_state["implement"] = True
                 # Cycle 61: if commit fails with nothing staged, builder never wrote test code
                 if "no changes added to commit" in self.result_str:
                     self.conversation_history.append({
@@ -8401,7 +7967,7 @@ class _Run:
                             "git add tests/test_<name>.py && git commit -m '<message>'.]"
                         ),
                     })
-            if _cmd_has(_cmd, "git push") and "exit=0" in self.result_str:  # Cycle 35+36 anchoring; WS8.1: heredoc/quote-blind (a doc line `&& git push` must not fake-persist the cycle)
+            if _cicd.cmd_has(_cmd, "git push") and "exit=0" in self.result_str:  # Cycle 35+36 anchoring; WS8.1: heredoc/quote-blind (a doc line `&& git push` must not fake-persist the cycle)
                 if not self._cycle_persisted:
                     self.log.info("Cycle persist detected (git push exit=0) — auto-nudge disabled")
                 # Interactive sessions keep working after a push: the
@@ -8409,7 +7975,7 @@ class _Run:
                 if _AUTO_MODE:
                     self._cycle_persisted = True
                     self._cycle_persisted_turn = self._cycle_persisted_turn or self.turn
-                _cicd_phase_state["verify"] = True
+                _cicd.phase_state["verify"] = True
                 if self._phase_engine is not None:
                     self._phase_engine.mark_persisted("git push")
                 # Cycle 37: block direct push to main — builder must use feature branches.
@@ -8449,13 +8015,13 @@ class _Run:
                 })
 
             # ── CICD phase detection ──
-            if _cmd_has(_cmd, "gh issue list") or _cmd_has(_cmd, "gh issue search"):  # WS8.1
-                _cicd_phase_state["perceive"] = True
+            if _cicd.cmd_has(_cmd, "gh issue list") or _cicd.cmd_has(_cmd, "gh issue search"):  # WS8.1
+                _cicd.phase_state["perceive"] = True
             if ("pytest" in _cmd or "python3 -m pytest" in _cmd
                     or "cat " in _cmd or "grep " in _cmd):
-                if _cicd_phase_state["perceive"]:
-                    _cicd_phase_state["probe"] = True
-            if _cmd_has(_cmd, "gh issue create") and "exit=0" in self.result_str:  # Cycles 36/55 anchoring; WS8.1: heredoc/quote-blind
+                if _cicd.phase_state["perceive"]:
+                    _cicd.phase_state["probe"] = True
+            if _cicd.cmd_has(_cmd, "gh issue create") and "exit=0" in self.result_str:  # Cycles 36/55 anchoring; WS8.1: heredoc/quote-blind
                 if not self._cicd_think_used:
                     self.log.warning("CICD: gh issue create without think — injecting reminder")
                     self.conversation_history.append({
@@ -8481,27 +8047,27 @@ class _Run:
                             "Do this before opening the PR.]"
                         ),
                     })
-                _cicd_phase_state["decide"] = True
+                _cicd.phase_state["decide"] = True
                 self._cicd_think_used = False  # reset for next gate (verdict)
                 # Extract issue number from gh output
                 _issue_match = re.search(
                     r'issues/(\d+)|#(\d+)|Issue #(\d+)', self.result_str
                 )
                 if _issue_match:
-                    _cicd_issue_number = next(
+                    _cicd.issue_number = next(
                         g for g in _issue_match.groups() if g
                     )
                     self.log.info("CICD phase: issue #%s filed",
-                             _cicd_issue_number)
-            if _cmd_has(_cmd, "git worktree add") and "exit=0" in self.result_str:  # WS8.1 (run 114: heredoc match here mis-captured the worktree path → guard-misdirection loop, turns 18-77)
-                _cicd_phase_state["implement"] = True
-                _wt_path_match = re.search(r'git\s+worktree\s+add\s+(?:-b\s+\S+\s+|--?[-\w]+\s+)*(\S+)', _strip_noncommand_text(_cmd))
+                             _cicd.issue_number)
+            if _cicd.cmd_has(_cmd, "git worktree add") and "exit=0" in self.result_str:  # WS8.1 (run 114: heredoc match here mis-captured the worktree path → guard-misdirection loop, turns 18-77)
+                _cicd.phase_state["implement"] = True
+                _wt_path_match = re.search(r'git\s+worktree\s+add\s+(?:-b\s+\S+\s+|--?[-\w]+\s+)*(\S+)', _cicd.strip_noncommand_text(_cmd))
                 if _wt_path_match:
-                    _cicd_worktree_path = _wt_path_match.group(1)
-                    self.log.info("CICD: worktree path captured: %s", _cicd_worktree_path)
+                    _cicd.worktree_path = _wt_path_match.group(1)
+                    self.log.info("CICD: worktree path captured: %s", _cicd.worktree_path)
                 _branch_match = re.search(r'-b\s+(\S+)', _cmd)
                 if _branch_match:
-                    _cicd_branch = _branch_match.group(1)
+                    _cicd.branch = _branch_match.group(1)
             # Cycle 82 capture-fix: when builder claims an EXISTING
             # issue via `gh issue view N` or `gh issue edit N`, also
             # capture the issue number so cycle 82's nudge can fire
@@ -8509,16 +8075,16 @@ class _Run:
             # this gap: builder used `gh issue view 397`, which
             # never set `_cicd_issue_number`, so cycle 82's elif
             # condition `and _cicd_issue_number` was always False.
-            if (not _cicd_issue_number) and "exit=0" in self.result_str:
+            if (not _cicd.issue_number) and "exit=0" in self.result_str:
                 _existing_match = re.search(
                     r'^gh\s+issue\s+(?:view|edit|comment)\s+(\d+)\b',
                     _cmd.lstrip(),
                 )
                 if _existing_match:
-                    _cicd_issue_number = _existing_match.group(1)
+                    _cicd.issue_number = _existing_match.group(1)
                     self.log.info("CICD phase: issue #%s claimed (existing)",
-                             _cicd_issue_number)
-            if _cmd_has(_cmd, "gh pr create") and "exit=0" in self.result_str:  # WS8.1
+                             _cicd.issue_number)
+            if _cicd.cmd_has(_cmd, "gh pr create") and "exit=0" in self.result_str:  # WS8.1
                 # cycle 87 (run 192 false-positive): only recognise a
                 # real PR URL (`pull/NNN`) as proof the PR was created.
                 # The old `#(\d+)` fallback fired on `Closes #424`
@@ -8532,26 +8098,26 @@ class _Run:
                 # PRs" early-exit and cause confusing downstream state).
                 _pr_match = re.search(r'pull/(\d+)', self.result_str)
                 if _pr_match:
-                    _cicd_pr_number = _pr_match.group(1)
+                    _cicd.pr_number = _pr_match.group(1)
                     self.log.info("CICD phase: PR #%s opened",
-                             _cicd_pr_number)
+                             _cicd.pr_number)
                 # Guard: PR body must contain `Closes #N` trailer
                 # so the linked issue auto-closes on merge. Missing
                 # trailer is a recurring builder failure that
                 # causes the reviewer to CLOSE the PR.
-                if not re.search(r'Closes\s+#\d+', _cmd, re.IGNORECASE) and _cicd_pr_number:
+                if not re.search(r'Closes\s+#\d+', _cmd, re.IGNORECASE) and _cicd.pr_number:
                     self.log.warning("CICD: gh pr create without `Closes #N` trailer — injecting reminder")
                     self.conversation_history.append({
                         "role": "user",
                         "content": (
-                            f"[SYSTEM: PR #{_cicd_pr_number} was created without a `Closes #<issue>` "
+                            f"[SYSTEM: PR #{_cicd.pr_number} was created without a `Closes #<issue>` "
                             f"trailer in the body. The reviewer will CLOSE this PR for the missing "
                             f"trailer (per pre-merge check rule #4), wasting the cycle. Fix it NOW: "
-                            f"`gh pr edit {_cicd_pr_number} --body \"<existing body>\\n\\nCloses #<issue>\"` "
+                            f"`gh pr edit {_cicd.pr_number} --body \"<existing body>\\n\\nCloses #<issue>\"` "
                             f"— use the real issue number this cycle targets.]"
                         ),
                     })
-            if (_cmd_has(_cmd, "gh pr review")  # WS8.1
+            if (_cicd.cmd_has(_cmd, "gh pr review")  # WS8.1
                     and ("--request-changes" in _cmd
                          or "--approve" in _cmd
                          or "--comment" in _cmd)
@@ -8565,7 +8131,7 @@ class _Run:
                 if not self._has_reviewer_persisted:
                     self.log.info("Reviewer persistence detected (reviews.md append) — completion signals now allowed")
                 self._has_reviewer_persisted = True
-            if _cmd_has(_cmd, "gh pr review") and "--approve" in _cmd:  # WS8.1
+            if _cicd.cmd_has(_cmd, "gh pr review") and "--approve" in _cmd:  # WS8.1
                 if not self._cicd_think_used:
                     self.log.warning("CICD: gh pr review --approve without think — injecting reminder")
                     self.conversation_history.append({
@@ -8585,10 +8151,10 @@ class _Run:
                         "`gh pr ready <N>` (separate command), then "
                         "`gh pr merge <N> --squash` (separate command).]",
                     })
-            if _cmd_has(_cmd, "gh pr ready") and "exit=0" in self.result_str:  # WS8.1
+            if _cicd.cmd_has(_cmd, "gh pr ready") and "exit=0" in self.result_str:  # WS8.1
                 self._cicd_pr_ready_called = True
                 self.log.info("CICD: gh pr ready called")
-            if _cmd_has(_cmd, "gh issue view") and ("exit=0" in self.result_str or "--json" in _cmd):  # WS8.1
+            if _cicd.cmd_has(_cmd, "gh issue view") and ("exit=0" in self.result_str or "--json" in _cmd):  # WS8.1
                 # Cycle 25: validate state + labels in the gh issue view result.
                 # Calling gh issue view is necessary but not sufficient — the
                 # issue must be OPEN and carry cicd + in-progress (or cicd-cycle-*)
@@ -8694,13 +8260,13 @@ class _Run:
                         ),
                     })
                 if "exit=0" in self.result_str:
-                    _cicd_phase_state["track"] = True
+                    _cicd.phase_state["track"] = True
             # Detect plan file writes via exec_command (cat/heredoc)
             if ("improvements/" in _cmd
                     and ("cat >" in _cmd or "cat >>" in _cmd
                          or "echo" in _cmd or "tee" in _cmd)
                     and "exit=0" in self.result_str):
-                _cicd_phase_state["plan"] = True
+                _cicd.phase_state["plan"] = True
                 self.log.info("CICD phase: plan written via exec_command")
             # Record cycle timestamp automatically
             if _tracker:

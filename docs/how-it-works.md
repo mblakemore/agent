@@ -76,6 +76,7 @@ checkpoint.py         # The checkpoint `-c` resumes from, and the .agent/ direct
 memory_pressure.py    # The RSS watermark and the spill of oversized tool output
 summarize.py          # The summary of what left the window: the prompt, the worker thread, the idle watcher
 tool_args.py          # Tool arguments the model got wrong: sanitize, repair, leaked control tokens
+cicd_gates.py         # The CICD loop's gates (merge, PR, push, compile) and the phase state they guard
 job.py                # The `--job` file: schema, prompt, env allowlist, acceptance re-run
 system_prompt.py      # The per-turn lines, the static/dynamic split, the runtime note
 live_input.py         # The always-live prompt thread and the terminal borrow

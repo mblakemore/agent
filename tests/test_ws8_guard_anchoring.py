@@ -14,6 +14,7 @@ import logging
 
 import pytest
 
+import cicd_gates
 import agent
 
 
@@ -25,28 +26,28 @@ log = logging.getLogger("test_ws8")
 class TestStripNoncommandText:
     def test_heredoc_body_removed(self):
         cmd = "cat << 'EOF' > doc.md\nrun git worktree add /tmp/x first\nEOF"
-        out = agent._strip_noncommand_text(cmd)
+        out = cicd_gates.strip_noncommand_text(cmd)
         assert "worktree" not in out
 
     def test_unterminated_heredoc_removed(self):
         cmd = "cat << EOF > doc.md\n&& git push origin main"
-        out = agent._strip_noncommand_text(cmd)
+        out = cicd_gates.strip_noncommand_text(cmd)
         assert "git push" not in out
 
     def test_single_quotes_removed(self):
-        out = agent._strip_noncommand_text("echo 'gh pr merge 5'")
+        out = cicd_gates.strip_noncommand_text("echo 'gh pr merge 5'")
         assert "merge" not in out
 
     def test_double_quotes_removed(self):
-        out = agent._strip_noncommand_text('echo "gh pr merge 5"')
+        out = cicd_gates.strip_noncommand_text('echo "gh pr merge 5"')
         assert "merge" not in out
 
     def test_line_continuation_collapsed(self):
-        out = agent._strip_noncommand_text("git \\\ncommit -m x")
+        out = cicd_gates.strip_noncommand_text("git \\\ncommit -m x")
         assert "\\\n" not in out
 
     def test_plain_command_untouched(self):
-        assert "git commit" in agent._strip_noncommand_text("git commit -m 'x'")
+        assert "git commit" in cicd_gates.strip_noncommand_text("git commit -m 'x'")
 
 
 class TestCmdHas:
@@ -59,7 +60,7 @@ class TestCmdHas:
         "echo $(git worktree add /tmp/wt)",
     ])
     def test_real_command_positions_match(self, cmd):
-        assert agent._cmd_has(cmd, "git worktree add")
+        assert cicd_gates.cmd_has(cmd, "git worktree add")
 
     @pytest.mark.parametrize("cmd", [
         # The run-114 class: keyword inside a heredoc body.
@@ -71,18 +72,18 @@ class TestCmdHas:
         "echo describe-git worktree add",
     ])
     def test_literal_text_does_not_match(self, cmd):
-        assert not agent._cmd_has(cmd, "git worktree add")
+        assert not cicd_gates.cmd_has(cmd, "git worktree add")
 
     def test_git_push_in_heredoc_does_not_fake_persist(self):
         cmd = "cat << EOF >> journal.md\nthen we ran && git push\nEOF"
-        assert not agent._cmd_has(cmd, "git push")
-        assert agent._cmd_has("git add x && git push origin HEAD", "git push")
+        assert not cicd_gates.cmd_has(cmd, "git push")
+        assert cicd_gates.cmd_has("git add x && git push origin HEAD", "git push")
 
 
 # ------------------------------------------------- WS8.1/8.2 validate guards
 
 def _validate(cmd, builder=False, reviewer=False, issue_view=False):
-    return agent._validate_tool_call(
+    return cicd_gates.validate_tool_call(
         "exec_command", {"command": cmd}, issue_view, log,
         is_cicd_builder=builder, is_cicd_reviewer=reviewer,
     )
@@ -143,7 +144,7 @@ class TestTrackScope:
         ("exec_command", {"command": "git worktree remove /tmp/wt --force"}),
     ])
     def test_track_scope_allowed(self, name, args):
-        assert agent._is_track_scope_call(name, args)
+        assert cicd_gates.is_track_scope_call(name, args)
 
     @pytest.mark.parametrize("name,args", [
         ("search_files", {"pattern": "def foo"}),
@@ -152,7 +153,7 @@ class TestTrackScope:
         ("web_fetch", {"url": "https://example.com"}),
     ])
     def test_new_cycle_work_not_track_scope(self, name, args):
-        assert not agent._is_track_scope_call(name, args)
+        assert not cicd_gates.is_track_scope_call(name, args)
 
 
 # ------------------------------------------------ reviewer draft path (loop)

@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import cicd_gates
 import agent
 import summarize
 import context_window
@@ -332,9 +333,9 @@ class TestPrefixDiff:
 
 class TestLeadMessageIsStable:
     def _cicd(self, monkeypatch):
-        monkeypatch.setattr(agent, "_cicd_phase_state", {"implement": True, "verify": False})
-        monkeypatch.setattr(agent, "_cicd_edited_files", {"a.py"})
-        monkeypatch.setattr(agent, "_cicd_branch", "fix/x")
+        monkeypatch.setattr(cicd_gates, "phase_state", {"implement": True, "verify": False})
+        monkeypatch.setattr(cicd_gates, "edited_files", {"a.py"})
+        monkeypatch.setattr(cicd_gates, "branch", "fix/x")
 
     def test_phase_state_rides_in_the_lead_only_on_a_sliding_window_backend(self, monkeypatch):
         self._cicd(monkeypatch)
@@ -348,9 +349,9 @@ class TestLeadMessageIsStable:
         self._cicd(monkeypatch)
         monkeypatch.setattr(agent, "_main_backend", MagicMock(kind="aicommons"))
         before = agent._build_context_footnote("s", "ID")
-        agent._cicd_phase_state["verify"] = True
-        agent._cicd_edited_files.add("b.py")
-        agent._cicd_pr_number = "77"
+        cicd_gates.phase_state["verify"] = True
+        cicd_gates.edited_files.add("b.py")
+        cicd_gates.pr_number = "77"
         assert agent._build_context_footnote("s", "ID") == before
 
     def test_the_checkpoint_rides_in_the_runtime_note_instead(self, agent_loop_mocks, monkeypatch):
@@ -359,7 +360,7 @@ class TestLeadMessageIsStable:
                             MagicMock(kind="aicommons", model="m", honours_system=True, base_url="http://x"))
 
         def tool(**kw):
-            agent._cicd_phase_state["implement"] = True     # what commit detection does
+            cicd_gates.phase_state["implement"] = True     # what commit detection does
             return "contents"
         monkeypatch.setitem(MAP_FN, "read_file", tool)
         agent_loop_mocks.script(_tool_turn_with_usage("t1", 0, 900, 2),

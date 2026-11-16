@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 import os
 from pathlib import Path
+import cicd_gates
 from agent import _check_worktree_guard, _detect_hallucinated_read, _handle_cicd_file_edit
 
 def test_check_worktree_guard_violation():
@@ -69,7 +70,7 @@ def test_handle_cicd_file_edit():
     
     # Setup paths for the guard
     # We'll mock _check_worktree_guard to avoid complex path setup
-    with patch("agent._check_worktree_guard") as mock_guard:
+    with patch("cicd_gates.check_worktree_guard") as mock_guard:
         mock_guard.return_value = (False, None)
         
         # Test basic edit
@@ -101,7 +102,7 @@ def test_handle_cicd_file_edit_violation():
     state = {}
     
     # Mock guard to return a violation
-    with patch("agent._check_worktree_guard") as mock_guard:
+    with patch("cicd_gates.check_worktree_guard") as mock_guard:
         mock_guard.return_value = (True, "/correct/path/file.py")
         
         args = {"path": "/wrong/path/file.py"}

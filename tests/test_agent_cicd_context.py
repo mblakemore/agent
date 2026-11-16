@@ -1,16 +1,24 @@
 import os
 import pytest
+import cicd_gates
 import agent
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cicd_state():
+    """These tests assign the module's state directly; leave a new cycle's state behind."""
+    yield
+    cicd_gates.reset()
 
 def test_build_context_footnote_cicd_checkpoint():
     # Setup mock state for CICD
     # These are module-level variables in agent.py
-    agent._cicd_phase_state = {"perceive": True, "probe": False, "decide": False}
-    agent._cicd_issue_number = "123"
-    agent._cicd_pr_number = "456"
-    agent._cicd_branch = "cicd/test-branch"
-    agent._cicd_worktree_path = "/tmp/worktree"
-    agent._cicd_edited_files = {"file1.py", "file2.py"}
+    cicd_gates.phase_state = {"perceive": True, "probe": False, "decide": False}
+    cicd_gates.issue_number = "123"
+    cicd_gates.pr_number = "456"
+    cicd_gates.branch = "cicd/test-branch"
+    cicd_gates.worktree_path = "/tmp/worktree"
+    cicd_gates.edited_files = {"file1.py", "file2.py"}
     
     summary_text = "Some work done"
     initial_files = "Initial file content"
@@ -31,18 +39,18 @@ def test_build_context_footnote_cicd_checkpoint():
 
 def test_build_context_footnote_no_cicd():
     # Reset state
-    agent._cicd_phase_state = {}
-    agent._cicd_issue_number = None
-    agent._cicd_pr_number = None
-    agent._cicd_branch = None
-    agent._cicd_worktree_path = None
-    agent._cicd_edited_files = None
+    cicd_gates.phase_state = {}
+    cicd_gates.issue_number = None
+    cicd_gates.pr_number = None
+    cicd_gates.branch = None
+    cicd_gates.worktree_path = None
+    cicd_gates.edited_files = None
     
     result = agent._build_context_footnote("Summary", "Initial")
     assert "PHASE CHECKPOINT" not in result["content"]
 
 def test_build_context_footnote_empty_phase_state():
     # Case where _cicd_phase_state exists but all values are False
-    agent._cicd_phase_state = {"perceive": False, "probe": False}
+    cicd_gates.phase_state = {"perceive": False, "probe": False}
     result = agent._build_context_footnote("Summary", "Initial")
     assert "PHASE CHECKPOINT" not in result["content"]

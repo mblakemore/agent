@@ -2,6 +2,7 @@ import pytest
 import requests
 from unittest.mock import patch, MagicMock
 import summarize
+import cicd_gates
 from agent import (
     _format_for_summary, 
     _summary_request, 
@@ -119,8 +120,8 @@ def test_build_summary_prompt_no_old():
     assert "previous summary" not in prompt
     assert "New" in prompt
 
-@patch("agent._cicd_worktree_path", "path/to/worktree")
-@patch("agent._cicd_issue_number", 205)
+@patch("cicd_gates.worktree_path", "path/to/worktree")
+@patch("cicd_gates.issue_number", 205)
 def test_build_summary_prompt_cicd_facts():
     prompt = _build_summary_prompt(None, [])
     assert "Worktree path: path/to/worktree" in prompt

@@ -3,6 +3,7 @@ import logging
 import json
 from unittest.mock import patch, MagicMock
 import agent
+import cicd_gates
 from agent import run_agent_single
 
 logging.basicConfig(level=logging.ERROR)
@@ -48,9 +49,9 @@ def test_cicd_auto_nudge_missing_pr(mock_config, mock_llm, mock_emit):
     def llm_with_cicd_state(*args, **kwargs):
         call_count[0] += 1
         if call_count[0] == 1:
-            agent_module._cicd_issue_number = 466
-            agent_module._cicd_branch = 'cicd/test-branch'
-            agent_module._cicd_edited_files = {'agent.py'}
+            cicd_gates.issue_number = 466
+            cicd_gates.branch = 'cicd/test-branch'
+            cicd_gates.edited_files = {'agent.py'}
         return create_mock_response(content="I have finished the edits.")
 
     mock_llm.side_effect = llm_with_cicd_state
@@ -77,9 +78,9 @@ def test_cicd_auto_nudge_missing_commit(mock_config, mock_llm, mock_emit):
     def llm_with_cicd_state(*args, **kwargs):
         call_count[0] += 1
         if call_count[0] == 1:
-            agent_module._cicd_issue_number = 466
-            agent_module._cicd_branch = 'cicd/test-branch'
-            agent_module._cicd_edited_files = {'agent.py'}
+            cicd_gates.issue_number = 466
+            cicd_gates.branch = 'cicd/test-branch'
+            cicd_gates.edited_files = {'agent.py'}
         return create_mock_response(content="I have finished the edits.")
 
     mock_llm.side_effect = llm_with_cicd_state
@@ -110,9 +111,9 @@ def test_cicd_auto_nudge_persisted_pr_only(mock_config, mock_llm, mock_emit):
     def llm_with_push(*args, **kwargs):
         call_count[0] += 1
         if call_count[0] == 1:
-            agent_module._cicd_issue_number = 466
-            agent_module._cicd_branch = 'cicd/test-branch'
-            agent_module._cicd_edited_files = {'agent.py'}
+            cicd_gates.issue_number = 466
+            cicd_gates.branch = 'cicd/test-branch'
+            cicd_gates.edited_files = {'agent.py'}
             return create_mock_response(tool_calls=[push_tool])
         return create_mock_response(content="Done.")
 

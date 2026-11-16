@@ -3,6 +3,7 @@ import os
 import tempfile
 from unittest.mock import patch, MagicMock
 import tool_args
+import cicd_gates
 import agent
 import summarize
 
@@ -19,7 +20,7 @@ def test_validate_tool_call_reads_pr_body_success():
             f_real.write("Closes #324\n")
     try:
         cmd = f'gh pr create --body "$(cat {fname})"'
-        blocked, msg = agent._validate_tool_call("exec_command", {"command": cmd}, False, log, is_cicd_builder=True)
+        blocked, msg = cicd_gates.validate_tool_call("exec_command", {"command": cmd}, False, log, is_cicd_builder=True)
         assert not blocked, f"Tool call was blocked: {msg}"
     finally:
         if os.path.exists("/tmp/pr-body-324.md"):
@@ -35,21 +36,21 @@ def test_salvage_tool_args_garbled():
 
 def test_build_summary_prompt_with_cicd_globals():
     # Target Lines 837-843
-    orig = (agent._cicd_worktree_path, agent._cicd_edited_files, agent._cicd_issue_number, agent._cicd_pr_number, agent._cicd_branch)
+    orig = (cicd_gates.worktree_path, cicd_gates.edited_files, cicd_gates.issue_number, cicd_gates.pr_number, cicd_gates.branch)
     try:
-        agent._cicd_worktree_path = "/tmp/worktree"
-        agent._cicd_edited_files = {"agent.py"}
-        agent._cicd_issue_number = 324
-        agent._cicd_pr_number = 325
-        agent._cicd_branch = "cicd/324-test"
+        cicd_gates.worktree_path = "/tmp/worktree"
+        cicd_gates.edited_files = {"agent.py"}
+        cicd_gates.issue_number = 324
+        cicd_gates.pr_number = 325
+        cicd_gates.branch = "cicd/324-test"
         
         prompt = summarize.build_summary_prompt("old summary", [])
         assert "Worktree path: /tmp/worktree" in prompt
         assert "Issue: #324" in prompt
         assert "PR: #325" in prompt
     finally:
-        (agent._cicd_worktree_path, agent._cicd_edited_files, agent._cicd_issue_number,
-         agent._cicd_pr_number, agent._cicd_branch) = orig
+        (cicd_gates.worktree_path, cicd_gates.edited_files, cicd_gates.issue_number,
+         cicd_gates.pr_number, cicd_gates.branch) = orig
 
 def test_setup_logger_log_dir_override(tmp_path):
     # Target Line 1169

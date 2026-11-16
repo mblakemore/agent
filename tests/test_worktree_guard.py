@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 import pytest
+import cicd_gates
 import agent
 
 @pytest.fixture
@@ -37,12 +38,12 @@ def fs_setup(tmp_path):
 
 def test_worktree_guard_none_paths(fs_setup):
     # 1. worktree_path is None
-    res, path = agent._check_worktree_guard("some_file", None)
+    res, path = cicd_gates.check_worktree_guard("some_file", None)
     assert res is False
     assert path is None
 
     # 2. file_path is None
-    res, path = agent._check_worktree_guard(None, fs_setup["worktree"])
+    res, path = cicd_gates.check_worktree_guard(None, fs_setup["worktree"])
     assert res is False
     assert path is None
 
@@ -52,19 +53,19 @@ def test_worktree_guard_logic(fs_setup):
         
         # 3. file_path is outside the cwd
         # Should return (False, None)
-        res, path = agent._check_worktree_guard(fs_setup["external"], fs_setup["worktree"])
+        res, path = cicd_gates.check_worktree_guard(fs_setup["external"], fs_setup["worktree"])
         assert res is False
         assert path is None
 
         # 4. file_path is inside the worktree_path
         # Should return (False, None) because it's already "safe"
-        res, path = agent._check_worktree_guard(fs_setup["inside_wt"], fs_setup["worktree"])
+        res, path = cicd_gates.check_worktree_guard(fs_setup["inside_wt"], fs_setup["worktree"])
         assert res is False
         assert path is None
 
         # 5. file_path is inside the cwd but NOT inside the worktree_path
         # Should return (True, correction_path)
-        res, path = agent._check_worktree_guard(fs_setup["outside_wt"], fs_setup["worktree"])
+        res, path = cicd_gates.check_worktree_guard(fs_setup["outside_wt"], fs_setup["worktree"])
         assert res is True
         # The correction should be: worktree_path + relative_path_from_cwd
         expected_correction = os.path.join(fs_setup["worktree"], "outside_wt.txt")
@@ -74,6 +75,6 @@ def test_worktree_guard_exception_handling(fs_setup):
     # Test that the try-except block handles invalid paths gracefully
     with patch("agent.Path.cwd", return_value=fs_setup["cwd"]):
         # Passing something that isn't a path-like object to trigger an exception
-        res, path = agent._check_worktree_guard(12345, fs_setup["worktree"])
+        res, path = cicd_gates.check_worktree_guard(12345, fs_setup["worktree"])
         assert res is False
         assert path is None

@@ -1,5 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
+import cicd_gates
 import agent
 
 def test_run_agent_interactive_boot_coverage():
@@ -62,7 +63,7 @@ def test_check_worktree_guard_violation():
     # File inside cwd but OUTSIDE worktree
     file_path = cwd / "forbidden_file.txt"
     
-    is_violation, correction = agent._check_worktree_guard(str(file_path), str(wt))
+    is_violation, correction = cicd_gates.check_worktree_guard(str(file_path), str(wt))
     
     assert is_violation is True
     assert str(wt) in correction
@@ -81,7 +82,7 @@ def test_check_worktree_guard_no_violation():
     # File inside worktree
     file_path = wt / "safe_file.txt"
     
-    is_violation, correction = agent._check_worktree_guard(str(file_path), str(wt))
+    is_violation, correction = cicd_gates.check_worktree_guard(str(file_path), str(wt))
     
     assert is_violation is False
     assert correction is None
@@ -90,5 +91,5 @@ def test_check_worktree_guard_no_violation():
 
 def test_check_worktree_guard_none_inputs():
     """Cover the None/empty inputs (line 100)."""
-    assert agent._check_worktree_guard(None, "/tmp") == (False, None)
-    assert agent._check_worktree_guard("/tmp", None) == (False, None)
+    assert cicd_gates.check_worktree_guard(None, "/tmp") == (False, None)
+    assert cicd_gates.check_worktree_guard("/tmp", None) == (False, None)

@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import tool_args
+import cicd_gates
 import agent
 import summarize
 from unittest.mock import patch, MagicMock
@@ -15,7 +16,7 @@ log = logging.getLogger(__name__)
 def test_validate_tool_call_pr_body_oserror():
     # Targets lines 332-333: except OSError: pass
     cmd = 'gh pr create --body "$(cat /tmp/pr-body-99999.md)"'
-    blocked, msg = agent._validate_tool_call("exec_command", {"command": cmd}, False, log, is_cicd_builder=True)
+    blocked, msg = cicd_gates.validate_tool_call("exec_command", {"command": cmd}, False, log, is_cicd_builder=True)
     # OSError caught and passed — guard falls through to check Closes #N in _precmd itself
     # Since there's no Closes #N in the command string, it should be blocked.
     assert blocked
@@ -50,7 +51,7 @@ def test_validate_tool_call_reads_pr_body_success(tmp_path):
     
     try:
         cmd = f'gh pr create --body "$(cat {tmp_dest})"'
-        blocked, msg = agent._validate_tool_call("exec_command", {"command": cmd}, False, log, is_cicd_builder=True)
+        blocked, msg = cicd_gates.validate_tool_call("exec_command", {"command": cmd}, False, log, is_cicd_builder=True)
         assert not blocked
     finally:
         if os.path.exists(tmp_dest):
@@ -58,19 +59,19 @@ def test_validate_tool_call_reads_pr_body_success(tmp_path):
 
 def test_build_summary_prompt_with_cicd_globals():
     # Targets lines 837-843 (in _build_summary_prompt)
-    orig = (agent._cicd_worktree_path, agent._cicd_edited_files, agent._cicd_issue_number, agent._cicd_pr_number, agent._cicd_branch)
+    orig = (cicd_gates.worktree_path, cicd_gates.edited_files, cicd_gates.issue_number, cicd_gates.pr_number, cicd_gates.branch)
     try:
-        agent._cicd_worktree_path = "/tmp/worktree"
-        agent._cicd_edited_files = {"agent.py"}
-        agent._cicd_issue_number = 324
-        agent._cicd_pr_number = 325
-        agent._cicd_branch = "cicd/324-test"
+        cicd_gates.worktree_path = "/tmp/worktree"
+        cicd_gates.edited_files = {"agent.py"}
+        cicd_gates.issue_number = 324
+        cicd_gates.pr_number = 325
+        cicd_gates.branch = "cicd/324-test"
         prompt = summarize.build_summary_prompt("old summary", [])
         assert "Worktree path" in prompt
         assert "Issue: #324" in prompt
     finally:
-        (agent._cicd_worktree_path, agent._cicd_edited_files, agent._cicd_issue_number,
-         agent._cicd_pr_number, agent._cicd_branch) = orig
+        (cicd_gates.worktree_path, cicd_gates.edited_files, cicd_gates.issue_number,
+         cicd_gates.pr_number, cicd_gates.branch) = orig
 
 def test_boot_sequence_tty():
     """Test the boot sequence when stderr is a TTY."""

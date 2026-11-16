@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 import tool_args
+import cicd_gates
 import agent
 import summarize
 import context_window
@@ -109,7 +110,7 @@ def test_validate_tool_call_reads_pr_body_file(tmp_path):
         f.write(content)
     try:
         log = logging.getLogger("test")
-        blocked, msg = agent._validate_tool_call(
+        blocked, msg = cicd_gates.validate_tool_call(
             "exec_command",
             {"command": f'gh pr create --body "$(cat {filename})"'},
             False, log, is_cicd_builder=True
@@ -130,13 +131,13 @@ def test_salvage_tool_args_exec_command():
 
 def test_build_summary_prompt_cicd_facts():
     # Targets lines 834, 838, 840
-    old_wt = agent._cicd_worktree_path
-    old_issue = agent._cicd_issue_number
-    old_pr = agent._cicd_pr_number
+    old_wt = cicd_gates.worktree_path
+    old_issue = cicd_gates.issue_number
+    old_pr = cicd_gates.pr_number
     
-    agent._cicd_worktree_path = "/some/worktree"
-    agent._cicd_issue_number = 42
-    agent._cicd_pr_number = 100
+    cicd_gates.worktree_path = "/some/worktree"
+    cicd_gates.issue_number = 42
+    cicd_gates.pr_number = 100
     
     try:
         result = summarize.build_summary_prompt("old summary", [])
@@ -144,9 +145,9 @@ def test_build_summary_prompt_cicd_facts():
         assert "Issue: #42" in result
         assert "PR: #100" in result
     finally:
-        agent._cicd_worktree_path = old_wt
-        agent._cicd_issue_number = old_issue
-        agent._cicd_pr_number = old_pr
+        cicd_gates.worktree_path = old_wt
+        cicd_gates.issue_number = old_issue
+        cicd_gates.pr_number = old_pr
 
 def test_setup_logger_log_dir_override(tmp_path):
     # Targets line 1166
