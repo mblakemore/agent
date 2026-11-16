@@ -52,6 +52,18 @@ def fn(query: str = "", max_results: int = 5) -> str:
                 unknown.append(n)
     else:
         known = _registry.search(q, limit)
+        by_keyword = _skill_keyword_hits(q)
+        if by_keyword:
+            # A skill keyword is the operator's word for "this skill, asked like this"
+            # (skills.keywords), so the skill's text is the answer and the tool list is
+            # left alone: a tool nobody asked for costs a cache miss over the whole
+            # context (2026-11-16: a search for a reminder script loaded the scheduler).
+            import skills as _skills
+            text = _skills.load_text(by_keyword[:3], by="model")
+            if known:
+                text += ("\nTools matching those words, not loaded: " + ", ".join(known[:limit])
+                         + " (tool_search select:NAME loads one).")
+            return text
     skill_lines = _skill_matches(q) if not q.lower().startswith("select:") else []
     if not known:
         tail = (" Unknown: " + ", ".join(unknown) + ".") if unknown else ""
@@ -76,6 +88,23 @@ def fn(query: str = "", max_results: int = 5) -> str:
     return "\n".join(lines)
 
 
+def _skill_keyword_hits(query):
+    """Skills one of whose keyword phrases is in the query as whole words, loaded or not
+    (a loaded one answers with its notice, never with a tool load instead)."""
+    try:
+        import re
+        import skills as _skills
+        low = " ".join(str(query or "").lower().split())
+        hits = []
+        for s in _skills.visible():
+            if any(re.search(r"(?<![a-z0-9_])" + re.escape(k) + r"(?![a-z0-9_])", low)
+                   for k in s.keywords):
+                hits.append(s.name)
+        return hits
+    except Exception:
+        return []
+
+
 def _skill_matches(query):
     """Skills a free-text query names, listed beside the tool matches (not loaded)."""
     try:
@@ -97,7 +126,8 @@ definition = {
             "Loaded tools stay for the session and are usable from the next turn. Loading "
             "changes your tool list, which costs one cache miss, so load what the task needs "
             "in one call. The short list of other tools is in your instructions. "
-            "'skill:NAME' (or skill:NAME,NAME) answers with a skill's instructions instead; "
+            "'skill:NAME' (or skill:NAME,NAME) answers with a skill's instructions instead, as does "
+            "a keyword query that matches a skill's own keywords (no tool is loaded then); "
             "the skills are listed in your instructions when there are any."
         ),
         "parameters": {

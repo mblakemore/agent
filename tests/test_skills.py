@@ -303,9 +303,31 @@ def test_tool_search_loads_several_and_refuses_past_the_token_cap(tree):
 
 
 def test_a_free_text_search_names_a_matching_skill_beside_the_tools(tree):
-    assert "Skill `zoom`" in tool_search.fn("join the meeting")
-    assert "tool_search skill:zoom" in tool_search.fn("zoom")
+    assert "Skill `zoom`" in tool_search.fn("join the meeting")   # a description match: named
+    assert tool_search.fn("zoom").startswith("[skill: zoom")       # a keyword match: answered
     assert "Skill `" not in tool_search.fn("pdf")
+
+
+def test_a_keyword_query_answers_with_the_skill_and_loads_no_tool(tree):
+    # "screenshot" is a browser_check keyword (a deferred tool) and, here, a skill's keyword
+    (tree / "docs" / "shots.md").write_text("# Shots\nHow I take a picture of the page.\n")
+    skills.configure({"catalog": [
+        {"name": "style", "path": "docs/style.md", "description": "The house style for written work",
+         "keywords": ["house style"]},
+        {"name": "shots", "path": "docs/shots.md", "description": "Taking page pictures",
+         "keywords": ["screenshot", "page picture"]}]}, cwd=str(tree), complete=None)
+    skills.discover(cwd=str(tree), log=log)
+    out = tool_search.fn("screenshot of the page")
+    assert out.startswith("[skill: shots") and "How I take a picture" in out
+    assert "Loaded" not in out and "not loaded: browser_check" in out and "select:NAME" in out
+    assert skills.LOADED == ["shots"]
+    # loaded already: the notice, still no tool load
+    again = tool_search.fn("screenshot")
+    assert "already loaded" in again and "Loaded" not in again
+    # a query that matches no skill keyword loads tools as before
+    assert "Loaded 1 tool" in tool_search.fn("chromium render")
+    # a keyword phrase matches as whole words only
+    assert "[skill: shots" not in tool_search.fn("screenshots")
 
 
 def test_request_load_queues_once_and_take_pending_marks_loaded(tree):

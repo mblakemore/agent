@@ -6,6 +6,7 @@ judge failure wakes; held items flush on the timer, on the size cap, on a flush,
 ride along on a wake that is already happening.
 """
 
+import logging
 import time
 
 import pytest
@@ -341,3 +342,26 @@ def test_verdict_log_false_keeps_only_the_held_text(tmp_path):
 def test_the_verdict_log_default_is_on_and_a_string_is_read_as_a_flag():
     assert gate.config_from(None)["verdict_log"] is True
     assert gate.config_from({"verdict_log": 0})["verdict_log"] is False
+
+
+def test_pattern_verdicts_are_logged_like_judged_ones(caplog):
+    monitor_bus.configure(judge=FakeJudge("hold"))
+    _src(bypass=r"\bboss\b", quiet=r"\bnoise\b")
+    with caplog.at_level(logging.INFO, logger="agent"):
+        monitor_bus.emit("s", "the boss is here")
+        monitor_bus.emit("s", "noise again")
+        monitor_bus.emit("s", "progress")
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("gate.verdict")]
+    assert len(lines) == 3
+    assert lines[0] == "gate.verdict source=s verdict=wake how=bypass ms=0 why=matched bypass"
+    assert lines[1] == "gate.verdict source=s verdict=hold how=quiet ms=0 why=matched quiet"
+    assert lines[2].startswith("gate.verdict source=s verdict=hold how=judge ms=")
+
+
+def test_no_judge_and_no_brief_logs_its_failopen(caplog):
+    monitor_bus.configure(judge=None)
+    _src(brief="wake me for errors")
+    with caplog.at_level(logging.INFO, logger="agent"):
+        monitor_bus.emit("s", "x")
+    assert any(m.getMessage() == "gate.verdict source=s verdict=wake how=failopen ms=0 err=no_judge_or_brief"
+               for m in caplog.records)

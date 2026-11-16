@@ -138,11 +138,16 @@ def judge(brief, label, text, held_lines, bypass=None, quiet=None, complete=None
 
     `bypass` / `quiet` are compiled regexes or None; `complete(prompt, timeout) -> str`
     is the summary-model call (None means no judge: wake). Never raises."""
+    # Every verdict is one gate.verdict line, the pattern paths included: an agent
+    # auditing its brief greps for them and must not read "none" as "no verdicts".
     if bypass is not None and bypass.search(text):
+        _log.info("gate.verdict source=%s verdict=wake how=bypass ms=0 why=matched bypass", label)
         return Verdict(WAKE, "matched bypass", first_line(text), how="bypass")
     if quiet is not None and quiet.search(text):
+        _log.info("gate.verdict source=%s verdict=hold how=quiet ms=0 why=matched quiet", label)
         return Verdict(HOLD, "matched quiet", first_line(text), how="quiet")
     if complete is None or not str(brief or "").strip():
+        _log.info("gate.verdict source=%s verdict=wake how=failopen ms=0 err=no_judge_or_brief", label)
         return Verdict(WAKE, "no judge or no brief", first_line(text), how="failopen")
     t0 = time.monotonic()
     try:
