@@ -261,6 +261,25 @@ def test_complete_is_non_streaming_with_role_budget(make):
     assert body["messages"] == [{"role": "user", "content": "summarise"}]
 
 
+def test_complete_thinking_off_sends_a_plain_request(make):
+    """The one-shot judges (gate, skill pick, F3) ask for a plain completion: on a reasoning
+    model the thinking block spends a small max_tokens first and the text comes back empty."""
+    def resp():
+        return httpx.Response(200, json={
+            "id": "m", "type": "message", "role": "assistant", "model": "claude-v5.5-haiku",
+            "content": [{"type": "text", "text": "idle"}], "stop_reason": "end_turn",
+            "stop_sequence": None, "usage": {"input_tokens": 10, "output_tokens": 2}})
+    gw = Gateway(resp())
+    make(gw, role="summary", model="claude-v5.5-haiku").complete(prompt="what is it doing?")
+    assert gw.body()["thinking"] == {"type": "adaptive"}      # the default keeps thinking
+    gw = Gateway(resp())
+    out = make(gw, role="summary", model="claude-v5.5-haiku").complete(
+        prompt="what is it doing?", gen_params={"max_tokens": 350, "temperature": 0, "thinking": "off"})
+    assert out == "idle"
+    body = gw.body()
+    assert "thinking" not in body and "output_config" not in body and body["max_tokens"] == 350
+
+
 def test_health_uses_models_and_checks_the_configured_model(make):
     models = {"data": [{"id": "claude-v5.5-opus", "type": "model", "created_at": "2026-01-01T00:00:00Z",
                         "display_name": "x"}], "has_more": False, "first_id": None, "last_id": None}

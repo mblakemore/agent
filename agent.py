@@ -1227,11 +1227,14 @@ _GATE_JUDGE_LOCK = threading.Lock()   # one judge call at a time, from any sourc
 
 def _gate_judge(prompt, timeout, max_tokens=200, lock=_GATE_JUDGE_LOCK):
     """The summary model as the gate's judge (and, with its own lock, the skill
-    picker's): one small deterministic completion. Every backend's complete() builds its
+    picker's and the F3 status question's): one small deterministic completion, with
+    thinking off. On a reasoning model the thinking spends the small budget first and
+    the answer comes back cut or empty (haiku, 2026-11-17: F3 printed nothing, two
+    gate verdicts failed open as unparseable). Every backend's complete() builds its
     request afresh, so a call from a monitor thread is safe beside the main loop; the
     lock only keeps gated sources from stampeding."""
     backend = _agent_mod()._summary_backend
-    gen = {"max_tokens": max_tokens, "temperature": 0}
+    gen = {"max_tokens": max_tokens, "temperature": 0, "thinking": "off"}
     with lock:
         try:
             return backend.complete(prompt=prompt, gen_params=gen, timeout=timeout)

@@ -272,6 +272,11 @@ class Backend(Protocol):
         cancel_check: Callable[[], None] | None = None,
         timeout: float = 120,
     ) -> str: ...
+    # gen_params carries the sampling keys a backend knows (max_tokens, temperature, ...)
+    # and one switch: "thinking": "off" asks a reasoning backend for a plain completion,
+    # for the short one-shot answers (the gate's verdict, the skill pick, F3) that a
+    # thinking block would otherwise crowd out of a small max_tokens. A backend without
+    # thinking ignores it and must not forward it as a sampling parameter.
 
 
 # ── FakeBackend (F8b test seam) ─────────────────────────────────────────
@@ -1438,7 +1443,7 @@ class BedrockBackend:
         for signature parity; the gateway poll uses its own ``poll_timeout``
         from config.
         """
-        gp = gen_params or {}
+        gp = {k: v for k, v in (gen_params or {}).items() if k != "thinking"}  # a switch, not a param
         _caller_overrides = {**self._base_inference_params, **gp}
         _inference_params = _build_inference_params(self.model, _caller_overrides)
         # Summary path: always clamp maxTokens to 1024
@@ -2430,8 +2435,10 @@ class AICommonsBackend:
         gp = gen_params or {}
         max_tokens = int(gp.get("max_tokens") or gp.get("n_predict")
                          or _AICOMMONS_COMPLETE_MAX_TOKENS.get(self.role, 4_096))
+        plain = str(gp.get("thinking", "")).lower() in ("off", "none", "false")
         kw = {"model": self.model, "max_tokens": min(max_tokens, int(self.info["max_output"])),
-              "messages": [{"role": "user", "content": prompt}], **self._thinking_kwargs()}
+              "messages": [{"role": "user", "content": prompt}],
+              **({} if plain else self._thinking_kwargs())}
         self._payload_guard(kw)
         self._fit_allowance(kw, log)
         if cancel_check:

@@ -611,3 +611,22 @@ def test_complete_passes_inference_params(monkeypatch, tmp_path):
     assert out == "result"
     assert captured["inference_params"] is not None
     assert "maxTokens" in captured["inference_params"]
+
+
+def test_complete_does_not_forward_the_thinking_switch(monkeypatch, tmp_path):
+    """gen_params' "thinking": "off" is a switch for reasoning backends, never an
+    inference parameter on the gateway payload."""
+    monkeypatch.setattr("llm_backend._SPEND_FILE", str(tmp_path / "spend.json"))
+    monkeypatch.setenv("BEDROCK_API_URL", "https://g.example.com/api")
+    monkeypatch.setenv("BEDROCK_API_KEY", "k" * 40)
+    b = BedrockBackend({"kind": "bedrock", "model": "claude-v4.5-haiku", "role": "summary"})
+    captured = {}
+
+    def _fake_send(prompt, enable_reasoning=False, cancel_check=None, inference_params=None):
+        captured["inference_params"] = inference_params
+        return _mock_assistant_msg("result")
+
+    with patch.object(b._api, "send_and_wait", side_effect=_fake_send):
+        b.complete(prompt="judge this", gen_params={"max_tokens": 200, "temperature": 0, "thinking": "off"})
+    assert "thinking" not in captured["inference_params"]
+    assert captured["inference_params"]["temperature"] == 0
