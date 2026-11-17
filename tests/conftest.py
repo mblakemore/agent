@@ -81,6 +81,16 @@ def _fresh_cache_lifetimes(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _no_remembered_probes():
+    """Roles on one server share a boot probe for two minutes; a test's backend must
+    not inherit another test's answer for the same URL and key."""
+    import llm_backend
+    llm_backend.forget_probes()
+    yield
+    llm_backend.forget_probes()
+
+
+@pytest.fixture(autouse=True)
 def _empty_event_bus():
     """A background exec session from an earlier test queues its exit on the event bus
     when it finishes; a test that compares request sequences must not inherit it."""

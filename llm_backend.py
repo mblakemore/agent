@@ -235,6 +235,41 @@ def _synthesize_delta_stream(payload: dict):
 # ── Protocol ───────────────────────────────────────────────────────────
 
 
+# ── One probe per server ──────────────────────────────────────────────
+#
+# At boot every role is checked: main, summary, advisor. Roles on the same server
+# (the same gateway and key, or the same llama.cpp URL) would each hit /health,
+# /v1/models and the quota endpoint again; the second and later checks reuse the
+# first's answer while it is fresh. Each role still validates its own model against
+# the shared model list, so the banner row stays per role.
+_PROBES: dict[tuple, tuple[float, object]] = {}
+_PROBE_TTL_S = 120.0
+
+
+def remember_probe(server: tuple, result) -> None:
+    _PROBES[server] = (time.monotonic(), result)
+
+
+def recall_probe(server: tuple, quiet: bool = False):
+    """The result of an earlier probe of ``server`` within the TTL, else None."""
+    hit = _PROBES.get(server)
+    if not hit:
+        return None
+    at, result = hit
+    age = time.monotonic() - at
+    if age > _PROBE_TTL_S:
+        _PROBES.pop(server, None)
+        return None
+    if not quiet:
+        logging.getLogger("llm_backend").info("health: %s probed %ds ago by another role — reused",
+                                              server[1], int(age))
+    return result
+
+
+def forget_probes() -> None:
+    _PROBES.clear()
+
+
 class Backend(Protocol):
     """Backend Protocol.
 
@@ -419,8 +454,17 @@ class LlamacppBackend:
         llama.cpp exposes ``/health``; generic OpenAI-compatible servers do
         not. When ``/health`` is missing (404) or rejects the request (401/405),
         fall back to ``/v1/models`` so a keyed remote endpoint still reports
-        healthy.
+        healthy. A server another role probed moments ago is not probed again.
         """
+        server = ("llamacpp", self.base_url, self.api_key or "")
+        hit = recall_probe(server)
+        if hit is not None:
+            return hit
+        result = self._probe_health(timeout)
+        remember_probe(server, result)
+        return result
+
+    def _probe_health(self, timeout: int = 3) -> tuple[bool, str]:
         try:
             resp = requests.get(
                 f"{self.base_url}/health", headers=self._auth_headers(), timeout=timeout
@@ -472,7 +516,12 @@ class LlamacppBackend:
         return None
 
     def list_models(self, timeout: int = 3) -> list[str]:
-        """Query ``/v1/models`` and return a list of model id strings, or ``[]``."""
+        """Query ``/v1/models`` and return a list of model id strings, or ``[]``.
+        Shared between roles on the same server while fresh."""
+        server = ("llamacpp-models", self.base_url, self.api_key or "")
+        hit = recall_probe(server)
+        if hit is not None:
+            return list(hit)
         try:
             resp = requests.get(
                 f"{self.base_url}/v1/models", headers=self._auth_headers(), timeout=timeout
@@ -480,9 +529,11 @@ class LlamacppBackend:
             if resp.status_code != 200:
                 return []
             data = resp.json()
-            return [m.get("id", "") for m in data.get("data", []) if m.get("id")]
+            ids = [m.get("id", "") for m in data.get("data", []) if m.get("id")]
         except (requests.RequestException, ValueError, KeyError):
             return []
+        remember_probe(server, ids)
+        return ids
 
     def check_tool_caps(self, timeout: int = 3) -> dict:
         """Query ``/props`` for ``chat_template_caps``. Returns ``{}`` on failure or non-llamacpp servers."""
@@ -2148,11 +2199,20 @@ class AICommonsBackend:
     # ── protocol ──
 
     def health(self, timeout: int = 3) -> tuple[bool, str]:
-        """GET /v1/models: free, and checks both the key and the `openai` group."""
-        try:
-            ids = self._model_ids(timeout=max(float(timeout), 5.0))
-        except Exception as e:  # noqa: BLE001
-            return False, str(translate_aicommons_error(e))
+        """GET /v1/models: free, and checks both the key and the `openai` group. One
+        call per gateway and key: later roles reuse the list (and the quota poll) and
+        only check their own model against it."""
+        server = ("aicommons", self.base_url, self.api_key)
+        hit = recall_probe(server)
+        if hit is None:
+            try:
+                hit = ("ids", self._model_ids(timeout=max(float(timeout), 5.0)))
+            except Exception as e:  # noqa: BLE001
+                hit = ("error", str(translate_aicommons_error(e)))
+            remember_probe(server, hit)
+        if hit[0] == "error":
+            return False, hit[1]
+        ids = hit[1]
         self.quota()   # startup poll: the session summary reports quota used from here
         if not self.model:
             return False, ("no model configured — run /setup to pick one from the gateway's "
@@ -2283,6 +2343,13 @@ class AICommonsBackend:
         now = time.monotonic()
         if not force and self._quota_cache and now - self._quota_cache[0] < float(self.opts["quota_poll_seconds"]):
             return self._quota_cache[1]
+        server = ("aicommons-quota", self.base_url, self.api_key)
+        shared = None if force else recall_probe(server, quiet=True)   # the health line said it
+        if shared is not None and now - shared[0] < float(self.opts["quota_poll_seconds"]):
+            self._quota_cache = shared       # another role polled this gateway just now
+            if self._quota_at_start is None:
+                self._quota_at_start = dict(shared[1])
+            return shared[1]
         try:
             q = self.client.with_options(max_retries=0, timeout=10.0).get("/v1/token-usage", cast_to=object)
         except Exception as e:  # noqa: BLE001
@@ -2291,6 +2358,7 @@ class AICommonsBackend:
         if not isinstance(q, dict) or not q.get("limit"):
             return None
         self._quota_cache = (now, q)
+        remember_probe(server, self._quota_cache)
         if self._quota_at_start is None:
             self._quota_at_start = dict(q)
         return q

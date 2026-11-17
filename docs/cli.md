@@ -73,7 +73,7 @@ Settings that belong to the machine or the launch rather than the project live i
 | Variable | Description |
 | --- | --- |
 | `NO_COLOR=1` | Disable all terminal colors and cursor escapes (also active when stdout is not a TTY). |
-| `AGENT_HEALTH_TIMEOUT` | Seconds to wait for the startup backend health probe (default `10`). Raise it for cold-start endpoints (e.g. AWS API Gateway/Lambda) that are slow on the first request. |
+| `AGENT_HEALTH_TIMEOUT` | Seconds to wait for the startup backend health probe (default `10`); roles on the same server share one probe. Raise it for cold-start endpoints (e.g. AWS API Gateway/Lambda) that are slow on the first request. |
 | `AGENT_TOKENIZER` | A Hugging Face tokenizer id matching the served model, for exact token counts (needs `transformers`). Unset, a conservative character-based estimate is used and corrected at runtime from the server's own `prompt_tokens`. |
 | `AGENT_BASH_EXE` | Windows only — full path to `bash.exe` for the `exec_command` shell, overriding Git-Bash auto-detection. |
 | `AGENT_FAKE_BACKEND=1` | Build the scriptable in-process fake backend instead of any configured kind (tests, control-flow reproduction; never opens a socket). See [configurations](configurations.md#hosted-backends). |

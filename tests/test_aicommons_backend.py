@@ -286,7 +286,8 @@ def test_health_uses_models_and_checks_the_configured_model(make):
     ok, msg = make(Gateway(httpx.Response(200, json=models))).health()
     assert ok, msg
     ok, msg = make(Gateway(httpx.Response(200, json=models)), model="claude-v9-opus").health()
-    assert not ok and "claude-v9-opus" in msg
+    assert not ok and "claude-v9-opus" in msg      # the shared list, its own model
+    lb.forget_probes()                              # a different gateway's answer next
     ok, msg = make(Gateway(status(401, "authentication_error", "bad key"))).health()
     assert not ok and "openai" in msg
 

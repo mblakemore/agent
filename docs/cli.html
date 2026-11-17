@@ -233,7 +233,7 @@
 </tr>
 <tr>
 <td><code>AGENT_HEALTH_TIMEOUT</code></td>
-<td>Seconds to wait for the startup backend health probe (default <code>10</code>). Raise it for cold-start endpoints (e.g. AWS API Gateway/Lambda) that are slow on the first request.</td>
+<td>Seconds to wait for the startup backend health probe (default <code>10</code>); roles on the same server share one probe. Raise it for cold-start endpoints (e.g. AWS API Gateway/Lambda) that are slow on the first request.</td>
 </tr>
 <tr>
 <td><code>AGENT_TOKENIZER</code></td>

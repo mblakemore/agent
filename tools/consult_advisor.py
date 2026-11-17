@@ -416,18 +416,23 @@ def startup_check(timeout_s: int = 5) -> tuple:
             return bool(ok), ("ok" if ok else str(detail))
         except Exception as e:
             return False, f"{type(e).__name__}: {e}"
+    from llm_backend import recall_probe, remember_probe
+    server = ("llamacpp", a["base_url"].rstrip("/"), "")     # the same key the main role's probe uses
+    hit = recall_probe(server)
+    if hit is not None:
+        return bool(hit[0]), ("ok" if hit[0] else str(hit[1]))
     url = a["base_url"].rstrip("/") + "/v1/models"
     try:
         r = requests.get(url, timeout=timeout_s)
-        if r.status_code < 500:
-            return True, "ok"
-        return False, f"http {r.status_code}"
+        result = (True, "ok") if r.status_code < 500 else (False, f"http {r.status_code}")
     except requests.exceptions.ConnectionError:
-        return False, "unreachable"
+        result = (False, "unreachable")
     except requests.exceptions.Timeout:
-        return False, "timeout"
+        result = (False, "timeout")
     except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+        result = (False, f"{type(e).__name__}: {e}")
+    remember_probe(server, result)
+    return result
 
 
 def consult_advisor(question: str, context: str = "", reason: str = "") -> str:
