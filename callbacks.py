@@ -278,11 +278,18 @@ class TerminalCallbacks(NullCallbacks):
         # from escalation is visible, not silent.
         if info.get("advisor_enabled"):
             a_detail = info.get("advisor_detail", "")
+            a_kind = info.get("advisor_kind", "")
+            a_model = info.get("advisor_model", "")
+            a_tag = f"[{a_kind}]  " if a_kind else ""
             if info.get("advisor_ok"):
-                self._print(theme.c(theme.GOOD, "● advisor") + f" {a_detail}")
+                # The same shape as the rows above: kind tag + model. The probe's detail
+                # is a bare "ok" for a healthy advisor; it shows only when the model
+                # is not known (an older probe that put the endpoint in the detail).
+                shown = a_model or a_detail
+                self._print(theme.c(theme.GOOD, "● advisor") + f" {a_tag}{shown}")
             else:
                 self._print(theme.c(theme.WARN, "⚠ advisor")
-                            + f" {a_detail} — consult_advisor unloaded")
+                            + f" {a_tag}{a_detail} — consult_advisor unloaded")
         self._print("")
 
     def on_summarizer_status(self, status: str, detail: str) -> None:

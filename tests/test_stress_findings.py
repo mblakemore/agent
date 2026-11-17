@@ -30,6 +30,22 @@ class TestAdvisorBannerRow(unittest.TestCase):
         self.assertIn("advisor", out)
         self.assertIn("http://x glm", out)
 
+    def test_healthy_advisor_shows_kind_and_model_like_the_other_rows(self):
+        out = self._banner({**self.BASE, "advisor_enabled": True, "advisor_ok": True,
+                            "advisor_detail": "ok", "advisor_kind": "ai-commons",
+                            "advisor_model": "claude-v5.5-opus"})
+        row = next(l for l in out.splitlines() if "advisor" in l)
+        self.assertIn("[ai-commons]  claude-v5.5-opus", row)
+        self.assertNotIn("ok", row.split("]")[-1])
+
+    def test_unreachable_advisor_keeps_the_detail_with_the_kind(self):
+        out = self._banner({**self.BASE, "advisor_enabled": True, "advisor_ok": False,
+                            "advisor_detail": "timeout", "advisor_kind": "ai-commons",
+                            "advisor_model": "claude-v5.5-opus"})
+        row = next(l for l in out.splitlines() if "advisor" in l)
+        self.assertIn("[ai-commons]  timeout", row)
+        self.assertIn("unloaded", row)
+
     def test_unreachable_advisor_shown_as_warning(self):
         out = self._banner({**self.BASE, "advisor_enabled": True,
                             "advisor_ok": False, "advisor_detail": "down"})

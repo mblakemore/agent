@@ -3388,6 +3388,7 @@ class _Session:
                 import transcript as _transcript
                 self._recorder = _transcript.install()
 
+        _adv = self._adv_eff if isinstance(getattr(self, "_adv_eff", None), dict) else {}
         _emit("on_session_start", {
             "version": __version__,
             "sha": _git_short_sha(),
@@ -3405,6 +3406,8 @@ class _Session:
             "advisor_enabled": self.advisor_enabled,
             "advisor_ok": self.advisor_ok,
             "advisor_detail": self.advisor_detail,
+            "advisor_kind": _cfg.display_backend_kind(_adv.get("kind") or "", _adv.get("base_url") or ""),
+            "advisor_model": _adv.get("model") or "",
             "ctx_size": self.ctx_size,
             "max_turns": _MAX_TURNS,
             "log_path": self.log_path,
