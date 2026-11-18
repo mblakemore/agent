@@ -2946,16 +2946,6 @@ def _sync_config_model(backend, config) -> None:
         config.setdefault("llm", {})["model"] = model
 
 
-def _check_api_health(base_url, timeout=3):
-    """Probe the LLM endpoint. Return (ok: bool, detail: str)."""
-    return _backend_for_url(base_url).health(timeout=timeout)
-
-
-def _detect_ctx_size(base_url, timeout=3):
-    """Query the backend for context size. Returns ``n_ctx`` or ``None``."""
-    return _backend_for_url(base_url).detect_ctx_size(timeout=timeout)
-
-
 def _list_available_models(base_url, timeout=3):
     """Query the backend for available model ids, or ``[]``."""
     return _backend_for_url(base_url).list_models(timeout=timeout)

@@ -210,8 +210,6 @@ def test_interactive_loop_ends_on_slash_restart():
         return False
 
     with patch('agent._setup_logger', return_value=(MagicMock(), "log.txt", "err.txt")), \
-         patch('agent._check_api_health', return_value=(True, "")), \
-         patch('agent._detect_ctx_size', return_value=None), \
          patch('agent._emit'), \
          patch('agent._auto_increment_cycle'), \
          patch('agent._load_checkpoint', return_value=None), \
@@ -253,8 +251,6 @@ def _resume_run(monkeypatch, resumed, prompt):
     cp = ([{"role": "user", "content": "before"}, {"role": "assistant", "content": "ok"}],
           {"text": "", "up_to": 0}, 3, None, False)
     with patch('agent._setup_logger', return_value=(MagicMock(), "log.txt", "err.txt")), \
-         patch('agent._check_api_health', return_value=(True, "")), \
-         patch('agent._detect_ctx_size', return_value=None), \
          patch('agent._emit'), \
          patch('agent._load_checkpoint', return_value=cp), \
          patch('agent._lead_reload', side_effect=lambda f, log: f), \

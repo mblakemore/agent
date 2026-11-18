@@ -72,7 +72,20 @@ def test_load_config_invalid_json():
             assert config["llm"]["model"] == ""
 
 import requests
-from agent import _check_api_health, _detect_ctx_size, _list_available_models, _render_context_bar
+from agent import _list_available_models, _render_context_bar
+
+def _llama(base_url):
+    from llm_backend import LlamacppBackend
+    return LlamacppBackend({"kind": "llamacpp", "base_url": base_url, "model": "m"})
+
+
+def _check_api_health(base_url, timeout=3):
+    return _llama(base_url).health(timeout=timeout)
+
+
+def _detect_ctx_size(base_url, timeout=3):
+    return _llama(base_url).detect_ctx_size(timeout=timeout)
+
 
 @pytest.mark.parametrize("status_code, expected_ok, expected_detail", [
     (200, True, "ok"),

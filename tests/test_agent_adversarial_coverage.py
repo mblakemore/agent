@@ -10,10 +10,24 @@ import checkpoint
 import context_window
 from agent import (
     _llm_request, _ReasoningRenderer,
-    _check_api_health, _detect_ctx_size, _list_available_models,
+    _list_available_models,
     _save_checkpoint, _load_checkpoint, _delete_checkpoint,
     _strip_checkpoint_reads, _format_for_summary, _condense_summary,
 )
+
+
+def _llama(base_url):
+    from llm_backend import LlamacppBackend
+    return LlamacppBackend({"kind": "llamacpp", "base_url": base_url, "model": "m"})
+
+
+def _check_api_health(base_url, timeout=3):
+    return _llama(base_url).health(timeout=timeout)
+
+
+def _detect_ctx_size(base_url, timeout=3):
+    return _llama(base_url).detect_ctx_size(timeout=timeout)
+
 
 def test_llm_request_max_retries_exhausted():
     """Test that _llm_request raises the error after max retries."""

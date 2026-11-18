@@ -42,9 +42,7 @@ def _run(monkeypatch, success_check, llm_side_effects):
     monkeypatch.setitem(_agent._config, "advisor", {"enabled": False})
     history = [{"role": "user", "content": "Do the work."}]
     with patch("agent._llm_request") as mock_llm, \
-         patch("agent._check_api_health", return_value=(True, "ok")), \
-         patch("agent._setup_logger"), \
-         patch("agent._detect_ctx_size", return_value=None):
+         patch("agent._setup_logger"):
         # Pad with text turns: the gate now blocks text-only exits too, so
         # scripts need enough responses for the 3-block cap to play out.
         mock_llm.side_effect = list(llm_side_effects) + [
@@ -112,9 +110,7 @@ class TestCompletionPathGate:
                             MagicMock(return_value="exit=0\ncommitted"))
         history = [{"role": "user", "content": "Do the work."}]
         with patch("agent._llm_request") as mock_llm, \
-             patch("agent._check_api_health", return_value=(True, "ok")), \
-             patch("agent._setup_logger"), \
-             patch("agent._detect_ctx_size", return_value=None):
+             patch("agent._setup_logger"):
             mock_llm.side_effect = [
                 _tool_resp("exec_command",
                            {"command": "git commit -m done"}, "c1"),
@@ -150,9 +146,7 @@ class TestAdvisorEscalationWiring:
             monkeypatch.setitem(_agent._config, "advisor", advisor_cfg)
         history = [{"role": "user", "content": "Do the work."}]
         with patch("agent._llm_request") as mock_llm, \
-             patch("agent._check_api_health", return_value=(True, "ok")), \
-             patch("agent._setup_logger"), \
-             patch("agent._detect_ctx_size", return_value=None):
+             patch("agent._setup_logger"):
             mock_llm.side_effect = list(side_effects) + [
                 _text(f"continuing {i}") for i in range(6)]
             _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
@@ -224,9 +218,7 @@ class TestAdvisorEscalationWiring:
         reads = [_tool_resp("read_file", {"path": str(f)}, f"r{i}")
                  for i in range(7)]
         with patch("agent._llm_request") as mock_llm, \
-             patch("agent._check_api_health", return_value=(True, "ok")), \
-             patch("agent._setup_logger"), \
-             patch("agent._detect_ctx_size", return_value=None):
+             patch("agent._setup_logger"):
             mock_llm.side_effect = reads + [_text(f"done {i}") for i in range(6)]
             _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
         return "".join(str(m) for m in history)
@@ -264,9 +256,7 @@ class TestAdvisorEscalationWiring:
         calls = [_tool_resp("exec_command", {"command": f"echo {i}"}, f"c{i}")
                  for i in range(6)]
         with patch("agent._llm_request") as mock_llm, \
-             patch("agent._check_api_health", return_value=(True, "ok")), \
-             patch("agent._setup_logger"), \
-             patch("agent._detect_ctx_size", return_value=None):
+             patch("agent._setup_logger"):
             mock_llm.side_effect = calls + [_text(f"done {i}") for i in range(6)]
             _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
         return "".join(str(m) for m in history)
@@ -306,9 +296,7 @@ class TestAdvisorEscalationWiring:
         calls = [_tool_resp("exec_command", {"command": f"echo {i}"}, f"c{i}")
                  for i in range(6)]
         with patch("agent._llm_request") as mock_llm, \
-             patch("agent._check_api_health", return_value=(True, "ok")), \
-             patch("agent._setup_logger"), \
-             patch("agent._detect_ctx_size", return_value=None):
+             patch("agent._setup_logger"):
             mock_llm.side_effect = calls + [_text(f"done {i}") for i in range(6)]
             _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
         hist = "".join(str(m) for m in history)
@@ -333,9 +321,7 @@ class TestAdvisorEscalationWiring:
         calls = [_tool_resp("write_file", {"path": f"f{i}.txt", "content": "x"}, f"w{i}")
                  for i in range(30)]
         with patch("agent._llm_request") as mock_llm, \
-             patch("agent._check_api_health", return_value=(True, "ok")), \
-             patch("agent._setup_logger"), \
-             patch("agent._detect_ctx_size", return_value=None):
+             patch("agent._setup_logger"):
             mock_llm.side_effect = calls
             _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
         hist = "".join(str(m) for m in history)
@@ -383,9 +369,7 @@ class TestClaimVsTraceGate:
                             MagicMock(return_value="exit=0\ncommitted"))
         history = [{"role": "user", "content": "Fix inc in m.py."}]
         with patch("agent._llm_request") as mock_llm, \
-             patch("agent._check_api_health", return_value=(True, "ok")), \
-             patch("agent._setup_logger"), \
-             patch("agent._detect_ctx_size", return_value=None):
+             patch("agent._setup_logger"):
             mock_llm.side_effect = [
                 _tool_resp("exec_command", {"command": "git commit -m fix"}, "c1"),
                 _text("Cycle complete. I ran the tests and they pass."),
@@ -413,9 +397,7 @@ class TestClaimVsTraceGate:
                             MagicMock(return_value="exit=0\nwrote m.py"))
         history = [{"role": "user", "content": "Fix inc in m.py."}]
         with patch("agent._llm_request") as mock_llm, \
-             patch("agent._check_api_health", return_value=(True, "ok")), \
-             patch("agent._setup_logger"), \
-             patch("agent._detect_ctx_size", return_value=None):
+             patch("agent._setup_logger"):
             # turn 1: a real (non-verify, non-commit) edit so _ran_verification
             # and _has_committed both stay False; then the fabricated completion
             # in an unrecognised phrase, repeated past the block bound + strip.

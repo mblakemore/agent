@@ -123,9 +123,7 @@ class TestOverflowHandlerOrdering:
             return _text("ok done")
 
         with patch("agent._llm_request", side_effect=llm), \
-             patch("agent._check_api_health", return_value=(True, "ok")), \
-             patch("agent._setup_logger"), \
-             patch("agent._detect_ctx_size", return_value=None):
+             patch("agent._setup_logger"):
             _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
 
         # the retry succeeded on call 2
@@ -151,9 +149,7 @@ class TestOverflowHandlerOrdering:
             return _text("ok")
 
         with patch("agent._llm_request", side_effect=llm), \
-             patch("agent._check_api_health", return_value=(True, "ok")), \
-             patch("agent._setup_logger"), \
-             patch("agent._detect_ctx_size", return_value=None):
+             patch("agent._setup_logger"):
             _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
 
         assert calls["n"] >= 2

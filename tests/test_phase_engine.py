@@ -182,9 +182,7 @@ class TestLoopWiring:
         monkeypatch.setitem(_MAP_FN, "file", mock_file)
         history = [{"role": "user", "content": "Creature cycle. Begin."}]
         with patch("agent._llm_request") as mock_llm, \
-             patch("agent._check_api_health", return_value=(True, "ok")), \
-             patch("agent._setup_logger"), \
-             patch("agent._detect_ctx_size", return_value=None):
+             patch("agent._setup_logger"):
             mock_llm.side_effect = [
                 _tool_resp("file", {"action": "write",
                                     "path": "state/current-state.json",

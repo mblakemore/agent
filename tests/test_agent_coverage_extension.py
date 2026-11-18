@@ -7,8 +7,6 @@ from cancel import CancelledError
 def test_run_agent_interactive_auto_continue_end():
     """Target lines 1543-1547: auto mode session end during continue."""
     with patch("agent._setup_logger", return_value=(MagicMock(), "log", "err")), \
-         patch("agent._check_api_health", return_value=(True, "")), \
-         patch("agent._detect_ctx_size", return_value=None), \
          patch("agent._load_checkpoint", return_value=([], {"text": ""}, 0, None, True)), \
          patch("agent.run_agent_single", return_value="done"), \
          patch("agent.cleanup_temp_sessions") as mock_cleanup, \
@@ -22,8 +20,6 @@ def test_run_agent_interactive_auto_continue_end():
 def test_run_agent_interactive_auto_cancelled_guidance():
     """Target lines 1608-1640: auto mode cancelled guidance."""
     with patch("agent._setup_logger", return_value=(MagicMock(), "log", "err")), \
-         patch("agent._check_api_health", return_value=(True, "")), \
-         patch("agent._detect_ctx_size", return_value=None), \
          patch("agent.run_agent_single") as mock_run, \
          patch("agent.cleanup_temp_sessions"), \
          patch("agent._delete_checkpoint"), \

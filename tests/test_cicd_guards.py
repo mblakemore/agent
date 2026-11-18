@@ -100,9 +100,7 @@ def test_cicd_guards_warnings(monkeypatch, command, tool_result, expected_warnin
             ]
             mock_exec.side_effect = [f"exit=0\n{issue_json}", tool_result]
         
-        with patch('agent._check_api_health', return_value=(True, "ok")), \
-             patch('agent._setup_logger'), \
-             patch('agent._detect_ctx_size', return_value=None):
+        with patch('agent._setup_logger'):
             
             run_agent_single(
                 conversation_history=history,
@@ -134,9 +132,7 @@ def test_pre_merge_check_flow(monkeypatch):
         
         history = [{"role": "user", "content": "Merge issue 1"}]
         mock_log = MagicMock()
-        with patch('agent._check_api_health', return_value=(True, "ok")), \
-             patch('agent._setup_logger'), \
-             patch('agent._detect_ctx_size', return_value=None):
+        with patch('agent._setup_logger'):
             
             run_agent_single(
                 conversation_history=history,
@@ -161,9 +157,7 @@ def test_pre_merge_check_failure(monkeypatch):
         
         history = [{"role": "user", "content": "Merge now"}]
         mock_log = MagicMock()
-        with patch('agent._check_api_health', return_value=(True, "ok")), \
-             patch('agent._setup_logger'), \
-             patch('agent._detect_ctx_size', return_value=None):
+        with patch('agent._setup_logger'):
             
             run_agent_single(
                 conversation_history=history,
@@ -263,10 +257,8 @@ def test_pre_merge_check_invalid_criteria(monkeypatch, issue_json, description):
         
         history = [{"role": "user", "content": f"Merge with {description}"}]
         mock_log = MagicMock()
-        with patch('agent._check_api_health', return_value=(True, "ok")), \
-             patch('agent._setup_logger'), \
-             patch('agent._setup_logger'), \
-             patch('agent._detect_ctx_size', return_value=None):
+        with patch('agent._setup_logger'), \
+             patch('agent._setup_logger'):
             
             run_agent_single(
                 conversation_history=history,
@@ -308,9 +300,7 @@ def test_reviewer_file_edit_blocked(monkeypatch):
         history = [{"role": "user", "content": "# CICD Improvement Loop — Reviewer\nTest prompt"}]
         mock_log = MagicMock()
         
-        with patch('agent._check_api_health', return_value=(True, "ok")), \
-             patch('agent._setup_logger'), \
-             patch('agent._detect_ctx_size', return_value=None):
+        with patch('agent._setup_logger'):
             
             run_agent_single(
                 conversation_history=history,
@@ -335,9 +325,7 @@ def test_push_to_main_blocked(monkeypatch):
         history = [{"role": "user", "content": "# CICD Improvement Loop — Builder\nTest prompt"}]
         mock_log = MagicMock()
         
-        with patch('agent._check_api_health', return_value=(True, "ok")), \
-             patch('agent._setup_logger'), \
-             patch('agent._detect_ctx_size', return_value=None):
+        with patch('agent._setup_logger'):
             
             run_agent_single(
                 conversation_history=history,
@@ -371,9 +359,7 @@ def test_pre_merge_warning_logged(monkeypatch):
         history = [{"role": "user", "content": "# CICD Improvement Loop — Reviewer\nI am the CICD Reviewer.\nTest prompt"}]
         mock_log = MagicMock()
 
-        with patch('agent._check_api_health', return_value=(True, "ok")), \
-             patch('agent._setup_logger'), \
-             patch('agent._detect_ctx_size', return_value=None):
+        with patch('agent._setup_logger'):
 
             run_agent_single(
                 conversation_history=history,

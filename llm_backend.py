@@ -446,8 +446,8 @@ class LlamacppBackend:
     """Concrete backend for llama.cpp / OpenAI-compatible HTTP servers.
 
     Wraps the request plumbing that was previously at module scope in
-    ``agent.py`` (``_llm_request``, ``_summary_request``, ``_check_api_health``,
-    ``_detect_ctx_size``, ``_list_available_models``). Behavior matches the
+    ``agent.py`` (``_llm_request``, ``_summary_request`` and the health, context-size and
+    model-list probes). Behavior matches the
     pre-refactor code — this is a pure refactor carrier for Phase 1.
     """
 

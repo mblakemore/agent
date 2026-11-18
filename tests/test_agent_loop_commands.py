@@ -10,8 +10,6 @@ def test_run_agent_interactive_loop_coverage():
     
     # Setup minimal mocks for dependencies
     with patch('agent._setup_logger', return_value=(MagicMock(), "log.txt", "err.txt")), \
-         patch('agent._check_api_health', return_value=(True, "")), \
-         patch('agent._detect_ctx_size', return_value=None), \
          patch('agent._emit'), \
          patch('agent._auto_increment_cycle'), \
          patch('agent._load_checkpoint', return_value=None), \

@@ -44,9 +44,7 @@ class TestLoopForcedThink:
         responses = [_batch("echo same") for _ in range(8)] + [_text("done")]
         history = [{"role": "user", "content": "loop forever"}]
         with patch("agent._llm_request") as mock_llm, \
-             patch("agent._check_api_health", return_value=(True, "ok")), \
-             patch("agent._setup_logger"), \
-             patch("agent._detect_ctx_size", return_value=None):
+             patch("agent._setup_logger"):
             mock_llm.side_effect = responses
             _agent.run_agent_single(history, {"text": "", "up_to": 0}, [], log)
         hist = "".join(str(m) for m in history)
