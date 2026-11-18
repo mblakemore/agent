@@ -36,3 +36,21 @@ def test_long_arguments_are_capped_not_dropped(monkeypatch):
 def test_describe_never_raises_on_odd_args():
     activity.tool_started("t", {"f": object()})
     assert "running for" in activity.describe()
+
+
+def test_an_exception_out_of_the_run_leaves_the_record_idle():
+    import agent
+    run = agent._Run.__new__(agent._Run)
+
+    def tool_step(self):
+        activity.tool_started("bash", {"command": "sleep 3600"})
+        raise KeyboardInterrupt
+
+    run._STEPS = (tool_step,)
+    try:
+        run.run()
+    except KeyboardInterrupt:
+        pass
+    else:
+        raise AssertionError("the exception was swallowed")
+    assert activity.snapshot()["phase"] == "idle"

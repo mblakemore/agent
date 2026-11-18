@@ -38,6 +38,7 @@ backends via ``build_backend(cfg)`` and pass them in.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import logging
@@ -235,23 +236,47 @@ def _synthesize_delta_stream(payload: dict):
 # ── Protocol ───────────────────────────────────────────────────────────
 
 
-# ── One probe per server ──────────────────────────────────────────────
+# ── One probe per server, at boot ─────────────────────────────────────
 #
 # At boot every role is checked: main, summary, advisor. Roles on the same server
 # (the same gateway and key, or the same llama.cpp URL) would each hit /health,
-# /v1/models and the quota endpoint again; the second and later checks reuse the
-# first's answer while it is fresh. Each role still validates its own model against
-# the shared model list, so the banner row stays per role.
+# /v1/models and the quota endpoint again; inside the boot window the second and
+# later checks reuse the first's answer. Each role still validates its own model
+# against the shared model list, so the banner row stays per role. Outside the
+# window nothing is remembered or reused: failover, the setup doctor and /model
+# must always ask the server.
 _PROBES: dict[tuple, tuple[float, object]] = {}
 _PROBE_TTL_S = 120.0
+_boot_open = False
+
+
+@contextlib.contextmanager
+def boot_probes():
+    """Open the shared-probe window for the boot checks; closed and cleared on exit."""
+    global _boot_open
+    _PROBES.clear()
+    _boot_open = True
+    try:
+        yield
+    finally:
+        _boot_open = False
+        _PROBES.clear()
+
+
+def probe_key(kind: str, base_url: str, api_key: str | None = "") -> tuple:
+    """The record key for a server: the URL without a trailing slash, plus the key."""
+    return (kind, (base_url or "").rstrip("/"), api_key or "")
 
 
 def remember_probe(server: tuple, result) -> None:
-    _PROBES[server] = (time.monotonic(), result)
+    if _boot_open:
+        _PROBES[server] = (time.monotonic(), result)
 
 
 def recall_probe(server: tuple, quiet: bool = False):
-    """The result of an earlier probe of ``server`` within the TTL, else None."""
+    """The result of an earlier boot probe of ``server`` within the TTL, else None."""
+    if not _boot_open:
+        return None
     hit = _PROBES.get(server)
     if not hit:
         return None
@@ -261,12 +286,15 @@ def recall_probe(server: tuple, quiet: bool = False):
         _PROBES.pop(server, None)
         return None
     if not quiet:
-        logging.getLogger("llm_backend").info("health: %s probed %ds ago by another role — reused",
+        logging.getLogger("llm_backend").info("health: %s answered by a probe %ds ago — reused",
                                               server[1], int(age))
     return result
 
 
 def forget_probes() -> None:
+    """Clear the record and close the window."""
+    global _boot_open
+    _boot_open = False
     _PROBES.clear()
 
 
@@ -454,9 +482,9 @@ class LlamacppBackend:
         llama.cpp exposes ``/health``; generic OpenAI-compatible servers do
         not. When ``/health`` is missing (404) or rejects the request (401/405),
         fall back to ``/v1/models`` so a keyed remote endpoint still reports
-        healthy. A server another role probed moments ago is not probed again.
+        healthy. During boot, a server another role probed moments ago is not probed again.
         """
-        server = ("llamacpp", self.base_url, self.api_key or "")
+        server = probe_key("llamacpp", self.base_url, self.api_key)
         hit = recall_probe(server)
         if hit is not None:
             return hit
@@ -517,8 +545,8 @@ class LlamacppBackend:
 
     def list_models(self, timeout: int = 3) -> list[str]:
         """Query ``/v1/models`` and return a list of model id strings, or ``[]``.
-        Shared between roles on the same server while fresh."""
-        server = ("llamacpp-models", self.base_url, self.api_key or "")
+        Shared between roles on the same server during boot."""
+        server = probe_key("llamacpp-models", self.base_url, self.api_key)
         hit = recall_probe(server)
         if hit is not None:
             return list(hit)

@@ -919,6 +919,7 @@ _set_extra_allowed_paths(_config.get("preferences", {}).get("extra_allowed_paths
 # Backend instances (plan task 1.4). Phase 1 only wires LlamacppBackend;
 # Phase 2 adds BedrockBackend behind the same factory. Tests may monkeypatch
 # these module globals to swap backends without touching the factory.
+import llm_backend as _llm_backend
 from llm_backend import ConfigError, build_backend as _build_backend
 
 
@@ -3241,7 +3242,12 @@ class _Session:
         _think_mod._output = lambda text: _emit("on_stream_chunk", text)
 
     def _backends(self):
-        """The main backend's health and context size, the summary and advisor backends."""
+        """The main backend's health and context size, the summary and advisor backends.
+        Roles on one server share a probe for the length of these checks only."""
+        with _llm_backend.boot_probes():
+            self._backend_checks()
+
+    def _backend_checks(self):
         model_name = _main_backend.model or _config["llm"]["model"]
         _emit(
             "on_boot_progress",
@@ -4992,14 +4998,16 @@ class _Run:
     def run(self):
         """The turn loop. Each step returns None to go on, _NEXT for the next turn, or
         the run's result."""
-        while True:
-            for step in self._STEPS:
-                r = step(self)
-                if r is _NEXT:
-                    break
-                if r is not None:
-                    _act.idle()
-                    return r
+        try:
+            while True:
+                for step in self._STEPS:
+                    r = step(self)
+                    if r is _NEXT:
+                        break
+                    if r is not None:
+                        return r
+        finally:
+            _act.idle()     # an exception out of a tool must not leave "bash running" behind
 
     def _begin_turn(self):
         self.turn += 1

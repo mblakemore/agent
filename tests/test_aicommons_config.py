@@ -310,8 +310,9 @@ def test_model_picker_lists_the_gateway_through_the_live_backend(monkeypatch, st
     assert agent._list_available_models("https://g/v1") == ["claude-v5.5-sonnet", "qwen3-32b"]
 
 
-def test_switching_model_rederives_its_limits(monkeypatch, store):
+def test_switching_model_rederives_its_limits(monkeypatch, store, tmp_path):
     import agent
+    monkeypatch.chdir(tmp_path)                       # persistence must not touch the real cwd
     b = lb.AICommonsBackend({"kind": "aicommons", "base_url": "https://g/v1", "api_key": "k",
                              "model": "claude-v5.5-opus"})
     assert b._thinking_kwargs()                       # opus: thinking on
@@ -319,8 +320,11 @@ def test_switching_model_rederives_its_limits(monkeypatch, store):
     live["backends"] = {"main": {"kind": "aicommons", "model": "claude-v5.5-opus"}}
     monkeypatch.setattr(agent, "_config", live)
     monkeypatch.setattr(agent, "_main_backend", b)
-    monkeypatch.setattr(agent, "_persist_config_value", lambda *a: None)
+    persisted = []
+    monkeypatch.setattr(agent._cfg, "persist_value", lambda *a: persisted.append(a))
     agent._set_model_for_role("main", "qwen3-32b")
+    assert persisted == [("llm", "model", "qwen3-32b")]
+    assert not (tmp_path / ".agent" / "config.json").exists()
     assert b.model == "qwen3-32b" and not b._thinking_kwargs()   # unknown: no thinking sent
     assert b.max_tokens <= lb._AICOMMONS_UNKNOWN_MODEL["max_output"]
     assert live["backends"]["main"]["model"] == "qwen3-32b"

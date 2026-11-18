@@ -83,7 +83,8 @@ def _fresh_cache_lifetimes(monkeypatch, tmp_path_factory):
 @pytest.fixture(autouse=True)
 def _no_remembered_probes():
     """Roles on one server share a boot probe for two minutes; a test's backend must
-    not inherit another test's answer for the same URL and key."""
+    not inherit another test's answer for the same URL and key. Also leaves the boot
+    window closed, as it is outside boot."""
     import llm_backend
     llm_backend.forget_probes()
     yield

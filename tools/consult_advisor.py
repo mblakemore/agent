@@ -416,8 +416,8 @@ def startup_check(timeout_s: int = 5) -> tuple:
             return bool(ok), ("ok" if ok else str(detail))
         except Exception as e:
             return False, f"{type(e).__name__}: {e}"
-    from llm_backend import recall_probe, remember_probe
-    server = ("llamacpp", a["base_url"].rstrip("/"), "")     # the same key the main role's probe uses
+    from llm_backend import probe_key, recall_probe, remember_probe
+    server = probe_key("llamacpp", a["base_url"])     # keyless, so a keyed main server stays distinct
     hit = recall_probe(server)
     if hit is not None:
         return bool(hit[0]), ("ok" if hit[0] else str(hit[1]))
