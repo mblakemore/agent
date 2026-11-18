@@ -13,7 +13,6 @@ def test_run_agent_interactive_loop_coverage():
          patch('agent._emit'), \
          patch('agent._auto_increment_cycle'), \
          patch('agent._load_checkpoint', return_value=None), \
-         patch('agent._delete_checkpoint'), \
          patch('agent.cleanup_temp_sessions'), \
          patch('agent.TerminalCallbacks'), \
          patch('agent.run_agent_single', return_value="success") as mock_run_single, \

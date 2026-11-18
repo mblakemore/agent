@@ -14,7 +14,6 @@ def test_initial_prompt_and_auto_mode_coverage():
          patch('agent._extract_pinned') as mock_pinned, \
          patch('agent.run_agent_single') as mock_run, \
          patch('agent.cleanup_temp_sessions') as mock_cleanup, \
-         patch('agent._delete_checkpoint') as mock_delete, \
          patch('agent.telemetry') as mock_telemetry, \
          patch('agent._log_bedrock_session_spend') as mock_spend, \
          patch('builtins.open', mock_open()) as mock_file, \

@@ -105,7 +105,7 @@ _DEFAULT_RETRY_CFG = {
     "jitter_factor": 0.1,
 }
 
-_LLM_REQUEST_TIMEOUT = 300  # 5 minutes per request (matches agent.py)
+_LLM_REQUEST_TIMEOUT = 300  # 5 minutes per request
 
 
 def _calc_retry_delay(attempt: int, cfg: dict) -> float:

@@ -14,7 +14,6 @@ class TestAgentInteractive(unittest.TestCase):
         self._orig_emit = agent._emit
         self._orig_setup_logger = agent._setup_logger
         self._orig_load_checkpoint = agent._load_checkpoint
-        self._orig_delete_checkpoint = agent._delete_checkpoint
         self._orig_auto_increment_cycle = agent._auto_increment_cycle
         self._orig_telemetry = agent.telemetry
 
@@ -51,7 +50,6 @@ class TestAgentInteractive(unittest.TestCase):
         agent._setup_logger.return_value = (self.mock_log, "/tmp/log", "/tmp/error_log")
 
         agent._load_checkpoint = MagicMock(return_value=None)
-        agent._delete_checkpoint = MagicMock()
         agent._auto_increment_cycle = MagicMock()
 
         # Mock telemetry
@@ -68,7 +66,6 @@ class TestAgentInteractive(unittest.TestCase):
         agent._emit = self._orig_emit
         agent._setup_logger = self._orig_setup_logger
         agent._load_checkpoint = self._orig_load_checkpoint
-        agent._delete_checkpoint = self._orig_delete_checkpoint
         agent._auto_increment_cycle = self._orig_auto_increment_cycle
         agent.telemetry = self._orig_telemetry
 

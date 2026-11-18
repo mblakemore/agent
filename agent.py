@@ -1353,54 +1353,6 @@ from llm_backend import BedrockBudgetExceeded, ConfigError, ContextOverflowError
 from anthropic_wire import THINKING_KEY as _THINKING_KEY
 
 
-_LLM_REQUEST_TIMEOUT = 300  # 5 minutes per request
-
-
-def _llm_request_raw(log, **kwargs):
-    """POST to the LLM with retries and exponential backoff.
-
-    Raises ContextOverflowError after 3 consecutive 500s (likely context overflow).
-    Other transient errors (503, connection, timeout) retry up to _LLM_MAX_RETRIES.
-
-    This is the original pre-refactor body, preserved as the internal transport
-    used by ``LlamacppBackend.stream_chat`` (plan task 1.4). Behavior is
-    byte-identical to the pre-refactor ``_llm_request``.
-    """
-    kwargs.setdefault("timeout", _LLM_REQUEST_TIMEOUT)
-    consecutive_500s = 0
-    for attempt in range(_LLM_MAX_RETRIES + 1):
-        try:
-            response = requests.post(f"{BASE_URL}/v1/chat/completions", **kwargs)
-            if response.status_code >= 500:
-                if response.status_code == 500:
-                    consecutive_500s += 1
-                    if consecutive_500s >= 3:
-                        raise ContextOverflowError(
-                            f"3 consecutive HTTP 500 errors — likely context overflow")
-                else:
-                    consecutive_500s = 0
-                raise requests.exceptions.HTTPError(
-                    f"Server error {response.status_code}", response=response)
-            response.raise_for_status()
-            return response
-        except ContextOverflowError:
-            raise  # Don't retry — caller will reduce context
-        except (requests.exceptions.ConnectionError,
-                requests.exceptions.Timeout,
-                requests.exceptions.HTTPError) as e:
-            if attempt == _LLM_MAX_RETRIES:
-                raise
-            if isinstance(e, requests.exceptions.HTTPError):
-                resp = getattr(e, 'response', None)
-                if resp is None or resp.status_code < 500:
-                    raise
-            delay = _calculate_retry_delay(attempt)
-            log.warning("LLM request failed (attempt %d/%d): %s — retrying in %ds",
-                        attempt + 1, _LLM_MAX_RETRIES + 1, e, delay)
-            _emit("on_api_retry", str(e), attempt + 1, _LLM_MAX_RETRIES, delay)
-            time.sleep(delay)
-
-
 def _is_failover_error(e):
     """Check if an exception should trigger failover to the fallback backend.
 
@@ -6170,7 +6122,7 @@ class _Run:
                 "standing by", "all tasks", "queue: empty",
             )
             # Completion signals are trusted after a commit OR a successful
-            # merge (reviewer role).  _cicd_phase_state["track"] is set when
+            # merge (reviewer role).  _cicd.phase_state["track"] is set when
             # `gh pr merge` exits 0.
             _has_persisted_work = (self._has_committed
                                     or _cicd.phase_state.get("track", False)
@@ -6363,7 +6315,7 @@ class _Run:
                 # the worktree, ran tests, said "I'm done", but never ran the
                 # commit + push + gh pr create sequence. Run 187 hit it after
                 # `git push` succeeded; run 188 hit it before push too. Detection
-                # widened from `_cycle_persisted` to `_cicd_edited_files` so the
+                # widened from `_cycle_persisted` to `_cicd.edited_files` so the
                 # nudge fires for both the "edits-but-no-commit" and "pushed-but-
                 # no-PR" branches of the same failure.
                 if self._cycle_persisted:
@@ -7541,8 +7493,8 @@ class _Run:
             # capture the issue number so cycle 82's nudge can fire
             # even on inherited/existing-issue cycles. Run 189 hit
             # this gap: builder used `gh issue view 397`, which
-            # never set `_cicd_issue_number`, so cycle 82's elif
-            # condition `and _cicd_issue_number` was always False.
+            # never set `_cicd.issue_number`, so cycle 82's elif
+            # condition `and _cicd.issue_number` was always False.
             if (not _cicd.issue_number) and "exit=0" in self.result_str:
                 _existing_match = re.search(
                     r'^gh\s+issue\s+(?:view|edit|comment)\s+(\d+)\b',

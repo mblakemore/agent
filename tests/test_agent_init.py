@@ -69,7 +69,7 @@ def test_run_agent_interactive_continue_auto():
          patch('agent._load_checkpoint') as mock_load, \
          patch('agent.run_agent_single', return_value="done") as mock_run, \
          patch('agent.cleanup_temp_sessions'), \
-         patch('agent._delete_checkpoint'), \
+         patch('agent._ckpt.delete') as mock_ckpt_delete, \
          patch('telemetry.record_cycle'), \
          patch('telemetry.shutdown'):
         
@@ -83,7 +83,7 @@ def test_run_agent_interactive_continue_auto():
         
         mock_run.assert_called()
         # 35dd636: checkpoints now survive session end (clean_exit) so -c can resume them
-        agent._delete_checkpoint.assert_not_called()
+        mock_ckpt_delete.assert_not_called()
 
 def test_initial_prompt_flow():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \
@@ -134,7 +134,7 @@ def test_initial_prompt_auto_cleanup():
          patch('agent._summary_backend') as mock_summary, \
          patch('agent.run_agent_single', return_value="done") as mock_run, \
          patch('agent.cleanup_temp_sessions'), \
-         patch('agent._delete_checkpoint'), \
+         patch('agent._ckpt.delete') as mock_ckpt_delete, \
          patch('telemetry.record_cycle'), \
          patch('telemetry.shutdown'):
         
@@ -147,7 +147,7 @@ def test_initial_prompt_auto_cleanup():
         
         mock_run.assert_called()
         # 35dd636: checkpoints now survive session end (clean_exit) so -c can resume them
-        agent._delete_checkpoint.assert_not_called()
+        mock_ckpt_delete.assert_not_called()
 
 def test_interactive_loop_commands():
     with patch('agent._setup_logger', return_value=(MagicMock(), "log_path", "err_path")), \

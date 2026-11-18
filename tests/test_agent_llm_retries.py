@@ -1,25 +1,25 @@
 import pytest
 import requests
 from unittest.mock import patch, MagicMock
+import logging
 from agent import ContextOverflowError
+from llm_backend import LlamacppBackend
 
-def test_llm_request_raw_success():
-    with patch("requests.post") as mock_post:
+def test_stream_chat_success():
+    with patch("llm_backend.requests.post") as mock_post:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_post.return_value = mock_response
         
-        from agent import _llm_request_raw
-        import logging
+        b = LlamacppBackend({"base_url": "http://x", "model": "m"})
         log = logging.getLogger("test")
-        kwargs = {"json": {}}
         
-        response = _llm_request_raw(log, **kwargs)
+        response = b.stream_chat(log, json={})
         assert response == mock_response
         assert mock_post.call_count == 1
 
-def test_llm_request_raw_500_retry_and_success():
-    with patch("requests.post") as mock_post:
+def test_stream_chat_500_retry_and_success():
+    with patch("llm_backend.requests.post") as mock_post:
         mock_fail = MagicMock()
         mock_fail.status_code = 500
         
@@ -28,68 +28,60 @@ def test_llm_request_raw_500_retry_and_success():
         
         mock_post.side_effect = [mock_fail, mock_success]
         
-        from agent import _llm_request_raw
-        import logging
+        b = LlamacppBackend({"base_url": "http://x", "model": "m"})
         log = logging.getLogger("test")
-        kwargs = {"json": {}}
         
-        with patch("time.sleep"):
-            response = _llm_request_raw(log, **kwargs)
+        with patch("llm_backend.time.sleep"):
+            response = b.stream_chat(log, json={})
             
         assert response == mock_success
         assert mock_post.call_count == 2
 
-def test_llm_request_raw_consecutive_500_overflow():
-    with patch("requests.post") as mock_post:
+def test_stream_chat_consecutive_500_overflow():
+    with patch("llm_backend.requests.post") as mock_post:
         mock_fail = MagicMock()
         mock_fail.status_code = 500
         mock_post.return_value = mock_fail
         
-        from agent import _llm_request_raw
-        import logging
+        b = LlamacppBackend({"base_url": "http://x", "model": "m"})
         log = logging.getLogger("test")
-        kwargs = {"json": {}}
         
-        with patch("time.sleep"):
+        with patch("llm_backend.time.sleep"):
             with pytest.raises(ContextOverflowError):
-                _llm_request_raw(log, **kwargs)
+                b.stream_chat(log, json={})
         
         assert mock_post.call_count == 3
 
-def test_llm_request_raw_non_500_http_error():
-    with patch("requests.post") as mock_post:
+def test_stream_chat_non_500_http_error():
+    with patch("llm_backend.requests.post") as mock_post:
         mock_fail = MagicMock()
         mock_fail.status_code = 400
         mock_fail.raise_for_status.side_effect = requests.exceptions.HTTPError("400 Client Error")
         mock_post.return_value = mock_fail
         
-        from agent import _llm_request_raw
-        import logging
+        b = LlamacppBackend({"base_url": "http://x", "model": "m"})
         log = logging.getLogger("test")
-        kwargs = {"json": {}}
         
         with pytest.raises(requests.exceptions.HTTPError):
-            _llm_request_raw(log, **kwargs)
+            b.stream_chat(log, json={})
             
         assert mock_post.call_count == 1
 
-def test_llm_request_raw_connection_error_retry():
-    with patch("requests.post") as mock_post:
+def test_stream_chat_connection_error_retry():
+    with patch("llm_backend.requests.post") as mock_post:
         mock_post.side_effect = [requests.exceptions.ConnectionError("Conn error"), MagicMock(status_code=200)]
         
-        from agent import _llm_request_raw
-        import logging
+        b = LlamacppBackend({"base_url": "http://x", "model": "m"})
         log = logging.getLogger("test")
-        kwargs = {"json": {}}
         
-        with patch("time.sleep"):
-            response = _llm_request_raw(log, **kwargs)
+        with patch("llm_backend.time.sleep"):
+            response = b.stream_chat(log, json={})
             
         assert response.status_code == 200
         assert mock_post.call_count == 2
 
-def test_llm_request_raw_502_retry_and_success():
-    with patch("requests.post") as mock_post:
+def test_stream_chat_502_retry_and_success():
+    with patch("llm_backend.requests.post") as mock_post:
         mock_fail = MagicMock()
         mock_fail.status_code = 502
         
@@ -98,13 +90,11 @@ def test_llm_request_raw_502_retry_and_success():
         
         mock_post.side_effect = [mock_fail, mock_success]
         
-        from agent import _llm_request_raw
-        import logging
+        b = LlamacppBackend({"base_url": "http://x", "model": "m"})
         log = logging.getLogger("test")
-        kwargs = {"json": {}}
         
-        with patch("time.sleep"):
-            response = _llm_request_raw(log, **kwargs)
+        with patch("llm_backend.time.sleep"):
+            response = b.stream_chat(log, json={})
             
         assert response == mock_success
         assert mock_post.call_count == 2

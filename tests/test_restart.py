@@ -213,7 +213,6 @@ def test_interactive_loop_ends_on_slash_restart():
          patch('agent._emit'), \
          patch('agent._auto_increment_cycle'), \
          patch('agent._load_checkpoint', return_value=None), \
-         patch('agent._delete_checkpoint'), \
          patch('agent.cleanup_temp_sessions'), \
          patch('agent.TerminalCallbacks'), \
          patch('agent._save_checkpoint', side_effect=lambda *a, **k: saved.append(a)), \

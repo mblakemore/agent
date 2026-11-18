@@ -10,7 +10,7 @@ def test_run_agent_interactive_auto_continue_end():
          patch("agent._load_checkpoint", return_value=([], {"text": ""}, 0, None, True)), \
          patch("agent.run_agent_single", return_value="done"), \
          patch("agent.cleanup_temp_sessions") as mock_cleanup, \
-         patch("agent._delete_checkpoint") as mock_del_cp, \
+         patch("agent._ckpt.delete") as mock_del_cp, \
          patch("agent._emit"):
         
         agent.run_agent_interactive(continue_mode=True, auto=True)
@@ -22,7 +22,6 @@ def test_run_agent_interactive_auto_cancelled_guidance():
     with patch("agent._setup_logger", return_value=(MagicMock(), "log", "err")), \
          patch("agent.run_agent_single") as mock_run, \
          patch("agent.cleanup_temp_sessions"), \
-         patch("agent._delete_checkpoint"), \
          patch("agent._emit"), \
          patch("builtins.input", return_value="guidance text"), \
          patch("agent._expand_file_refs", return_value=("expanded", None, None)):

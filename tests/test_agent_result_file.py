@@ -29,11 +29,10 @@ class TestAgentResultFile(unittest.TestCase):
 
     @patch('agent.run_agent_single')
     @patch('agent.cleanup_temp_sessions')
-    @patch('agent._delete_checkpoint')
     @patch('agent._log_bedrock_session_spend')
     @patch('agent._emit')
     @patch('agent._setup_logger')
-    def test_run_agent_interactive_writes_result_file(self, mock_setup_logger, mock_emit, mock_spend, mock_del_cp, mock_cleanup, mock_single):
+    def test_run_agent_interactive_writes_result_file(self, mock_setup_logger, mock_emit, mock_spend, mock_cleanup, mock_single):
         """Test that run_agent_interactive actually writes the last assistant message to the result_file."""
         # Setup logger mock to avoid file creation/errors
         mock_log = MagicMock()
@@ -72,11 +71,10 @@ class TestAgentResultFile(unittest.TestCase):
 
     @patch('agent.run_agent_single')
     @patch('agent.cleanup_temp_sessions')
-    @patch('agent._delete_checkpoint')
     @patch('agent._log_bedrock_session_spend')
     @patch('agent._emit')
     @patch('agent._setup_logger')
-    def test_run_agent_interactive_result_file_empty_history(self, mock_setup_logger, mock_emit, mock_spend, mock_del_cp, mock_cleanup, mock_single):
+    def test_run_agent_interactive_result_file_empty_history(self, mock_setup_logger, mock_emit, mock_spend, mock_cleanup, mock_single):
         """Test result-file writing when no assistant messages exist."""
         mock_log = MagicMock()
         mock_setup_logger.return_value = (mock_log, "log.txt", "err.txt")

@@ -53,7 +53,6 @@ def test_run_agent_interactive_auto_mode():
          patch("agent._setup_logger", return_value=(MagicMock(), "log", "err")), \
          patch("agent._main_backend") as mock_main, \
          patch("agent._summary_backend") as mock_summary, \
-         patch("agent._delete_checkpoint"), \
          patch("agent.cleanup_temp_sessions"):
         
         mock_main.health.return_value = (True, "OK")
@@ -86,7 +85,6 @@ def test_run_agent_interactive_continue_mode():
          patch("agent._main_backend") as mock_main, \
          patch("agent._summary_backend") as mock_summary, \
          patch("agent._llm_request") as mock_llm, \
-         patch("agent._delete_checkpoint"), \
          patch("agent.cleanup_temp_sessions"):
         
         mock_main.health.return_value = (True, "OK")

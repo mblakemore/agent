@@ -239,29 +239,28 @@ def test_cicd_phase_detection_perceive(mock_config, mock_llm, mock_emit):
     except Exception:
         pass
 
-@patch('agent._emit')
-@patch('agent._llm_request')
-@patch('agent._config')
-def test_cicd_phase_detection_implement(mock_config, mock_llm, mock_emit):
-    """Test that running git worktree add and gh pr create trigger the IMPLEMENT phase and capture details."""
-    mock_config.get.side_effect = lambda k, d=None: d  # .get() returns defaults like the real config (a bare MagicMock made the text cap int(MagicMock)==1)
-    mock_config.__getitem__.side_effect = lambda k: {
-        "llm": {"model": "test-model"},
-        "generation": {"temperature": 0.7, "top_p": 0.9, "top_k": 40, "continue_mode": False, "tui": False, "verbose": False}
-    }.get(k)
-    
-    mock_resp = MagicMock()
-    mock_resp.iter_lines.return_value = [
-        b'data: {"choices": [{"delta": {"content": "I will now create the worktree."}}]}',
-        b'data: [DONE]'
-    ]
-    mock_llm.return_value = mock_resp
-    
+def test_cicd_phase_detection_implement(monkeypatch):
+    """A successful `git worktree add` moves the builder to the IMPLEMENT phase and
+    captures the worktree path and branch."""
+    import cicd_gates
+    from tools import MAP_FN
+    from tests.test_cicd_guards import mock_llm_response, mock_text_response
+    cicd_gates.reset()
+    monkeypatch.setitem(MAP_FN, "exec_command", MagicMock(return_value="exit=0"))
     try:
-        with patch('agent.exec_command', return_value="exit=0"):
-            run_agent_interactive(initial_prompt="git worktree add /tmp/worktree -b cicd/test-branch", auto=True)
-    except Exception:
-        pass
+        with patch('agent._llm_request') as mock_llm, patch('agent._setup_logger'):
+            mock_llm.side_effect = [
+                mock_llm_response({"command": "git worktree add /tmp/worktree -b cicd/test-branch"}),
+                mock_text_response("Done"),
+            ]
+            history = [{"role": "user", "content": "# CICD Improvement Loop — Builder\nTest prompt"}]
+            run_agent_single(conversation_history=history, summary_state={"text": "", "up_to": 0},
+                             initial_files=[], log=MagicMock())
+        assert cicd_gates.phase_state["implement"] is True
+        assert cicd_gates.worktree_path == "/tmp/worktree"
+        assert cicd_gates.branch == "cicd/test-branch"
+    finally:
+        cicd_gates.reset()
 
 @patch('agent._emit')
 @patch('agent.run_agent_single')
