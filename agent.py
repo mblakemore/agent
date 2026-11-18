@@ -3054,6 +3054,10 @@ def _apply_setup_updates(updates):
                            ("_PREVIEW_LINES", "preview_lines")):
             if key in c:
                 globals()[gname] = c[key]
+        # lead.py keeps its own copy of the file-reference limits.
+        _lead.configure(max_full_lines=c.get("max_full_lines"),
+                        preview_lines=c.get("preview_lines"),
+                        model_guards=c.get("model_guards"))
         if "summary_max_chars" in c:
             _summ.SUMMARY_MAX_CHARS = c["summary_max_chars"]
         if "max_context_messages" in c:

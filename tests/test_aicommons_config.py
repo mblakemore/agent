@@ -341,3 +341,23 @@ def test_console_log_lines_follow_the_current_stdout(monkeypatch, capsys):
     monkeypatch.setattr(sys, "stdout", swapped)
     h.emit(logging.makeLogRecord({"msg": "hello", "levelno": logging.INFO}))
     assert swapped.getvalue() == "hello\n"
+
+
+def test_live_setup_apply_refreshes_the_file_reference_limits(monkeypatch, tmp_path):
+    """A /setup change to context.max_full_lines / preview_lines reaches lead.py at once."""
+    import agent
+    import lead
+    live = json.loads(json.dumps(agent._DEFAULT_CONFIG))
+    monkeypatch.setattr(agent, "_config", live)
+    monkeypatch.setattr(lead, "_CFG", dict(lead._CFG))       # restored after the test
+    for name in ("_MAX_FULL_LINES", "_PREVIEW_LINES"):
+        monkeypatch.setattr(agent, name, getattr(agent, name))
+    agent._apply_setup_updates({"context": {"max_full_lines": 10, "preview_lines": 3,
+                                            "model_guards": False}})
+    assert lead._CFG["max_full_lines"] == 10 and lead._CFG["preview_lines"] == 3
+    assert lead._CFG["model_guards"] is False
+    assert agent._MAX_FULL_LINES == 10 and agent._PREVIEW_LINES == 3
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "big.log").write_text("\n".join(f"line{i}" for i in range(30)))
+    _, files, err = lead.expand_file_refs("@big.log")
+    assert err is None and "first 3 of 30 lines" in files and "line3" not in files
